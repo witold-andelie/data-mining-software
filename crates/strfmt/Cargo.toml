@@ -1,0 +1,21 @@
+[package]
+name = "dms-strfmt"
+description = "IBM SPSS Modeler .str stream files: ZIP container and Fast Infoset (ITU-T X.891) decoder"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+zip = { version = "9", default-features = false, features = ["deflate-flate2-zlib-rs"] }
+
+[features]
+# Tests over the local real-file corpus (`cargo xtask corpus sync ...` first).
+corpus = []
+
+[lints]
+workspace = true
+
+[dev-dependencies]
+zip = { version = "9", default-features = false, features = ["deflate-flate2-zlib-rs"] }

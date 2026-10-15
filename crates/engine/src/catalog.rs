@@ -69,7 +69,7 @@ impl Scope {
 }
 
 /// One Modeler node.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct NodeSpec {
     /// Our stable node kind id (snake_case).
     pub id: &'static str,
@@ -137,6 +137,7 @@ pub const NODES: &[NodeSpec] = &[
     n("append", "Append", RecordOps, Mvp, &["AppendNode"]),
     n("distinct", "Distinct", RecordOps, Mvp, &["DistinctNode"]),
     n("smote", "SMOTE (Python)", RecordOps, Mvp, &["smote!spss.smote"]),
+    n("streaming_ts", "Streaming TS", RecordOps, Later, &["spss.ts!ts_streaming"]),
     n("extension_transform", "Extension Transform", RecordOps, Later, &["ExtensionDataTransformNode"]),
     n("space_time_boxes", "Space-Time-Boxes", RecordOps, OutOfScope, &["stb!spss.stb"]),
     n("cplex_optimization", "CPLEX Optimization", RecordOps, OutOfScope, &["cplexopt!spss.cplexopt"]),
@@ -188,20 +189,20 @@ pub const NODES: &[NodeSpec] = &[
     n("linear", "Linear", Modeling, Mvp, &["LinearRegression!spss.alm-extension", "ApplyLinearRegressionSplitModelNode"]),
     n("regression", "Regression", Modeling, Mvp, &["BuildRegressionNode", "ApplyRegressionNode"]),
     n("logistic", "Logistic", Modeling, Mvp, &["BuildLogisticNode", "ApplyLogisticNode", "ApplyLogisticSplitModelNode"]),
-    n("genlin", "GenLin", Modeling, Mvp, &[]),
+    n("genlin", "GenLin", Modeling, Mvp, &["spss.generalizedlinear_id!buildgeneralizedlinear"]),
     n("neural_net", "Neural Net", Modeling, Mvp, &["TrainNetNode", "ApplyNetNode", "ApplyNeuralNetSplitModelNode", "neuralnet!spss.neuralnet-extension"]),
-    n("svm", "SVM", Modeling, Mvp, &[]),
-    n("knn", "KNN", Modeling, Mvp, &[]),
-    n("bayes_net", "Bayes Net", Modeling, Mvp, &[]),
-    n("discriminant", "Discriminant", Modeling, Mvp, &[]),
+    n("svm", "SVM", Modeling, Mvp, &["spss.svm_id!buildSVM"]),
+    n("knn", "KNN", Modeling, Mvp, &["spss.KNN_id!KNNbuilder"]),
+    n("bayes_net", "Bayes Net", Modeling, Mvp, &["spss.bayesian_id!buildBN"]),
+    n("discriminant", "Discriminant", Modeling, Mvp, &["spss.discriminant_id!builddiscriminant"]),
     n("pca_factor", "PCA/Factor", Modeling, Mvp, &["BuildPCANode", "ApplyPCANode"]),
     n("feature_selection", "Feature Selection", Modeling, Mvp, &["BuildFeatureSelectionNode", "ApplyFeatureSelectionNode", "FeatureSelectionModelNode"]),
     n("anomaly", "Anomaly", Modeling, Mvp, &["BuildAnomalyNode", "ApplyAnomalyNode"]),
-    n("time_series", "Time Series", Modeling, Mvp, &["BuildTimeSeriesNode", "ApplyTimeSeriesNode"]),
+    n("time_series", "Time Series", Modeling, Mvp, &["BuildTimeSeriesNode", "ApplyTimeSeriesNode", "spss.ts!ts_builder"]),
     n("pmml_model", "Imported PMML model", Modeling, Mvp, &["ApplyImportedNode"]),
     n("glmm", "GLMM", Modeling, Later, &["GLMM!spss.glmm-extension"]),
     n("gle", "GLE", Modeling, Later, &[]),
-    n("cox", "Cox", Modeling, Later, &[]),
+    n("cox", "Cox", Modeling, Later, &["spss.coxreg_id!buildcoxreg"]),
     n("lsvm", "LSVM", Modeling, Later, &[]),
     n("slrm", "Self-Learning Response Model", Modeling, Later, &["spss.selflearning!selflearning"]),
     n("tcm", "Temporal Causal Model", Modeling, Later, &["tcm!pasw.timeseries-extension"]),
@@ -283,6 +284,41 @@ pub fn coverage(scope: Scope) -> Coverage {
 /// The catalog entry a `.str` identifier names, if any.
 pub fn by_modeler_identifier(identifier: &str) -> Option<&'static NodeSpec> {
     NODES.iter().find(|spec| spec.modeler.contains(&identifier))
+}
+
+/// Node classes that only give a stream its structure (supernode connectors).
+const STRUCTURAL_CLASSES: &[&str] = &[
+    "SuperNodeInputConnectorNode",
+    "SuperNodeOutputConnectorNode",
+];
+
+/// How the catalog sees one node of a stream.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Resolution {
+    Node(&'static NodeSpec),
+    /// Part of the stream structure, not a node type to implement.
+    Structural,
+    /// No catalog entry names this identifier.
+    Unmapped,
+}
+
+/// The identifier the catalog uses for a node: a model nugget counts as the node type that built
+/// it (`modelBuildInfo@modelBuilderId`); every other node uses its type identifier.
+pub fn catalog_identifier(node: &dms_stream::StreamNode) -> String {
+    match &node.model_builder {
+        Some(builder) if by_modeler_identifier(&node.type_identifier()).is_none() => {
+            builder.clone()
+        }
+        _ => node.type_identifier(),
+    }
+}
+
+pub fn resolve(node: &dms_stream::StreamNode) -> Resolution {
+    let identifier = catalog_identifier(node);
+    if STRUCTURAL_CLASSES.contains(&identifier.as_str()) {
+        return Resolution::Structural;
+    }
+    by_modeler_identifier(&identifier).map_or(Resolution::Unmapped, Resolution::Node)
 }
 
 #[cfg(test)]
