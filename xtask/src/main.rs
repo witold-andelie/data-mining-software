@@ -22,7 +22,30 @@ commands:
   corpus verify              verify corpus/ against xtask/corpus.tsv
   oracle <label> <path> [--timeout <secs>]
                              run a pinned corpus stream through IBM SPSS Modeler (Windows,
-                             DMS_MODELER_HOME) and keep CSV/PMML results in oracle/";
+                             DMS_MODELER_HOME) and keep CSV/PMML results in oracle/
+  probe <name>               run xtask/oracle/probes/<name>.py in Modeler; output goes to
+                             oracle/probes/<name>/ (differential format observation)
+  test-corpus                verify corpus/ and run the corpus-gated tests";
+
+/// Crates with real-file tests behind their `corpus` feature.
+const CORPUS_CRATES: &[&str] = &["dms-strfmt", "dms-stream"];
+
+fn test_corpus() -> Result<()> {
+    corpus::run(&["verify".to_string()])?;
+    let features: Vec<String> = CORPUS_CRATES
+        .iter()
+        .map(|krate| format!("{krate}/corpus"))
+        .collect();
+    let features = features.join(",");
+    let mut args = vec!["test"];
+    for krate in CORPUS_CRATES {
+        args.push("-p");
+        args.push(krate);
+    }
+    args.push("--features");
+    args.push(&features);
+    cargo(&args)
+}
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -33,6 +56,8 @@ fn main() -> ExitCode {
         Some("parity") => parity::run(rest.iter().any(|a| a == "--check")),
         Some("corpus") => corpus::run(rest),
         Some("oracle") => oracle::run(rest),
+        Some("probe") => oracle::probe(rest),
+        Some("test-corpus") => test_corpus(),
         _ => Err(USAGE.to_string()),
     };
     match outcome {

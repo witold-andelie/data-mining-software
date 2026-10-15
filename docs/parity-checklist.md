@@ -5,7 +5,7 @@
 | Scope | Implemented | Total |
 |---|---|---|
 | MVP | 0 | 100 |
-| later | 0 | 12 |
+| later | 0 | 13 |
 | out of scope | 0 | 34 |
 
 ## Sources
@@ -49,6 +49,7 @@
 | Append | `append` | MVP | missing | `AppendNode` |
 | Distinct | `distinct` | MVP | missing | `DistinctNode` |
 | SMOTE (Python) | `smote` | MVP | missing | `smote!spss.smote` |
+| Streaming TS | `streaming_ts` | later | missing | `spss.ts!ts_streaming` |
 | Extension Transform | `extension_transform` | later | missing | `ExtensionDataTransformNode` |
 | Space-Time-Boxes | `space_time_boxes` | out of scope | missing | `stb!spss.stb` |
 | CPLEX Optimization | `cplex_optimization` | out of scope | missing | `cplexopt!spss.cplexopt` |
@@ -111,20 +112,20 @@
 | Linear | `linear` | MVP | missing | `LinearRegression!spss.alm-extension`, `ApplyLinearRegressionSplitModelNode` |
 | Regression | `regression` | MVP | missing | `BuildRegressionNode`, `ApplyRegressionNode` |
 | Logistic | `logistic` | MVP | missing | `BuildLogisticNode`, `ApplyLogisticNode`, `ApplyLogisticSplitModelNode` |
-| GenLin | `genlin` | MVP | missing | (unmapped) |
+| GenLin | `genlin` | MVP | missing | `spss.generalizedlinear_id!buildgeneralizedlinear` |
 | Neural Net | `neural_net` | MVP | missing | `TrainNetNode`, `ApplyNetNode`, `ApplyNeuralNetSplitModelNode`, `neuralnet!spss.neuralnet-extension` |
-| SVM | `svm` | MVP | missing | (unmapped) |
-| KNN | `knn` | MVP | missing | (unmapped) |
-| Bayes Net | `bayes_net` | MVP | missing | (unmapped) |
-| Discriminant | `discriminant` | MVP | missing | (unmapped) |
+| SVM | `svm` | MVP | missing | `spss.svm_id!buildSVM` |
+| KNN | `knn` | MVP | missing | `spss.KNN_id!KNNbuilder` |
+| Bayes Net | `bayes_net` | MVP | missing | `spss.bayesian_id!buildBN` |
+| Discriminant | `discriminant` | MVP | missing | `spss.discriminant_id!builddiscriminant` |
 | PCA/Factor | `pca_factor` | MVP | missing | `BuildPCANode`, `ApplyPCANode` |
 | Feature Selection | `feature_selection` | MVP | missing | `BuildFeatureSelectionNode`, `ApplyFeatureSelectionNode`, `FeatureSelectionModelNode` |
 | Anomaly | `anomaly` | MVP | missing | `BuildAnomalyNode`, `ApplyAnomalyNode` |
-| Time Series | `time_series` | MVP | missing | `BuildTimeSeriesNode`, `ApplyTimeSeriesNode` |
+| Time Series | `time_series` | MVP | missing | `BuildTimeSeriesNode`, `ApplyTimeSeriesNode`, `spss.ts!ts_builder` |
 | Imported PMML model | `pmml_model` | MVP | missing | `ApplyImportedNode` |
 | GLMM | `glmm` | later | missing | `GLMM!spss.glmm-extension` |
 | GLE | `gle` | later | missing | (unmapped) |
-| Cox | `cox` | later | missing | (unmapped) |
+| Cox | `cox` | later | missing | `spss.coxreg_id!buildcoxreg` |
 | LSVM | `lsvm` | later | missing | (unmapped) |
 | Self-Learning Response Model | `slrm` | later | missing | `spss.selflearning!selflearning` |
 | Temporal Causal Model | `tcm` | later | missing | `tcm!pasw.timeseries-extension` |

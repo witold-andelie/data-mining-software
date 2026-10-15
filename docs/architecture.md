@@ -1,6 +1,6 @@
 # 架构
 
-> 更新：2026-10-15 · 状态：P0，只有 `dms-engine`（节点目录）和 `xtask` 已建
+> 更新：2026-10-15 · 状态：P1 完成。已建 `dms-strfmt`、`dms-stream`（结构）、`dms-engine`（节点目录与识别）、`dms-cli`、`xtask`
 
 ## 分层
 
@@ -9,9 +9,9 @@
 | 层 | crate（计划） | 职责 | 阶段 |
 |---|---|---|---|
 | L0 | `dms-types` | 存储类型、测量级别、角色、缺失值、日期/时间语义 | P2 |
-| L0（独立） | `dms-strfmt` | `.str` 流文件：ZIP 容器 + 二进制编码 XML 的解码 | P1 |
+| L0（独立） | `dms-strfmt` | `.str` 流文件：ZIP 容器 + Fast Infoset（ITU-T X.891）解码，见 `docs/formats/str.md` | P1 已完成 |
 | L0（独立） | `dms-sav`、`dms-pmml` | `.sav` 读写；PMML 读写 | P2 / P3 |
-| L1 | `dms-stream` | 流模型（节点 DAG、参数、超节点）和原生文本格式（可 git diff） | P2 |
+| L1 | `dms-stream` | 流模型（节点 DAG、参数、超节点）和原生文本格式（可 git diff） | P1 完成结构；参数与原生格式在 P2 |
 | L1 | `dms-clem` | CLEM 表达式解析和求值 | P2 |
 | L2 | `dms-io` | CSV、固定宽度、Excel、`.sav`、数据库、JSON、XML、SAS → Arrow/Polars | P2 |
 | L2 | `dms-algo` | 原生算法：树族、回归、聚类、关联规则、神经网络等（线性代数用 faer） | P3 |

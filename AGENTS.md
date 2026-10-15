@@ -32,8 +32,11 @@
 
 | 层 | crate | 职责 | 状态 |
 |---|---|---|---|
-| L4 | `dms-engine` | Session、节点注册表、Modeler 节点目录（对标用） | 已建：目录 |
-| tools | `xtask` | `cargo xtask ci / layers / parity / corpus` | 已建 |
+| L0 | `dms-strfmt` | `.str` 容器与 Fast Infoset（ITU-T X.891）解码 | 已建 |
+| L1 | `dms-stream` | 流模型：节点、连线、属性（设置原样保留） | 已建：结构 |
+| L4 | `dms-engine` | Session、节点注册表、Modeler 节点目录与节点识别 | 已建：目录 |
+| apps | `dms-cli` | `xml / inspect / coverage` | 已建 |
+| tools | `xtask` | `ci / layers / parity / corpus / test-corpus / oracle / probe` | 已建 |
 
 计划中的各层见 `docs/architecture.md`。规则：
 
@@ -51,6 +54,8 @@
 
 - `xtask/corpus.tsv` 按标签、相对路径、SHA-256 固定语料。本机源目录记在 `plan/STATUS.md`。
 - `cargo xtask corpus sync <label> <dir>` 把文件拷到 `corpus/<label>/` 并校验；`cargo xtask corpus verify` 校验现有语料；新增文件用 `cargo xtask corpus record`。
+- 语料测试在各 crate 的 `corpus` feature 后面；`cargo xtask test-corpus` 先校验语料再运行它们。改动 `dms-strfmt`、`dms-stream` 后必须跑。
+- 格式事实靠差分探针获得：`cargo xtask probe <name>` 在 Modeler 里运行 `xtask/oracle/probes/<name>.py`，每步只改一处并保存，再对比文件。结论写进 `docs/formats/`，并区分“已验证”和“推断”。
 - 标准答案：`cargo xtask oracle <label> <path>`（仅 Windows，需要 `DMS_MODELER_HOME`）用 Modeler 批处理模式跑一个语料流，把模型导出为 PMML、终端节点的输入导出为 CSV，结果放 `oracle/`（不进 git）。流引用的数据在别的机器上时，按文件名在 Modeler 的 Demos、`corpus/<label>/` 和 `DMS_ORACLE_DATA_DIRS` 里查找。详见 `docs/oracle.md`。
 
 ## 环境

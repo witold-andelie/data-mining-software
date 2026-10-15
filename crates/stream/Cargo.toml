@@ -1,0 +1,17 @@
+[package]
+name = "dms-stream"
+description = "Stream model: nodes, links and properties read from Modeler streams"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+dms-strfmt.workspace = true
+
+[features]
+corpus = []
+
+[lints]
+workspace = true

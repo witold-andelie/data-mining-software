@@ -6,9 +6,16 @@ use serde_json::Value;
 use std::process::Command;
 
 /// Layer of every workspace package. A new crate must be registered here.
-const LAYERS: &[(&str, u8)] = &[("dms-engine", 4), ("xtask", TOOLS)];
+const LAYERS: &[(&str, u8)] = &[
+    ("dms-strfmt", 0),
+    ("dms-stream", 1),
+    ("dms-engine", 4),
+    ("dms-cli", APPS),
+    ("xtask", TOOLS),
+];
 
 const UI_LAYER: u8 = 6;
+const APPS: u8 = 10;
 const TOOLS: u8 = 100;
 const GUI_CRATES: &[&str] = &["egui", "eframe", "egui_extras", "egui_plot", "winit", "rfd"];
 

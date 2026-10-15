@@ -154,39 +154,99 @@ fn prepare_output_dir(out: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Embed paths into the Jython template as ASCII-only unicode literals. Modeler compiles the
-/// script from a Unicode string, so it rejects a coding declaration; non-ASCII characters are
-/// written as `\uXXXX` / `\UXXXXXXXX` escapes. A JSON string literal escapes quotes, backslashes
-/// and control characters the same way a Python 2 `u"..."` literal reads them.
+/// Embed paths into the Jython template as ASCII-only unicode literals.
 fn render_script(stream: &Path, out: &Path, data_dirs: &[String]) -> Result<String> {
-    let literal = |text: &str| -> Result<String> {
-        let json = serde_json::to_string(&text.replace('\\', "/"))
-            .map_err(|e| format!("cannot encode {text:?}: {e}"))?;
-        let mut ascii = String::with_capacity(json.len() + 1);
-        ascii.push('u');
-        for c in json.chars() {
-            match u32::from(c) {
-                code if code < 0x80 => ascii.push(c),
-                code if code <= 0xFFFF => ascii.push_str(&format!("\\u{code:04x}")),
-                code => ascii.push_str(&format!("\\U{code:08x}")),
-            }
-        }
-        Ok(ascii)
-    };
-    let path_literal = |path: &Path| -> Result<String> {
-        literal(
-            path.to_str()
-                .ok_or_else(|| format!("{} is not valid UTF-8", path.display()))?,
-        )
-    };
     let dirs = data_dirs
         .iter()
-        .map(|dir| literal(dir))
+        .map(|dir| python_literal(dir))
         .collect::<Result<Vec<_>>>()?;
     Ok(SCRIPT_TEMPLATE
         .replace("@STREAM_PATH@", &path_literal(stream)?)
         .replace("@OUT_DIR@", &path_literal(out)?)
         .replace("@DATA_DIRS@", &format!("[{}]", dirs.join(", "))))
+}
+
+/// A pure-ASCII Python 2 `u"..."` literal (backslashes turned into forward slashes). Modeler
+/// compiles scripts from a Unicode string, so it rejects a coding declaration; non-ASCII
+/// characters are written as `\uXXXX` / `\UXXXXXXXX` escapes. A JSON string literal escapes
+/// quotes, backslashes and control characters the same way a Python 2 `u"..."` literal reads them.
+fn python_literal(text: &str) -> Result<String> {
+    let json = serde_json::to_string(&text.replace('\\', "/"))
+        .map_err(|e| format!("cannot encode {text:?}: {e}"))?;
+    let mut ascii = String::with_capacity(json.len() + 1);
+    ascii.push('u');
+    for c in json.chars() {
+        match u32::from(c) {
+            code if code < 0x80 => ascii.push(c),
+            code if code <= 0xFFFF => ascii.push_str(&format!("\\u{code:04x}")),
+            code => ascii.push_str(&format!("\\U{code:08x}")),
+        }
+    }
+    Ok(ascii)
+}
+
+fn path_literal(path: &Path) -> Result<String> {
+    python_literal(
+        path.to_str()
+            .ok_or_else(|| format!("{} is not valid UTF-8", path.display()))?,
+    )
+}
+
+/// `cargo xtask probe <name>`: run `xtask/oracle/probes/<name>.py` in Modeler with `@OUT_DIR@`
+/// bound to `oracle/probes/<name>/`. Probes create and save artifacts (for example `.str` files
+/// that differ in one setting) for differential observation of Modeler's file formats. Each
+/// probe writes a `manifest.json` with `saved` and `errors` lists.
+pub fn probe(args: &[String]) -> Result<()> {
+    let [name] = args else {
+        return Err("usage: probe <name>".into());
+    };
+    if name.is_empty() || !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+        return Err(format!("invalid probe name {name:?}"));
+    }
+    if !cfg!(windows) {
+        return Err("probes run only on the Windows machine with IBM SPSS Modeler".into());
+    }
+    let home = modeler_home()?;
+    let root = workspace_root()?;
+    let template_path = root
+        .join("xtask")
+        .join("oracle")
+        .join("probes")
+        .join(format!("{name}.py"));
+    let template = fs::read_to_string(&template_path)
+        .map_err(|e| format!("cannot read {}: {e}", template_path.display()))?;
+    let out = root.join("oracle").join("probes").join(name);
+    if out.exists() {
+        fs::remove_dir_all(&out).map_err(|e| format!("cannot clear {}: {e}", out.display()))?;
+    }
+    fs::create_dir_all(&out).map_err(|e| format!("cannot create {}: {e}", out.display()))?;
+    let script = out.join("probe_script.py");
+    fs::write(&script, template.replace("@OUT_DIR@", &path_literal(&out)?))
+        .map_err(|e| format!("cannot write {}: {e}", script.display()))?;
+    let log = out.join("clem_batch.log");
+    let timeout = Duration::from_secs(DEFAULT_TIMEOUT_SECS);
+    run_clemb(&home, &script, &log, &out, timeout)?;
+    let manifest = read_json(&out.join("manifest.json"))?;
+    let list = |key: &str| {
+        manifest
+            .get(key)
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default()
+    };
+    let errors = list("errors");
+    println!(
+        "xtask probe: {name}: {} saved, {} errors -> {}",
+        list("saved").len(),
+        errors.len(),
+        out.display()
+    );
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        let lines: Vec<String> = errors.iter().map(Value::to_string).collect();
+        Err(format!("probe errors:\n  {}", lines.join("\n  ")))
+    }
 }
 
 fn run_clemb(home: &Path, script: &Path, log: &Path, out: &Path, timeout: Duration) -> Result<()> {
