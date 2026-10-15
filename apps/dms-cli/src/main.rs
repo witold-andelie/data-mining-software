@@ -14,7 +14,10 @@ commands:
   xml <file.str>                  print the decoded stream document as XML
   inspect <file.str>              print nodes, links and attachments as JSON
   coverage [--json] <path>...     decode every .str under the paths and report which catalog
-                                  nodes they use";
+                                  nodes they use
+  run <file.str> --out <dir> [--data-dir <dir>]...
+                                  run the stream and write the data reaching each terminal node
+                                  to <dir>/<uid>.csv, with a report in <dir>/run.json";
 
 /// Directory recursion bound for `coverage`.
 const MAX_DIRECTORY_DEPTH: usize = 32;
@@ -25,6 +28,7 @@ fn main() -> ExitCode {
         [command, path] if command == "xml" => xml(Path::new(path)),
         [command, path] if command == "inspect" => inspect(Path::new(path)),
         [command, rest @ ..] if command == "coverage" && !rest.is_empty() => coverage(rest),
+        [command, path, rest @ ..] if command == "run" => run(Path::new(path), rest),
         _ => Err(USAGE.to_string()),
     };
     match outcome {
@@ -287,5 +291,88 @@ fn collect_streams(path: &Path, depth: usize, out: &mut Vec<PathBuf>) -> Result<
             out.push(child);
         }
     }
+    Ok(())
+}
+
+/// Runs the stream's top-level diagram and exports the input of every terminal node, which is
+/// what `cargo xtask oracle` exports from Modeler (`data/NN_<type>_<uid>.csv`).
+fn run(path: &Path, args: &[String]) -> Result<(), String> {
+    let mut out = None;
+    let mut data_dirs = Vec::new();
+    let mut rest = args.iter();
+    while let Some(flag) = rest.next() {
+        let value = rest.next().ok_or_else(|| format!("{flag} needs a value"))?;
+        match flag.as_str() {
+            "--out" => out = Some(PathBuf::from(value)),
+            "--data-dir" => data_dirs.push(PathBuf::from(value)),
+            other => return Err(format!("unknown option {other}")),
+        }
+    }
+    let out = out.ok_or("run needs --out <dir>")?;
+    let (_, stream) = open(path)?;
+    let plan = dms_exec::Plan::new(&stream);
+    let mut exported: Vec<&str> = Vec::new();
+    for terminal in plan.terminals() {
+        for input in plan.inputs_of(terminal) {
+            if !exported.contains(&input) {
+                exported.push(input);
+            }
+        }
+    }
+    let context = dms_exec::ExecContext {
+        files: dms_exec::FileResolver { data_dirs },
+        stream_properties: stream.properties.clone().map(std::sync::Arc::new),
+    };
+    let results = plan.evaluate(&exported, &context);
+    std::fs::create_dir_all(&out).map_err(|e| format!("cannot create {}: {e}", out.display()))?;
+    let mut report_ok = Vec::new();
+    let mut report_failed = Vec::new();
+    for uid in &exported {
+        match results.get(*uid) {
+            Some(Ok(table)) => {
+                let file = out.join(format!("{uid}.csv"));
+                let mut writer = std::io::BufWriter::new(
+                    std::fs::File::create(&file)
+                        .map_err(|e| format!("cannot create {}: {e}", file.display()))?,
+                );
+                dms_io::csv::write_table(table, &mut writer)
+                    .and_then(|()| std::io::Write::flush(&mut writer))
+                    .map_err(|e| format!("cannot write {}: {e}", file.display()))?;
+                report_ok.push(
+                    json!({ "uid": uid, "rows": table.row_count(), "fields": table.model().len() }),
+                );
+            }
+            Some(Err(error)) => {
+                report_failed.push(json!({ "uid": uid, "error": error.to_string() }))
+            }
+            None => report_failed.push(json!({ "uid": uid, "error": "not evaluated" })),
+        }
+    }
+    // Root causes: failures that are not just "an upstream node failed".
+    let root_causes: Vec<Value> = results
+        .iter()
+        .filter_map(|(uid, result)| match result {
+            Err(error) if !matches!(error.kind, dms_exec::ErrorKind::Upstream(_)) => {
+                Some(json!({ "uid": uid, "error": error.to_string() }))
+            }
+            _ => None,
+        })
+        .collect();
+    let report = json!({
+        "stream": path.display().to_string(),
+        "exported": report_ok,
+        "failed": report_failed,
+        "root_causes": root_causes,
+    });
+    let text = serde_json::to_string_pretty(&report).map_err(|e| e.to_string())?;
+    std::fs::write(out.join("run.json"), text + "\n")
+        .map_err(|e| format!("cannot write run.json: {e}"))?;
+    println!(
+        "dms-cli run: {} exported, {} failed ({} root causes) -> {}",
+        report_ok.len(),
+        report_failed.len(),
+        root_causes.len(),
+        out.display()
+    );
     Ok(())
 }

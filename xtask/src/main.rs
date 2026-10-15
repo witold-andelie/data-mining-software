@@ -1,5 +1,6 @@
 //! Developer tasks: `cargo xtask <command>`.
 
+mod compare;
 mod corpus;
 mod layers;
 mod oracle;
@@ -25,10 +26,13 @@ commands:
                              DMS_MODELER_HOME) and keep CSV/PMML results in oracle/
   probe <name>               run xtask/oracle/probes/<name>.py in Modeler; output goes to
                              oracle/probes/<name>/ (differential format observation)
-  test-corpus                verify corpus/ and run the corpus-gated tests";
+  test-corpus                verify corpus/ and run the corpus-gated tests
+  compare <label> <path> [--strict]
+                             run a corpus stream with dms-cli and compare the data reaching
+                             each terminal node with the Modeler oracle export";
 
 /// Crates with real-file tests behind their `corpus` feature.
-const CORPUS_CRATES: &[&str] = &["dms-strfmt", "dms-stream"];
+const CORPUS_CRATES: &[&str] = &["dms-strfmt", "dms-stream", "dms-sav"];
 
 fn test_corpus() -> Result<()> {
     corpus::run(&["verify".to_string()])?;
@@ -57,6 +61,7 @@ fn main() -> ExitCode {
         Some("corpus") => corpus::run(rest),
         Some("oracle") => oracle::run(rest),
         Some("probe") => oracle::probe(rest),
+        Some("compare") => compare::run(rest),
         Some("test-corpus") => test_corpus(),
         _ => Err(USAGE.to_string()),
     };

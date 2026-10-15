@@ -1,0 +1,17 @@
+[package]
+name = "dms-exec"
+description = "Reference executor: plans a stream and runs its nodes on in-memory tables"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+dms-strfmt.workspace = true
+dms-stream.workspace = true
+dms-types.workspace = true
+dms-catalog.workspace = true
+
+[lints]
+workspace = true

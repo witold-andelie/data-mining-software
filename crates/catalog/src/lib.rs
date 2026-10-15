@@ -1,12 +1,11 @@
-//! Catalog of IBM SPSS Modeler 19 nodes, used to measure parity.
+//! Catalog of IBM SPSS Modeler 19 nodes (L2): which nodes exist, which we intend to build, and
+//! how a stream node maps to them. Used for parity and for dispatching nodes to implementations.
 //!
 //! Each entry is one user-facing node (a model's build node and its generated model nugget share
 //! an entry). `modeler` lists the identifiers that name the node inside `.str` stream files: Java
 //! class simple names (`SelectNode`) or extension node ids (`Cart!spss.tree-extension`). They come
 //! from file listings and stream observation only; mappings marked empty are resolved by the `.str`
 //! decoder work. `cargo xtask parity` renders this catalog to `docs/parity-checklist.md`.
-
-use crate::nodes;
 
 /// Modeler palette a node belongs to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -269,13 +268,13 @@ pub struct Coverage {
     pub total: usize,
 }
 
-/// Coverage of the catalog entries in `scope`.
-pub fn coverage(scope: Scope) -> Coverage {
+/// Coverage of the catalog entries in `scope`, given which node ids are implemented.
+pub fn coverage(scope: Scope, is_implemented: impl Fn(&str) -> bool) -> Coverage {
     let in_scope = NODES.iter().filter(|spec| spec.scope == scope);
     Coverage {
         implemented: in_scope
             .clone()
-            .filter(|spec| nodes::is_implemented(spec.id))
+            .filter(|spec| is_implemented(spec.id))
             .count(),
         total: in_scope.count(),
     }
@@ -326,9 +325,6 @@ mod tests {
     use super::*;
     use std::collections::HashSet;
 
-    /// Implemented MVP nodes; raise it when nodes land, never lower it.
-    const MVP_FLOOR: usize = 0;
-
     #[test]
     fn ids_are_unique_snake_case() {
         let mut seen = HashSet::new();
@@ -355,18 +351,9 @@ mod tests {
     }
 
     #[test]
-    fn implemented_ids_exist_in_catalog() {
-        for id in nodes::IMPLEMENTED {
-            assert!(NODES.iter().any(|spec| spec.id == *id), "unknown node {id}");
-        }
-    }
-
-    #[test]
-    #[allow(
-        clippy::absurd_extreme_comparisons,
-        reason = "the floor starts at 0 and only rises"
-    )]
-    fn mvp_parity_never_drops() {
-        assert!(coverage(Scope::Mvp).implemented >= MVP_FLOOR);
+    fn coverage_counts_implemented_entries() {
+        let all = coverage(Scope::Mvp, |_| true);
+        assert_eq!(all.implemented, all.total);
+        assert_eq!(coverage(Scope::Mvp, |id| id == "select").implemented, 1);
     }
 }

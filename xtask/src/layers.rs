@@ -8,7 +8,13 @@ use std::process::Command;
 /// Layer of every workspace package. A new crate must be registered here.
 const LAYERS: &[(&str, u8)] = &[
     ("dms-strfmt", 0),
+    ("dms-sav", 0),
+    ("dms-types", 0),
     ("dms-stream", 1),
+    ("dms-clem", 1),
+    ("dms-catalog", 2),
+    ("dms-io", 2),
+    ("dms-exec", 3),
     ("dms-engine", 4),
     ("dms-cli", APPS),
     ("xtask", TOOLS),

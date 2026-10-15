@@ -135,7 +135,7 @@ fn modeler_home() -> Result<PathBuf> {
 }
 
 /// `oracle/<label>/<path without extension, '/' replaced by "__">`.
-fn output_dir(label: &str, path: &str) -> Result<PathBuf> {
+pub(crate) fn output_dir(label: &str, path: &str) -> Result<PathBuf> {
     let stem = path.strip_suffix(".str").unwrap_or(path).replace('/', "__");
     if stem.is_empty() || stem.contains("..") {
         return Err(format!("unusable corpus path {path:?}"));

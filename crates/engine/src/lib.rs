@@ -1,4 +1,4 @@
-//! Engine layer (L4): session, node registry and the Modeler node catalog used to measure parity.
+//! Engine layer (L4): session, commands, and the node catalog as seen by the executor.
 
-pub mod catalog;
+pub use dms_catalog as catalog;
 pub mod nodes;

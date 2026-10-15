@@ -1,0 +1,19 @@
+[package]
+name = "dms-sav"
+description = "IBM SPSS Statistics system files (.sav, .zsav): dictionary and case data reader"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+encoding_rs = "0.8"
+flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
+
+[features]
+# Tests over the local real-file corpus (`cargo xtask corpus sync ...` first).
+corpus = []
+
+[lints]
+workspace = true
