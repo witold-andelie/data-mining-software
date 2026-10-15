@@ -3,7 +3,7 @@
 # (IBM SPSS Modeler 19.0 Python Scripting and Automation Guide).
 #
 # For one stream it writes into OUT_DIR:
-#   models/NN_<label>.xml      PMML of every model the stream builds
+#   models/NN_<label>.xml      PMML of every model the stream builds (terminals run one by one)
 #   data/NN_<type>_<id>.csv    the records reaching each terminal node (UTF-8, comma, header row)
 #   exports/<name>             files written by the stream's own export nodes
 #   manifest.json              what was exported, relocated or missing, and every error
@@ -21,7 +21,7 @@ DATA_DIRS = @DATA_DIRS@
 MAX_SEARCH_DEPTH = 4
 ERRORS = (modeler.api.ModelerException, java.lang.Exception, Exception)
 
-manifest = {"stream": STREAM_PATH, "models": [], "data": [], "relocated": [],
+manifest = {"stream": STREAM_PATH, "runs": [], "models": [], "data": [], "relocated": [],
             "missing_data": [], "errors": []}
 
 
@@ -107,9 +107,23 @@ def relocate_files(stream):
             record_error("relocate", node, e)
 
 
-def export_models(stream, taskrunner):
+def run_terminals(stream, taskrunner):
+    # Run each terminal node on its own so one failing branch does not stop the others.
     outputs = []
-    stream.runAll(outputs)
+    for terminal in terminal_nodes(stream):
+        results = []
+        entry = {"node": describe(terminal), "ok": True}
+        try:
+            terminal.run(results)
+        except ERRORS, e:
+            entry["ok"] = False
+            record_error("run_terminal", terminal, e)
+        manifest["runs"].append(entry)
+        outputs.extend(results)
+    export_models(outputs, taskrunner)
+
+
+def export_models(outputs, taskrunner):
     index = 0
     for output in outputs:
         if not isinstance(output, modeler.api.ModelOutput):
@@ -190,7 +204,7 @@ except ERRORS, e:
 if stream is not None:
     relocate_files(stream)
     try:
-        export_models(stream, taskrunner)
+        run_terminals(stream, taskrunner)
     except ERRORS, e:
         record_error("run_stream", None, e)
     export_terminal_inputs(stream)
