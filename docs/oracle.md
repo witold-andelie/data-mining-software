@@ -22,7 +22,7 @@ cargo xtask oracle ibm-demos druglearn.str [--timeout 600]
 2. 用 `xtask/oracle/modeler_oracle.py` 生成脚本（Jython 2.7，只用 IBM 公开的 Python 脚本接口），通过 `clemb -script … -execute` 在本地批处理模式运行（不需要 Modeler Server，也不弹界面）。
 3. 脚本：
    - 源节点引用的文件不存在时，按文件名在 Modeler 的 `Demos`、`corpus/<label>/`、`DMS_ORACLE_DATA_DIRS` 中查找并替换；流自带的导出节点改写到 `exports/`。
-   - `runAll` 后把每个生成的模型导出为 PMML（`models/`）。
+   - 逐个运行终端节点（一个分支失败不影响其他分支，结果记在 `runs`），把生成的模型导出为 PMML（`models/`）。
    - 在每个终端节点的上游接一个 Flat File 导出（UTF-8、逗号、带表头），写到 `data/`。
    - `manifest.json` 记录导出、重定位、缺失的数据文件和所有错误。
 4. xtask 写 `provenance.json`：流的 sha256、Modeler 版本、数据目录、耗时、每个输出文件的大小和 sha256。
@@ -36,8 +36,15 @@ cargo xtask oracle ibm-demos druglearn.str [--timeout 600]
 | 流 | 结果 |
 |---|---|
 | `ibm-demos/druglearn.str` | 2 个模型、1 份数据，0 错误 |
-| `team/model_comparison.str` | 4 个模型、6 份数据，`tree_credit.sav` 重定位到 Demos，0 错误 |
-| 其余 6 个团队流 | 缺数据文件：`CREDCARD.sav`、`HEART.csv`、`acct97.txt`、`customer.dat`、`customer_bank_data.csv`、`fraud_info.csv`、`goods.dat`、`telco_missing.sav` |
+| `team/cluster_analysis.str` | 3 个模型、7 份数据；1 个散点图节点失败：它引用的 `$KM-K-Means` 在该分支上不存在（流本身的问题，Modeler 界面里同样报错） |
+| `team/decision_trees_heart.str` | 2 个模型、4 份数据，0 错误 |
+| `team/linear_regression.str` | 3 个模型、3 份数据，0 错误 |
+| `team/logistic_regression.str` | 2 个模型、6 份数据，0 错误 |
+| `team/model_comparison.str` | 4 个模型、6 份数据，0 错误（`tree_credit.sav` 用 Modeler Demos 里的） |
+| `team/stream_1_M.str` | 9 份数据，0 错误 |
+| `team/stream_2_M.str` | 5 份数据，0 错误 |
+
+团队流的数据文件已加入 `team` 语料（`str,csv,sav,dat,txt`）。
 
 ## 已知限制
 

@@ -9,8 +9,8 @@
 | MVP 节点覆盖 | 0 / 100 | 实测（`cargo xtask parity`） |
 | 以后再做 / 不做 | 12 / 34 | 实测 |
 | `.str` 语料解码成功率 | 未测（P1 解码器之后） | — |
-| 标准答案（oracle） | 2 个流可生成（druglearn、model_comparison）；6 个团队流缺数据 | 实测（`cargo xtask oracle`） |
-| 语料 | 49 个文件（团队 8 个、IBM 示例 41 个） | 实测（`xtask/corpus.tsv`） |
+| 标准答案（oracle） | 8 个流可生成：团队 7 个 + druglearn；共 16 个模型、41 份数据 | 实测（`cargo xtask oracle`） |
+| 语料 | 57 个文件（团队 16 个含数据、IBM 示例 41 个） | 实测（`xtask/corpus.tsv`） |
 
 ## 阶段
 
