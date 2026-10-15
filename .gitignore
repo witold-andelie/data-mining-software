@@ -1,0 +1,6 @@
+/target/
+# local only: plans, dev log, real-file corpus and Modeler oracle output (IBM/team files never get committed)
+/plan/
+/log/
+/corpus/
+/oracle/
