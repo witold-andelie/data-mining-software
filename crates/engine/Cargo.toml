@@ -1,0 +1,11 @@
+[package]
+name = "dms-engine"
+description = "Session, node registry and the Modeler node catalog"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
