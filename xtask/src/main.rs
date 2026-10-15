@@ -2,6 +2,7 @@
 
 mod corpus;
 mod layers;
+mod oracle;
 mod parity;
 
 use std::path::PathBuf;
@@ -18,7 +19,10 @@ commands:
   corpus record <label> <dir> [ext,...]
                              write manifest entries for files under <dir> (default ext: str)
   corpus sync <label> <dir>  copy manifest files from <dir> into corpus/<label>/ and verify
-  corpus verify              verify corpus/ against xtask/corpus.tsv";
+  corpus verify              verify corpus/ against xtask/corpus.tsv
+  oracle <label> <path> [--timeout <secs>]
+                             run a pinned corpus stream through IBM SPSS Modeler (Windows,
+                             DMS_MODELER_HOME) and keep CSV/PMML results in oracle/";
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -28,6 +32,7 @@ fn main() -> ExitCode {
         Some("layers") => layers::check(),
         Some("parity") => parity::run(rest.iter().any(|a| a == "--check")),
         Some("corpus") => corpus::run(rest),
+        Some("oracle") => oracle::run(rest),
         _ => Err(USAGE.to_string()),
     };
     match outcome {
