@@ -51,7 +51,7 @@
 
 - `xtask/corpus.tsv` 按标签、相对路径、SHA-256 固定语料。本机源目录记在 `plan/STATUS.md`。
 - `cargo xtask corpus sync <label> <dir>` 把文件拷到 `corpus/<label>/` 并校验；`cargo xtask corpus verify` 校验现有语料；新增文件用 `cargo xtask corpus record`。
-- Modeler 产生的标准答案放 `oracle/`，只在装有 Modeler 的 Windows 机器上生成。
+- 标准答案：`cargo xtask oracle <label> <path>`（仅 Windows，需要 `DMS_MODELER_HOME`）用 Modeler 批处理模式跑一个语料流，把模型导出为 PMML、终端节点的输入导出为 CSV，结果放 `oracle/`（不进 git）。流引用的数据在别的机器上时，按文件名在 Modeler 的 Demos、`corpus/<label>/` 和 `DMS_ORACLE_DATA_DIRS` 里查找。详见 `docs/oracle.md`。
 
 ## 环境
 

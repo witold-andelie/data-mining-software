@@ -180,12 +180,31 @@ fn relative_path(root: &Path, path: &Path) -> Result<String> {
     Ok(joined)
 }
 
-fn sha256_file(path: &Path) -> Result<String> {
+pub fn sha256_file(path: &Path) -> Result<String> {
     let bytes = fs::read(path).map_err(|e| format!("cannot read {}: {e}", path.display()))?;
     Ok(Sha256::digest(&bytes)
         .iter()
         .map(|byte| format!("{byte:02x}"))
         .collect())
+}
+
+/// The synced copy of a pinned corpus file, verified against its manifest digest.
+pub fn verified_file(label: &str, path: &str) -> Result<(PathBuf, String)> {
+    let entry = read_manifest()?
+        .into_iter()
+        .find(|entry| entry.label == label && entry.path == path)
+        .ok_or_else(|| format!("{label}/{path} is not in {MANIFEST}"))?;
+    let file = workspace_root()?.join("corpus").join(label).join(path);
+    let digest = sha256_file(&file)
+        .map_err(|e| format!("{e} (run `cargo xtask corpus sync {label} <dir>`)"))?;
+    if digest != entry.sha256 {
+        return Err(format!(
+            "{}: sha256 {digest} != pinned {}",
+            file.display(),
+            entry.sha256
+        ));
+    }
+    Ok((file, digest))
 }
 
 fn manifest_path() -> Result<PathBuf> {

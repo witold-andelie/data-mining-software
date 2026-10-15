@@ -9,7 +9,7 @@
 | MVP 节点覆盖 | 0 / 100 | 实测（`cargo xtask parity`） |
 | 以后再做 / 不做 | 12 / 34 | 实测 |
 | `.str` 语料解码成功率 | 未测（P1 解码器之后） | — |
-| 与 Modeler 标准答案一致率 | 未测（P0 oracle 打通之后） | — |
+| 标准答案（oracle） | 2 个流可生成（druglearn、model_comparison）；6 个团队流缺数据 | 实测（`cargo xtask oracle`） |
 | 语料 | 49 个文件（团队 8 个、IBM 示例 41 个） | 实测（`xtask/corpus.tsv`） |
 
 ## 阶段
@@ -27,4 +27,5 @@
 
 ## 进度日志
 
+- 2026-10-15：`cargo xtask oracle` 打通：Modeler 本地批处理（`clemb`）无需 Server 许可、不弹界面；导出 PMML 和终端节点输入 CSV；跨机器数据路径按文件名重定位；druglearn 两次运行结果可复现（仅 PMML 时间戳不同）。
 - 2026-10-15：建立仓库骨架、工作区 lints、`xtask`（ci / layers / parity / corpus）、146 个节点的目录（MVP 100 个）、语料清单 49 个文件。
