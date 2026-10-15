@@ -1,0 +1,11 @@
+[package]
+name = "dms-types"
+description = "Data model: storage types, measurement levels, roles, values, fields and tables"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true

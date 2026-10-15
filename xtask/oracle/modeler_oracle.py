@@ -202,6 +202,14 @@ try:
 except ERRORS, e:
     record_error("open_stream", None, e)
 if stream is not None:
+    # Reals are exported with the stream's display decimals (3 by default); export full precision
+    # so comparisons are not limited by rounding. The saved value is kept in the manifest.
+    try:
+        manifest["decimal_places"] = {"saved": unicode(stream.getPropertyValue("decimal_places"))}
+        stream.setPropertyValue("decimal_places", 15)
+        manifest["decimal_places"]["export"] = unicode(stream.getPropertyValue("decimal_places"))
+    except ERRORS, e:
+        record_error("decimal_places", None, e)
     relocate_files(stream)
     try:
         run_terminals(stream, taskrunner)

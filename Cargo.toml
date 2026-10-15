@@ -12,7 +12,13 @@ publish = false
 [workspace.dependencies]
 dms-engine = { path = "crates/engine" }
 dms-strfmt = { path = "crates/strfmt" }
+dms-sav = { path = "crates/sav" }
+dms-types = { path = "crates/types" }
+dms-clem = { path = "crates/clem" }
+dms-io = { path = "crates/io" }
 dms-stream = { path = "crates/stream" }
+dms-catalog = { path = "crates/catalog" }
+dms-exec = { path = "crates/exec" }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

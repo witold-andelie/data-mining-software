@@ -11,4 +11,5 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
-dms-stream.workspace = true
+dms-catalog.workspace = true
+dms-exec.workspace = true

@@ -1,0 +1,236 @@
+name	category	arguments	returns	semantics
+@BLANK	Information	FIELD	Boolean	True when the value is blank under the upstream Type/source blank-handling rules (user-defined missing, optionally null/whitespace).
+@NULL	Information	ITEM	Boolean	True only for system-missing ($null$); false for user-defined blanks. The only function that does not propagate null.
+is_date	Information	ITEM	Boolean	True if the value has date storage.
+is_datetime	Information	ITEM	Boolean	True if the value has date, time or timestamp storage.
+is_integer	Information	ITEM	Boolean	True if the value has integer storage.
+is_number	Information	ITEM	Boolean	True if the value has numeric (integer or real) storage.
+is_real	Information	ITEM	Boolean	True if the value has real storage.
+is_string	Information	ITEM	Boolean	True if the value has string storage.
+is_time	Information	ITEM	Boolean	True if the value has time storage.
+is_timestamp	Information	ITEM	Boolean	True if the value has timestamp storage.
+undef	Information	(none)	Any	Constant that yields the system-missing value ($null$); used as in "if Age > 30 then undef else Age endif".
+><	Conversion	ITEM1 >< ITEM2	String	Concatenation; result is always a string even for non-string operands (3 >< 5 gives "35").
+to_integer	Conversion	ITEM	Integer	Convert storage to integer.
+to_real	Conversion	ITEM	Real	Convert storage to real.
+to_number	Conversion	ITEM	Number	Convert storage to a number (integer or real as the value dictates).
+to_string	Conversion	ITEM	String	Convert to string; a real is rendered with 6 digits after the decimal point.
+to_time	Conversion	ITEM	Time	Convert to time using the stream time format when the input is a string.
+to_date	Conversion	ITEM	Date	Convert to date; strings are parsed with the stream date format and must match it.
+to_timestamp	Conversion	ITEM	Timestamp	Convert to timestamp.
+to_datetime	Conversion	ITEM	Datetime	Convert to a date, time or timestamp value, whichever fits the input.
+datetime_date	Conversion	ITEM	Date	Date from a number (seconds since baseline; fraction of a day truncated), a string (parsed with date format), or a timestamp (date part); a date is returned unchanged.
+stb_centroid_latitude	Conversion	ITEM	Integer	Latitude of the centroid of a geohash argument (documented as an integer).
+stb_centroid_longitude	Conversion	ITEM	Integer	Longitude of the centroid of a geohash argument (documented as an integer).
+to_geohash	Conversion	latitude, longitude, bits	String	Geohash string; one character per 5 bits, bits in 1..75. IBM lists the ranges of latitude and longitude swapped (-180..180 vs -90..90); treat as a documentation error.
+count_equal	Comparison	ITEM1, LIST	Integer	Count of listed fields equal to ITEM1; null if ITEM1 is null.
+count_greater_than	Comparison	ITEM1, LIST	Integer	Count of listed fields greater than ITEM1; null if ITEM1 is null.
+count_less_than	Comparison	ITEM1, LIST	Integer	Count of listed fields less than ITEM1; null if ITEM1 is null.
+count_not_equal	Comparison	ITEM1, LIST	Integer	Count of listed fields not equal to ITEM1; null if ITEM1 is null.
+count_nulls	Comparison	LIST	Integer	Count of null values among the listed fields.
+count_non_nulls	Comparison	LIST	Integer	Count of non-null values among the listed fields.
+date_before	Comparison	DATE1, DATE2	Boolean	True if DATE1 is before DATE2 (dates or timestamps); otherwise false.
+first_index	Comparison	ITEM, LIST	Integer	1-based index of the first listed field containing ITEM, or 0 if none; string, integer and real only.
+first_non_null	Comparison	LIST	Any	First non-null value in the listed fields.
+first_non_null_index	Comparison	LIST	Integer	1-based index of the first non-null listed field, or 0 if all are null.
+last_index	Comparison	ITEM, LIST	Integer	1-based index of the last listed field containing ITEM, or 0 if none; string, integer and real only.
+last_non_null	Comparison	LIST	Any	Last non-null value in the listed fields.
+last_non_null_index	Comparison	LIST	Integer	1-based index of the last non-null listed field, or 0 if all are null.
+max	Comparison	ITEM1, ITEM2	Any	Greater of two items.
+min	Comparison	ITEM1, ITEM2	Any	Lesser of two items.
+max_index	Comparison	LIST	Integer	1-based index of the field holding the maximum (leftmost on ties); 0 if all null.
+min_index	Comparison	LIST	Integer	1-based index of the field holding the minimum (leftmost on ties); 0 if all null.
+max_n	Comparison	LIST	Number	Maximum over listed numeric fields; null if all are null.
+min_n	Comparison	LIST	Number	Minimum over listed numeric fields; null if all are null.
+member	Comparison	ITEM, LIST	Boolean	True if ITEM is in LIST (a list of field names is allowed).
+time_before	Comparison	TIME1, TIME2	Boolean	True if TIME1 is before TIME2.
+value_at	Comparison	INT, LIST	Any	Value of the INTth listed field (1-based); null when INT is outside 1..length.
+=	Comparison	ITEM1 = ITEM2	Boolean	Equality; same as ==.
+==	Comparison	ITEM1 == ITEM2	Boolean	Equality; identical to =.
+/=	Comparison	ITEM1 /= ITEM2	Boolean	Inequality; identical to /==.
+/==	Comparison	ITEM1 /== ITEM2	Boolean	Inequality; identical to /=.
+<	Comparison	ITEM1 < ITEM2	Boolean	Strictly less than.
+<=	Comparison	ITEM1 <= ITEM2	Boolean	Less than or equal.
+>	Comparison	ITEM1 > ITEM2	Boolean	Strictly greater than.
+>=	Comparison	ITEM1 >= ITEM2	Boolean	Greater than or equal.
+and	Logical	COND1 and COND2	Boolean	Conjunction with short-circuit (COND2 not evaluated when COND1 is false); three-valued with null.
+or	Logical	COND1 or COND2	Boolean	Inclusive disjunction with short-circuit (COND2 not evaluated when COND1 is true); three-valued with null.
+not	Logical	COND	Boolean	Negation; not(null) is null.
+if-then-else-endif	Logical	if COND then EXPR1 else EXPR2 endif	Any	Conditional; a null condition takes the else branch.
+if-then-elseif-else-endif	Logical	if COND1 then EXPR1 elseif COND2 then EXPR2 else EXPR_N endif	Any	Multi-branch conditional.
+- (unary)	Numeric	-NUM	Number	Negation; same as negate.
++	Numeric	NUM1 + NUM2	Number	Sum.
+- (binary)	Numeric	NUM1 - NUM2	Number	Difference.
+*	Numeric	NUM1 * NUM2	Number	Product.
+/	Numeric	NUM1 / NUM2	Number	Quotient; division by zero yields null (see chapter on missing values).
+div	Numeric	INT1 div INT2	Number	Integer division.
+rem	Numeric	INT1 rem INT2	Number	Remainder: INT1 - (INT1 div INT2) * INT2.
+mod	Numeric	INT1 mod INT2	Number	Deprecated; use rem.
+**	Numeric	BASE ** POWER	Number	Power; integer POWER uses repeated multiplication so integer BASE gives integer; integer 0 power gives 1 of BASE's type; otherwise exp(POWER*log(BASE)).
+abs	Numeric	NUM	Number	Absolute value, same type as input.
+exp	Numeric	NUM	Real	e raised to NUM.
+fracof	Numeric	NUM	Real	Fractional part: NUM - intof(NUM).
+intof	Numeric	NUM	Integer	Truncate toward zero.
+log	Numeric	NUM	Real	Natural logarithm; argument must not be zero.
+log10	Numeric	NUM	Real	Base-10 logarithm, log(NUM)/log(10); argument must not be zero.
+negate	Numeric	NUM	Number	Opposite sign.
+round	Numeric	NUM	Integer	Round half away from zero: intof(NUM+0.5) if positive, intof(NUM-0.5) if negative.
+sign	Numeric	NUM	Number	-1, 0 or 1 (integer input) or -1.0, 0.0, 1.0 (real input).
+sqrt	Numeric	NUM	Real	Square root; negative input gives null.
+sum_n	Numeric	LIST	Number	Sum of listed numeric fields; null if all are null.
+mean_n	Numeric	LIST	Number	Mean of listed numeric fields; null if all are null.
+sdev_n	Numeric	LIST	Number	Standard deviation of listed numeric fields; null if all are null (sample vs population not documented).
+arccos	Trigonometric	NUM	Real	Arc cosine; result unit follows the stream angle setting.
+arccosh	Trigonometric	NUM	Real	Hyperbolic arc cosine.
+arcsin	Trigonometric	NUM	Real	Arc sine; unit follows stream setting.
+arcsinh	Trigonometric	NUM	Real	Hyperbolic arc sine.
+arctan	Trigonometric	NUM	Real	Arc tangent; unit follows stream setting.
+arctan2	Trigonometric	NUM_Y, NUM_X	Real	Quadrant-aware arc tangent of Y/X in (-pi, pi] or (-180, 180] degrees.
+arctanh	Trigonometric	NUM	Real	Hyperbolic arc tangent.
+cos	Trigonometric	NUM	Real	Cosine; argument unit follows stream setting (radians or degrees).
+cosh	Trigonometric	NUM	Real	Hyperbolic cosine.
+pi	Trigonometric	(none)	Real	The constant pi.
+sin	Trigonometric	NUM	Real	Sine; argument unit follows stream setting.
+sinh	Trigonometric	NUM	Real	Hyperbolic sine.
+tan	Trigonometric	NUM	Real	Tangent; argument unit follows stream setting.
+tanh	Trigonometric	NUM	Real	Hyperbolic tangent.
+cdf_chisq	Probability	NUM, DF	Real	P(X < NUM) for chi-square with DF degrees of freedom.
+cdf_f	Probability	NUM, DF1, DF2	Real	P(X < NUM) for the F distribution.
+cdf_normal	Probability	NUM, MEAN, STDDEV	Real	P(X < NUM) for the normal distribution.
+cdf_t	Probability	NUM, DF	Real	P(X < NUM) for Student's t with DF degrees of freedom.
+close_to	Spatial	SHAPE, SHAPE, NUM	Boolean	True if two shapes are within the given distance (metres for a projected system, arbitrary units otherwise).
+crosses	Spatial	SHAPE, SHAPE	Boolean	True if two shapes cross (two linestrings, or a linestring and a polygon).
+overlap	Spatial	SHAPE, SHAPE	Boolean	True if two polygons intersect and the intersection is interior to both.
+within	Spatial	SHAPE, SHAPE	Boolean	True if the first shape lies entirely inside the polygon.
+area	Spatial	SHAPE	Real	Area of a POLYGON or MULTIPOLYGON (square metres if projected).
+num_points	Spatial	SHAPE, LIST	Integer	Count of points of a MULTIPOINT inside a POLYGON/MULTIPOLYGON (second argument form is unclear in the docs).
+distance	Spatial	SHAPE, SHAPE	Real	Distance between two shapes of any geo measurement type.
+~~	Bitwise	~~ INT	Integer	Bitwise complement; equals -(INT+1).
+||	Bitwise	INT1 || INT2	Integer	Bitwise inclusive or.
+||/&	Bitwise	INT1 ||/& INT2	Integer	Bitwise exclusive or.
+&&	Bitwise	INT1 && INT2	Integer	Bitwise and.
+&&~~	Bitwise	INT1 &&~~ INT2	Integer	Bitwise and with complement of INT2 (clears bits).
+<<	Bitwise	INT << N	Integer	Shift left by N; negative N shifts right.
+>>	Bitwise	INT >> N	Integer	Shift right by N; negative N shifts left (sign-extended).
+&&=_0	Bitwise	INT1 &&=_0 INT2	Boolean	True when (INT1 && INT2) = 0.
+&&/=_0	Bitwise	INT1 &&/=_0 INT2	Boolean	True when (INT1 && INT2) is not 0.
+integer_bitcount	Bitwise	INT	Integer	Number of 1 bits (non-negative INT) or 0 bits (negative INT) in two's complement.
+integer_leastbit	Bitwise	INT	Integer	Position of the least significant set bit.
+integer_length	Bitwise	INT	Integer	Smallest N with INT < (1<<N) (INT>=0) or INT >= (-1<<N) (INT<0).
+testbit	Bitwise	INT, N	Boolean	True if bit N (0-based, weight 2**N) of INT is 1.
+oneof	Random	LIST	Any	Randomly chosen element of the list (list of field names allowed).
+random	Random	NUM	Number	Uniform random in 1..NUM of the same type as NUM; may equal NUM.
+random0	Random	NUM	Number	Like random but from 0 and never equal to NUM.
+allbutfirst	String	N, STRING	String	STRING without its first N characters.
+allbutlast	String	N, STRING	String	STRING without its last N characters.
+alphabefore	String	STRING1, STRING2	Boolean	True if STRING1 sorts before STRING2.
+count_substring	String	STRING, SUBSTRING	Integer	Number of occurrences of SUBSTRING (count_substring("foooo.txt","oo") is 3: overlapping matches are counted).
+endstring	String	LENGTH, STRING	String	Last LENGTH characters; unchanged if STRING is not longer.
+hasendstring	String	STRING, SUBSTRING	Integer	Same as isendstring(SUBSTRING, STRING).
+hasmidstring	String	STRING, SUBSTRING	Integer	Same as ismidstring(SUBSTRING, STRING).
+hasstartstring	String	STRING, SUBSTRING	Integer	Same as isstartstring(SUBSTRING, STRING).
+hassubstring	String	STRING, N, SUBSTRING (N optional)	Integer	Same as issubstring(SUBSTRING, N, STRING); N defaults to 1.
+isalphacode	String	CHAR	Boolean	True if the character is a letter.
+isendstring	String	SUBSTRING, STRING	Integer	1-based subscript of SUBSTRING if STRING ends with it, else 0.
+islowercode	String	CHAR	Boolean	True if the character is lower case.
+ismidstring	String	SUBSTRING, STRING	Integer	Start subscript if SUBSTRING occurs strictly inside STRING (not at the start or end), else 0.
+isnumbercode	String	CHAR	Boolean	True if the character is a digit.
+isstartstring	String	SUBSTRING, STRING	Integer	1 if STRING starts with SUBSTRING, else 0.
+issubstring	String	SUBSTRING, N, STRING (N optional)	Integer	1-based start subscript of the first match at or after position N (default 1), else 0.
+issubstring_count	String	SUBSTRING, N, STRING	Integer	Start subscript of the Nth occurrence of SUBSTRING, or 0 if there are fewer.
+issubstring_lim	String	SUBSTRING, N, STARTLIM, ENDLIM, STRING	Integer	issubstring with the match required to start by STARTLIM and end by ENDLIM; false disables a limit.
+isuppercode	String	CHAR	Boolean	True if the character is upper case.
+last	String	STRING	CHAR	Last character of STRING (must have at least one character).
+length	String	STRING	Integer	Number of characters.
+locchar	String	CHAR, N, STRING	Integer	1-based position of CHAR searching forward from position N; 0 if absent; null if N is an invalid offset.
+locchar_back	String	CHAR, N, STRING	Integer	Like locchar but searches backward from position N; null on invalid offset.
+lowertoupper	String	CHAR or STRING	CHAR or String	Upper-case conversion; result has the same kind as the input.
+matches	String	STRING matches PATTERN	Boolean	Wildcard match: ? is one character, * is zero or more, backslash escapes them; PATTERN must be a literal.
+replace	String	SUBSTRING, NEWSUBSTRING, STRING	String	Replace every occurrence of SUBSTRING.
+replicate	String	COUNT, STRING	String	STRING repeated COUNT times.
+stripchar	String	CHAR, STRING	String	Remove all occurrences of CHAR from STRING.
+skipchar	String	CHAR, N, STRING	Integer	Position of the first character at or after N that is not CHAR; 0 if all are CHAR; null on invalid offset.
+skipchar_back	String	CHAR, N, STRING	Integer	Like skipchar but searches backward from N.
+startstring	String	LENGTH, STRING	String	First LENGTH characters; unchanged if STRING is not longer.
+strmember	String	CHAR, STRING	Integer	Same as locchar(CHAR, 1, STRING).
+subscrs	String	N, STRING	CHAR	Nth character (1-based); also written STRING(N); out-of-range index is undefined behaviour.
+substring	String	N, LEN, STRING	String	LEN characters starting at 1-based position N.
+substring_between	String	N1, N2, STRING	String	Characters from position N1 through N2 (1-based; inclusivity of N2 is assumed from "begins at N1 and ends at N2").
+trim	String	STRING	String	Remove leading and trailing white space.
+trim_start	String	STRING	String	Remove leading white space (the narrative also calls it trimstart).
+trimend	String	STRING	String	Remove trailing white space.
+unicode_char	String	NUM	CHAR	Character for a decimal Unicode code point.
+unicode_value	String	CHAR	NUM	Unicode code point of a character.
+uppertolower	String	CHAR or STRING	CHAR or String	Lower-case conversion; result has the same kind as the input.
+soundex	SoundEx	STRING	Integer	Four-character SoundEx code (documented as Integer but a code string is described; likely String).
+soundex_difference	SoundEx	STRING1, STRING2	Integer	Similarity of SoundEx codes, 0 (none) to 4 (identical).
+@TODAY	Date and time	(none)	String	Current date as a string in the stream date format; null for two-digit formats without Rollover days/mins.
+date_add_years	Date and time	NUM, DATE or TIMESTAMP	Date or Timestamp	Add NUM years to a date or timestamp.
+date_add_months	Date and time	NUM, DATE or TIMESTAMP	Date or Timestamp	Add NUM months.
+date_add_weeks	Date and time	NUM, DATE or TIMESTAMP	Date or Timestamp	Add NUM weeks.
+date_add_days	Date and time	NUM, DATE or TIMESTAMP	Date or Timestamp	Add NUM days.
+date_days_difference	Date and time	DATE1, DATE2	Integer	Days from DATE1 to DATE2; negative if DATE2 is earlier.
+date_in_days	Date and time	DATE	Integer	Days from the baseline date; negative before baseline.
+date_in_months	Date and time	DATE	Real	Months from baseline, approximated with a 30.4375-day month (an introductory page says 30.0).
+date_in_weeks	Date and time	DATE	Real	Weeks from baseline (7.0-day week).
+date_in_years	Date and time	DATE	Real	Years from baseline, 365.25-day year.
+date_months_difference	Date and time	DATE1, DATE2	Real	Months from DATE1 to DATE2 (30.4375-day month); negative if DATE2 earlier.
+date_weeks_difference	Date and time	DATE1, DATE2	Real	Weeks from DATE1 to DATE2 (7.0-day week).
+date_years_difference	Date and time	DATE1, DATE2	Real	Years from DATE1 to DATE2 (365.25-day year).
+datetime_day	Date and time	DATE	Integer	Day of month 1..31.
+datetime_day_name	Date and time	DAY	String	Full weekday name for integer 1 (Sunday) to 7 (Saturday).
+datetime_day_short_name	Date and time	DAY	String	Abbreviated weekday name for 1 (Sunday) to 7 (Saturday).
+datetime_hour	Date and time	TIME	Integer	Hour 0..23.
+datetime_in_seconds	Date and time	TIME, or DATE, or DATETIME	Real	Seconds in a time, or seconds elapsed since the 1900-01-01 baseline for a date or datetime.
+datetime_minute	Date and time	TIME	Integer	Minute 0..59.
+datetime_month	Date and time	DATE	Integer	Month 1..12.
+datetime_month_name	Date and time	MONTH	String	Full month name for 1..12.
+datetime_month_short_name	Date and time	MONTH	String	Abbreviated month name for 1..12.
+datetime_now	Date and time	(none)	Timestamp	Current time; time zone follows the stream Time zone option.
+datetime_second	Date and time	TIME	Integer	Second 0..59.
+datetime_time	Date and time	HOUR, MINUTE, SECOND or ITEM	Time	Build a time from integer parts, or take the time value of ITEM.
+datetime_timestamp	Date and time	YEAR, MONTH, DAY, HOUR, MINUTE, SECOND or DATE, TIME or NUMBER	Timestamp	Build a timestamp from six parts, from date plus time, or from a number of seconds.
+datetime_weekday	Date and time	DATE	Integer	Day of week (numbering not stated; day-name functions imply 1=Sunday).
+datetime_year	Date and time	DATE	Integer	Year, e.g. 2002.
+date_from_ywd	Date and time	YEAR, WEEK, DAY	Integer	Date from ISO 8601 year, week and weekday (documented result type Integer).
+date_iso_day	Date and time	DATE	Integer	ISO 8601 day of week.
+date_iso_week	Date and time	DATE	Integer	ISO 8601 week of year.
+date_iso_year	Date and time	DATE	Integer	ISO 8601 year.
+time_add_hours	Date and time	NUM, TIME or TIMESTAMP	Time or Timestamp	Add NUM hours (the 19.0 table prints Date for the first form, evidently a typo).
+time_add_minutes	Date and time	NUM, TIME or TIMESTAMP	Time or Timestamp	Add NUM minutes.
+time_add_seconds	Date and time	NUM, TIME or TIMESTAMP	Time or Timestamp	Add NUM seconds.
+time_hours_difference	Date and time	TIME1, TIME2	Real	Hours from TIME1 to TIME2; with Rollover a higher TIME1 means the previous day, else the result is negative.
+time_in_hours	Date and time	TIME	Real	Time as hours (HHMM "0130" gives 1.5).
+time_in_mins	Date and time	TIME	Real	Time as minutes.
+time_in_secs	Date and time	TIME	Integer	Time as seconds.
+time_mins_difference	Date and time	TIME1, TIME2	Real	Minutes from TIME1 to TIME2 with the same rollover rule.
+time_secs_difference	Date and time	TIME1, TIME2	Integer	Seconds from TIME1 to TIME2 with the same rollover rule.
+@MEAN	Sequence	FIELD [, EXPR [, INT]]	Real	Running mean over all records so far, or the last EXPR records including the current one; INT caps lookback storage.
+@SUM	Sequence	FIELD [, EXPR [, INT]]	Number	Running sum, optionally over the last EXPR records.
+@MIN	Sequence	FIELD [, EXPR [, INT]]	Number	Running minimum, optionally over the last EXPR records.
+@MAX	Sequence	FIELD [, EXPR [, INT]]	Number	Running maximum, optionally over the last EXPR records.
+@SDEV	Sequence	FIELD [, EXPR [, INT]]	Real	Running standard deviation, optionally over the last EXPR records.
+@DIFF1	Sequence	FIELD or FIELD1, FIELD2	Real	First difference vs previous record (null if none); two-argument form is @DIFF1(F1)/@DIFF1(F2).
+@DIFF2	Sequence	FIELD or FIELD1, FIELD2	Real	Second difference; two-argument form per the long formula in the guide.
+@INDEX	Sequence	(none)	Integer	1-based index of the current record at this node.
+@LAST_NON_BLANK	Sequence	FIELD	Any	Last non-blank value so far; null if none.
+@OFFSET	Sequence	FIELD, EXPR [, INT]	Any	Value of FIELD EXPR records back (positive) or ahead (negative, constant only); null/error rules for self-reference documented in the guide.
+@SINCE	Sequence	EXPR [, INT]	Any	Records since EXPR was last true, excluding the current record; @INDEX+1 if never.
+@SINCE0	Sequence	EXPR [, INT]	Any	Like @SINCE but includes the current record (0 if true now).
+@THIS	Sequence	FIELD	Any	Current record's value of FIELD; only valid inside @SINCE expressions.
+@GLOBAL_MAX	Global	FIELD	Number	Whole-data-set maximum from a Set Globals node; error if not set.
+@GLOBAL_MIN	Global	FIELD	Number	Whole-data-set minimum; error if not set.
+@GLOBAL_SDEV	Global	FIELD	Number	Whole-data-set standard deviation; error if not set.
+@GLOBAL_MEAN	Global	FIELD	Number	Whole-data-set mean; error if not set.
+@GLOBAL_SUM	Global	FIELD	Number	Whole-data-set sum; error if not set.
+@FIELD	Special fields	(none)	Any	Stands for each selected field in multi-field Derive and Filler nodes.
+@TARGET	Special fields	(none)	Any	Target field value in a user-defined Analysis expression.
+@PREDICTED	Special fields	(none)	Any	Predicted value in a user-defined Analysis expression.
+@PARTITION_FIELD	Special fields	(none)	Any	The current partition field.
+@TRAINING_PARTITION	Special fields	(none)	Any	The value that denotes the training partition.
+@TESTING_PARTITION	Special fields	(none)	Any	The value that denotes the testing partition.
+@VALIDATION_PARTITION	Special fields	(none)	Any	The value that denotes the validation partition.
+@FIELDS_BETWEEN	Special fields	start, end	List	Field names between two fields inclusive in natural field order.
+@FIELDS_MATCHING	Special fields	pattern	List	Field names matching a literal wildcard pattern (? and *, backslash escape).
+@MULTI_RESPONSE_SET	Special fields	"set name"	List	Fields of a named multiple response set.
+datetime_date	Date and time	YEAR, MONTH, DAY	Date	Date from integer year, month and day.
