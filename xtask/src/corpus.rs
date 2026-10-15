@@ -21,26 +21,30 @@ struct Entry {
 pub fn run(args: &[String]) -> Result<()> {
     match args {
         [cmd, label, dir, rest @ ..] if cmd == "record" => {
+            let recursive = !rest.iter().any(|arg| arg == "--flat");
             let extensions = rest
-                .first()
+                .iter()
+                .find(|arg| !arg.starts_with("--"))
                 .map(|list| list.split(',').map(str::to_lowercase).collect())
                 .unwrap_or_else(|| vec!["str".to_string()]);
-            record(label, Path::new(dir), &extensions)
+            record(label, Path::new(dir), &extensions, recursive)
         }
         [cmd, label, dir] if cmd == "sync" => sync(label, Path::new(dir)),
         [cmd] if cmd == "verify" => verify(),
         _ => {
-            Err("usage: corpus record <label> <dir> [ext,...] | sync <label> <dir> | verify".into())
+            Err("usage: corpus record <label> <dir> [ext,...|none] [--flat] | sync <label> <dir> | verify".into())
         }
     }
 }
 
-fn record(label: &str, dir: &Path, extensions: &[String]) -> Result<()> {
+/// `extensions` may include `none` for files without an extension; `recursive: false` records only
+/// the top level of `dir`.
+fn record(label: &str, dir: &Path, extensions: &[String], recursive: bool) -> Result<()> {
     if label.is_empty() || label.contains(['\t', '/', '\\']) {
         return Err(format!("invalid label {label:?}"));
     }
     let mut files = Vec::new();
-    collect(dir, dir, extensions, 0, &mut files)?;
+    collect(dir, dir, extensions, recursive, 0, &mut files)?;
     files.sort();
     let mut entries: Vec<Entry> = read_manifest()?
         .into_iter()
@@ -128,6 +132,7 @@ fn collect(
     root: &Path,
     dir: &Path,
     extensions: &[String],
+    recursive: bool,
     depth: usize,
     out: &mut Vec<String>,
 ) -> Result<()> {
@@ -145,7 +150,9 @@ fn collect(
             .file_type()
             .map_err(|e| format!("cannot stat {}: {e}", path.display()))?;
         if kind.is_dir() {
-            collect(root, &path, extensions, depth + 1, out)?;
+            if recursive {
+                collect(root, &path, extensions, recursive, depth + 1, out)?;
+            }
         } else if kind.is_file() && has_extension(&path, extensions) {
             out.push(relative_path(root, &path)?);
         }
@@ -154,13 +161,14 @@ fn collect(
 }
 
 fn has_extension(path: &Path, extensions: &[String]) -> bool {
-    path.extension()
-        .and_then(|ext| ext.to_str())
-        .is_some_and(|ext| {
+    match path.extension() {
+        None => extensions.iter().any(|wanted| wanted == "none"),
+        Some(ext) => ext.to_str().is_some_and(|ext| {
             extensions
                 .iter()
                 .any(|wanted| wanted.eq_ignore_ascii_case(ext))
-        })
+        }),
+    }
 }
 
 /// Manifest paths use `/` so they are identical on Windows and macOS.
