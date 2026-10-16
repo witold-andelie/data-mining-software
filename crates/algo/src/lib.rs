@@ -10,6 +10,7 @@
 pub mod cart;
 pub mod chaid;
 mod common;
+pub mod stats;
 
 pub use common::{categories, data_dictionary, mining_schema};
 

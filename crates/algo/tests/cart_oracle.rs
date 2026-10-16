@@ -383,16 +383,16 @@ fn show(p: &Predicate) -> String {
     }
 }
 
-/// Scores the nugget's records with both models: (matching predictions and confidences, rows).
-fn score_both(ours: &Pmml, oracle: &Pmml, csv: &str, inputs: &[&str]) -> (usize, usize) {
+/// Scores the nugget's records with our model and compares with what Modeler's nugget output
+/// (`$R-<target>` and, for classification, `$RC-<target>`): (matching rows, rows).
+fn score_both(ours: &Pmml, target: &str, csv: &str, inputs: &[&str]) -> (usize, usize) {
     let rows = parse_modeler_csv(csv);
     let header: Vec<&str> = rows[0].iter().map(|c| c.text.as_str()).collect();
-    let positions: Vec<usize> = inputs
-        .iter()
-        .map(|name| header.iter().position(|h| h == name).unwrap())
-        .collect();
+    let column = |name: &str| header.iter().position(|h| *h == name);
+    let positions: Vec<usize> = inputs.iter().map(|name| column(name).unwrap()).collect();
+    let predicted = column(&format!("$R-{target}")).unwrap();
+    let confidence = column(&format!("$RC-{target}"));
     let ours = ours.bind(inputs).unwrap();
-    let theirs = oracle.bind(inputs).unwrap();
     let mut matched = 0;
     let mut total = 0;
     for row in rows[1..].iter().filter(|r| r.len() == header.len()) {
@@ -411,13 +411,26 @@ fn score_both(ours: &Pmml, oracle: &Pmml, csv: &str, inputs: &[&str]) -> (usize,
                 }
             })
             .collect();
-        let (a, b) = (ours.score(&record).unwrap(), theirs.score(&record).unwrap());
+        let prediction = ours.score(&record).unwrap();
         total += 1;
-        let same_value = match (&a.value, &b.value) {
-            (PmmlValue::Number(x), PmmlValue::Number(y)) => close(*x, *y),
-            (x, y) => x == y,
+        let expected = &row[predicted].text;
+        let same_value = match &prediction.value {
+            PmmlValue::Number(x) => expected.parse::<f64>().is_ok_and(|y| close(*x, y)),
+            PmmlValue::Text(t) => {
+                t == expected
+                    || matches!((t.parse::<f64>(), expected.parse::<f64>()), (Ok(a), Ok(b)) if a == b)
+            }
+            PmmlValue::Missing => is_missing(&row[predicted]),
         };
-        if same_value && option_close(a.confidence, b.confidence) {
+        let same_confidence =
+            confidence.is_none_or(
+                |i| match (prediction.confidence, row[i].text.parse::<f64>()) {
+                    (Some(a), Ok(b)) => close(a, b),
+                    (None, _) => is_missing(&row[i]),
+                    _ => false,
+                },
+            );
+        if same_value && same_confidence {
             matched += 1;
         }
     }
@@ -451,7 +464,7 @@ fn cart_trains_the_trees_modeler_trains() {
         let difference = first_difference(tree(&ours), tree(&oracle));
         let (matched, rows) = score_both(
             &ours,
-            &oracle,
+            case.target,
             &std::fs::read_to_string(data_file(&dir, "_applycart_")).unwrap(),
             case.inputs,
         );

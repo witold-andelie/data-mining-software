@@ -1,16 +1,19 @@
 //! Model build nodes (`docs/models.md`): train on the records that reach the node and hand the
 //! model to the linked nugget (`Operator::produce` returns `NodeOutput::Model`).
 //!
-//! Supported: C&R Tree (`Cart!spss.tree-extension`). It is an extension-framework node: its
-//! algorithm settings are `<Parameter name= value=>` entries of the XML attachment named by the
-//! node's `properties` attribute (`docs/formats/nodes/cart.md`). Fields: with `role_use` the
+//! Supported: C&R Tree (`Cart!spss.tree-extension`) and CHAID (`Chaid!spss.tree-extension`).
+//! They are extension-framework nodes: their algorithm settings are `<Parameter name= value=>`
+//! entries of the XML attachment named by the node's `properties` attribute
+//! (`docs/formats/nodes/cart.md`, `chaid.md`). Fields: with `role_use` the
 //! attachment's `tree.TargetField` and `tree.InputFieldList`, otherwise the Type roles (one
 //! target, inputs `Input` and `Both`). With `usePartitionedData` and a partition field, only the
 //! training partition (the field's first value) trains.
 //!
 //! Rejected until implemented: frequency and analysis weights, split models, boosting and
-//! bagging, the interactive builder, the overfit prevention set (Modeler draws it with its own
-//! random generator), custom priors, misclassification costs, ordered twoing.
+//! bagging, the interactive builder, misclassification costs; for C&R Tree the overfit
+//! prevention set (Modeler draws it with its own random generator; CHAID ignores the setting,
+//! `models/chaid_default` trains on all records with 30% set), custom priors and ordered
+//! twoing; for CHAID splitting merged categories.
 
 use crate::context::ExecContext;
 use crate::error::OperatorError;
@@ -19,6 +22,7 @@ use crate::output::NodeOutput;
 use crate::settings;
 use dms_algo::Dataset;
 use dms_algo::cart::{self, CartSettings, Impurity, MinSize};
+use dms_algo::chaid::{self, ChaidSettings, ChiSquare, Method};
 use dms_pmml::Pmml;
 use dms_stream::StreamNode;
 use dms_types::{DataModel, Role, Table};
@@ -29,6 +33,7 @@ pub fn build(node: &StreamNode) -> Result<Box<dyn Operator>, OperatorError> {
     let s = node.settings.as_ref();
     let algorithm = match node.type_identifier().as_str() {
         "Cart!spss.tree-extension" => Algorithm::Cart,
+        "Chaid!spss.tree-extension" => Algorithm::Chaid,
         other => {
             return Err(OperatorError::Settings(format!(
                 "training {other} is not implemented yet"
@@ -52,6 +57,7 @@ pub fn build(node: &StreamNode) -> Result<Box<dyn Operator>, OperatorError> {
 #[derive(Debug, Clone, Copy)]
 enum Algorithm {
     Cart,
+    Chaid,
 }
 
 struct Build {
@@ -82,20 +88,20 @@ impl Operator for Build {
             .first()
             .ok_or_else(|| OperatorError::Inputs("a build node needs one input".into()))?;
         let parameters = self.parameters(context)?;
+        tree_checks(&parameters)?;
+        let table = self.training_records(input)?;
+        let (target, fields) = roles(&table, &parameters, "tree.")?;
+        let dataset = Dataset {
+            table: &table,
+            target,
+            inputs: &fields,
+            frequency: None,
+        };
         let pmml = match self.algorithm {
-            Algorithm::Cart => {
-                let settings = cart_settings(&parameters)?;
-                let table = self.training_records(input)?;
-                let (target, fields) = roles(&table, &parameters, "tree.")?;
-                let dataset = Dataset {
-                    table: &table,
-                    target,
-                    inputs: &fields,
-                    frequency: None,
-                };
-                cart::train(&dataset, &settings)
-                    .map_err(|error| OperatorError::Data(format!("C&R Tree: {error}")))?
-            }
+            Algorithm::Cart => cart::train(&dataset, &cart_settings(&parameters)?)
+                .map_err(|error| OperatorError::Data(format!("C&R Tree: {error}")))?,
+            Algorithm::Chaid => chaid::train(&dataset, &chaid_settings(&parameters)?)
+                .map_err(|error| OperatorError::Data(format!("CHAID: {error}")))?,
         };
         Ok(NodeOutput::Model(Arc::new(pmml)))
     }
@@ -183,10 +189,9 @@ fn roles(
     Ok((target, inputs))
 }
 
-fn cart_settings(p: &Parameters) -> Result<CartSettings, OperatorError> {
-    let unsupported =
-        |what: &str| OperatorError::Settings(format!("C&R Tree: {what} is not supported yet"));
-    let defaults = CartSettings::default();
+/// Choices the tree algorithms share that are not supported yet.
+fn tree_checks(p: &Parameters) -> Result<(), OperatorError> {
+    let unsupported = |what: &str| OperatorError::Settings(format!("{what} is not supported yet"));
     if p.text("objective_goal").is_some_and(|g| g != "standard") {
         return Err(unsupported("boosting, bagging and very large datasets"));
     }
@@ -204,21 +209,17 @@ fn cart_settings(p: &Parameters) -> Result<CartSettings, OperatorError> {
     if p.flag("tree.UseCosts")? {
         return Err(unsupported("misclassification costs"));
     }
-    if p.text("tree.Priors").is_some_and(|priors| priors != "Data") {
-        return Err(unsupported("equal or custom priors"));
-    }
-    if p.flag("tree.UseOverFitPreventionSet")?
-        && p.real("tree.OverFitPreventionSetPct")?.unwrap_or(0.0) > 0.0
-    {
-        return Err(unsupported("an overfit prevention set (set its size to 0)"));
-    }
-    let max_depth = if p.text("MaxTreeDepth").as_deref() == Some("Custom") {
-        p.real("tree.MaxTreeDepth")?
-            .map_or(defaults.max_depth, |d| d.max(0.0) as usize)
+    Ok(())
+}
+
+/// The tree depth and node sizes both trees use.
+fn tree_sizes(p: &Parameters) -> Result<(Option<usize>, MinSize, MinSize), OperatorError> {
+    let depth = if p.text("MaxTreeDepth").as_deref() == Some("Custom") {
+        p.real("tree.MaxTreeDepth")?.map(|d| d.max(0.0) as usize)
     } else {
-        defaults.max_depth
+        None
     };
-    let (min_parent, min_child) = if p
+    let sizes = if p
         .text("tree.UsePercentageForNodeSizeRequirement")
         .as_deref()
         == Some("absolute")
@@ -233,6 +234,55 @@ fn cart_settings(p: &Parameters) -> Result<CartSettings, OperatorError> {
             MinSize::Percent(p.real("tree.MinChildRecordsPct")?.unwrap_or(1.0)),
         )
     };
+    Ok((depth, sizes.0, sizes.1))
+}
+
+fn chaid_settings(p: &Parameters) -> Result<ChaidSettings, OperatorError> {
+    let unsupported =
+        |what: &str| OperatorError::Settings(format!("CHAID: {what} is not supported yet"));
+    let defaults = ChaidSettings::default();
+    if p.flag("tree.SplitMergedCategories")? {
+        return Err(unsupported("splitting merged categories"));
+    }
+    let method = match p.text("method").as_deref() {
+        None | Some("Chaid") => Method::Chaid,
+        Some("ExhaustiveChaid") => Method::Exhaustive,
+        Some(other) => return Err(unsupported(&format!("method {other}"))),
+    };
+    let chi_square = match p.text("tree.ChiSquareType").as_deref() {
+        None | Some("pearson") => ChiSquare::Pearson,
+        Some("LR") => ChiSquare::LikelihoodRatio,
+        Some(other) => return Err(unsupported(&format!("chi-square {other}"))),
+    };
+    let (depth, min_parent, min_child) = tree_sizes(p)?;
+    Ok(ChaidSettings {
+        method,
+        max_depth: depth.unwrap_or(defaults.max_depth),
+        min_parent,
+        min_child,
+        split_alpha: p.real("tree.SplitAlpha")?.unwrap_or(defaults.split_alpha),
+        merge_alpha: p.real("tree.MergeAlpha")?.unwrap_or(defaults.merge_alpha),
+        bonferroni: p
+            .text("tree.BonferroniAdjustment")
+            .map_or(defaults.bonferroni, |v| v == "true"),
+        chi_square,
+    })
+}
+
+fn cart_settings(p: &Parameters) -> Result<CartSettings, OperatorError> {
+    let unsupported =
+        |what: &str| OperatorError::Settings(format!("C&R Tree: {what} is not supported yet"));
+    if p.text("tree.Priors").is_some_and(|priors| priors != "Data") {
+        return Err(unsupported("equal or custom priors"));
+    }
+    if p.flag("tree.UseOverFitPreventionSet")?
+        && p.real("tree.OverFitPreventionSetPct")?.unwrap_or(0.0) > 0.0
+    {
+        return Err(unsupported("an overfit prevention set (set its size to 0)"));
+    }
+    let defaults = CartSettings::default();
+    let (depth, min_parent, min_child) = tree_sizes(p)?;
+    let max_depth = depth.unwrap_or(defaults.max_depth);
     let impurity = match p.text("tree.ImpurityMeasure").as_deref() {
         None | Some("Gini") => Impurity::Gini,
         Some("Twoing") => Impurity::Twoing,

@@ -35,7 +35,9 @@
 //! Supported: empirical priors and equal misclassification costs, no frequency or case weights.
 //! Other settings return [`AlgoError::Unsupported`].
 
-use crate::common::{data_dictionary, mining_schema};
+use crate::common::{
+    class_summary, data_dictionary, mining_schema, regression_summary, split_text, value_range,
+};
 use crate::{AlgoError, Dataset, categories};
 use dms_pmml::{
     BooleanOperator, MiningFunction, MissingValueStrategy, Model, ModelHeader, NoTrueChildStrategy,
@@ -60,7 +62,7 @@ pub enum MinSize {
 }
 
 impl MinSize {
-    fn records(self, total: usize) -> f64 {
+    pub(crate) fn records(self, total: usize) -> f64 {
         match self {
             MinSize::Percent(percent) => percent / 100.0 * total as f64,
             MinSize::Records(records) => records,
@@ -1185,7 +1187,7 @@ fn rule_predicate(data: &Data, input: usize, rule: &Rule, satisfied: bool) -> Pr
                 } else {
                     Operator::GreaterThan
                 },
-                value: Some(number_text(*t)),
+                value: Some(split_text(*t)),
             };
             let predicates = if satisfied {
                 vec![Predicate::True, simple]
@@ -1221,123 +1223,17 @@ fn rule_predicate(data: &Data, input: usize, rule: &Rule, satisfied: bool) -> Pr
 
 /// A node's prediction and score distribution.
 fn summary(data: &Data, rows: &[usize]) -> (String, Vec<ScoreDistribution>) {
-    let n = rows.len() as f64;
     match &data.target {
         Target::Classes { codes, labels } => {
             let mut counts = vec![0.0; labels.len()];
             for &row in rows {
                 counts[codes[row]] += 1.0;
             }
-            // The most probable class under the priors; the first on ties.
-            let weight = |j: usize| {
-                if data.class_totals[j] > 0.0 {
-                    data.priors[j] * counts[j] / data.class_totals[j]
-                } else {
-                    0.0
-                }
-            };
-            let mut best = 0;
-            for j in 1..labels.len() {
-                if weight(j) > weight(best) {
-                    best = j;
-                }
-            }
-            let distribution = labels
-                .iter()
-                .zip(&counts)
-                .map(|(label, &count)| {
-                    let share = if n > 0.0 { count / n } else { 0.0 };
-                    ScoreDistribution {
-                        value: label.clone(),
-                        record_count: count,
-                        probability: Some(share),
-                        confidence: Some(share),
-                    }
-                })
-                .collect();
-            (labels.get(best).cloned().unwrap_or_default(), distribution)
+            class_summary(labels, &counts, &data.priors, &data.class_totals)
         }
-        Target::Numbers(ys) => {
-            let mut moments = Moments::default();
-            for &row in rows {
-                moments.add(ys[row]);
-            }
-            let mean = if n > 0.0 { moments.sum / n } else { 0.0 };
-            // Ten equal-width bins of the target's training range.
-            let (low, high) = data
-                .rows
-                .iter()
-                .fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), &r| {
-                    (lo.min(ys[r]), hi.max(ys[r]))
-                });
-            let width = (high - low) / 10.0;
-            let mut bins = [0.0; 10];
-            for &row in rows {
-                let bin = if width > 0.0 {
-                    (((ys[row] - low) / width).floor() as usize).min(9)
-                } else {
-                    0
-                };
-                bins[bin] += 1.0;
-            }
-            let distribution = bins
-                .iter()
-                .enumerate()
-                .map(|(bin, &count)| ScoreDistribution {
-                    value: bin.to_string(),
-                    record_count: count,
-                    probability: None,
-                    confidence: None,
-                })
-                .collect();
-            (number_text(mean), distribution)
-        }
-    }
-}
-
-/// A number as Modeler writes split values and predictions: 15 significant digits, trailing
-/// zeros dropped (`0.0477765`, `62.9004775217086`, `1`).
-fn number_text(x: f64) -> String {
-    if !x.is_finite() {
-        return x.to_string();
-    }
-    if x == 0.0 {
-        return "0".into();
-    }
-    let scientific = format!("{x:.14e}");
-    let exponent: i32 = scientific
-        .split_once('e')
-        .and_then(|(_, e)| e.parse().ok())
-        .unwrap_or(0);
-    if !(-5..15).contains(&exponent) {
-        return scientific;
-    }
-    let decimals = usize::try_from(14 - exponent).unwrap_or(0);
-    let mut text = format!("{x:.decimals$}");
-    if text.contains('.') {
-        while text.ends_with('0') {
-            text.pop();
-        }
-        if text.ends_with('.') {
-            text.pop();
-        }
-    }
-    text
-}
-
-#[cfg(test)]
-mod tests {
-    use super::number_text;
-
-    #[test]
-    fn numbers_have_fifteen_significant_digits() {
-        assert_eq!(number_text(0.0477765), "0.0477765");
-        assert_eq!(
-            number_text((62.451230569719314 + 63.34972447369782) / 2.0),
-            "62.9004775217086"
-        );
-        assert_eq!(number_text(1.0), "1");
-        assert_eq!(number_text(44.0), "44");
-        assert_eq!(number_text(0.684171809523809), "0.684171809523809");
+        Target::Numbers(ys) => regression_summary(
+            rows.iter().map(|&r| ys[r]),
+            value_range(data.rows.iter().map(|&r| ys[r])),
+        ),
     }
 }

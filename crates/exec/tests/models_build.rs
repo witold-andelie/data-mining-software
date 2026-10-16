@@ -1,4 +1,4 @@
-//! Build nodes end to end: run each `models/cart_*` probe stream's build node (settings from its
+//! Build nodes end to end: run each `models/cart_*` and `models/chaid_*` probe stream's build node (settings from its
 //! attachment, fields from the Type roles, types from the Type node) and compare the trained tree
 //! with the PMML Modeler exported for that stream.
 
@@ -19,8 +19,13 @@ use dms_strfmt::ArchiveLimits;
 use std::collections::HashMap;
 use std::sync::Arc;
 
-/// Cases whose tree must equal Modeler's (`crates/algo/tests/cart_oracle.rs` lists the GAPs).
+/// Cases whose tree must equal Modeler's (the algorithm tests list the GAPs).
 const DONE: &[&str] = &[
+    "chaid_default",
+    "chaid_depth2",
+    "chaid_exhaustive",
+    "chaid_alpha",
+    "chaid_regression",
     "cart_default",
     "cart_depth3",
     "cart_unpruned",
@@ -71,7 +76,7 @@ fn first_difference(ours: &Node, theirs: &Node) -> Option<String> {
 }
 
 #[test]
-fn cart_build_nodes_train_modelers_trees() {
+fn tree_build_nodes_train_modelers_trees() {
     let root_dir = support::repo_root();
     let mut failures = Vec::new();
     for case in [
@@ -83,6 +88,11 @@ fn cart_build_nodes_train_modelers_trees() {
         "cart_surrogates",
         "cart_no_surrogates",
         "cart_twoing",
+        "chaid_default",
+        "chaid_depth2",
+        "chaid_exhaustive",
+        "chaid_alpha",
+        "chaid_regression",
     ] {
         let bytes = std::fs::read(root_dir.join(format!("corpus/models/{case}.str"))).unwrap();
         let archive =
@@ -92,7 +102,7 @@ fn cart_build_nodes_train_modelers_trees() {
             .diagram
             .nodes
             .iter()
-            .find(|node| node.type_identifier() == "Cart!spss.tree-extension")
+            .find(|node| node.type_identifier().ends_with("!spss.tree-extension"))
             .map(|node| node.uid.clone())
             .unwrap();
         let attachments: HashMap<String, Arc<[u8]>> = archive
