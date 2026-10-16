@@ -231,6 +231,10 @@ fn cells_equal(actual: &str, expected: &str) -> bool {
     numbers_close(actual, expected)
 }
 
+/// Numeric cells printed with the same number of decimals that agree to 1e-12: Modeler sums in
+/// an order we do not always reproduce, so the 15th decimal can differ by an ulp or two. This is
+/// stricter than `xtask compare` (printed rounding plus a relative 1e-9). The report prints exact
+/// text matches separately so the gap stays visible.
 fn numbers_close(a: &str, b: &str) -> bool {
     let (Ok(fa), Ok(fb)) = (a.parse::<f64>(), b.parse::<f64>()) else {
         return false;
@@ -244,8 +248,10 @@ fn numbers_close(a: &str, b: &str) -> bool {
     a_decimals == b_decimals && (fa - fb).abs() <= 1e-12
 }
 
-fn compare_documents(actual: &Document, expected: &Document) -> (usize, usize, Vec<String>) {
+/// Cells compared: (matched within `cells_equal`, exactly equal text, total, differences).
+fn compare_documents(actual: &Document, expected: &Document) -> (usize, usize, usize, Vec<String>) {
     let mut matched = 0usize;
+    let mut exact = 0usize;
     let mut total = 0usize;
     let mut diffs = Vec::new();
 
@@ -269,6 +275,7 @@ fn compare_documents(actual: &Document, expected: &Document) -> (usize, usize, V
                         let ec = e.header.get(c).map(String::as_str);
                         if ac == ec {
                             matched += 1;
+                            exact += 1;
                         } else if diffs.len() < 10 {
                             diffs.push(format!(
                                 "table {t_idx} header[{c}]: actual={ac:?}, expected={ec:?}"
@@ -285,10 +292,19 @@ fn compare_documents(actual: &Document, expected: &Document) -> (usize, usize, V
                         total += 1;
                         let ac = a_row.and_then(|row| row.get(c)).map(String::as_str);
                         let ec = e_row.and_then(|row| row.get(c)).map(String::as_str);
-                        if let (Some(av), Some(ev)) = (ac, ec)
+                        if ac.is_some() && ac == ec {
+                            matched += 1;
+                            exact += 1;
+                        } else if let (Some(av), Some(ev)) = (ac, ec)
                             && cells_equal(av, ev)
                         {
                             matched += 1;
+                            if diffs.len() < 10 {
+                                diffs.push(format!(
+                                    "table {t_idx} ({:?}) row {r} col {c}: within 1e-12: actual={av:?}, expected={ev:?}",
+                                    e.title
+                                ));
+                            }
                         } else if diffs.len() < 10 {
                             diffs.push(format!(
                                 "table {t_idx} ({:?}) row {r} col {c}: actual={ac:?}, expected={ec:?}",
@@ -312,7 +328,7 @@ fn compare_documents(actual: &Document, expected: &Document) -> (usize, usize, V
         }
     }
 
-    (matched, total, diffs)
+    (matched, exact, total, diffs)
 }
 
 #[derive(Debug)]
@@ -416,10 +432,10 @@ fn statistics_means_and_matrix_match_modeler_oracles() {
             parse_csv_document(&oracle_text)
         };
 
-        let (matched, total, diffs) = compare_documents(&actual, &expected);
+        let (matched, exact, total, diffs) = compare_documents(&actual, &expected);
         println!(
-            "{}/{}: {}/{} cells",
-            case.stream_name, file_name, matched, total
+            "{}/{}: {}/{} cells ({} exact)",
+            case.stream_name, file_name, matched, total, exact
         );
         for diff in &diffs {
             println!("    {diff}");
