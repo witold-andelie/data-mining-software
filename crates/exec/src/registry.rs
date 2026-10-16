@@ -43,13 +43,15 @@ const BUILT_IN: &[(&str, Factory)] = &[
     ("flat_file_export", nodes::flat_file_export::build),
     ("json_export", nodes::json_export::build),
     ("xml_export", nodes::xml_export::build),
+    ("excel_export", nodes::excel_export::build),
+    ("statistics_export", nodes::statistics_export::build),
 ];
 
 /// Registered while their implementation is under way; not counted as implemented.
 /// TwoStep numbers clusters differently on larger data, and multinomial Logistic coefficients
 /// on separated data differ from Modeler's (the GAPs in
 /// `dms_algo::twostep` and `dms_algo::logistic`).
-const PENDING: &[&str] = &["twostep", "logistic"];
+const PENDING: &[&str] = &["twostep", "logistic", "excel_export", "statistics_export"];
 
 /// Model nodes whose nuggets score (`nodes::apply`) while their build nodes cannot train yet;
 /// they do not count as implemented.
