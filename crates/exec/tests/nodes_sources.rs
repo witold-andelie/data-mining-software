@@ -673,14 +673,15 @@ fn type_node_reads_values_sets_roles_blanks_and_partition_categories() {
         vec![(Value::string("HIGH"), "High BP".into())]
     );
 
-    // sex: whitespace "   " is a blank, leaving 2 distinct values ("F", "M") -> Flag.
+    // sex: whitespace "   " is a blank, leaving 2 distinct values ("F", "M") -> Flag; the
+    // second value is true, as in Modeler.
     let sex = typed.model().field("sex").unwrap();
     assert_eq!(sex.measurement, Measurement::Flag);
     assert_eq!(
         sex.values,
         ValueSpec::Flag {
-            true_value: Value::string("F"),
-            false_value: Value::string("M"),
+            true_value: Value::string("M"),
+            false_value: Value::string("F"),
         }
     );
 

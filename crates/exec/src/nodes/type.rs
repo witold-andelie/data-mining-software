@@ -595,8 +595,11 @@ fn compute_value_spec(
             } else {
                 distinct_column_values(input, col_idx, field, saved, augment)
             };
+            // Modeler lists a flag's values false first, true second: `F`, `T` (`fields/*`
+            // `flg`), and K-Means codes the second value as 1 (`models/kmeans_categorical`:
+            // `Sex` F, M -> M = 1; `Cholesterol` HIGH, NORMAL -> NORMAL = 1).
             match (candidates.first(), candidates.get(1)) {
-                (Some(t), Some(f)) => ValueSpec::Flag {
+                (Some(f), Some(t)) => ValueSpec::Flag {
                     true_value: t.clone(),
                     false_value: f.clone(),
                 },
