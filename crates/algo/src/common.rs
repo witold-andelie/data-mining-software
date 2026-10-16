@@ -4,7 +4,7 @@ use crate::Dataset;
 use dms_pmml::{
     DataField, DataType, InvalidTreatment, MiningField, OpType, Outliers, ScoreDistribution, Usage,
 };
-use dms_types::{Measurement, Storage, Value, ValueSpec};
+use dms_types::{Measurement, Storage, Table, Value, ValueSpec};
 
 /// The categories of field `position` in PMML text form: the declared values of an
 /// instantiated field, otherwise the distinct non-null values in order of appearance; blanks
@@ -14,7 +14,12 @@ use dms_types::{Measurement, Storage, Value, ValueSpec};
 /// (`models/cart_default`: `Cholesterol` HIGH, NORMAL with NORMAL true); trees send the first
 /// category of a subset left, so the order decides the children.
 pub fn categories(dataset: &Dataset<'_>, position: usize) -> Vec<String> {
-    let Some(field) = dataset.table.model().fields().get(position) else {
+    field_categories(dataset.table, position)
+}
+
+/// [`categories`] of a table's field, for models without a target (clustering).
+pub fn field_categories(table: &Table, position: usize) -> Vec<String> {
+    let Some(field) = table.model().fields().get(position) else {
         return Vec::new();
     };
     let valid = |value: &&Value| !field.is_missing(value);
@@ -31,7 +36,7 @@ pub fn categories(dataset: &Dataset<'_>, position: usize) -> Vec<String> {
         _ if field.measurement == Measurement::Continuous => Vec::new(),
         _ => {
             let mut seen: Vec<String> = Vec::new();
-            for row in dataset.table.rows() {
+            for row in table.rows() {
                 if let Some(value) = row.get(position).filter(valid) {
                     let value = text(value);
                     if !seen.contains(&value) {
@@ -46,57 +51,65 @@ pub fn categories(dataset: &Dataset<'_>, position: usize) -> Vec<String> {
 
 /// `DataDictionary`: the target, then the inputs.
 pub fn data_dictionary(dataset: &Dataset<'_>) -> Vec<DataField> {
-    let fields = dataset.table.model().fields();
     std::iter::once(dataset.target)
         .chain(dataset.inputs.iter().copied())
-        .filter_map(|position| {
-            let field = fields.get(position)?;
-            let continuous = field.measurement == Measurement::Continuous;
-            Some(DataField {
-                name: field.name.clone(),
-                optype: if continuous {
-                    OpType::Continuous
-                } else if field.measurement == Measurement::Ordinal {
-                    OpType::Ordinal
-                } else {
-                    OpType::Categorical
-                },
-                data_type: match field.storage {
-                    Storage::Integer => DataType::Integer,
-                    Storage::Real => DataType::Double,
-                    Storage::Date => DataType::Date,
-                    Storage::Time => DataType::Time,
-                    Storage::Timestamp => DataType::DateTime,
-                    _ => DataType::String,
-                },
-                values: if continuous {
-                    Vec::new()
-                } else {
-                    categories(dataset, position)
-                },
-            })
-        })
+        .filter_map(|position| data_field(dataset.table, position))
         .collect()
+}
+
+/// The `DataField` of a table's field: its optype, data type and categories.
+pub fn data_field(table: &Table, position: usize) -> Option<DataField> {
+    let field = table.model().fields().get(position)?;
+    let continuous = field.measurement == Measurement::Continuous;
+    Some(DataField {
+        name: field.name.clone(),
+        optype: if continuous {
+            OpType::Continuous
+        } else if field.measurement == Measurement::Ordinal {
+            OpType::Ordinal
+        } else {
+            OpType::Categorical
+        },
+        data_type: match field.storage {
+            Storage::Integer => DataType::Integer,
+            Storage::Real => DataType::Double,
+            Storage::Date => DataType::Date,
+            Storage::Time => DataType::Time,
+            Storage::Timestamp => DataType::DateTime,
+            _ => DataType::String,
+        },
+        values: if continuous {
+            Vec::new()
+        } else {
+            field_categories(table, position)
+        },
+    })
 }
 
 /// `MiningSchema`: the target as predicted, the inputs as active, with no treatments.
 pub fn mining_schema(dataset: &Dataset<'_>) -> Vec<MiningField> {
-    let fields = dataset.table.model().fields();
-    let field = |position: usize, usage: Usage| {
-        fields.get(position).map(|f| MiningField {
-            name: f.name.clone(),
-            usage,
-            missing_replacement: None,
-            outliers: Outliers::AsIs,
-            low_value: None,
-            high_value: None,
-            invalid_treatment: InvalidTreatment::AsIs,
-        })
-    };
-    std::iter::once(field(dataset.target, Usage::Target))
-        .chain(dataset.inputs.iter().map(|&p| field(p, Usage::Active)))
+    std::iter::once(mining_field(dataset.table, dataset.target, Usage::Target))
+        .chain(
+            dataset
+                .inputs
+                .iter()
+                .map(|&p| mining_field(dataset.table, p, Usage::Active)),
+        )
         .flatten()
         .collect()
+}
+
+/// A `MiningField` without treatments.
+pub fn mining_field(table: &Table, position: usize, usage: Usage) -> Option<MiningField> {
+    table.model().fields().get(position).map(|f| MiningField {
+        name: f.name.clone(),
+        usage,
+        missing_replacement: None,
+        outliers: Outliers::AsIs,
+        low_value: None,
+        high_value: None,
+        invalid_treatment: InvalidTreatment::AsIs,
+    })
 }
 
 /// A value as PMML writes it (integers without a decimal point, reals in shortest form).

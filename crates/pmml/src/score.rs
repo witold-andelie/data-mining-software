@@ -406,6 +406,13 @@ fn collect_expr_fields<'a>(
                 out.insert(field.as_str());
             }
         }
+        Expr::MapValues { pairs, .. } => {
+            for (field, _) in pairs {
+                if !params.contains(&field.as_str()) {
+                    out.insert(field.as_str());
+                }
+            }
+        }
         Expr::Apply { function, args, .. } => {
             if let Some(def) = functions.iter().find(|f| f.name == *function) {
                 let def_params: Vec<&str> = def.parameters.iter().map(String::as_str).collect();

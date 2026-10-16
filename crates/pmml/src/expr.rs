@@ -44,6 +44,36 @@ pub(crate) fn eval(
             let x = as_f64(&val, field)?;
             eval_norm_continuous(x, points, *outliers, *map_missing_to)
         }
+        Expr::MapValues {
+            pairs,
+            output,
+            rows,
+            default,
+            map_missing_to,
+        } => {
+            let mut keys = Vec::with_capacity(pairs.len());
+            for (field, column) in pairs {
+                let value = lookup(field, env, params)?;
+                if value == Value::Missing {
+                    return Ok(map_missing_to.clone().unwrap_or(Value::Missing));
+                }
+                keys.push((column, value));
+            }
+            fn cell<'r>(row: &'r [(String, String)], column: &str) -> Option<&'r str> {
+                row.iter()
+                    .find(|(c, _)| c == column)
+                    .map(|(_, v)| v.as_str())
+            }
+            let hit = rows.iter().find(|row| {
+                keys.iter().all(|(column, value)| {
+                    cell(row, column).is_some_and(|text| value_matches_str(value, text))
+                })
+            });
+            Ok(match hit.and_then(|row| cell(row, output)) {
+                Some(text) => crate::parse::parse_value_str(text),
+                None => default.clone().unwrap_or(Value::Missing),
+            })
+        }
         Expr::NormDiscrete {
             field,
             value,

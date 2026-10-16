@@ -10,7 +10,7 @@
 //! |---|---|
 //! | C&R Tree, CHAID | `$R-<target>` prediction; `$RC-<target>` confidence (`calculateConfidences`); `$RRP-<target>` raw propensity, the probability of the second (true) category (`calculateRawPropensities`) |
 //! | Logistic | `$L-`, `$LP-` (confidence), `$LRP-` (raw propensity), same switches |
-//! | K-Means | `$KM-<model name>`: `cluster-<cluster name>` |
+//! | K-Means | `$KM-<model name>`: `cluster-<cluster name>`; `$KMD-<model name>`: the Euclidean distance to that center, when the nugget's `buildSettings` set `generateDistanceField` |
 //!
 //! When the input already has a field of that name (another model on the same target), the
 //! fields get the first free index: `$R1-`, `$RC1-`, `$RRP1-` (`team/model_comparison`).
@@ -67,6 +67,8 @@ pub fn build(node: &StreamNode) -> Result<Box<dyn Operator>, OperatorError> {
             .map(str::to_string),
         confidences: settings::flag(s, "calculateConfidences")?.unwrap_or(true),
         raw_propensities: settings::flag(s, "calculateRawPropensities")?.unwrap_or(false),
+        distance: kind == Kind::KMeans
+            && build_setting(s, "generateDistanceField").as_deref() == Some("true"),
         model_name,
     }))
 }
@@ -77,7 +79,18 @@ struct Apply {
     pmml_member: Option<String>,
     confidences: bool,
     raw_propensities: bool,
+    /// K-Means: also the distance to the cluster center (`$KMD-`).
+    distance: bool,
     model_name: String,
+}
+
+/// A value of the nugget's `buildSettings/propertySetting` list (the build node's settings).
+fn build_setting(s: Option<&dms_strfmt::fastinfoset::Element>, name: &str) -> Option<String> {
+    settings::children(s, "buildSettings", "propertySetting")
+        .into_iter()
+        .find(|setting| settings::text(Some(setting), "name").as_deref() == Some(name))
+        .and_then(|setting| settings::element(Some(setting), "value"))
+        .map(|value| value.text())
 }
 
 impl Operator for Apply {
@@ -170,7 +183,15 @@ impl Apply {
                     value => Value::string(format!("cluster-{}", text(value))),
                 })
                 .collect();
-            return Ok(vec![column(&name, Storage::String, values)]);
+            let mut columns = vec![column(&name, Storage::String, values)];
+            if self.distance {
+                columns.push(column(
+                    &format!("$KMD-{}", self.model_name),
+                    Storage::Real,
+                    predictions.iter().map(|p| real(p.affinity)).collect(),
+                ));
+            }
+            return Ok(columns);
         }
         let target = target_name(pmml)?;
         let (value_prefix, confidence_prefix, propensity_prefix) = match self.kind {
