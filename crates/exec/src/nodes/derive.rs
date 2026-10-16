@@ -21,7 +21,7 @@
 //! `deriveFormulaGeoMeasure`) beyond the measurement level.
 
 use super::field_util::{
-    Column, bind, bind_condition, eval, eval_condition, extended_name, field_list, field_value,
+    Column, bind, bind_condition, conditions, extended_name, field_list, field_values,
     literal_values, measurement, parse_optional, parse_required, position, record_number,
     with_columns,
 };
@@ -29,7 +29,7 @@ use crate::context::ExecContext;
 use crate::error::OperatorError;
 use crate::operator::{Arity, Operator};
 use crate::settings;
-use dms_clem::Expr;
+use dms_clem::{Compiled, Expr};
 use dms_stream::StreamNode;
 use dms_types::{Field, Measurement, Storage, Table, Value, ValueSpec};
 use std::sync::Arc;
@@ -305,15 +305,16 @@ impl Derive {
             bind_condition(&format!("{name}: {setting}"), expr, model, current)
         };
         let rows = input.rows();
-        let mut values = Vec::with_capacity(rows.len());
+        // Every expression runs over all records first: sequence functions need them.
+        let values_of = |setting: &str, compiled: &Compiled| {
+            field_values(&format!("{name}: {setting}"), compiled, rows)
+        };
+        let tests_of = |setting: &str, compiled: &Compiled| {
+            conditions(&format!("{name}: {setting}"), compiled, rows)
+        };
         let mut column = match &self.kind {
             Kind::Formula(expr) => {
-                let compiled = bound("formula", expr)?;
-                for (i, row) in rows.iter().enumerate() {
-                    let index = record_number(i);
-                    let datum = eval("formula", &compiled, row, index)?;
-                    values.push(field_value(&format!("{name}: formula"), datum, index)?);
-                }
+                let values = values_of("formula", &bound("formula", expr)?)?;
                 Column::inferred(name, self.measure, values)?
             }
             Kind::Flag {
@@ -327,10 +328,10 @@ impl Derive {
                     model,
                     current,
                 )?;
-                for (i, row) in rows.iter().enumerate() {
-                    let hit = eval_condition("flag condition", &compiled, row, record_number(i))?;
-                    values.push(if hit { true_value } else { false_value }.clone());
-                }
+                let values = tests_of("flag condition", &compiled)?
+                    .into_iter()
+                    .map(|hit| if hit { true_value } else { false_value }.clone())
+                    .collect();
                 let mut column = Column::inferred(name, self.measure, values)?;
                 column.field.values = ValueSpec::Flag {
                     true_value: true_value.clone(),
@@ -343,20 +344,22 @@ impl Derive {
                 rows: cases,
                 default,
             } => {
-                let compiled = cases
+                let tests = cases
                     .iter()
-                    .map(|(test, value)| Ok((condition("set condition", test)?, value)))
+                    .map(|(test, value)| {
+                        let compiled = condition("set condition", test)?;
+                        Ok((tests_of("set condition", &compiled)?, value))
+                    })
                     .collect::<Result<Vec<_>, OperatorError>>()?;
-                for (i, row) in rows.iter().enumerate() {
-                    let mut chosen = default;
-                    for (condition, value) in &compiled {
-                        if eval_condition("set condition", condition, row, record_number(i))? {
-                            chosen = value;
-                            break;
-                        }
-                    }
-                    values.push(chosen.clone());
-                }
+                let values = (0..rows.len())
+                    .map(|i| {
+                        tests
+                            .iter()
+                            .find(|(hits, _)| hits.get(i) == Some(&true))
+                            .map_or(default, |(_, value)| *value)
+                            .clone()
+                    })
+                    .collect();
                 self.literal_column(name, cases.iter().map(|(_, v)| v), default, values)
             }
             Kind::State {
@@ -366,20 +369,20 @@ impl Derive {
                 off_value,
                 initially_on,
             } => {
-                let on = on_condition
-                    .as_ref()
-                    .map(|expr| condition("state on condition", expr))
-                    .transpose()?;
-                let off = off_condition
-                    .as_ref()
-                    .map(|expr| condition("state off condition", expr))
-                    .transpose()?;
+                let switch = |setting: &str, expr: &Option<Expr>| {
+                    expr.as_ref()
+                        .map(|expr| tests_of(setting, &condition(setting, expr)?))
+                        .transpose()
+                };
+                let on = switch("state on condition", on_condition)?;
+                let off = switch("state off condition", off_condition)?;
                 let mut is_on = *initially_on;
-                for (i, row) in rows.iter().enumerate() {
-                    let index = record_number(i);
-                    let switch = if is_on { &off } else { &on };
-                    if let Some(compiled) = switch
-                        && eval_condition("state condition", compiled, row, index)?
+                let mut values = Vec::with_capacity(rows.len());
+                for i in 0..rows.len() {
+                    let flips = if is_on { &off } else { &on };
+                    if flips
+                        .as_ref()
+                        .is_some_and(|hits| hits.get(i) == Some(&true))
                     {
                         is_on = !is_on;
                     }
@@ -393,41 +396,32 @@ impl Derive {
                 increment_by,
                 reset_condition,
             } => {
-                let increment = increment_condition
-                    .as_ref()
-                    .map(|expr| condition("count increment condition", expr))
-                    .transpose()?;
-                let amount = bound("count increment", increment_by)?;
-                let reset = reset_condition
-                    .as_ref()
-                    .map(|expr| condition("count reset condition", expr))
-                    .transpose()?;
+                let tests = |setting: &str, expr: &Option<Expr>| {
+                    expr.as_ref()
+                        .map(|expr| tests_of(setting, &condition(setting, expr)?))
+                        .transpose()
+                };
+                let increment = tests("count increment condition", increment_condition)?;
+                let amounts =
+                    values_of("count increment", &bound("count increment", increment_by)?)?;
+                let reset = tests("count reset condition", reset_condition)?;
+                let hit = |tests: &Option<Vec<bool>>, i: usize, otherwise: bool| {
+                    tests
+                        .as_ref()
+                        .map_or(otherwise, |hits| hits.get(i) == Some(&true))
+                };
                 let mut count = initial.clone();
-                for (i, row) in rows.iter().enumerate() {
+                let mut values = Vec::with_capacity(rows.len());
+                for (i, by) in amounts.iter().enumerate() {
                     let index = record_number(i);
-                    let reset_now = match &reset {
-                        Some(c) => eval_condition("count reset condition", c, row, index)?,
-                        None => false,
-                    };
-                    if reset_now {
+                    if hit(&reset, i, false) {
                         count = initial.clone();
-                    } else {
-                        let increment_now = match &increment {
-                            Some(c) => eval_condition("count increment condition", c, row, index)?,
-                            None => true,
-                        };
-                        if increment_now {
-                            let by = field_value(
-                                &format!("{name}: count increment"),
-                                eval("count increment", &amount, row, index)?,
-                                index,
-                            )?;
-                            count = add(&count, &by).ok_or_else(|| {
-                                OperatorError::Data(format!(
-                                    "{name}, record {index}: the count increment is not a number"
-                                ))
-                            })?;
-                        }
+                    } else if hit(&increment, i, true) {
+                        count = add(&count, by).ok_or_else(|| {
+                            OperatorError::Data(format!(
+                                "{name}, record {index}: the count increment is not a number"
+                            ))
+                        })?;
                     }
                     values.push(count.clone());
                 }
@@ -438,28 +432,24 @@ impl Derive {
                 then,
                 otherwise,
             } => {
-                let test = condition("if condition", test)?;
-                let then = bound("then expression", then)?;
+                let hits = tests_of("if condition", &condition("if condition", test)?)?;
+                let then = values_of("then expression", &bound("then expression", then)?)?;
                 let otherwise = otherwise
                     .as_ref()
-                    .map(|expr| bound("else expression", expr))
+                    .map(|expr| values_of("else expression", &bound("else expression", expr)?))
                     .transpose()?;
-                for (i, row) in rows.iter().enumerate() {
-                    let index = record_number(i);
-                    let chosen = if eval_condition("if condition", &test, row, index)? {
-                        Some(&then)
-                    } else {
-                        otherwise.as_ref()
-                    };
-                    values.push(match chosen {
-                        Some(compiled) => field_value(
-                            &format!("{name}: conditional"),
-                            eval("conditional", compiled, row, index)?,
-                            index,
-                        )?,
-                        None => Value::Null,
-                    });
-                }
+                let values = hits
+                    .iter()
+                    .zip(then)
+                    .enumerate()
+                    .map(|(i, (hit, then))| match (hit, &otherwise) {
+                        (true, _) => then,
+                        (false, Some(otherwise)) => {
+                            otherwise.get(i).cloned().unwrap_or(Value::Null)
+                        }
+                        (false, None) => Value::Null,
+                    })
+                    .collect();
                 Column::inferred(name, self.measure, values)?
             }
         };

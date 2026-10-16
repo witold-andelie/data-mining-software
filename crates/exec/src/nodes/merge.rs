@@ -29,8 +29,7 @@
 //! model where duplicate field names are disambiguated as `<tag>_<field>` (GAP: condition merge
 //! pairing semantics and join types beyond inner are unverified against Modeler).
 
-use super::field_util::record_number;
-use super::select::{Condition, Verdict};
+use super::select::Condition;
 use crate::context::ExecContext;
 use crate::error::OperatorError;
 use crate::operator::{Arity, Operator};
@@ -367,6 +366,10 @@ impl Operator for Merge {
     }
 }
 
+/// A condition merge tests every combination of records; beyond this it fails instead of
+/// running for hours.
+const MAX_CONDITION_COMBINATIONS: u64 = 100_000_000;
+
 impl Merge {
     fn condition_combos(
         &self,
@@ -399,30 +402,40 @@ impl Merge {
             DataModel::new(eval_fields).map_err(|error| OperatorError::Data(error.to_string()))?;
         let bound = condition.bind(&eval_model)?;
 
-        let mut product: Vec<Vec<usize>> = vec![Vec::new()];
-        for input in inputs {
-            let count = input.row_count();
-            product = product
-                .into_iter()
-                .flat_map(|prefix| {
-                    (0..count).map(move |i| {
-                        let mut next = prefix.clone();
-                        next.push(i);
-                        next
-                    })
-                })
-                .collect();
+        // Every combination of records, the last input varying fastest, visited one at a time.
+        let total = inputs
+            .iter()
+            .try_fold(1u64, |acc, input| {
+                acc.checked_mul(u64::try_from(input.row_count()).unwrap_or(u64::MAX))
+            })
+            .unwrap_or(u64::MAX);
+        if total > MAX_CONDITION_COMBINATIONS {
+            return Err(OperatorError::Data(format!(
+                "merge by condition would test {total} record combinations (limit                  {MAX_CONDITION_COMBINATIONS})"
+            )));
         }
         let mut combos = Vec::new();
-        for (ordinal, indices) in product.into_iter().enumerate() {
-            let mut combined = Vec::with_capacity(eval_model.len());
-            for (n, &row_idx) in indices.iter().enumerate() {
-                if let Some(row) = inputs.get(n).and_then(|t| t.rows().get(row_idx)) {
+        if total == 0 {
+            return Ok(combos);
+        }
+        let mut indices = vec![0usize; inputs.len()];
+        let mut combined = Vec::with_capacity(eval_model.len());
+        for ordinal in 0..total {
+            combined.clear();
+            for (input, &row) in inputs.iter().zip(&indices) {
+                if let Some(row) = input.rows().get(row) {
                     combined.extend(row.iter().cloned());
                 }
             }
-            if bound.verdict(&combined, record_number(ordinal))? == Verdict::True {
-                combos.push(indices.into_iter().map(Some).collect());
+            if bound.truth_of(&combined, ordinal.saturating_add(1))? == Some(true) {
+                combos.push(indices.iter().copied().map(Some).collect());
+            }
+            for (n, index) in indices.iter_mut().enumerate().rev() {
+                *index += 1;
+                if *index < inputs.get(n).map_or(0, |input| input.row_count()) {
+                    break;
+                }
+                *index = 0;
             }
         }
         Ok(combos)

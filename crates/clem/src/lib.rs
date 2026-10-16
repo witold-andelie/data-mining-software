@@ -7,6 +7,7 @@ mod eval;
 mod functions;
 mod lexer;
 mod parser;
+mod sequence;
 mod types;
 
 use dms_types::Value;
@@ -82,6 +83,11 @@ pub enum ClemError {
     Unsupported(String),
     /// Operands of the wrong kind at evaluation time.
     Type(String),
+    /// An error on one record; `index` is its `@INDEX`.
+    Record {
+        index: i64,
+        error: Box<ClemError>,
+    },
 }
 
 impl fmt::Display for ClemError {
@@ -99,6 +105,7 @@ impl fmt::Display for ClemError {
             } => write!(f, "{function} takes {expected} arguments, {found} given"),
             ClemError::Unsupported(what) => write!(f, "not supported yet: {what}"),
             ClemError::Type(message) => write!(f, "type error: {message}"),
+            ClemError::Record { index, error } => write!(f, "record {index}: {error}"),
         }
     }
 }

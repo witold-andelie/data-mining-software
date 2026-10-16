@@ -9,7 +9,7 @@
 //! Conditions treat flag fields as truth values (rule 33). A condition that evaluates to `$null$`
 //! drops the record in both `include` and `discard` modes (verified by Modeler 19 oracle, rule 39).
 
-use super::field_util::{bind_condition, eval, parse_required, record_number};
+use super::field_util::{bind_condition, parse_required, truths};
 use crate::context::ExecContext;
 use crate::error::OperatorError;
 use crate::operator::{Arity, Operator};
@@ -46,23 +46,13 @@ pub(crate) struct Condition {
     setting: &'static str,
 }
 
-/// The truth of a condition on one record.
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Verdict {
-    True,
-    False,
-    Null,
-}
-
-impl Verdict {
-    /// Oracle rule 39: a `$null$` condition excludes the record in both `include` and `discard`
-    /// modes.
-    fn keeps(self, discard: bool) -> bool {
-        match self {
-            Verdict::True => !discard,
-            Verdict::False => discard,
-            Verdict::Null => false,
-        }
+/// Oracle rule 39: a `$null$` condition excludes the record in both `include` and `discard`
+/// modes.
+fn keeps(truth: Option<bool>, discard: bool) -> bool {
+    match truth {
+        Some(true) => !discard,
+        Some(false) => discard,
+        None => false,
     }
 }
 
@@ -90,19 +80,24 @@ impl Condition {
 }
 
 impl BoundCondition {
-    /// `index` is the 1-based record number.
-    pub(crate) fn verdict(&self, row: &[Value], index: u64) -> Result<Verdict, OperatorError> {
-        let datum = eval(self.setting, &self.compiled, row, index)?;
+    /// The truth on every record (null is `None`), evaluated over all records so that
+    /// sequence functions see the others.
+    pub(crate) fn truths(&self, rows: &[Vec<Value>]) -> Result<Vec<Option<bool>>, OperatorError> {
+        truths(self.setting, &self.compiled, rows)
+    }
+
+    /// The truth on one record standing alone (merge conditions over combined records, where
+    /// sequence functions have no meaning); `index` is its `@INDEX`.
+    pub(crate) fn truth_of(
+        &self,
+        row: &[Value],
+        index: u64,
+    ) -> Result<Option<bool>, OperatorError> {
         let setting = self.setting;
-        Ok(
-            match datum.truth().map_err(|error| {
-                OperatorError::Data(format!("{setting}, record {index}: {error}"))
-            })? {
-                Some(true) => Verdict::True,
-                Some(false) => Verdict::False,
-                None => Verdict::Null,
-            },
-        )
+        self.compiled
+            .eval(row, index)
+            .and_then(|datum| datum.truth())
+            .map_err(|error| OperatorError::Data(format!("{setting}, record {index}: {error}")))
     }
 }
 
@@ -120,16 +115,14 @@ impl Operator for Select {
         let input = inputs
             .first()
             .ok_or_else(|| OperatorError::Inputs("Select needs one input".into()))?;
-        let bound = self.condition.bind(input.model())?;
-        let mut kept = Vec::new();
-        for (index, row) in input.rows().iter().enumerate() {
-            if bound
-                .verdict(row, record_number(index))?
-                .keeps(self.discard)
-            {
-                kept.push(row.clone());
-            }
-        }
+        let truths = self.condition.bind(input.model())?.truths(input.rows())?;
+        let kept = input
+            .rows()
+            .iter()
+            .zip(truths)
+            .filter(|(_, truth)| keeps(*truth, self.discard))
+            .map(|(row, _)| row.clone())
+            .collect();
         Table::new(input.model().clone(), kept)
             .map_err(|error| OperatorError::Data(error.to_string()))
     }

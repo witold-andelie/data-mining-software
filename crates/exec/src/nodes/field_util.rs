@@ -73,30 +73,58 @@ pub(crate) fn field_value(setting: &str, datum: Datum, index: u64) -> Result<Val
     }
 }
 
-/// Evaluates on one record; failures name the record (1-based).
-pub(crate) fn eval(
+/// Evaluates on every record of the input, in order, so that sequence functions (`@OFFSET`,
+/// `@MEAN`, `@SINCE`, ...) see the other records. Failures name the record.
+pub(crate) fn eval_all(
     setting: &str,
     compiled: &Compiled,
-    row: &[Value],
-    index: u64,
-) -> Result<Datum, OperatorError> {
+    rows: &[Vec<Value>],
+) -> Result<Vec<Datum>, OperatorError> {
     compiled
-        .eval(row, index)
-        .map_err(|error| OperatorError::Data(format!("{setting}, record {index}: {error}")))
+        .eval_records(rows)
+        .map_err(|error| OperatorError::Data(format!("{setting}: {error}")))
 }
 
-/// Evaluates a condition on one record; null counts as false.
-pub(crate) fn eval_condition(
+/// The truth of a condition on every record (null is `None`).
+pub(crate) fn truths(
     setting: &str,
     compiled: &Compiled,
-    row: &[Value],
-    index: u64,
-) -> Result<bool, OperatorError> {
-    let datum = eval(setting, compiled, row, index)?;
-    datum
-        .truth()
+    rows: &[Vec<Value>],
+) -> Result<Vec<Option<bool>>, OperatorError> {
+    eval_all(setting, compiled, rows)?
+        .iter()
+        .enumerate()
+        .map(|(i, datum)| {
+            datum.truth().map_err(|error| {
+                OperatorError::Data(format!("{setting}, record {}: {error}", record_number(i)))
+            })
+        })
+        .collect()
+}
+
+/// A condition on every record; null counts as false.
+pub(crate) fn conditions(
+    setting: &str,
+    compiled: &Compiled,
+    rows: &[Vec<Value>],
+) -> Result<Vec<bool>, OperatorError> {
+    Ok(truths(setting, compiled, rows)?
+        .into_iter()
         .map(|truth| truth == Some(true))
-        .map_err(|error| OperatorError::Data(format!("{setting}, record {index}: {error}")))
+        .collect())
+}
+
+/// `field_value` on every record.
+pub(crate) fn field_values(
+    setting: &str,
+    compiled: &Compiled,
+    rows: &[Vec<Value>],
+) -> Result<Vec<Value>, OperatorError> {
+    eval_all(setting, compiled, rows)?
+        .into_iter()
+        .enumerate()
+        .map(|(i, datum)| field_value(setting, datum, record_number(i)))
+        .collect()
 }
 
 /// 1-based record number for `@INDEX`.
