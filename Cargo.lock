@@ -135,6 +135,7 @@ dependencies = [
  "dms-stream",
  "dms-strfmt",
  "dms-types",
+ "serde_json",
 ]
 
 [[package]]

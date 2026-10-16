@@ -40,6 +40,7 @@ const CORPUS_CRATES: &[&str] = &[
     "dms-clem",
     "dms-pmml",
     "dms-algo",
+    "dms-exec",
 ];
 
 fn test_corpus() -> Result<()> {
