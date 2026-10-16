@@ -4,7 +4,7 @@
 
 | Scope | Implemented | Total |
 |---|---|---|
-| MVP | 18 | 100 |
+| MVP | 19 | 100 |
 | later | 0 | 13 |
 | out of scope | 0 | 34 |
 
@@ -193,4 +193,4 @@
 
 | Node | Id | Scope | Status | Modeler identifiers |
 |---|---|---|---|---|
-| SuperNode | `supernode` | MVP | missing | `MutableSuperNode` |
+| SuperNode | `supernode` | MVP | done | `MutableSuperNode` |

@@ -218,3 +218,111 @@ fn resolver_relocates_foreign_paths_by_file_name() {
     assert_eq!(resolver.resolve(r"C:\elsewhere\missing.csv"), None);
     assert!(resolver.resolve("$CLEO_DEMOS/data.csv").is_some());
 }
+
+fn supernode(uid: &str, nodes: Vec<StreamNode>, links: Vec<Link>) -> StreamNode {
+    let mut node = node(uid, "MutableSuperNode");
+    node.subdiagram = Some(Diagram {
+        nodes,
+        links,
+        terminal_order: Vec::new(),
+    });
+    node
+}
+
+fn input_connector(uid: &str) -> StreamNode {
+    node(uid, "SuperNodeInputConnectorNode")
+}
+
+fn output_connector(uid: &str) -> StreamNode {
+    node(uid, "SuperNodeOutputConnectorNode")
+}
+
+#[test]
+fn supernodes_are_expanded_and_keep_their_uid() {
+    // src -> S{in -> f -> out} -> t
+    let s = stream(
+        vec![
+            node("src", "DelimitedFileImportNode"),
+            supernode(
+                "S",
+                vec![
+                    input_connector("in"),
+                    node("f", "FilterNode"),
+                    output_connector("out"),
+                ],
+                vec![link("in", "f"), link("f", "out")],
+            ),
+            node("t", "TableNode"),
+        ],
+        vec![link("src", "S"), link("S", "t")],
+    );
+    let plan = Plan::with_factories(&s, lookup);
+    assert_eq!(plan.terminals(), vec!["t"]);
+    assert_eq!(plan.inputs_of("t"), vec!["S"]);
+    assert_eq!(plan.inputs_of("f"), vec!["in"]);
+    let results = plan.evaluate(&["S"], &ExecContext::default());
+    assert_eq!(results["S"].as_ref().unwrap().row_count(), 2);
+    assert_eq!(results["f"].as_ref().unwrap().row_count(), 2);
+}
+
+#[test]
+fn nested_source_and_terminal_supernodes() {
+    // S1{src -> out1} -> S2{in2 -> S3{in3 -> f -> out3} -> t_inner}
+    let s = stream(
+        vec![
+            supernode(
+                "S1",
+                vec![node("src", "DelimitedFileImportNode"), output_connector("out1")],
+                vec![link("src", "out1")],
+            ),
+            supernode(
+                "S2",
+                vec![
+                    input_connector("in2"),
+                    supernode(
+                        "S3",
+                        vec![
+                            input_connector("in3"),
+                            node("f", "FilterNode"),
+                            output_connector("out3"),
+                        ],
+                        vec![link("in3", "f"), link("f", "out3")],
+                    ),
+                    node("t_inner", "TableNode"),
+                ],
+                vec![link("in2", "S3"), link("S3", "t_inner")],
+            ),
+        ],
+        vec![link("S1", "S2")],
+    );
+    let plan = Plan::with_factories(&s, lookup);
+    assert_eq!(plan.terminals(), vec!["t_inner"]);
+    assert_eq!(plan.inputs_of("t_inner"), vec!["S3"]);
+    let results = plan.evaluate(&["S3", "t_inner"], &ExecContext::default());
+    assert_eq!(results["S3"].as_ref().unwrap().row_count(), 2);
+    assert_eq!(results["t_inner"].as_ref().unwrap().row_count(), 2);
+}
+
+#[test]
+fn an_unconnected_supernode_input_fails_its_reader() {
+    // S{in -> f -> out} with nothing linked into S.
+    let s = stream(
+        vec![
+            supernode(
+                "S",
+                vec![
+                    input_connector("in"),
+                    node("f", "FilterNode"),
+                    output_connector("out"),
+                ],
+                vec![link("in", "f"), link("f", "out")],
+            ),
+            node("t", "TableNode"),
+        ],
+        vec![link("S", "t")],
+    );
+    let plan = Plan::with_factories(&s, lookup);
+    let results = plan.evaluate(&["S"], &ExecContext::default());
+    let error = results["S"].as_ref().unwrap_err();
+    assert!(matches!(error.kind, ErrorKind::Inputs(_)), "{error:?}");
+}
