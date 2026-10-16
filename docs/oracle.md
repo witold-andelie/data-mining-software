@@ -72,8 +72,54 @@ cargo xtask oracle ibm-demos druglearn.str [--timeout 600]
 | `ibm-demos/bayes_bankloan.str`、`bayes_churn_retrain.str` | 部分导出；本机 Modeler 不认识 Bayes Net 节点（`unknownterminal`），其下游的评估、分析节点随之失败 |
 | `ibm-demos/telco_coxreg.str` | 部分导出；Cox 节点未知，两个图节点没有可用字段 |
 | `records/*.str`（30 个） | 记录操作节点的探针流（`xtask/oracle/probes/record_streams.py` 生成），全部 1 份数据、0 错误 |
+| `models/*.str`（23 个） | 确定性模型训练与评分的探针流（`xtask/oracle/probes/model_streams.py` 生成），全部 1 个模型、2 份数据、1 份输出、0 错误 |
 
 Modeler 导出 CSV 时不转义字段里的双引号（值 `a"b` 写成 `"a"b"`），`xtask compare` 按这种方言读取 oracle 文件。
+
+## Model probes（`corpus/models/` 与 `oracle/models/`）
+
+团队语料流在训练节点前接了未设种子的 `Partition` / `Balance` 节点，每次运行到达建模节点的数据都会变化。`xtask/oracle/probes/model_streams.py` 构造了一组完全确定性的训练与评分探针流（标签 `models`）：
+
+- **数据文件**（拷贝到 `corpus/models/` 并固定在 `xtask/corpus.tsv`）：
+  - `DRUG1n`（200 行，字段：`Age` `Range`、`Sex` `Flag`、`BP` `Set`、`Cholesterol` `Flag`、`Na` `Range`、`K` `Range`、`Drug` `Set`）
+  - `tree_credit.sav`（2,464 行，字段：`Credit_rating` `Set`、`Age` `Range`、`Income` `OrderedSet`、`Credit_cards` `Set`、`Education` `Set`、`Car_loans` `Set`）
+  - `HEART.csv`（270 行，字段：`age`、`resting blood pressure`、`max heart rate` 等，目标 `heart disease` `Flag`）
+- **流拓扑**：`source -> Type`（显式设置每个字段的测量级别与角色：单目标 `Target`、特征 `Input`、其余字段 `None`）后分两支：
+  1. `Type -> build_node`（终端建模节点，模型名显式设为 `<case>`，支持随机种子的节点统一设 `12345`，C&R Tree 设 `train_pct = 0` 关闭内部 30% 防过拟合随机留出集以使用全部训练记录）；
+  2. `Type -> apply<xxx> -> Table`（由建模节点生成的模型块接在 `Type` 之后并连到 `Table` 终端节点）。
+  流中不含 `Partition`、`Sample`、`Balance` 节点，`decimal_places = 15`。
+- **每个 `oracle/models/<case>/` 目录包含**：
+  - `models/01_<case>.xml`：建模节点导出的 PMML 模型；
+  - `data/01_apply<xxx>_<id>.csv`：模型块评分后到达 `Table` 节点的记录（含 `$R-*` / `$C-*` / `$L-*` / `$E-*` / `$$kmeans` / `$T-*` 等评分与概率/距离字段）；
+  - `data/02_type_<id>.csv`：到达建模节点的精确训练输入记录；
+  - `outputs/01_table_<id>.csv`：`Table` 终端节点的 `DocumentOutput` 导出；
+  - `manifest.json` 与 `provenance.json`。
+
+| 用例（`.str`） | 建模节点 / 模型块 | 数据集 | 目标（Target） | 输入（Inputs） | 关键设置 |
+|---|---|---|---|---|---|
+| `cart_default` | `cart` / `applycart` | `DRUG1n` | `Drug` (`Set`) | `Age, Sex, BP, Cholesterol, Na, K` | 默认（`impurity_measure=Gini`, `use_max_depth=Default` [5], `prune_tree=True`, `train_pct=0`, `seed=12345`） |
+| `cart_depth3` | `cart` / `applycart` | `DRUG1n` | `Drug` (`Set`) | `Age, Sex, BP, Cholesterol, Na, K` | `use_max_depth=Custom`, `max_depth=3`, `impurity_measure=Gini`, `train_pct=0`, `seed=12345` |
+| `cart_unpruned` | `cart` / `applycart` | `DRUG1n` | `Drug` (`Set`) | `Age, Sex, BP, Cholesterol, Na, K` | `prune_tree=False`, `impurity_measure=Gini`, `train_pct=0`, `seed=12345` |
+| `cart_min_records` | `cart` / `applycart` | `DRUG1n` | `Drug` (`Set`) | `Age, Sex, BP, Cholesterol, Na, K` | `prune_tree=False`, `use_percentage=False`, `min_parent_records_abs=30`, `min_child_records_abs=15`, `train_pct=0`, `seed=12345` |
+| `cart_regression` | `cart` / `applycart` | `DRUG1n` | `Na` (`Range`) | `Age, Sex, BP, Cholesterol, K` | 连续目标回归树（LSD），`prune_tree=False`, `use_max_depth=Custom`, `max_depth=4`, `train_pct=0`, `seed=12345` |
+| `cart_surrogates` | `cart` / `applycart` | `tree_credit.sav` | `Credit_rating` (`Set`) | `Age, Income, Credit_cards, Education, Car_loans` | `max_surrogates=2`, `prune_tree=False`, `use_max_depth=Custom`, `max_depth=3`, `train_pct=0`, `seed=12345` |
+| `cart_no_surrogates` | `cart` / `applycart` | `DRUG1n` | `Drug` (`Set`) | `Age, Sex, BP, Cholesterol, Na, K` | `max_surrogates=0`（禁用代理分裂）, `prune_tree=False`, `train_pct=0`, `seed=12345` |
+| `cart_twoing` | `cart` / `applycart` | `DRUG1n` | `Drug` (`Set`) | `Age, Sex, BP, Cholesterol, Na, K` | `impurity_measure=Twoing`, `prune_tree=False`, `train_pct=0`, `seed=12345` |
+| `chaid_default` | `chaid` / `applychaid` | `DRUG1n` | `Drug` (`Set`) | `Age, Sex, BP, Cholesterol, Na, K` | 默认（`method=Chaid`, `use_max_depth=Default` [5], `split_alpha=0.05`, `merge_alpha=0.05`, `seed=12345`） |
+| `chaid_exhaustive` | `chaid` / `applychaid` | `tree_credit.sav` | `Credit_rating` (`Set`) | `Age, Income, Credit_cards, Education, Car_loans` | `method=ExhaustiveChaid`, `seed=12345` |
+| `chaid_depth2` | `chaid` / `applychaid` | `DRUG1n` | `Drug` (`Set`) | `Age, Sex, BP, Cholesterol, Na, K` | `method=Chaid`, `use_max_depth=Custom`, `max_depth=2`, `seed=12345` |
+| `chaid_alpha` | `chaid` / `applychaid` | `tree_credit.sav` | `Credit_rating` (`Set`) | `Age, Income, Credit_cards, Education, Car_loans` | `method=Chaid`, `split_alpha=0.01`, `merge_alpha=0.10`, `bonferroni_adjustment=False`, `seed=12345` |
+| `chaid_regression` | `chaid` / `applychaid` | `tree_credit.sav` | `Age` (`Range`) | `Credit_rating, Income, Credit_cards, Education, Car_loans` | 连续目标（F 检验），`method=Chaid`, `use_max_depth=Custom`, `max_depth=3`, `seed=12345` |
+| `kmeans_3clusters` | `kmeans` / `applykmeans` | `DRUG1n` | — | `Age, Na, K` | 连续输入，`num_clusters=3`, `gen_distance=True` |
+| `kmeans_5clusters` | `kmeans` / `applykmeans` | `DRUG1n` | — | `Age, Na, K` | 连续输入，`num_clusters=5`, `gen_distance=True` |
+| `kmeans_categorical` | `kmeans` / `applykmeans` | `DRUG1n` | — | `Age, Sex, BP, Cholesterol, Na, K` | 含分类输入（集合编码），`num_clusters=4`, `gen_distance=True` |
+| `logreg_binomial` | `logreg` / `applylogreg` | `HEART.csv` | `heart disease` (`Flag`) | `age, resting blood pressure, max heart rate` | `logistic_procedure=Binomial`, `binomial_method=Enter`, `include_constant=True` |
+| `logreg_multinomial` | `logreg` / `applylogreg` | `DRUG1n` | `Drug` (`Set`) | `Age, Sex, BP, Cholesterol, Na, K` | `logistic_procedure=Multinomial`, `method=Enter`, `include_constant=True`, `all_probabilities=True` |
+| `linear_enter` | `linear` / `applylinear` | `DRUG1n` | `Na` (`Range`) | `Age, K` | `model_selection=None`（Enter），`use_auto_data_preparation=False`, `use_random_seed=True`, `random_seed=12345` |
+| `regression_enter` | `regression` / `applyregression` | `DRUG1n` | `Na` (`Range`) | `Age, K` | `method=Enter`, `include_constant=True` |
+| `c50_default` | `c50` / `applyc50` | `DRUG1n` | `Drug` (`Set`) | `Age, Sex, BP, Cholesterol, Na, K` | `output_type=DecisionTree` |
+| `neuralnet_default` | `neuralnetwork` / `applyneuralnetwork` | `DRUG1n` | `Drug` (`Set`) | `Age, Sex, BP, Cholesterol, Na, K` | 默认 MLP，`use_random_seed=True`, `random_seed=12345` |
+| `twostep_default` | `twostep` / `applytwostep` | `DRUG1n` | — | `Age, Sex, BP, Cholesterol, Na, K` | `standardize=True`, `cluster_num_auto=True` (2..15), `distance_measure=Loglikelihood`, `clustering_criterion=BIC` |
 
 ## 已知限制
 
