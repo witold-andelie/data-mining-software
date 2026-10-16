@@ -146,6 +146,7 @@ dependencies = [
  "dms-sav",
  "dms-types",
  "encoding_rs",
+ "zip",
 ]
 
 [[package]]

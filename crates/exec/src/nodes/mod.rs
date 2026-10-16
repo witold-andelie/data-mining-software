@@ -1,5 +1,4 @@
 //! Node implementations, one module per catalog id.
-
 pub mod aggregate;
 pub mod analysis;
 pub mod append;
@@ -10,6 +9,7 @@ pub mod build;
 pub mod data_audit;
 pub mod derive;
 pub mod distinct;
+pub mod excel_export;
 pub mod field_reorder;
 pub mod field_util;
 pub mod filler;
@@ -28,6 +28,7 @@ pub mod select;
 pub mod set_to_flag;
 pub mod sort;
 pub mod statistics;
+pub mod statistics_export;
 pub mod statistics_file;
 pub mod table;
 pub mod transpose;
