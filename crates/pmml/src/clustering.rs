@@ -6,8 +6,10 @@
 //! of size N_v has the log-likelihood
 //! xi_v = -N_v * (sum_k 1/2 ln(s2_k + s2_vk) + sum_k E_vk)
 //! over the continuous fields k (DataField optype), with s2_k the field's variance over the training data
-//! (its `fieldWeight`) and s2_vk the cluster's maximum-likelihood variance (the PMML saves the
-//! sample variance, times (N_v - 1) / N_v), and E_vk = -sum_l (N_vkl / N_v) ln(N_vkl / N_v) the
+//! (its `fieldWeight`) and s2_vk the cluster's variance as the PMML saves it (the sample
+//! variance; training merges with the maximum-likelihood one, but Modeler's nugget scores with the
+//! saved value: `twostep/ts_drug_cont` record 64 goes to cluster-4 by 0.92781 against 0.92820,
+//! where the maximum-likelihood variance would choose cluster-2), and E_vk = -sum_l (N_vkl / N_v) ln(N_vkl / N_v) the
 //! entropy of each categorical field's counts. A record joins the cluster j minimising
 //! d(j, s) = xi_j + xi_s - xi_<j,s>, the first on a tie; the distance is its affinity.
 
@@ -308,7 +310,6 @@ fn score_log_likelihood(
                 idx + 1
             )));
         }
-        let scale = if n > 1.0 { (n - 1.0) / n } else { 0.0 };
         let counts = categorical
             .iter()
             .map(|field| {
@@ -329,7 +330,7 @@ fn score_log_likelihood(
         let stats = Stats {
             n,
             means: cluster.center.clone(),
-            variances: cluster.variances.iter().map(|v| v * scale).collect(),
+            variances: cluster.variances.clone(),
             counts,
         };
         let distance = stats.log_likelihood(&totals) + record_xi

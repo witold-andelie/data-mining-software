@@ -11,7 +11,7 @@
 //! | C&R Tree, CHAID | `$R-<target>` prediction; `$RC-<target>` confidence (`calculateConfidences`); `$RRP-<target>` raw propensity, the probability of the second (true) category (`calculateRawPropensities`) |
 //! | Logistic | `$L-`, `$LP-` (confidence), `$LRP-` (raw propensity), same switches |
 //! | K-Means | `$KM-<model name>`: `cluster-<cluster name>`; `$KMD-<model name>`: the Euclidean distance to that center, when the nugget's `buildSettings` set `generateDistanceField` |
-//! | TwoStep | `$T-<model name>`: the cluster name (`cluster-<n>`), by the log-likelihood distance |
+//! | TwoStep | `$T-<model name>`: the cluster name (`cluster-<n>`), by the log-likelihood distance; an integer with numeric labels (`buildSettings` `clusterLabelType` `NUMBER`) |
 //!
 //! When the input already has a field of that name (another model on the same target), the
 //! fields get the first free index: `$R1-`, `$RC1-`, `$RRP1-` (`team/model_comparison`).
@@ -82,6 +82,8 @@ pub fn build(node: &StreamNode) -> Result<Box<dyn Operator>, OperatorError> {
         raw_propensities: settings::flag(s, "calculateRawPropensities")?.unwrap_or(false),
         distance: kind == Kind::KMeans
             && build_setting(s, "generateDistanceField").as_deref() == Some("true"),
+        numeric_labels: kind == Kind::TwoStep
+            && build_setting(s, "clusterLabelType").as_deref() == Some("NUMBER"),
         model_name,
     }))
 }
@@ -94,6 +96,8 @@ struct Apply {
     raw_propensities: bool,
     /// K-Means: also the distance to the cluster center (`$KMD-`).
     distance: bool,
+    /// TwoStep: clusters are numbers (`$T-` is an integer field).
+    numeric_labels: bool,
     model_name: String,
 }
 
@@ -207,16 +211,18 @@ impl Apply {
             return Ok(columns);
         }
         if self.kind == Kind::TwoStep {
+            let storage = if self.numeric_labels {
+                Storage::Integer
+            } else {
+                Storage::String
+            };
             let values = predictions
                 .iter()
-                .map(|p| match &p.value {
-                    PmmlValue::Missing => Value::Null,
-                    value => Value::string(text(value)),
-                })
+                .map(|p| typed(&p.value, storage))
                 .collect();
             return Ok(vec![column(
                 &format!("$T-{}", self.model_name),
-                Storage::String,
+                storage,
                 values,
             )]);
         }
