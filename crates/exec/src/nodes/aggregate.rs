@@ -42,6 +42,7 @@
 //! Not supported (`build` fails): `aggregateExpressionsTable` (expression aggregates),
 //! `aggregateAllowApproximation`.
 
+use super::field_util::GroupKey;
 use crate::context::ExecContext;
 use crate::error::OperatorError;
 use crate::operator::{Arity, Operator};
@@ -51,34 +52,6 @@ use dms_types::{Field, Storage, Table, Value};
 use std::cmp::Ordering;
 use std::collections::BTreeMap;
 use std::sync::Arc;
-
-/// A key of the non-contiguous grouping, ordered by `Value::total_cmp`.
-struct GroupKey(Vec<Value>);
-
-impl PartialEq for GroupKey {
-    fn eq(&self, other: &Self) -> bool {
-        self.cmp(other) == Ordering::Equal
-    }
-}
-
-impl Eq for GroupKey {}
-
-impl PartialOrd for GroupKey {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        Some(self.cmp(other))
-    }
-}
-
-impl Ord for GroupKey {
-    fn cmp(&self, other: &Self) -> Ordering {
-        self.0
-            .iter()
-            .zip(&other.0)
-            .map(|(a, b)| a.total_cmp(b))
-            .find(|ordering| ordering.is_ne())
-            .unwrap_or_else(|| self.0.len().cmp(&other.0.len()))
-    }
-}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Stat {

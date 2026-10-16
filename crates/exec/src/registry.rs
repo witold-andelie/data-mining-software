@@ -40,13 +40,7 @@ const BUILT_IN: &[(&str, Factory)] = &[
 ];
 
 /// Registered while their implementation is under way; not counted as implemented.
-const PENDING: &[&str] = &[
-    "binning",
-    "set_to_flag",
-    "transpose",
-    "field_reorder",
-    "history",
-];
+const PENDING: &[&str] = &[];
 
 /// Model nodes whose nuggets score (`nodes::apply`) while their build nodes cannot train yet;
 /// they do not count as implemented.

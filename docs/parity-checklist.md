@@ -4,7 +4,7 @@
 
 | Scope | Implemented | Total |
 |---|---|---|
-| MVP | 26 | 90 |
+| MVP | 31 | 90 |
 | later | 0 | 23 |
 | out of scope | 0 | 34 |
 
@@ -67,15 +67,15 @@
 | Filler | `filler` | MVP | done | `FillerNode` |
 | Anonymize | `anonymize` | MVP | missing | `AnonymizeNode` |
 | Reclassify | `reclassify` | MVP | done | `ReclassifyNode` |
-| Binning | `binning` | MVP | missing | `BinningNode` |
+| Binning | `binning` | MVP | done | `BinningNode` |
 | RFM Analysis | `rfm_analysis` | MVP | missing | `RFMAnalysisNode` |
 | Partition | `partition` | MVP | done | `PartitionNode` |
-| Set to Flag | `set_to_flag` | MVP | missing | `SetToFlagNode` |
+| Set to Flag | `set_to_flag` | MVP | done | `SetToFlagNode` |
 | Restructure | `restructure` | MVP | done | `RestructureNode` |
-| Transpose | `transpose` | MVP | missing | `TransposeNode` |
-| Field Reorder | `field_reorder` | MVP | missing | `FieldReorderNode` |
+| Transpose | `transpose` | MVP | done | `TransposeNode` |
+| Field Reorder | `field_reorder` | MVP | done | `FieldReorderNode` |
 | Time Intervals | `time_intervals` | MVP | missing | `TimeIntervalsNode` |
-| History | `history` | MVP | missing | `HistoryNode` |
+| History | `history` | MVP | done | `HistoryNode` |
 | Reproject | `reproject` | out of scope | missing | (unmapped) |
 | Statistics Transform | `statistics_transform` | out of scope | missing | `SPSSTransformNode` |
 
