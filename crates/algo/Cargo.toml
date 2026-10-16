@@ -1,0 +1,22 @@
+[package]
+name = "dms-algo"
+description = "Training algorithms (trees, regression, clustering, ...) producing PMML models"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+dms-types.workspace = true
+dms-pmml.workspace = true
+
+[dev-dependencies]
+serde_json = "1"
+
+[features]
+# Trains on the inputs Modeler's oracle exported and compares with the PMML it exported (local only).
+corpus = []
+
+[lints]
+workspace = true
