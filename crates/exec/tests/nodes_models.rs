@@ -203,3 +203,125 @@ fn unsupported_nuggets_and_missing_models_are_errors() {
             .is_err()
     );
 }
+
+/// Logit on `x` with two target categories. `x = 0` is a tie (probability 1/2 each); a null
+/// `x` cannot be scored.
+fn logit_pmml(data_type: &str, first: &str, second: &str) -> String {
+    format!(
+        r#"<PMML xmlns="http://www.dmg.org/PMML-4_3" version="4.3">
+  <DataDictionary numberOfFields="2">
+    <DataField name="y" optype="categorical" dataType="{data_type}">
+      <Value value="{first}"/><Value value="{second}"/>
+    </DataField>
+    <DataField name="x" optype="continuous" dataType="double"/>
+  </DataDictionary>
+  <RegressionModel functionName="classification" normalizationMethod="logit">
+    <MiningSchema>
+      <MiningField name="y" usageType="predicted"/>
+      <MiningField name="x"/>
+    </MiningSchema>
+    <RegressionTable intercept="0" targetCategory="{first}">
+      <NumericPredictor name="x" exponent="1" coefficient="1"/>
+    </RegressionTable>
+    <RegressionTable intercept="0" targetCategory="{second}"/>
+  </RegressionModel>
+</PMML>"#
+    )
+}
+
+fn logistic_settings(procedure: &str, all_probabilities: bool) -> Vec<Node> {
+    vec![
+        p("calculateConfidences", "true"),
+        p("calculateRawPropensities", "false"),
+        p(
+            "appendProbabilities",
+            if all_probabilities { "true" } else { "false" },
+        ),
+        p("logisticProcedure", procedure),
+        Node::Element(element(
+            "model",
+            vec![("pmml", "data/0001.dat")],
+            Vec::new(),
+        )),
+    ]
+}
+
+fn logit_input(indexed: bool) -> Table {
+    let mut fields = vec![Field::new("x", Storage::Real)];
+    if indexed {
+        fields.push(Field::new("$L-y", Storage::String));
+    }
+    let rows = [Some(0.0), None]
+        .into_iter()
+        .map(|x| {
+            let mut row = vec![x.map_or(Value::Null, Value::Real)];
+            if indexed {
+                row.push(Value::string("old"));
+            }
+            row
+        })
+        .collect();
+    Table::new(DataModel::new(fields).unwrap(), rows).unwrap()
+}
+
+fn score_logit(procedure: &str, all_probabilities: bool, indexed: bool, pmml: &str) -> Table {
+    let operator = apply::build(&nugget(
+        "ApplyLogisticNode",
+        logistic_settings(procedure, all_probabilities),
+    ))
+    .unwrap();
+    operator
+        .run(&[Arc::new(logit_input(indexed))], &context(pmml))
+        .unwrap()
+}
+
+fn field_names(table: &Table) -> Vec<&str> {
+    table
+        .model()
+        .fields()
+        .iter()
+        .map(|field| field.name.as_str())
+        .collect()
+}
+
+#[test]
+fn multinomial_appends_one_probability_field_per_category() {
+    let out = score_logit("Multinomial", true, false, &logit_pmml("string", "A", "B"));
+    assert_eq!(field_names(&out), ["x", "$L-y", "$LP-y", "$LP-A", "$LP-B"]);
+    let probability = out.model().fields().iter().find(|f| f.name == "$LP-A");
+    assert_eq!(probability.map(|f| f.storage), Some(Storage::Real));
+    // A tie keeps the first category. A missing input scores nothing.
+    assert_eq!(column(&out, "$L-y"), [Value::string("A"), Value::Null]);
+    assert_eq!(column(&out, "$LP-y"), [Value::real(0.5), Value::Null]);
+    assert_eq!(column(&out, "$LP-A"), [Value::real(0.5), Value::Null]);
+    assert_eq!(column(&out, "$LP-B"), [Value::real(0.5), Value::Null]);
+}
+
+#[test]
+fn binomial_appends_category_probabilities_when_the_flag_is_off() {
+    let out = score_logit("Binomial", false, false, &logit_pmml("integer", "1", "2"));
+    assert_eq!(field_names(&out), ["x", "$L-y", "$LP-y", "$LP-1", "$LP-2"]);
+    assert_eq!(column(&out, "$L-y"), [Value::Integer(1), Value::Null]);
+    assert_eq!(column(&out, "$LP-1"), [Value::real(0.5), Value::Null]);
+    assert_eq!(column(&out, "$LP-2"), [Value::real(0.5), Value::Null]);
+}
+
+#[test]
+fn multinomial_without_the_flag_omits_category_probabilities() {
+    let out = score_logit("Multinomial", false, false, &logit_pmml("string", "A", "B"));
+    assert_eq!(field_names(&out), ["x", "$L-y", "$LP-y"]);
+}
+
+#[test]
+fn category_probabilities_use_the_prediction_fields_index() {
+    let out = score_logit("Multinomial", true, true, &logit_pmml("string", "A", "B"));
+    assert_eq!(
+        field_names(&out),
+        ["x", "$L-y", "$L1-y", "$LP1-y", "$LP1-A", "$LP1-B"]
+    );
+    assert_eq!(
+        column(&out, "$L-y"),
+        [Value::string("old"), Value::string("old")]
+    );
+    assert_eq!(column(&out, "$LP1-A"), [Value::real(0.5), Value::Null]);
+}
