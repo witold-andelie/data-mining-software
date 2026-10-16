@@ -329,6 +329,7 @@ fn run(path: &Path, args: &[String]) -> Result<(), String> {
                 .map(|attachment| (attachment.name, attachment.bytes.into()))
                 .collect(),
         ),
+        decimal_places: None,
     };
     let results = plan.evaluate(&exported, &context);
     std::fs::create_dir_all(&out).map_err(|e| format!("cannot create {}: {e}", out.display()))?;
