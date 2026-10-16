@@ -10,6 +10,7 @@ const LAYERS: &[(&str, u8)] = &[
     ("dms-strfmt", 0),
     ("dms-sav", 0),
     ("dms-types", 0),
+    ("dms-pmml", 0),
     ("dms-stream", 1),
     ("dms-clem", 1),
     ("dms-catalog", 2),
