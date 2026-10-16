@@ -30,6 +30,7 @@ const BUILT_IN: &[(&str, Factory)] = &[
     ("means", nodes::means::build),
     ("matrix", nodes::matrix::build),
     ("analysis", nodes::analysis::build),
+    ("cart", model_node),
 ];
 
 /// Registered while their implementation is under way; not counted as implemented.
@@ -37,7 +38,7 @@ const PENDING: &[&str] = &[];
 
 /// Model nodes whose nuggets score (`nodes::apply`) while their build nodes cannot train yet;
 /// they do not count as implemented.
-const SCORING_ONLY: &[&str] = &["cart", "chaid", "logistic", "kmeans"];
+const SCORING_ONLY: &[&str] = &["chaid", "logistic", "kmeans"];
 
 pub fn factory(catalog_id: &str) -> Option<Factory> {
     BUILT_IN
@@ -49,6 +50,15 @@ pub fn factory(catalog_id: &str) -> Option<Factory> {
                 .contains(&catalog_id)
                 .then_some(nugget_or_builder as Factory)
         })
+}
+
+/// A model node that trains (`nodes::build`) and scores (`nodes::apply`).
+fn model_node(node: &StreamNode) -> Result<Box<dyn Operator>, OperatorError> {
+    if node.type_identifier().starts_with("Apply") {
+        nodes::apply::build(node)
+    } else {
+        nodes::build::build(node)
+    }
 }
 
 /// A nugget scores; its build node is not implemented yet.

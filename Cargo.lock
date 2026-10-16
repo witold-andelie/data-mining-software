@@ -135,6 +135,7 @@ dependencies = [
  "dms-stream",
  "dms-strfmt",
  "dms-types",
+ "roxmltree",
  "serde_json",
 ]
 
