@@ -116,6 +116,7 @@ fn ctx_with_dir(dir: PathBuf) -> ExecContext {
         },
         stream_properties: None,
         attachments: Default::default(),
+        decimal_places: None,
     }
 }
 

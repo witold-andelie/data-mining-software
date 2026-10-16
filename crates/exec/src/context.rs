@@ -17,6 +17,21 @@ pub struct ExecContext {
     /// The stream file's attachments by ZIP member (`data/0001.dat`, ...): model nuggets keep
     /// their PMML there.
     pub attachments: Arc<HashMap<String, Arc<[u8]>>>,
+    /// Overrides the stream's `realDecimalPlaces` (the oracle exports with 15).
+    pub decimal_places: Option<usize>,
+}
+
+impl ExecContext {
+    /// Decimal places for reals in documents: the override, else the stream's
+    /// `realDecimalPlaces`, else Modeler's default 3.
+    pub fn decimal_places(&self) -> usize {
+        self.decimal_places
+            .or_else(|| {
+                crate::settings::text(self.stream_properties.as_deref(), "realDecimalPlaces")
+                    .and_then(|text| text.trim().parse().ok())
+            })
+            .unwrap_or(3)
+    }
 }
 
 /// Finds data files a stream references. A path is used as-is when it exists; otherwise (for
