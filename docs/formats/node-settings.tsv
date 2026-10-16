@@ -1,0 +1,763 @@
+node_type	scripting_property	file_path	value_kind	examples	default	verified
+type	use_custom_name	autoLabel	flag	True -> false	False (file: true)	yes
+type	custom_name	label	string	My Type -> My Type		yes
+type	tooltip	toolTipText	string	tip text -> tip text		yes
+type	annotation	annotation	string	note text -> note text		yes
+type	keywords	keywords / keywords/value	string	kw1 kw2 -> (removed)	[]	yes
+type	cache_enabled	cacheEnabled	flag	True -> true	False (file: false)	yes
+type	change: instantiate the Type node by running a temporary Table node	typeTable/rows/row[$field]/name / typeTable/rows/row[$field]/valueMode / typeTable/rows/row[$field]/type/measure	(structure)	 -> Sex	 (file: absent)	yes
+type	direction[field]	typeTable/rows/row[$field]/direction	enum(Input/Target/Both/None/Partition/Split/Frequency/RecordID/In/Out/Target)	Input -> in; Target -> out; Both -> both; None -> none; Partition -> partition; Split -> split	Input (file: absent)	yes
+type	type[field]	typeTable/rows/row[$field]/measure / typeTable/rows/row[$field]/valueMode / typeTable/rows/row[$field]/type/measure	enum(Range/Flag/Set/Typeless/Discrete/OrderedSet/Default/Range)	Range -> discrete; Flag -> flag; Set -> set; Typeless -> typeless; Discrete -> discrete; OrderedSet -> orderedSet	Set (file: absent)	yes
+type	measure_type[field]	typeTable/rows/row[$field]/measure / typeTable/rows/row[$field]/valueMode / typeTable/rows/row[$field]/type/values	enum(Range/Flag/Set/Typeless/Discrete/OrderedSet)	Range -> (no change); Flag -> flag; Set -> set; Typeless -> typeless; Discrete -> discrete; OrderedSet -> orderedSet	Discrete	yes
+type	check[field]	typeTable/rows/row[$field]/check	enum(None/Nullify/Coerce/Discard/Warn/Abort)	None -> (no change); Nullify -> nullify; Coerce -> coerce; Discard -> discard; Warn -> warn; Abort -> abort	None	yes
+type	values[field]	typeTable/rows/row[$field]/type/values/value[0] / typeTable/rows/row[$field]/valueMode / typeTable/rows/row[$field]/measure	list	[10, 50] -> [10, 50]; ['drugA', 'drugB', 'drugC'] -> typeTable/rows/row[$field]/measure=set; ['F', 'M'] -> typeTable/rows/row[$field]/measure=flag; ['HIGH', 'LOW', 'NORMAL'] -> [HIGH, LOW, NORMAL]; [10, 50] -> [10, 50]	[15, 74] (file: 15)	yes
+type	value_mode[field]	typeTable/rows/row[$field]/valueMode / typeTable/rows/row[$field]/augment / typeTable/rows/row[$field]/type/measure	enum(Read/Pass/Read+/Current)	Read -> read; Pass -> pass; Read+ -> typeTable/rows/row[$field]/augment=true; Current -> (no change)	Specify (file: local)	yes
+type	extend_values[field]	typeTable/rows/row[$field]/augment	flag	False -> (removed)	True (file: true)	yes
+type	enable_missing[field]	typeTable/rows/row[$field]/missingEnabled	flag	True -> true	False (file: absent)	yes
+type	missing_values[field]	typeTable/rows/row[$field]/missing/values/value / typeTable/rows/row[$field]/missing/enabled / typeTable/rows/row[$field]/missing/nullIncluded	list	['HIGH'] -> HIGH; [0, 99] -> typeTable/rows/row[$field]/missing/enabled=false	[] (file: absent)	yes
+type	range_missing[field]	typeTable/rows/row[$field]/missing/rangeIncluded	flag	True -> true	False (file: false)	yes
+type	missing_lower[field]	typeTable/rows/row[$field]/missing/rangeLowerBound / typeTable/rows/row[$field]/missing/rangeLowerBound/@type	string	5 -> 5	 (file: absent)	yes
+type	missing_upper[field]	typeTable/rows/row[$field]/missing/rangeUpperBound / typeTable/rows/row[$field]/missing/rangeUpperBound/@type	string	95 -> 95	 (file: absent)	yes
+type	null_missing[field]	typeTable/rows/row[$field]/missing/nullIncluded	flag	False -> false	True (file: true)	yes
+type	whitespace_missing[field]	typeTable/rows/row[$field]/missing/whitespaceIncluded	flag	False -> false	True (file: true)	yes
+type	description[field]	typeTable/rows/row[$field]/annotation	string	Blood Pressure -> Blood Pressure	 (file: absent)	yes
+type	value_labels[field]	typeTable/rows/row[$field]/type/valueLabels/valueKey[0] / typeTable/rows/row[$field]/type/valueLabels/valueKey[1] / typeTable/rows/row[$field]/type/valueLabels/valueLabel[0]	list	[['HIGH', 'High Blood Pressure'], ['NORM... -> [HIGH, NORMAL]; [[10, 'ten'], [50, 'fifty']] -> [10, 50]; [['F', 'Female'], ['M', 'Male']] -> [F, M]	{} (file: absent)	yes
+type	display_places[field]	formattingTable/rows/row[$field]/displayPlaces / formattingTable/rows / formattingTable/rows/row[$field]/name	integer	5 -> 5	-1 (file: absent)	yes
+type	export_places[field]	formattingTable/rows/row[$field]/exportPlaces	integer	6 -> 6	-1 (file: -1)	yes
+type	decimal_separator[field]	formattingTable/rows/row[$field]/decimalSymbol	enum(DEFAULT/PERIOD/COMMA)	DEFAULT -> (no change); PERIOD -> period; COMMA -> comma	DEFAULT	yes
+type	date_format[field]	formattingTable/rows/row[$field]/dateFormat / formattingTable/rows/row[$field]/name / formattingTable/rows/row[$field]/justify	string	YYYYMMDD -> format4	DEFAULT (file: absent)	yes
+type	time_format[field]	formattingTable/rows/row[$field]/timeFormat	string	HH:MM:SS -> format4	DEFAULT (file: absent)	yes
+type	number_format[field]	formattingTable/rows/row[$field]/numberFormat	enum(DEFAULT/STANDARD/SCIENTIFIC/CURRENCY)	DEFAULT -> (no change); STANDARD -> standard; SCIENTIFIC -> scientific; CURRENCY -> currency	DEFAULT	yes
+type	standard_places[field]	formattingTable/rows/row[$field]/displayPlaces	integer	4 -> 4	5 (file: 5)	yes
+type	scientific_places[field]	formattingTable/rows/row[$field]/scientificPlaces	integer	4 -> 4	-1 (file: -1)	yes
+type	currency_places[field]	formattingTable/rows/row[$field]/currencyPlaces	integer	4 -> 4	-1 (file: -1)	yes
+type	grouping_symbol[field]	formattingTable/rows/row[$field]/groupingSymbol	enum(DEFAULT/NONE/LOCALE/PERIOD/COMMA/SPACE)	DEFAULT -> (no change); NONE -> none; LOCALE -> locale; PERIOD -> period; COMMA -> comma; SPACE -> space	DEFAULT	yes
+type	column_width[field]	formattingTable/rows/row[$field]/manualWidth	integer	25 -> 25	-1 (file: -1)	yes
+type	justify[field]	formattingTable/rows/row[$field]/justify	enum(AUTO/CENTER/LEFT/RIGHT)	AUTO -> (no change); CENTER -> center; LEFT -> left; RIGHT -> right	AUTO	yes
+statisticsimport	full_filename	inputFileName	enum(D:/data-mining.../D:/data/other .../D:/data-mining...)	D:/data-mining-software/corpus/ibm-demo-... -> D:/data-mining-software/corpus/ibm-d...; D:/data/other file.sav -> D:/data/other file.sav; D:/data-mining-software/corpus/ibm-demo-... -> D:/data-mining-software/corpus/ibm-d...		yes
+statisticsimport	import_names	readVariableNames	enum(LabelsAsNames/NamesAndLabels/LabelsAsNames)	LabelsAsNames -> labelsAsNames; NamesAndLabels -> namesAndLabels; LabelsAsNames -> labelsAsNames	NamesAndLabels (file: namesAndLabels)	yes
+statisticsimport	import_data	readValues	enum(LabelsAsData/DataAndLabels)	LabelsAsData -> labelsAsData; DataAndLabels -> dataAndLabels	DataAndLabels (file: dataAndLabels)	yes
+statisticsimport	use_field_format_for_storage	useFieldFormatForStorage	flag	True -> true; False -> false	False (file: false)	yes
+statisticsimport	file_encrypted	fileIsPasswordEncrypted	flag	True -> true; False -> false	False (file: false)	yes
+statisticsimport	password		enum(secret/)	secret -> (no change);  -> (no change)		no
+statisticsimport	change: instantiate by running a temporary Table node		(structure)	 -> (no change)		no
+statisticsimport	direction[field]	typeTable/rows/row[$field]/direction / typeTable/rows / typeTable/rows/row[$field]/name	string	Target -> out	Input (file: absent)	yes
+statisticsimport	type[field]	typeTable/rows/row[$field]/measure	string	Range -> range	Range (file: absent)	yes
+statisticsimport	check[field]	typeTable/rows/row[$field]/check	string	Coerce -> coerce	None (file: absent)	yes
+statisticsimport	values[field]	typeTable/rows/row[$field]/type/values/value[0] / typeTable/rows/row[$field]/name / typeTable/rows/row[$field]/measure	list	[0, 1] -> [0, 1]	[0.0, 1.0] (file: absent)	yes
+statisticsimport	missing_values[field]	typeTable/rows/row[$field]/missing/values/value / typeTable/rows/row[$field]/missing/enabled / typeTable/rows/row[$field]/missing/nullIncluded	list	[0] -> 0	[] (file: absent)	yes
+statisticsimport	description[field]	typeTable/rows/row[$field]/annotation	string	Age in years -> Age in years	Age in years (file: absent)	yes
+table	use_custom_name	autoLabel	flag	True -> false	False (file: true)	yes
+table	full_filename	outputFilePath	string	D:/out/table_output.htm -> D:/out/table_output.htm		yes
+table	use_output_name	autoOutputName	flag	True -> false	False (file: true)	yes
+table	output_name	outputName	string	My table -> My table		yes
+table	output_mode	outputMode	enum(File/Screen)	File -> file; Screen -> screen	Screen (file: screen)	yes
+table	output_format	outputFileType	enum(Formatted/Delimited/HTML/Output)	Formatted -> (no change); Delimited -> delimited; HTML -> html; Output -> output_object	Formatted	yes
+table	transpose_data	transposeData	flag	True -> true	False (file: false)	yes
+table	paginate_output	paginateOutput	flag	False -> false	True (file: true)	yes
+table	lines_per_page	outputLinesPerPage	integer	50 -> 50; 0 -> 20	400 (file: 400)	yes
+table	highlight_expr	tableHighlightExpression	enum(Age > 30/)	Age > 30 -> Age > 30;  -> 		yes
+table	change: run the table node once		(structure)	 -> (no change)		no
+table	display_places[field]	formattingTable/rows/row[$field]/displayPlaces / formattingTable/rows / formattingTable/rows/row[$field]/name	integer	5 -> 5	-1 (file: absent)	yes
+table	export_places[field]	formattingTable/rows/row[$field]/exportPlaces	integer	6 -> 6	-1 (file: -1)	yes
+table	decimal_separator[field]	formattingTable/rows/row[$field]/decimalSymbol	enum(PERIOD/COMMA/DEFAULT)	PERIOD -> period; COMMA -> comma; DEFAULT -> default	DEFAULT (file: default)	yes
+table	date_format[field]	formattingTable/rows/row[$field]/dateFormat / formattingTable/rows/row[$field]/name / formattingTable/rows/row[$field]/justify	string	YYYYMMDD -> format4	DEFAULT (file: absent)	yes
+table	time_format[field]	formattingTable/rows/row[$field]/timeFormat	string	HH:MM:SS -> format4	DEFAULT (file: absent)	yes
+table	column_width[field]	formattingTable/rows/row[$field]/manualWidth	integer	25 -> 25	-1 (file: -1)	yes
+table	justify[field]	formattingTable/rows/row[$field]/justify	enum(CENTER/LEFT/RIGHT/AUTO)	CENTER -> center; LEFT -> left; RIGHT -> right; AUTO -> auto	AUTO (file: auto)	yes
+variablefile	full_filename	inputFileName	enum(D:/data-mining.../D:/data/other .../D:/data-mining...)	D:/data-mining-software/corpus/ibm-demo-... -> D:/data-mining-software/corpus/ibm-d...; D:/data/other file.csv -> D:/data/other file.csv; D:/data-mining-software/corpus/ibm-demo-... -> D:/data-mining-software/corpus/ibm-d...		yes
+variablefile	skip_header	skipHeaderCount	integer	5 -> 5; 70000 -> 70000	0 (file: 0)	yes
+variablefile	num_fields_auto	useManualFieldCount	flag	False -> true	True (file: false)	yes
+variablefile	num_fields	manualFieldCount	integer	12 -> 12; 0 -> 1	1 (file: 1)	yes
+variablefile	delimit_space	delimitOnSpace	flag	True -> true	False (file: false)	yes
+variablefile	delimit_tab	delimitOnTab	flag	True -> true	False (file: false)	yes
+variablefile	delimit_new_line		flag	True -> (no change)	True	no
+variablefile	delimit_non_printing	delimitOnNonPrintChars	flag	True -> true	False (file: false)	yes
+variablefile	delimit_comma	delimitOnComma	flag	False -> false	True (file: true)	yes
+variablefile	delimit_other	useDelimiterChars	flag	True -> true	False (file: false)	yes
+variablefile	other	delimiterChars	enum(;/)	; -> ;;  -> 		yes
+variablefile	decimal_symbol	realDecimalSymbol	enum(Comma/Period/Default)	Comma -> comma; Period -> period; Default -> default	DEFAULT (file: default)	yes
+variablefile	multi_blank		flag	False -> (no change)	False	no
+variablefile	read_field_names	fieldNamesIncluded	flag	False -> false	True (file: true)	yes
+variablefile	strip_spaces	trimMode	enum(Left/Right/Both/None)	Left -> left; Right -> right; Both -> both; None -> none	None (file: none)	yes
+variablefile	invalid_char_mode	invalidCharacterMode	enum(Replace/Discard)	Replace -> replace; Discard -> discard	Discard (file: discard)	yes
+variablefile	invalid_char_replacement	invalidCharacterReplacement	string	/ -> /		yes
+variablefile	break_case_by_newline	breakCasebyNewline	flag	True -> true	False (file: false)	yes
+variablefile	lines_to_scan	scanLineCount	integer	500 -> 500; 0 -> 1	50 (file: 50)	yes
+variablefile	auto_recognize_datetime	autoRecognizeDates	flag	False -> false	True (file: true)	yes
+variablefile	quotes_1	singleQuoteMode	enum(Discard/PairAndDiscard/IncludeAsText)	Discard -> discard; PairAndDiscard -> pairDiscard; IncludeAsText -> include	PairAndDiscard (file: pairDiscard)	yes
+variablefile	quotes_2	doubleQuoteMode	enum(Discard/PairAndDiscard/IncludeAsText)	Discard -> discard; PairAndDiscard -> pairDiscard; IncludeAsText -> include	PairAndDiscard (file: pairDiscard)	yes
+variablefile	encoding	fileEncoding	enum(SystemDefault/UTF-8/StreamDefault/GBK)	SystemDefault -> serverDefault; UTF-8 -> UTF-8; StreamDefault -> clientDefault; GBK -> GBK	StreamDefault (file: clientDefault)	yes
+variablefile	change: instantiate by running a temporary Table node		(structure)	 -> (no change)		no
+variablefile	use_custom_values[field]		flag	True -> (no change)	False	no
+variablefile	values[field]	typeTable/rows/row[$field]/name / typeTable/rows/row[$field]/measure / typeTable/rows	list	[1, 100] -> Age; ['drugA', 'drugB'] -> Drug	[] (file: absent)	yes
+variablefile	direction[field]	typeTable/rows/row[$field]/direction	enum(Input/Target/Both/None/Partition/Split/Frequency/RecordID)	Input -> in; Target -> out; Both -> both; None -> none; Partition -> partition; Split -> split	 (file: absent)	yes
+variablefile	type[field]	typeTable/rows/row[$field]/measure / typeTable/rows/row[$field]/valueMode	enum(Range/Flag/Set/Typeless/Discrete/OrderedSet/Default)	Range -> range; Flag -> flag; Set -> set; Typeless -> typeless; Discrete -> discrete; OrderedSet -> orderedSet	Default (file: auto)	yes
+variablefile	measure_type[field]	typeTable/rows/row[$field]/measure	enum(Range/Flag/Set/Typeless/Discrete/OrderedSet)	Range -> range; Flag -> flag; Set -> set; Typeless -> typeless; Discrete -> discrete; OrderedSet -> orderedSet	Default (file: auto)	yes
+variablefile	check[field]	typeTable/rows/row[$field]/check	enum(None/Nullify/Coerce/Discard/Warn/Abort)	None -> (no change); Nullify -> nullify; Coerce -> coerce; Discard -> discard; Warn -> warn; Abort -> abort	None	yes
+variablefile	custom_storage_type[field]	textImportTable/rows/row[$field]/storage / textImportTable/rows / textImportTable/rows/row[$field]/name	enum(Unknown/String/Integer/Real/Time/Date/Timestamp)	Unknown -> unknown; String -> string; Integer -> integer; Real -> real; Time -> time; Date -> date	 (file: absent)	yes
+variablefile	custom_storage[field]	textImportTable/rows/row[$field]/storage	string	Real -> real	Timestamp (file: timestamp)	yes
+variablefile	custom_date_format[field]	textImportTable/rows/row[$field]/dateFormat	string	DD/MM/YYYY -> format6	 (file: absent)	yes
+variablefile	custom_time_format[field]	textImportTable/rows/row[$field]/timeFormat	string	HH:MM:SS -> format4	 (file: absent)	yes
+variablefile	custom_list_storage_type[field]	textImportTable/rows/row[$field]/storage / textImportTable/rows/row[$field]/dateFormat / textImportTable/rows/row[$field]/timeFormat	string	Integer -> list	 (file: real)	yes
+variablefile	custom_list_depth[field]	textImportTable/rows/row[$field]/ExtendedStorage/ListStorage/@depth	integer	2 -> 2	0 (file: 0)	yes
+variablefile	missing_values[field]	typeTable/rows/row[$field]/missing/values/value / typeTable/rows/row[$field]/missing/enabled / typeTable/rows/row[$field]/missing/nullIncluded	list	[0] -> 0	[] (file: absent)	yes
+variablefile	description[field]	typeTable/rows/row[$field]/annotation	string	Age of patient -> Age of patient	 (file: absent)	yes
+variablefile	custom_decimal_symbol		?	set failed: java.lang.String incompatible with com.spss.clementine.component.FieldFormat$DecimalSymbol		no
+variablefile	geo_type		?	set failed: The value 'Point' is not valid for the property 'geo_type'		no
+variablefile	geo_coordinates		?	set failed: The property 'geo_coordinates' is undefined		no
+derive	use_custom_name	autoLabel	flag	True -> false	False (file: true)	yes
+derive	new_name	deriveSingleFieldName	enum(NaToK//Na_to_K_ratio)	NaToK -> NaToK;  -> ; Na_to_K_ratio -> Na_to_K_ratio		yes
+derive	mode	deriveMode	enum(Multiple/Single)	Multiple -> multiple; Single -> single	Single (file: single)	yes
+derive	fields	deriveMultipleFieldList / deriveMultipleFieldList/field[0] / deriveMultipleFieldList/field[1]	list	['Na', 'K'] -> (removed)	[]	yes
+derive	name_extension	deriveMultipleExtensionName	string	_new -> _new	_Derive (file: _Derive)	yes
+derive	add_as	deriveMultipleExtensionPosition	enum(Prefix/Suffix)	Prefix -> prefix; Suffix -> suffix	Suffix (file: suffix)	yes
+derive	result_type	deriveType	enum(Formula/Flag/Set/State/Count/Conditional/Formula/Flag/Set/State/Count/Conditional)	Formula -> (no change); Flag -> flag; Set -> set; State -> state; Count -> count; Conditional -> conditional	Formula	yes
+derive	formula_expr	deriveFormulaExpression	string	Na / K -> Na / K		yes
+derive	formula_measure_type	deriveFormulaFieldMeasure	enum(Range/Flag/Set/OrderedSet/Typeless/Discrete/Collection/Range/Collection/Geospatial)	Range -> range; Flag -> flag; Set -> set; OrderedSet -> orderedSet; Typeless -> typeless; Discrete -> discrete	Default (file: auto)	yes
+derive	flag_expr	deriveFlagFieldCondition	string	Drug = 'drugX' -> Drug = 'drugX'		yes
+derive	flag_true	deriveFlagTrueValue	string	yes -> yes	T (file: T)	yes
+derive	flag_false	deriveFlagFalseValue	string	no -> no	F (file: F)	yes
+derive	set_default	deriveSetDefaultValue	string	other -> other	default (file: default)	yes
+derive	set_value_cond[field]	deriveSetTable/rows / deriveSetTable/rows/row[$field]/name / deriveSetTable/rows/row[$field]/index	string	Na > 0.8 -> (removed)		yes
+derive	state_on_val	deriveStateOnValue	string	1 -> 1	On (file: On)	yes
+derive	state_off_val	deriveStateOffValue	string	0 -> 0	Off (file: Off)	yes
+derive	state_on_expression	deriveStateOnCondition	string	Na > 0.8 -> Na > 0.8		yes
+derive	state_off_expression	deriveStateOffCondition	string	Na < 0.5 -> Na < 0.5		yes
+derive	state_initial	deriveStateInitialState	enum(On/Off)	On -> on; Off -> off	Off (file: off)	yes
+derive	count_initial_val	deriveCountInitialValue	string	5 -> 5	0 (file: 0)	yes
+derive	count_inc_condition	deriveCountIncrementCondition	string	Na > 0.7 -> Na > 0.7		yes
+derive	count_inc_expression	deriveCountIncrementByExpression	string	@INDEX -> @INDEX	1 (file: 1)	yes
+derive	count_reset_condition	deriveCountResetCondition	string	Na < 0.6 -> Na < 0.6		yes
+derive	cond_if_cond	deriveConditionalIfCondition	string	Age > 40 -> Age > 40		yes
+derive	cond_then_expr	deriveConditionalThenExpression	string	Na * 2 -> Na * 2		yes
+derive	cond_else_expr	deriveConditionalElseExpression	string	Na -> Na		yes
+derive	collection_measure	deriveFormulaCollectionMeasure/CollectionType/@valueMeasure	enum(Geospatial/Range/Flag/Set/OrderedSet/Typeless)	Geospatial -> geospatial; Range -> range; Flag -> flag; Set -> set; OrderedSet -> orderedSet; Typeless -> typeless	Typeless (file: typeless)	yes
+derive	geo_type	deriveFormulaGeoMeasure/Geo/@geoType	enum(Point/MultiPoint/LineString/MultiLineStrin.../Polygon/MultiPolygon)	Point -> (no change); MultiPoint -> MultiPoint; LineString -> LineString; MultiLineString -> MultiLineString; Polygon -> Polygon; MultiPolygon -> MultiPolygon	Point	yes
+derive	has_coordinate_system		flag	True -> (no change)	False	no
+derive	coordinate_system	deriveFormulaGeoMeasure/Geo/@geoCsname	string	ETRS_1989_EPSG_Arctic_zone_5-47 -> ETRS_1989_EPSG_Arctic_zone_5-47		yes
+filter	change: instantiate fields by running a temporary Table node on the source		(structure)	 -> (no change)		no
+filter	default_include	filterTable/defaultDrop / filterTable/rows/row[$field]/drop	flag	False -> true; True -> false; False -> true	True (file: false)	yes
+filter	include[field]	filterTable/rows/row[$field]/drop / filterTable/rows/row[$field]/name / filterTable/rows	flag	False -> true; False -> true; True -> (removed); True -> false; False -> (no change)	True (file: absent)	yes
+filter	new_name[field]	filterTable/rows/row[$field]/rename / filterTable/rows/row[$field]/name	enum(Chemical/Sodium//Gender/x)	Chemical -> Chemical; Sodium -> Sodium;  -> (no change); Gender -> Gender; x -> x	Drug (file: absent)	yes
+select	mode	selectMode	enum(Discard/Include)	Discard -> discard; Include -> include	Include (file: include)	yes
+select	condition	selectCondition	enum(Age < 18/Drug = "drugY"...//数据 = 1/xxxxxxxxxxxxxx...)	Age < 18 -> Age < 18; Drug = "drugY" and Na > 0.7 -> Drug = "drugY" and Na > 0.7;  -> ; 数据 = 1 -> 数据 = 1; xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx... -> xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx...		yes
+dataaudit	custom_fields	dataAuditUseCustomFields	flag	True -> true	False (file: false)	yes
+dataaudit	fields	dataAuditFields / dataAuditFields/field[0] / dataAuditFields/field[1]	list	['Age', 'Na', 'K'] -> (removed)	[]	yes
+dataaudit	overlay	dataAuditUserSpecifiedOverlayField	string	Drug -> Drug		yes
+dataaudit	display_graphs	dataAuditDisplayGraphs	flag	False -> false	True (file: true)	yes
+dataaudit	basic_stats	dataAuditBasicStatistics	flag	False -> false	True (file: true)	yes
+dataaudit	advanced_stats	dataAuditAdvancedStatistics	flag	True -> true	False (file: false)	yes
+dataaudit	median_stats	dataAuditMedianAndMode	flag	True -> true	False (file: false)	yes
+dataaudit	calculate	qualityCalculateValues/setElement / qualityCalculateValues/setElement[0] / qualityCalculateValues/setElement[1]	list	['Count'] -> records; ['Breakdown'] -> breakdown; ['Count', 'Breakdown'] -> [breakdown, records]; [] -> qualityCalculateValues=	[Breakdown, Count] (file: absent)	yes
+dataaudit	outlier_detection_method	dataAuditOutlierDetectionMethod	enum(iqr/std)	iqr -> iqr; std -> std	std (file: std)	yes
+dataaudit	outlier_detection_std_outlier	dataAuditStdOutlier	number	2.5 -> 2.5	3.0 (file: 3.0)	yes
+dataaudit	outlier_detection_std_extreme	dataAuditStdExtreme	number	4.5 -> 4.5	5.0 (file: 5.0)	yes
+dataaudit	outlier_detection_iqr_outlier	dataAuditIQROutlier	number	2.5 -> 2.5	1.5 (file: 1.5)	yes
+dataaudit	outlier_detection_iqr_extreme	dataAuditIQRExtreme	number	4.5 -> 4.5	3.0 (file: 3.0)	yes
+dataaudit	use_output_name	autoOutputName	flag	True -> false	False (file: true)	yes
+dataaudit	output_name	outputName	string	audit -> audit		yes
+dataaudit	output_mode	outputMode	enum(File/Screen)	File -> file; Screen -> screen	Screen (file: screen)	yes
+dataaudit	output_format	outputFileType	enum(Delimited/HTML/Output/Formatted)	Delimited -> delimited; HTML -> html; Output -> output_object; Formatted -> formatted	Formatted (file: formatted)	yes
+dataaudit	paginate_output		flag	True -> (no change)	True	no
+dataaudit	lines_per_page	outputLinesPerPage	integer	77 -> 77	400 (file: 400)	yes
+dataaudit	full_filename	outputFilePath	string	D:/out/audit.html -> D:/out/audit.html		yes
+filler	fields	fillerSelectedFields / fillerSelectedFields/field / fillerSelectedFields/field[0]	list	['Age'] -> (removed); ['Age', 'Na'] -> fillerSelectedFields/field=(removed); [] -> ; ['Drug'] -> (removed)	[]	yes
+filler	replace_mode	fillerReplaceMode	enum(Conditional/Blank/Null/BlankAndNull/Always)	Conditional -> (no change); Blank -> blanks; Null -> nulls; BlankAndNull -> blanksAndNulls; Always -> always	Conditional	yes
+filler	condition	fillerCondition	string	(Age > 60) and (Sex = "M") -> (Age > 60) and (Sex = "M")	@BLANK(@FIELD) (file: @BLANK(@FIELD))	yes
+filler	replace_with	fillerReplaceExpression	enum("old man"/@FIELD * 2/)	"old man" -> "old man"; @FIELD * 2 -> @FIELD * 2;  -> 	0 (file: 0)	yes
+analysis	coincidence		flag	False -> (no change)	False	no
+analysis	performance	appendTagField	flag	True -> true	False (file: false)	yes
+analysis	evaluation_binary	analysisBinaryEvaluation	flag	True -> true	False (file: false)	yes
+analysis	confidence	analysisConfidenceFigures	flag	True -> true	False (file: false)	yes
+analysis	threshold	analysisThreshold	integer	75 -> 75; 150 -> 100	90 (file: 90)	yes
+analysis	improve_accuracy	analysisImproveAccuracy	number	3 -> 3.0; 2.5 -> 2.5	2.0 (file: 2.0)	yes
+analysis	field_detection_method	fieldDetectionMethod	enum(Name/Metadata)	Name -> name; Metadata -> metadata	Metadata (file: metadata)	yes
+analysis	inc_user_measure	analysisUserDefined	flag	True -> true	False (file: false)	yes
+analysis	user_if	analysisUserIf	string	@TARGET = @PREDICTED -> @TARGET = @PREDICTED	@TARGET == @PREDICTED (file: @TARGET == @PREDICTED)	yes
+analysis	user_then	analysisUserThen	string	101 -> 101	100 (file: 100)	yes
+analysis	user_else	analysisUserElse	string	1 -> 1	0 (file: 0)	yes
+analysis	user_compute	analysisUserCompute/setElement / analysisUserCompute/setElement[0] / analysisUserCompute/setElement[1]	list	['Mean', 'Sum'] -> analysisUserCompute/setElement[0]=mean; ['Min'] -> min; ['Max'] -> max; ['SDev'] -> sdev; ['Mean'] -> mean; ['Sum'] -> sum	[SDev, Min, Mean, Max, Sum]	yes
+analysis	by_fields	analysisBreakdownBy / analysisBreakdownBy/field	list	['Drug'] -> (removed)	[]	yes
+analysis	use_output_name	autoOutputName	flag	True -> false	False (file: true)	yes
+analysis	output_name	outputName	string	an -> an		yes
+analysis	output_mode	outputMode	enum(File/Screen)	File -> file; Screen -> screen	Screen (file: screen)	yes
+analysis	output_format	outputFileType	enum(HTML/Output/Text)	HTML -> (no change); Output -> output_object; Text -> text	HTML	yes
+analysis	full_filename	outputFilePath	string	D:/out/analysis_out.html -> D:/out/analysis_out.html		yes
+partition	new_name	partitionFieldName	string	MyPart -> MyPart	Partition (file: Partition)	yes
+partition	create_validation	createValidationPartition	flag	True -> true; False -> false	False (file: false)	yes
+partition	training_size	trainingPartitionSize	integer	40 -> 40; 150 -> 100; -5 -> 0	50 (file: 50)	yes
+partition	testing_size	testingPartitionSize	integer	30 -> 30	50 (file: 50)	yes
+partition	validation_size	validationPartitionSize	integer	20 -> 20	0 (file: 0)	yes
+partition	training_label	trainingPartitionLabel	string	Train -> Train	Training (file: Training)	yes
+partition	testing_label	testingPartitionLabel	string	Test -> Test	Testing (file: Testing)	yes
+partition	validation_label	validationPartitionLabel	string	Valid -> Valid	Validation (file: Validation)	yes
+partition	value_mode	partitionValueMode	enum(SystemAndLabel/Label/System)	SystemAndLabel -> (no change); Label -> label; System -> system	SystemAndLabel	yes
+partition	set_random_seed		flag	True -> (no change)	True	no
+partition	random_seed	partitionRandomSeed	integer	123 -> 123; 0 -> 0; 2147483647 -> 2147483647; -1 -> 0	1234567 (file: 1234567)	yes
+partition	enable_sql_generation	usePartitionHashColumn	flag	True -> true	False (file: false)	yes
+partition	unique_field	partitionHashColumn	string	Age -> Age		yes
+distribution	plot	distributionSelectionMode	enum(Flags/Specified)	Flags -> flags; Specified -> selectedFields	Specified (file: selectedFields)	yes
+distribution	x_field	graphXField	string	Drug -> Drug		yes
+distribution	color_field	graphColorField	string	Sex -> Sex		yes
+distribution	normalize	graphNormalizeData	flag	True -> true	False (file: false)	yes
+distribution	sort_mode	distributionSortType	enum(Alphabetic/ByOccurence)	Alphabetic -> (no change); ByOccurence -> byCount	Alphabetic	yes
+distribution	use_proportional_scale	distributionProportionalScale	flag	True -> true	False (file: false)	yes
+distribution	x_label_auto	graphAutomaticXLabel	flag	False -> false	True (file: true)	yes
+distribution	x_label	graphXLabel	string	my x -> my x		yes
+distribution	y_label_auto	graphAutomaticYLabel	flag	False -> false	True (file: true)	yes
+distribution	y_label	graphYLabel	string	my y -> my y		yes
+distribution	use_grid		flag	False -> (no change)	False	no
+distribution	graph_background	graphBackgroundColor	string	#87CEEB -> -7876885	-3355444 (file: -3355444)	yes
+distribution	page_background	graphPageBackgroundColor	string	#112233 -> -15654349	-1 (file: -1)	yes
+distribution	output_mode	outputMode	enum(File/Screen)	File -> file; Screen -> screen	Screen (file: screen)	yes
+distribution	output_format	graphOutputFileType	enum(BMP/JPEG/PNG/HTML/Output)	BMP -> bmp; JPEG -> jpg; PNG -> png; HTML -> html; Output -> output_object	JPEG (file: jpg)	yes
+distribution	full_filename	outputFilePath	string	D:/out/g.png -> D:/out/g.png		yes
+distribution	use_output_name	autoOutputName	flag	True -> false	False (file: true)	yes
+distribution	output_name	outputName	string	dist -> dist		yes
+distribution	title	graphTitle	string	My title -> My title		yes
+distribution	caption	graphCaption	string	My caption -> My caption		yes
+distribution	use_graph_size	useGraphSize	flag	True -> true	False (file: false)	yes
+distribution	graph_width	graphWidth	integer	640 -> 640	575 (file: 575)	yes
+distribution	graph_height	graphHeight	integer	480 -> 480	475 (file: 475)	yes
+histogram	field	graphXField	string	Age -> Age		yes
+histogram	color_field	graphColorField	string	Drug -> Drug		yes
+histogram	panel_field	graphPanelField	string	Sex -> Sex		yes
+histogram	animation_field	graphAnimationField	string	BP -> BP		yes
+histogram	range_mode	automaticRangeX	enum(UserDefined/Automatic)	UserDefined -> false; Automatic -> true	Automatic (file: true)	yes
+histogram	range_min	userDefinedRangeXMin	number	1.5 -> 1.5	0.0 (file: 0.0)	yes
+histogram	range_max		number	100.0 -> (no change)	100.0	no
+histogram	bins	graphBinByWidth	enum(ByWidth/ByNumber)	ByWidth -> true; ByNumber -> false	ByNumber (file: false)	yes
+histogram	num_bins	graphNumBins	integer	25 -> (no change); 0 -> 0	25	yes
+histogram	bin_width	graphBinWidth	number	7.5 -> 7.5	1.0 (file: 1.0)	yes
+histogram	normalize	graphNormalizeData	flag	True -> true	False (file: false)	yes
+histogram	separate_bands	histogramSeparateBands	flag	True -> true	False (file: false)	yes
+histogram	x_label_auto	graphAutomaticXLabel	flag	False -> false	True (file: true)	yes
+histogram	x_label	graphXLabel	string	my x -> my x		yes
+histogram	y_label_auto	graphAutomaticYLabel	flag	False -> false	True (file: true)	yes
+histogram	y_label	graphYLabel	string	my y -> my y		yes
+histogram	use_grid	graphGridlines	flag	False -> false	True (file: true)	yes
+histogram	graph_background	graphBackgroundColor	string	#87CEEB -> -7876885	-3355444 (file: -3355444)	yes
+histogram	page_background	graphPageBackgroundColor	string	#112233 -> -15654349	-1 (file: -1)	yes
+histogram	normal_curve	graphNormalCurve	flag	True -> true	False (file: false)	yes
+histogram	output_mode	outputMode	enum(File/Screen)	File -> file; Screen -> screen	Screen (file: screen)	yes
+histogram	output_format	graphOutputFileType	enum(BMP/JPEG/PNG/HTML/Output)	BMP -> bmp; JPEG -> jpg; PNG -> png; HTML -> html; Output -> output_object	JPEG (file: jpg)	yes
+histogram	full_filename	outputFilePath	string	D:/out/g.png -> D:/out/g.png		yes
+histogram	title	graphTitle	string	My title -> My title		yes
+histogram	caption	graphCaption	string	My caption -> My caption		yes
+histogram	use_graph_size	useGraphSize	flag	True -> true	False (file: false)	yes
+histogram	graph_width	graphWidth	integer	640 -> 640	575 (file: 575)	yes
+histogram	graph_height	graphHeight	integer	480 -> 480	475 (file: 475)	yes
+plot	three_D	graph3D	flag	True -> true	False (file: false)	yes
+plot	x_field	graphXField	string	Age -> Age		yes
+plot	y_field	graphYField	string	Na -> Na		yes
+plot	z_field	graphZField	string	K -> K		yes
+plot	color_field	graphColorField	string	Drug -> Drug		yes
+plot	size_field	graphSizeField	string	Age -> Age		yes
+plot	shape_field	graphShapeField	string	Sex -> Sex		yes
+plot	panel_field	graphPanelField	string	BP -> BP		yes
+plot	animation_field	graphAnimationField	string	Cholesterol -> Cholesterol		yes
+plot	transp_field	graphTransparencyField	string	Drug -> Drug		yes
+plot	overlay_type	graphOverlayType	enum(Smoother/Function/None)	Smoother -> Smoother; Function -> Function; None -> None	None (file: None)	yes
+plot	overlay_expression	graphOverlayFunction	string	Na * 2 -> Na * 2		yes
+plot	use_overlay_expr	graphIncludeOverlayFunction	flag	True -> true	False (file: false)	yes
+plot	style	scatterShowLine	enum(Line/Point)	Line -> true; Point -> false	Point (file: false)	yes
+plot	point_type		enum(Rectangle/Dot/Triangle/Hexagon/Plus/Pentagon/Star/BowTie/HorizontalDash/VerticalDash/IronCross/Factory)	Rectangle -> (no change); Dot -> (no change); Triangle -> (no change); Hexagon -> (no change); Plus -> (no change); Pentagon -> (no change)		no
+plot	x_mode	scatterXMode	enum(Overlay/Sort/AsRead)	Overlay -> Overlay; Sort -> Sort; AsRead -> AsRead	Sort (file: Sort)	yes
+plot	x_range_mode	automaticRangeX	enum(UserDefined/Automatic)	UserDefined -> false; Automatic -> true	Automatic (file: true)	yes
+plot	x_range_min	userDefinedRangeXMin	number	-2.5 -> -2.5	0.0 (file: 0.0)	yes
+plot	x_range_max	userDefinedRangeXMax	number	99.5 -> 99.5	100.0 (file: 100.0)	yes
+plot	x_label_auto	graphAutomaticXLabel	flag	False -> false	True (file: true)	yes
+plot	x_label	graphXLabel	string	lab x -> lab x		yes
+plot	y_range_mode	automaticRangeY	enum(UserDefined/Automatic)	UserDefined -> false; Automatic -> true	Automatic (file: true)	yes
+plot	y_range_min	userDefinedRangeYMin	number	-2.5 -> -2.5	0.0 (file: 0.0)	yes
+plot	y_range_max	userDefinedRangeYMax	number	99.5 -> 99.5	100.0 (file: 100.0)	yes
+plot	y_label_auto	graphAutomaticYLabel	flag	False -> false	True (file: true)	yes
+plot	y_label	graphYLabel	string	lab y -> lab y		yes
+plot	z_range_mode	automaticRangeZ	enum(UserDefined/Automatic)	UserDefined -> false; Automatic -> true	Automatic (file: true)	yes
+plot	z_range_min	userDefinedRangeZMin	number	-2.5 -> -2.5	0.0 (file: 0.0)	yes
+plot	z_range_max	userDefinedRangeZMax	number	99.5 -> 99.5	100.0 (file: 100.0)	yes
+plot	z_label_auto	graphAutomaticZLabel	flag	False -> false	True (file: true)	yes
+plot	z_label	graphZLabel	string	lab z -> lab z		yes
+plot	jitter	graphJitter	flag	True -> true	False (file: false)	yes
+plot	records_limit	graphLargeDatasetReadThreshold	integer	1234 -> 1234; -1 -> 0	2000 (file: 2000)	yes
+plot	if_over_limit	graphLargeDatasetReadOption	enum(PlotSample/PlotAll/PlotBins)	PlotSample -> Sample; PlotAll -> All; PlotBins -> Bin	PlotBins (file: Bin)	yes
+plot	use_grid	graphGridlines	flag	False -> false	True (file: true)	yes
+plot	graph_background	graphBackgroundColor	string	#87CEEB -> -7876885	-3355444 (file: -3355444)	yes
+plot	page_background	graphPageBackgroundColor	string	#112233 -> -15654349	-1 (file: -1)	yes
+plot	output_mode	outputMode	enum(File/Screen)	File -> file; Screen -> screen	Screen (file: screen)	yes
+plot	output_format	graphOutputFileType	enum(BMP/JPEG/PNG/HTML/Output)	BMP -> bmp; JPEG -> jpg; PNG -> png; HTML -> html; Output -> output_object	JPEG (file: jpg)	yes
+plot	full_filename	outputFilePath	string	D:/out/g.png -> D:/out/g.png		yes
+plot	title	graphTitle	string	My title -> My title		yes
+plot	caption	graphCaption	string	My caption -> My caption		yes
+plot	use_graph_size	useGraphSize	flag	True -> true	False (file: false)	yes
+plot	graph_width	graphWidth	integer	640 -> 640	575 (file: 575)	yes
+plot	graph_height	graphHeight	integer	480 -> 480	475 (file: 475)	yes
+reclassify	change: instantiate fields by running a temporary Table node on the source		(structure)	 -> (no change)		no
+reclassify	mode	reclassifyMode	enum(Multiple/Single)	Multiple -> multiple; Single -> single	Single (file: single)	yes
+reclassify	replace_field	reclassifyReplaceField	flag	True -> true	False (file: false)	yes
+reclassify	field	singleFieldSelection	string	Drug -> Drug		yes
+reclassify	new_name	singleFieldName	string	Chemical -> Chemical		yes
+reclassify	fields	multipleFieldList / multipleFieldList/field[0] / multipleFieldList/field[1]	list	['Drug', 'BP'] -> (removed)	[]	yes
+reclassify	name_extension	multipleExtensionName	string	_reclass -> _reclass		yes
+reclassify	add_as	multipleExtensionPosition	enum(Prefix/Suffix)	Prefix -> prefix; Suffix -> suffix	Suffix (file: suffix)	yes
+reclassify	reclassify[field]	reclassifyTable/rows/row[$field]/newValue / reclassifyTable/rows/row/newValue / reclassifyTable/rows/row/oldValue	enum(BrandA/BrandB/BrandC)	BrandA -> reclassifyTable/rows=(removed); BrandB -> BrandB; BrandC -> BrandC		yes
+reclassify	use_default	useDefault	flag	True -> true; False -> false	False (file: false)	yes
+reclassify	default	defaultValue	string	BrandX -> BrandX	undef (file: undef)	yes
+reclassify	pick_list	reclassifyPickList / reclassifyPickList/value[0] / reclassifyPickList/value[1]	list	['BrandX', 'Placebo', 'Generic'] -> (removed)	[]	yes
+merge	change: instantiate fields by running a temporary Table node on the source		(structure)	 -> (no change)		no
+merge	method	mergeMode	enum(Keys/Condition/Order)	Keys -> key; Condition -> condition; Order -> order	Order (file: order)	yes
+merge	condition	mergeCondition	string	Age > 30 -> Age > 30		yes
+merge	key_fields	keyFields / keyFields/field / keyFields/field[0]	list	['Drug'] -> (removed); ['Drug', 'Sex'] -> keyFields/field=(removed)	[]	yes
+merge	common_keys	mergeCommonKeys	flag	False -> false	True (file: true)	yes
+merge	join	joinType	enum(FullOuter/PartialOuter/Anti/Inner)	FullOuter -> fullOuter; PartialOuter -> partialOuter; Anti -> anti; Inner -> inner	Inner (file: inner)	yes
+merge	outer_join_tag[field]	includeIncompleteRecords/includeIncompleteRecordsList/includeIncompleteRecords/inputNodeTagName / includeIncompleteRecords/includeIncompleteRecordsList / includeIncompleteRecords/includeIncompleteReco...	flag	True -> 1; True -> (removed)	False (file: absent)	yes
+merge	single_large_input	mergeSingleLargeInput	flag	True -> true	False (file: false)	yes
+merge	single_large_input_tag	mergeSingleLargeInputTag	string	2 -> 2		yes
+merge	use_existing_sort_keys	mergePreSortedInput	flag	True -> true	False (file: false)	yes
+merge	existing_sort_keys	existingSortKeys/rows/row[$field]/field / existingSortKeys/rows/row[$field]/direction / existingSortKeys/rows	list	[['Drug', 'Ascending'], ['Age', 'Descend... -> Age	[] (file: absent)	yes
+merge	primary_dataset		string	1 -> (no change)	1	no
+merge	rename_duplicate_fields		flag	True -> (no change)	True	no
+merge	merge_condition		?	set failed: The property 'merge_condition' is undefined		no
+merge	ranking_expression		?	set failed: The value 'Age' is not valid for the property 'ranking_expression'		no
+merge	Num_matches		?	set failed: The property 'Num_matches' is undefined		no
+balance	training_data_only	balanceTrainingPartitionOnly	flag	True -> (no change); False -> false	True	yes
+balance	directives	balanceDirectives/entries/entry/factor / balanceDirectives/entries/entry/condition / balanceDirectives/entries	list	[[1.3, 'Age > 60']] -> 1.3; [[1.3, 'Age > 60'], [1.5, 'Na > 0.5']] -> (removed); [[0.5, 'Drug = "drugY"']] -> 0.5; [] -> (removed)	[] (file: absent)	yes
+aggregate	change: instantiate fields by running a temporary Table node on the source		(structure)	 -> (no change)		no
+aggregate	keys	aggregateKeyFields/field / aggregateKeyFields / aggregateKeyFields/field[0]	list	['Drug'] -> Drug; ['Drug', 'Sex'] -> [Drug, Sex]	[] (file: absent)	yes
+aggregate	contiguous	aggregateContiguousKeys	flag	True -> true	False (file: false)	yes
+aggregate	aggregates[field]	aggregateFields/rows/row/max / aggregateFields/rows/row/min / aggregateFields/rows/row/count	list	['Sum', 'Mean'] -> false; ['Sum', 'Mean', 'Min', 'Max', 'SDev', 'M... -> true; ['Mean'] -> (removed)	 (file: absent)	yes
+aggregate	aggregate_exprs[field]	aggregateExpressionsTable/rows / aggregateExpressionsTable/rows/row/field / aggregateExpressionsTable/rows/row/index	string	MAX('Na') -> (removed)		yes
+aggregate	extension	aggregateNameExtension	string	Aggregated_ -> Aggregated_		yes
+aggregate	add_as	aggregateExtensionPosition	enum(Prefix/Suffix)	Prefix -> Prefix; Suffix -> Suffix	Suffix (file: Suffix)	yes
+aggregate	inc_record_count	aggregateIncludeCount	flag	False -> false	True (file: true)	yes
+aggregate	count_field	aggregateCountFieldName	string	cnt -> cnt	Record_Count (file: Record_Count)	yes
+aggregate	allow_approximation	aggregateAllowApproximation	flag	True -> true	False (file: false)	yes
+aggregate	bin_count	aggregateNumberOfBins	integer	2000 -> 2000; 0 -> 100	1000 (file: 1000)	yes
+matrix	fields	matrixType	enum(Flags/Numerics/Selected)	Flags -> flags; Numerics -> numbers; Selected -> specified	Selected (file: specified)	yes
+matrix	row	rowField	string	Drug -> Drug		yes
+matrix	column	columnField	string	BP -> BP		yes
+matrix	include_missing_values		flag	True -> (no change)	True	no
+matrix	cell_contents	cellContents	enum(CrossTabs/Function)	CrossTabs -> (no change); Function -> parameter	CrossTabs	yes
+matrix	function_field	parameterField	string	Age -> Age		yes
+matrix	function	parameterFunction	enum(Sum/Mean/Min/Max/SDev)	Sum -> sum; Mean -> mean; Min -> min; Max -> max; SDev -> sdev	Mean (file: mean)	yes
+matrix	sort_mode	rowColumnSort	enum(Ascending/Descending/Unsorted)	Ascending -> ascending; Descending -> descending; Unsorted -> unsorted	Unsorted (file: unsorted)	yes
+matrix	highlight_bottom	highlightBottom / useHighlightBottom	integer	5 -> 5	0 (file: 0)	yes
+matrix	highlight_top		integer	0 -> (no change)	0	no
+matrix	display	coincidenceFunction/setElement / coincidenceFunction/setElement[0] / coincidenceFunction/setElement[1]	list	['Counts'] -> (no change); ['Counts', 'Expected', 'Residuals'] -> [counts, expected, residual]; ['RowPct'] -> row; ['ColumnPct'] -> column; ['TotalPct'] -> total	[Counts]	yes
+matrix	include_totals	showTotals	flag	True -> true	False (file: false)	yes
+matrix	use_output_name	autoOutputName	flag	True -> false	False (file: true)	yes
+matrix	output_name	outputName	string	mx -> mx		yes
+matrix	output_mode	outputMode	enum(File/Screen)	File -> file; Screen -> screen	Screen (file: screen)	yes
+matrix	output_format	outputFileType	enum(Delimited/HTML/Output/Formatted)	Delimited -> delimited; HTML -> html; Output -> output_object; Formatted -> formatted	Formatted (file: formatted)	yes
+matrix	paginate_output		flag	True -> (no change)	True	no
+matrix	lines_per_page	outputLinesPerPage	integer	50 -> 50	400 (file: 400)	yes
+matrix	full_filename	outputFilePath	string	D:/out/m.html -> D:/out/m.html		yes
+transform	fields	transformFields / transformFields/field[0] / transformFields/field[1]	list	['Age', 'Na'] -> (removed)	[]	yes
+transform	formula	allTransformations	enum(Select/All)	Select -> select; All -> all	All (file: all)	yes
+transform	formula_inverse	includeInverse	flag	True -> true	False (file: false)	yes
+transform	formula_inverse_offset	inverseOffset	number	2.5 -> 2	0 (file: 0)	yes
+transform	formula_log_n	includeLogN	flag	True -> true	False (file: false)	yes
+transform	formula_log_n_offset	logNOffset	integer	1 -> 1	0 (file: 0)	yes
+transform	formula_log_10	includeLog10	flag	True -> true	False (file: false)	yes
+transform	formula_log_10_offset	log10Offset	integer	3 -> 3	0 (file: 0)	yes
+transform	formula_exponential	includeExponential	flag	True -> true	False (file: false)	yes
+transform	formula_square_root	includeSquareRoot	flag	True -> true	False (file: false)	yes
+transform	use_output_name	autoOutputName	flag	True -> false	False (file: true)	yes
+transform	output_name	outputName	string	tr -> tr		yes
+transform	output_mode	outputMode	enum(File/Screen)	File -> file; Screen -> screen	Screen (file: screen)	yes
+transform	output_format	reportOutputFileType	enum(HTML/Output)	HTML -> (no change); Output -> output_object	HTML	yes
+transform	paginate_output	paginateOutput	flag	False -> false	True (file: true)	yes
+transform	lines_per_page	outputLinesPerPage	integer	30 -> 30	400 (file: 400)	yes
+transform	full_filename	outputFilePath	string	D:/out/t.html -> D:/out/t.html		yes
+statistics	examine	examineFields / examineFields/field[0] / examineFields/field[1]	list	['Age', 'Na'] -> (removed)	[]	yes
+statistics	correlate	correlationFields / correlationFields/field	list	['K'] -> (removed)	[]	yes
+statistics	statistics	statistics / statistics/setElement[0] / statistics/setElement[1]	list	['mean', 'sum', 'sdev'] -> statistics/setElement[0]=sum; ['count', 'min', 'max', 'range', 'varian... -> statistics/setElement[0]=semean; [] -> 	[SEMean, Min, Range, Max, Count, Mean, V...	yes
+statistics	correlation_mode	correlationStrengthMode	enum(Absolute/Probability)	Absolute -> absolute; Probability -> probability	Probability (file: probability)	yes
+statistics	label_correlations		flag	True -> (no change)	True	no
+statistics	weak_label	weakCorrelationLabel	string	weakish -> weakish	Weak (file: Weak)	yes
+statistics	medium_label	mediumCorrelationLabel	string	midish -> midish	Medium (file: Medium)	yes
+statistics	strong_label	strongCorrelationLabel	string	strongish -> strongish	Strong (file: Strong)	yes
+statistics	weak_below_probability	weakProbabilityThreshold	number	0.8 -> 0.8	0.9 (file: 0.9)	yes
+statistics	strong_above_probability		number	0.95 -> (no change)	0.95	no
+statistics	weak_below_absolute	weakCorrelationThreshold	number	0.25 -> 0.25	0.3333 (file: 0.3333)	yes
+statistics	strong_above_absolute	mediumCorrelationThreshold	number	0.75 -> 0.75	0.6666 (file: 0.6666)	yes
+statistics	use_output_name	autoOutputName	flag	True -> false	False (file: true)	yes
+statistics	output_name	outputName	string	st -> st		yes
+statistics	output_mode	outputMode	enum(File/Screen)	File -> file; Screen -> screen	Screen (file: screen)	yes
+statistics	output_format	outputFileType	enum(HTML/Output/Text)	HTML -> (no change); Output -> output_object; Text -> text	HTML	yes
+statistics	full_filename	outputFilePath	string	D:/out/s.html -> D:/out/s.html		yes
+binning	fields	binningFields / ../@SettingsChanged / binningFields/field[0]	list	['Na', 'K'] -> (removed)	[]	yes
+binning	method	binningMethod / ../@RecomputeNecessary	enum(EqualCount/Rank/SDev/Optimal/FixedWidth)	EqualCount -> equalFreq; Rank -> rank; SDev -> aroundMean; Optimal -> optimal; FixedWidth -> fixedWidth	FixedWidth (file: fixedWidth)	yes
+binning	recalculate_bins	recalculateBins	enum(Always/IfNecessary)	Always -> (no change); IfNecessary -> ifnecessary	Always	yes
+binning	fixed_width_name_extension	fixedBinExtensionName	string	_bin -> _bin	_BIN (file: _BIN)	yes
+binning	fixed_width_add_as	fixedBinExtensionPosition	enum(Prefix/Suffix)	Prefix -> prefix; Suffix -> suffix	Suffix (file: suffix)	yes
+binning	fixed_bin_method	fixedBinMethod	enum(Count/Width)	Count -> count; Width -> width	Width (file: width)	yes
+binning	fixed_bin_count	fixedBinCount	integer	7 -> 7	10 (file: 10)	yes
+binning	fixed_bin_width	fixedBinWidth	number	3.5 -> 3.5	10.0 (file: 10.0)	yes
+binning	equal_count_name_extension	binTileExtensionName	string	_tl -> _tl	_TILE (file: _TILE)	yes
+binning	equal_count_add_as	binTileExtensionPosition	enum(Prefix/Suffix)	Prefix -> prefix; Suffix -> suffix	Suffix (file: suffix)	yes
+binning	tile4	binTile4	flag	True -> true	False (file: false)	yes
+binning	tile5	binTile5	flag	True -> true	False (file: false)	yes
+binning	tile10		flag	True -> (no change)	True	no
+binning	tile20	binTile20	flag	True -> true	False (file: false)	yes
+binning	tile100	binTile100	flag	True -> true	False (file: false)	yes
+binning	use_custom_tile	useBinTileN	flag	True -> true	False (file: false)	yes
+binning	custom_tile_name_extension	binTileNExtensionName	string	_ct -> _ct	_TILEN (file: _TILEN)	yes
+binning	custom_tile_add_as	binTileNExtensionPosition	enum(Prefix/Suffix)	Prefix -> prefix; Suffix -> suffix	Suffix (file: suffix)	yes
+binning	custom_tile		integer	8 -> (no change)	8	no
+binning	equal_count_method	tilingMethod	enum(ValueSum/RecordCount)	ValueSum -> sum; RecordCount -> count	RecordCount (file: count)	yes
+binning	tied_values_method	tiedValuesMethod	enum(Current/Random/Next)	Current -> low; Random -> random; Next -> high	Next (file: high)	yes
+binning	rank_order	reverseRank	enum(Descending/Ascending)	Descending -> true; Ascending -> false	Ascending (file: false)	yes
+binning	rank_add_as	binRankExtensionPositions	enum(Prefix/Suffix)	Prefix -> prefix; Suffix -> suffix	Suffix (file: suffix)	yes
+binning	rank	binByRank	flag	False -> false	True (file: true)	yes
+binning	rank_name_extension	binRankExtensionName	string	_rk -> _rk	_RANK (file: _RANK)	yes
+binning	rank_fractional		flag	True -> (no change)	True	no
+binning	rank_fractional_name_extension	binFrRankExtensionName	string	_frk -> _frk	_F_RANK (file: _F_RANK)	yes
+binning	rank_pct		flag	True -> (no change)	True	no
+binning	rank_pct_name_extension	binPcRankExtensionName	string	_prk -> _prk	_P_RANK (file: _P_RANK)	yes
+binning	sdev_name_extension	binMeanStdDevExtensionName	string	_sd -> _sd	_SDBIN (file: _SDBIN)	yes
+binning	sdev_add_as	binMeanStdDevExtensionPosition	enum(Prefix/Suffix)	Prefix -> prefix; Suffix -> suffix	Suffix (file: suffix)	yes
+binning	sdev_count	binMeanStdDevCount	enum(One/Two/Three)	One -> (no change); Two -> 2; Three -> 3	One	yes
+binning	optimal_name_extension	binOptimalExtensionName	string	_op -> _op	_OPTIMAL (file: _OPTIMAL)	yes
+binning	optimal_add_as	binOptimalExtensionPosition	enum(Prefix/Suffix)	Prefix -> prefix; Suffix -> suffix	Suffix (file: suffix)	yes
+binning	optimal_supervisor_field	binOptimalSupervisorField	string	Drug -> Drug		yes
+binning	optimal_merge_bins		flag	False -> (no change)	False	no
+binning	optimal_small_bin_threshold	binOptimalsmallBinDetectionThreshold	integer	20 -> 1.0	0.2 (file: 0.2)	yes
+binning	optimal_pre_bin	binOptimalPreBin	flag	False -> false	True (file: true)	yes
+binning	optimal_max_bins	binOptimalMaxBins	integer	9 -> 9	1000 (file: 1000)	yes
+binning	optimal_lower_end_point	binEndpointsOpenClosed	enum(Exclusive/Inclusive)	Exclusive -> lowerExclusive; Inclusive -> lowerInclusive	Inclusive (file: lowerInclusive)	yes
+binning	optimal_first_bin	binEndpointsLowestBounding	enum(Bounded/Unbounded)	Bounded -> bounded; Unbounded -> unbounded	Unbounded (file: unbounded)	yes
+binning	optimal_last_bin	binEndpointsHighestBounding	enum(Bounded/Unbounded)	Bounded -> bounded; Unbounded -> unbounded	Unbounded (file: unbounded)	yes
+restructure	change: instantiate fields by running a temporary Table node on the source		(structure)	 -> (no change)		no
+restructure	fields_from[field]	createRestructuredFields / createRestructuredFields/persistentObjectListMember[0]/srcFieldName / createRestructuredFields/persistentObjectListMember[1]/srcFieldName	list	['drugA', 'drugX'] -> (removed); ['all'] -> createRestructuredFields/persistentObjectListMembe...=true; ['drugA'] -> (no change)	[]	yes
+restructure	include_field_name	restructureIncludeFieldNames / createRestructuredFields/persistentObjectListMember[0]/includeFieldNames / createRestructuredFields/persistentObjectListMember[1]/includeFieldNames	flag	False -> false	True (file: true)	yes
+restructure	value_mode	restructureValuesMode	enum(OtherFields/Flags)	OtherFields -> (no change); Flags -> Flags	OtherFields	yes
+restructure	value_fields	restructureValueFields / restructureValueFields/field[0] / restructureValueFields/field[1]	list	['Age', 'Na'] -> (removed)	[]	yes
+sort	keys	sortKeys/rows/row/field / sortKeys/rows/row/direction / sortKeys/rows/row[$field]/field	list	[['Age', 'Ascending']] -> Age; [['Age', 'Ascending'], ['Sex', 'Descendi... -> (removed); [['Drug', 'Descending']] -> Drug; [] -> (removed)	[] (file: absent)	yes
+sort	default_ascending	sortDefaultOrder	flag	False -> false	True (file: true)	yes
+sort	use_existing_keys	useExistingSortOrder	flag	True -> true	False (file: false)	yes
+sort	existing_keys	existingSortKeys/rows/row/field / existingSortKeys/rows/row/direction / existingSortKeys/rows/row[$field]/field	list	[['Age', 'Ascending']] -> Age; [['Age', 'Descending'], ['Sex', 'Ascendi... -> (removed)	[] (file: absent)	yes
+append	match_by	appendMode	enum(Name/Position)	Name -> (no change); Position -> position	Name	yes
+append	match_case	appendMatchCase	flag	True -> true	False (file: false)	yes
+append	include_fields_from	appendIncludeAllFields	enum(All/Main)	All -> true; Main -> false	Main (file: false)	yes
+append	create_tag_field	appendIncludeTag	flag	True -> true	False (file: false)	yes
+append	tag_field_name	appendTagField	enum(Append_Flag/)	Append_Flag -> Append_Flag;  -> 	Input (file: Input)	yes
+sample	change: instantiate fields by running a temporary Table node on the source		(structure)	 -> (no change)		no
+sample	mode	sampleMode	enum(Discard/Include)	Discard -> discard; Include -> pass	Include (file: pass)	yes
+sample	method	sampleProcedure	enum(Complex/Simple/Complex)	Complex -> complex; Simple -> simple; Complex -> complex	Simple (file: simple)	yes
+sample	sample_type	sampleMethod	enum(OneInN/RandomPct/First)	OneInN -> oneInN; RandomPct -> random; First -> firstN	First (file: firstN)	yes
+sample	first_n	sampleFirstN	integer	500 -> 500; -3 -> 0	10000 (file: 10000)	yes
+sample	one_in_n	sampleOneInN	integer	7 -> 7; 0 -> 1	2 (file: 2)	yes
+sample	rand_pct	sampleRandom	number	12.5 -> 12.5; 250 -> 100.0	50.0 (file: 50.0)	yes
+sample	use_max_size	sampleUseMaxSize	flag	True -> true	False (file: false)	yes
+sample	maximum_size	sampleMaxSize	integer	1000 -> 1000	10000 (file: 10000)	yes
+sample	set_random_seed	sampleUseRandomSeed	flag	True -> true	False (file: false)	yes
+sample	random_seed	sampleRandomSeed	integer	4242 -> 4242; -1 -> 0	1217380 (file: 1217380)	yes
+sample	complex_sample_type	sampleComplexType	enum(Systematic/Random)	Systematic -> systematic; Random -> random	Random (file: random)	yes
+sample	sample_units	sampleUnits	enum(Counts/Proportions/Proportions/Counts)	Counts -> counts; Proportions -> proportions; Proportions -> (no change); Counts -> counts	Proportions (file: proportions)	yes
+sample	sample_size_proportions	sampleSizeProportions	enum(Fixed/Custom/Variable/Custom)	Fixed -> (no change); Custom -> custom; Variable -> variable; Custom -> custom	Fixed	yes
+sample	sample_size_counts	sampleSizeCounts	enum(Fixed/Custom/Variable/Custom)	Fixed -> (no change); Custom -> custom; Variable -> variable; Custom -> custom	Fixed	yes
+sample	fixed_proportions	sampleFixedProportions	number	0.4 -> 0.4	0.5 (file: 0.5)	yes
+sample	fixed_counts	sampleFixedCounts	integer	77 -> 77	10000 (file: 10000)	yes
+sample	variable_proportions	sampleVariableProportions	string	Age -> Age		yes
+sample	variable_counts	sampleVariableCounts	string	Age -> Age		yes
+sample	use_min_stratum_size	sampleUseMinStratumSize	flag	True -> true	False (file: false)	yes
+sample	minimum_stratum_size	sampleMinimumStratumSize	integer	5 -> 5	100 (file: 100)	yes
+sample	use_max_stratum_size	sampleUseMaxStratumSize	flag	True -> true	False (file: false)	yes
+sample	maximum_stratum_size	sampleMaximumStratumSize	integer	50 -> 50	10000 (file: 10000)	yes
+sample	clusters	sampleClusters	string	Drug -> Drug		yes
+sample	stratify_by	sampleStratifyBy / sampleStratifyBy/field[0] / sampleStratifyBy/field[1]	list	['Sex', 'BP'] -> (removed)	[]	yes
+sample	specify_input_weight	sampleSpecifyInputWeight	flag	True -> true	False (file: false)	yes
+sample	input_weight	sampleInputWeight	string	Age -> Age		yes
+sample	new_output_weight	sampleNewOutputWeight	string	NewWeight -> NewWeight	SampleWeight (file: SampleWeight)	yes
+sample	sizes_proportions	sampleProportionsSizes / sampleProportionsSizes/persistentObjectListMember[0]/SizeValue / sampleProportionsSizes/persistentObjectListMember[0]/Strata[0]	list	[['M', 'HIGH', 'Default'], ['F', 'HIGH',... -> (removed)	[]	yes
+sample	default_proportion	sampleDefaultProportion	number	0.2 -> 0.2	0.5 (file: 0.5)	yes
+sample	sizes_counts	sampleCountsSizes / sampleCountsSizes/persistentObjectListMember[0]/SizeValue / sampleCountsSizes/persistentObjectListMember[0]/Strata[0]	list	[['M', 'HIGH', 10], ['F', 'HIGH', 20]] -> (removed)	[]	yes
+sample	default_count	sampleDefaultCount	integer	15 -> 15	10000 (file: 10000)	yes
+kmeans	change: instantiate fields by running a temporary Table node on the source		(structure)	 -> (no change)		no
+kmeans	custom_fields	autoModelFieldSelection	flag	True -> false	False (file: true)	yes
+kmeans	inputs	modelInputFieldSelection/field[0] / modelInputFieldSelection/field[1] / modelInputFieldSelection/field[2]	list	['Age', 'Na', 'K'] -> [Age, Na, K]; ['Age'] -> (removed)	[] (file: absent)	yes
+kmeans	use_model_name	autoModelName	flag	True -> false	False (file: true)	yes
+kmeans	model_name	modelName	string	Kmeans_x -> Kmeans_x		yes
+kmeans	partition	partitionField	string	Test -> Test		yes
+kmeans	use_partitioned_data		flag	True -> (no change)	True	no
+kmeans	use_frequency	useFrequency	flag	True -> true	False (file: false)	yes
+kmeans	frequency_field	frequencyField	string	Age -> Age		yes
+kmeans	use_weight	useWeight	flag	True -> true	False (file: false)	yes
+kmeans	weight_field	weightField	string	Age -> Age		yes
+kmeans	num_clusters	numClusters	integer	9 -> 9; 0 -> 1	5 (file: 5)	yes
+kmeans	gen_distance	generateDistanceField	flag	True -> true	False (file: false)	yes
+kmeans	cluster_label	clusterLabelType	enum(Number/String)	Number -> NUMBER; String -> STRING	String (file: STRING)	yes
+kmeans	label_prefix	clusterLabel	string	KM_ -> KM_	cluster (file: cluster)	yes
+kmeans	optimize	optimization	enum(Memory/Speed)	Memory -> (no change); Speed -> speed	Memory	yes
+kmeans	mode	expertMode	enum(Expert/Simple)	Expert -> true; Simple -> false	Simple (file: false)	yes
+kmeans	stop_on	stoppingCondition	enum(Custom/Default)	Custom -> CUSTOM; Default -> DEFAULT	Default (file: DEFAULT)	yes
+kmeans	max_iterations	numberIterations	integer	33 -> 33; 0 -> 0	20 (file: 20)	yes
+kmeans	tolerance	changeTolerance	number	0.05 -> 0.05; -1.0 -> -1.0	1e-06 (file: 1.0E-6)	yes
+kmeans	encoding_value	encodingValueForSets	number	0.7 -> 0.7; 5.0 -> 5.0	0.707107 (file: 0.707107)	yes
+kmeans	use_split_data		?	set failed: The property 'use_split_data' is undefined		no
+kmeans	splits		?	set failed: The property 'splits' is undefined		no
+twostep	custom_fields	autoModelFieldSelection	flag	True -> false	False (file: true)	yes
+twostep	inputs	modelInputFieldSelection / modelInputFieldSelection/field[0] / modelInputFieldSelection/field[1]	list	['Age', 'Na', 'K'] -> (removed)	[]	yes
+twostep	use_model_name	autoModelName	flag	True -> false	False (file: true)	yes
+twostep	model_name	modelName	string	TwoStep_x -> TwoStep_x		yes
+twostep	standardize	standardizeFields	flag	False -> false	True (file: true)	yes
+twostep	exclude_outliers	excludeOutliers	flag	True -> true	False (file: false)	yes
+twostep	percentage	noiseDef	number	12.5 -> 12; 150 -> 100	25 (file: 25)	yes
+twostep	cluster_num_auto	autoCluster	flag	False -> false	True (file: true)	yes
+twostep	min_num_clusters	minClusters	integer	4 -> 4	2 (file: 2)	yes
+twostep	max_num_clusters	maxClusters	integer	12 -> 12	15 (file: 15)	yes
+twostep	num_clusters	numClusters	integer	7 -> 7	10 (file: 10)	yes
+twostep	cluster_label	clusterLabelType	enum(String/Number)	String -> (no change); Number -> NUMBER	String	yes
+twostep	label_prefix	clusterLabel	string	TS_ -> TS_	cluster (file: cluster)	yes
+twostep	distance_measure	distanceMeasure	enum(Loglikelihood/Euclidean)	Loglikelihood -> (no change); Euclidean -> Euclidean	loglikelihood	yes
+twostep	clustering_criterion	clusteringCriterion	enum(AIC/BIC)	AIC -> AIC; BIC -> BIC	BIC (file: BIC)	yes
+cart	custom_fields	attachment:role_use	flag	True -> true	False (file: false)	yes
+cart	target	attachment:tree.TargetField	string	Drug -> Drug		yes
+cart	inputs	attachment:tree.InputFieldList	list	['Age', 'BP', 'Cholesterol'] -> [Age,BP,Cholesterol]	[] (file: [])	yes
+cart	use_model_name	autoModelName / attachment:modelRename	flag	True -> false	False (file: true)	yes
+cart	model_name	modelName / attachment:modelName	string	Cart_x -> Cart_x		yes
+cart	use_partitioned_data		flag	True -> (no change)	True	no
+cart	splits	attachment:split_distribute.split_fields	list	['Sex'] -> [Sex]	[] (file: [])	yes
+cart	use_frequency		flag	True -> (no change)	True	no
+cart	weight_field	attachment:tree.RegressionWeightField	string	Na -> Na		yes
+cart	continue_training_existing_model	attachment:objective_choose	flag	True -> updateExistingModel	False (file: buildNewModel)	yes
+cart	objective	attachment:objective_goal	enum(Boosting/Bagging/psm/Standard)	Boosting -> boosting; Bagging -> bagging; psm -> psm; Standard -> standard	standard (file: standard)	yes
+cart	model_output_type	attachment:SingleModel	enum(InteractiveBui.../Single)	InteractiveBuilder -> InteractiveBuilder; Single -> Single	Single (file: Single)	yes
+cart	use_tree_directives	attachment:use_tree_directives	flag	True -> true	False (file: false)	yes
+cart	tree_directives	attachment:tree_directives	string	Grow Node Index 0 Children 1 2 -> Grow Node Index 0 Children 1 2		yes
+cart	use_max_depth	attachment:MaxTreeDepth	enum(Custom/Default)	Custom -> Custom; Default -> Default	True (file: Default)	yes
+cart	max_depth	attachment:tree.MaxTreeDepth	integer	7 -> 7; 5000 -> 1000	5 (file: 5)	yes
+cart	prune_tree	attachment:tree.PruneTree	flag	False -> false	True (file: true)	yes
+cart	use_std_err		flag	False -> (no change)	False	no
+cart	std_err_multiplier	attachment:tree.StdErrMultiplier	number	3.0 -> 3.0	1.0 (file: 1.0)	yes
+cart	max_surrogates	attachment:tree.MaxSurrogates	integer	7 -> 7	5 (file: 5)	yes
+cart	use_percentage	attachment:tree.UsePercentageForNodeSizeRequirement	flag	False -> absolute	True (file: percentage)	yes
+cart	min_parent_records_pc	attachment:tree.MinParentRecordsPct	integer	5 -> 5.0	2.0 (file: 2.0)	yes
+cart	min_child_records_pc	attachment:tree.MinChildRecordsPct	integer	3 -> 3.0	1.0 (file: 1.0)	yes
+cart	min_parent_records_abs	attachment:tree.MinParentRecordsABS	integer	50 -> 50	100 (file: 100)	yes
+cart	min_child_records_abs	attachment:tree.MinChildRecordsABS	integer	20 -> 20	50 (file: 50)	yes
+cart	use_costs	attachment:tree.UseCosts	flag	True -> true	False (file: false)	yes
+cart	costs	attachment:tree.Costs	list	[['drugA', 'drugB', 2.0]] -> [(trueValue=drugA,predictedValue=dru...	[] (file: [])	yes
+cart	priors	attachment:tree.Priors	enum(Equal/Custom/Data)	Equal -> Equal; Custom -> Custom; Data -> Data	Data (file: Data)	yes
+cart	custom_priors	attachment:tree.CustomPriors	list	[['drugA', 0.2], ['drugB', 0.8]] -> [(value=drugA,probability=0.2),(valu...	[] (file: [])	yes
+cart	adjust_priors	attachment:tree.AdjustPriors	flag	True -> true	False (file: false)	yes
+cart	trails	attachment:thread_num	integer	15 -> 15	10 (file: 10)	yes
+cart	set_ensemble_method	attachment:ensemble_cat_method	enum(HighestProbabi.../HighestMeanPro.../Voting)	HighestProbability -> HighestProbability; HighestMeanProbability -> HighestMeanProbability; Voting -> Voting	Voting (file: Voting)	yes
+cart	range_ensemble_method	attachment:ensemble_con_method	enum(Median/Mean)	Median -> Median; Mean -> Mean	Mean (file: Mean)	yes
+cart	large_boost	attachment:veryLargeData	flag	True -> true	False (file: false)	yes
+cart	min_impurity	attachment:tree.MinImpurity	number	0.0003 -> 3.0E-4	0.0001 (file: 1.0E-4)	yes
+cart	impurity_measure	attachment:tree.ImpurityMeasure	enum(Twoing/Ordered/Gini)	Twoing -> Twoing; Ordered -> Ordered; Gini -> Gini	Gini (file: Gini)	yes
+cart	train_pct	attachment:tree.OverFitPreventionSetPct	integer	33 -> 33.0	30.0 (file: 30.0)	yes
+cart	set_random_seed		flag	True -> (no change)	True	no
+cart	seed	attachment:Cart_RandomSeed	integer	4321 -> 4321	681644031 (file: 681644031)	yes
+cart	calculate_variable_importance		flag	True -> (no change)	True	no
+cart	calculate_raw_propensities	attachment:scoring.isRawPropensity	flag	True -> true	False (file: false)	yes
+cart	calculate_adjusted_propensities	attachment:calculate_adjusted_propensities	flag	True -> Calc	False (file: NoCalc)	yes
+cart	adjusted_propensity_partition	attachment:adjusted_propensity_partition	enum(Validation/Test)	Validation -> Validation; Test -> Test	Test (file: Test)	yes
+cart	partition		?	set failed: The property 'partition' is read-only		no
+cart	use_split_data		?	set failed: The property 'use_split_data' is read-only		no
+cart	frequency_field		?	set failed: The property 'frequency_field' is read-only		no
+cart	use_weight		?	set failed: The property 'use_weight' is read-only		no
+chaid	custom_fields	attachment:role_use	flag	True -> true	False (file: false)	yes
+chaid	target	attachment:tree.TargetField	string	Drug -> Drug		yes
+chaid	inputs	attachment:tree.InputFieldList	list	['Age', 'Na', 'K'] -> [Age,Na,K]	[] (file: [])	yes
+chaid	use_model_name	autoModelName / attachment:modelRename	flag	True -> false	False (file: true)	yes
+chaid	model_name	modelName / attachment:modelName	string	CHAID_x -> CHAID_x		yes
+chaid	continue_training_existing_model	attachment:objective_choose	flag	True -> updateExistingModel	False (file: buildNewModel)	yes
+chaid	objective	attachment:objective_goal	enum(Boosting/Bagging/psm/Standard)	Boosting -> boosting; Bagging -> bagging; psm -> psm; Standard -> standard	standard (file: standard)	yes
+chaid	model_output_type	attachment:SingleModel	enum(InteractiveBui.../Single)	InteractiveBuilder -> InteractiveBuilder; Single -> Single	Single (file: Single)	yes
+chaid	use_tree_directives	attachment:use_tree_directives	flag	True -> true	False (file: false)	yes
+chaid	tree_directives	attachment:tree_directives	string	Test -> Test		yes
+chaid	method	attachment:method	enum(ExhaustiveChai.../Chaid)	ExhaustiveChaid -> ExhaustiveChaid; Chaid -> Chaid	Chaid (file: Chaid)	yes
+chaid	use_max_depth	attachment:MaxTreeDepth	enum(Custom/Default)	Custom -> Custom; Default -> Default	True (file: Default)	yes
+chaid	max_depth	attachment:tree.MaxTreeDepth	integer	7 -> 7	5 (file: 5)	yes
+chaid	use_percentage	attachment:tree.UsePercentageForNodeSizeRequirement	flag	False -> absolute	True (file: percentage)	yes
+chaid	min_parent_records_pc	attachment:tree.MinParentRecordsPct	integer	5 -> 5.0	2.0 (file: 2.0)	yes
+chaid	min_child_records_pc	attachment:tree.MinChildRecordsPct	integer	3 -> 3.0	1.0 (file: 1.0)	yes
+chaid	min_parent_records_abs	attachment:tree.MinParentRecordsABS	integer	40 -> 40	100 (file: 100)	yes
+chaid	min_child_records_abs	attachment:tree.MinChildRecordsABS	integer	30 -> 30	50 (file: 50)	yes
+chaid	use_costs	attachment:tree.UseCosts	flag	True -> true	False (file: false)	yes
+chaid	costs	attachment:tree.Costs	list	[['drugA', 'drugB', 2.0]] -> [(trueValue=drugA,predictedValue=dru...	[] (file: [])	yes
+chaid	trails	attachment:thread_num	integer	15 -> 15	10 (file: 10)	yes
+chaid	set_ensemble_method	attachment:ensemble_cat_method	enum(HighestProbabi.../HighestMeanPro.../Voting)	HighestProbability -> HighestProbability; HighestMeanProbability -> HighestMeanProbability; Voting -> Voting	Voting (file: Voting)	yes
+chaid	range_ensemble_method	attachment:ensemble_con_method	enum(Median/Mean)	Median -> Median; Mean -> Mean	Mean (file: Mean)	yes
+chaid	large_boost	attachment:veryLargeData	flag	True -> true	False (file: false)	yes
+chaid	split_alpha	attachment:tree.SplitAlpha	number	0.03 -> 0.03	0.05 (file: 0.05)	yes
+chaid	merge_alpha	attachment:tree.MergeAlpha	number	0.04 -> 0.04	0.05 (file: 0.05)	yes
+chaid	bonferroni_adjustment	attachment:tree.BonferroniAdjustment	flag	False -> false	True (file: true)	yes
+chaid	split_merged_categories	attachment:tree.SplitMergedCategories	flag	True -> true	False (file: false)	yes
+chaid	chi_square	attachment:tree.ChiSquareType	enum(LR/Pearson)	LR -> LR; Pearson -> pearson	pearson (file: pearson)	yes
+chaid	epsilon	attachment:tree.Epsilon	number	0.003 -> 0.003	0.001 (file: 0.001)	yes
+chaid	max_iterations	attachment:tree.MaxIterations	integer	75 -> 75	100 (file: 100)	yes
+chaid	set_random_seed		flag	True -> (no change)	True	no
+chaid	seed	attachment:Chaid_RandomSeed	integer	4321 -> 4321	701499504 (file: 701499504)	yes
+chaid	calculate_variable_importance		flag	True -> (no change)	True	no
+chaid	calculate_raw_propensities	attachment:scoring.isRawPropensity	flag	True -> true	False (file: false)	yes
+chaid	calculate_adjusted_propensities	attachment:calculate_adjusted_propensities	flag	True -> Calc	False (file: NoCalc)	yes
+chaid	adjusted_propensity_partition	attachment:adjusted_propensity_partition	enum(Validation/Test)	Validation -> Validation; Test -> Test	Test (file: Test)	yes
+chaid	maximum_number_of_models		?	set failed: The property 'maximum_number_of_models' is read-only		no
+logreg	change: instantiate fields by running a temporary Table node on the source		(structure)	 -> (no change)		no
+logreg	custom_fields	autoModelFieldSelection	flag	True -> false	False (file: true)	yes
+logreg	target	modelTargetFieldSelection	string	Drug -> Drug		yes
+logreg	inputs	modelInputFieldSelection / modelInputFieldSelection/field[0] / modelInputFieldSelection/field[1]	list	['BP', 'Cholesterol', 'Age'] -> (removed)	[]	yes
+logreg	partition	partitionField	string	Test -> Test		yes
+logreg	use_model_name	autoModelName	flag	True -> false	False (file: true)	yes
+logreg	model_name	modelName	string	Log_x -> Log_x		yes
+logreg	use_partitioned_data		flag	True -> (no change)	True	no
+logreg	logistic_procedure	logisticProcedure	enum(Binomial/Multinomial)	Binomial -> Binomial; Multinomial -> Multinomial	Multinomial (file: Multinomial)	yes
+logreg	include_constant	includeConstant	flag	False -> false	True (file: true)	yes
+logreg	mode	expertMode	enum(Expert/Simple)	Expert -> true; Simple -> false	Simple (file: false)	yes
+logreg	method	LogregMethod	enum(Stepwise/Forwards/Backwards/BackwardsStepw.../Enter)	Stepwise -> stepwise; Forwards -> forwards; Backwards -> backwards; BackwardsStepwise -> remove; Enter -> enter	Enter (file: enter)	yes
+logreg	binomial_method	LogregBinomialMethod	enum(Forwards/Backwards/Enter)	Forwards -> Forwards; Backwards -> Backwards; Enter -> Enter	Enter (file: Enter)	yes
+logreg	model_type	modelType	enum(FullFactorial/Custom/MainEffects)	FullFactorial -> fullFactorial; Custom -> custom; MainEffects -> mainEffects	MainEffects (file: mainEffects)	yes
+logreg	custom_terms	customEffects / customEffects/persistentObjectListMember[1]/EffectTerm / customEffects/persistentObjectListMember[0]/EffectTerm[0]	list	[['BP', 'Sex'], ['Age'], ['Na', 'K']] -> (removed)	[]	yes
+logreg	multinomial_base_category	multinomialBaseCategory	string	BP -> BP		yes
+logreg	binomial_categorical_input	logisticInputsTable/rows / logisticInputsTable/rows/row/field / logisticInputsTable/rows/row/contrast	string	Sex -> (removed)		yes
+logreg	binomial_input_contrast[field]	logisticInputsTable/rows/row/contrast	enum(Simple/Indicator/Difference/Helmert/Repeated/Polynomial/Deviation)	Simple -> Simple; Indicator -> Indicator; Difference -> Difference; Helmert -> Helmert; Repeated -> Repeated; Polynomial -> Polynomial	Indicator (file: Indicator)	yes
+logreg	binomial_input_category[field]	logisticInputsTable/rows/row/base_category	enum(First/Last)	First -> (no change); Last -> Last	First	yes
+logreg	scale	scale	enum(Pearson/Deviance/UserDefined/None)	Pearson -> pearsonScaling; Deviance -> devianceScaling; UserDefined -> userDefined; None -> none	None (file: none)	yes
+logreg	scale_value	scaleValue	number	3.0 -> 3.0	1.0 (file: 1.0)	yes
+logreg	all_probabilities	appendProbabilities	flag	True -> true	False (file: false)	yes
+logreg	tolerance	singularityTolerance	enum(1.0E-5/1.0E-6/1.0E-7/1.0E-8/1.0E-9/1.0E-10)	1.0E-5 -> 1.0e-5; 1.0E-6 -> 1.0e-6; 1.0E-7 -> 1.0e-7; 1.0E-8 -> 1.0e-8; 1.0E-9 -> 1.0e-9; 1.0E-10 -> 1.0e-10	1.0E-8 (file: 1.0e-8)	yes
+logreg	min_terms	minTerms	integer	7 -> 7	0 (file: 0)	yes
+logreg	use_max_terms	LogregEnableMaxTerms	flag	True -> true	False (file: false)	yes
+logreg	max_terms		integer	10 -> (no change)	10	no
+logreg	entry_criterion	stepwiseEntryMethod	enum(LR/Score)	LR -> LR; Score -> Score	Score (file: Score)	yes
+logreg	removal_criterion	stepwiseRemovalMethod	enum(Wald/LR)	Wald -> Wald; LR -> LR	LR (file: LR)	yes
+logreg	probability_entry	pIn	number	0.03 -> 0.03	0.05 (file: 0.05)	yes
+logreg	probability_removal	pOut	number	0.05 -> 0.05	0.1 (file: 0.1)	yes
+logreg	binomial_probability_entry	binomialPIn	number	0.04 -> 0.04	0.05 (file: 0.05)	yes
+logreg	binomial_probability_removal	binomialPOut	number	0.2 -> 0.2	0.1 (file: 0.1)	yes
+logreg	requirements	LogregSteppingRequirements	enum(HierarchyAll/Containment/None/HierarchyDiscr...)	HierarchyAll -> hierarchy_all; Containment -> containment_all; None -> none; HierarchyDiscrete -> hierarchy_discrete	None (file: none)	yes
+logreg	max_iterations	maximumIterations	integer	50 -> 50	20 (file: 20)	yes
+logreg	max_steps	maximumStepHalving	integer	3 -> 3	5 (file: 5)	yes
+logreg	p_converge	parameterConvergence	enum(1.0E-5/1.0E-6/1.0E-7/1.0E-8/1.0E-4)	1.0E-5 -> 1.0e-5; 1.0E-6 -> 1.0e-6; 1.0E-7 -> 1.0e-7; 1.0E-8 -> 1.0e-8; 1.0E-4 -> 1.0e-4	1.0E-6 (file: 1.0e-6)	yes
+logreg	l_converge	logLikelihoodConvergence	enum(0/1.0E-1/1.0E-2/1.0E-3/1.0E-4/1.0E-5)	0 -> (no change); 1.0E-1 -> 1.0e-1; 1.0E-2 -> 1.0e-2; 1.0E-3 -> 1.0e-3; 1.0E-4 -> 1.0e-4; 1.0E-5 -> 1.0e-5	0	yes
+logreg	delta	delta	number	0.03 -> 0.03	0.0 (file: 0.0)	yes
+logreg	iteration_history	iterationHistory	flag	True -> true	False (file: false)	yes
+logreg	summary		flag	True -> (no change)	True	no
+logreg	likelihood_ratio	likelihoodRatioTests	flag	True -> true	False (file: false)	yes
+logreg	asymptotic_correlation	asymptoticCorrelation	flag	True -> true	False (file: false)	yes
+logreg	goodness_fit	goodnessOfFit	flag	True -> true	False (file: false)	yes
+logreg	parameters		flag	True -> (no change)	True	no
+logreg	asymptotic_covariance	asymptoticCovariance	flag	True -> true	False (file: false)	yes
+logreg	classification_table	classificationTable	flag	True -> true	False (file: false)	yes
+logreg	stepwise_summary		flag	True -> (no change)	True	no
+logreg	info_criteria		flag	True -> (no change)	True	no
+logreg	monotonicity_measures	associationTable	flag	True -> true	False (file: false)	yes
+logreg	history_steps	historyIterations	integer	3 -> 3	1 (file: 1)	yes
+logreg	confidence_interval	confidenceInterval	integer	90 -> 90.0	95.0 (file: 95.0)	yes
+logreg	binomial_output_display	binomialOutputDisplay	enum(at_last_step/at_each_step)	at_last_step -> at_last_step; at_each_step -> at_each_step	at_each_step (file: at_each_step)	yes
+logreg	binomial_goodness_of_fit	binomialGoodnessOfFit	flag	True -> true	False (file: false)	yes
+logreg	binomial_parameters	binomialCorrelationOfEstimates	flag	True -> true	False (file: false)	yes
+logreg	binomial_iteration_history	binomialIterationHistory	flag	True -> true	False (file: false)	yes
+logreg	binomial_classification_plots	binomialClassificationPlots	flag	True -> true	False (file: false)	yes
+logreg	binomial_ci_enable	binomialCIEnable	flag	True -> true	False (file: false)	yes
+logreg	binomial_residual_enable	binomialCasewiseEnable	flag	True -> true	False (file: false)	yes
+logreg	binomial_ci	binomialCIValue	integer	85 -> 85	95 (file: 95)	yes
+logreg	binomial_residual	binomialCasewiseOutliers	enum(all/outliers)	all -> all; outliers -> outliers	outliers (file: outliers)	yes
+logreg	binomial_outlier_threshold	binomialCasewiseThreshold	number	3.5 -> 3.5	2.0 (file: 2.0)	yes
+logreg	binomial_classification_cutoff	binomialClassificationCutoff	number	0.6 -> 0.6	0.5 (file: 0.5)	yes
+logreg	binomial_removal_criterion	binomialStepwiseRemovalMethod	enum(Wald/Conditional/LR)	Wald -> Wald; Conditional -> Conditional; LR -> LR	LR (file: LR)	yes
+logreg	calculate_variable_importance	calculateVariableImportances	flag	True -> true	False (file: false)	yes
+logreg	calculate_raw_propensities	calculateRawPropensities	flag	True -> true	False (file: false)	yes
+featureselection	custom_fields	autoModelFieldSelection	flag	True -> false	False (file: true)	yes
+featureselection	target	modelTargetFieldSelection	string	Drug -> Drug		yes
+featureselection	inputs	modelInputFieldSelection / modelInputFieldSelection/field[0] / modelInputFieldSelection/field[1]	list	['Age', 'Na', 'K'] -> (removed)	[]	yes
+featureselection	use_model_name	autoModelName	flag	True -> false	False (file: true)	yes
+featureselection	model_name	modelName	string	FS_x -> FS_x		yes
+featureselection	screen_single_category		flag	True -> (no change)	True	no
+featureselection	max_single_category	maxSingleCategory	integer	80 -> 80.0	90.0 (file: 90.0)	yes
+featureselection	screen_missing_values		flag	True -> (no change)	True	no
+featureselection	max_missing_values		integer	70 -> (no change)	70.0	no
+featureselection	screen_num_categories		flag	True -> (no change)	True	no
+featureselection	max_num_categories	maxCategoriesAsCases	integer	33 -> 33.0	95.0 (file: 95.0)	yes
+featureselection	screen_std_dev		flag	True -> (no change)	True	no
+featureselection	min_std_dev	minStdDev	number	0.2 -> 0.2	0.0 (file: 0.0)	yes
+featureselection	screen_coeff_of_var		flag	True -> (no change)	True	no
+featureselection	min_coeff_of_var	minVariability	number	0.3 -> 0.3	0.1 (file: 0.1)	yes
+featureselection	criteria	criteria	enum(Likelihood/CramersV/Lambda/Pearson)	Likelihood -> likelihood; CramersV -> cramersV; Lambda -> lambda; Pearson -> pearson	Pearson (file: pearson)	yes
+featureselection	unimportant_below	importanceLowThreshold	number	0.8 -> 0.8	0.9 (file: 0.9)	yes
+featureselection	important_above	importanceMediumThreshold	number	0.9 -> 0.9	0.95 (file: 0.95)	yes
+featureselection	unimportant_label	importanceLowLabel	string	Nope -> Nope	Unimportant (file: Unimportant)	yes
+featureselection	marginal_label	importanceMediumLabel	string	Maybe -> Maybe	Marginal (file: Marginal)	yes
+featureselection	important_label	importanceHighLabel	string	Yes -> Yes	Important (file: Important)	yes
+featureselection	selection_mode	fieldSelectionMode	enum(ImportanceValu.../TopN/ImportanceLeve...)	ImportanceValue -> importanceValue; TopN -> topN; ImportanceLevel -> importanceLevel	ImportanceLevel (file: importanceLevel)	yes
+featureselection	select_important	selectImportantFields	flag	False -> false	True (file: true)	yes
+featureselection	select_marginal	selectMarginalFields	flag	True -> true	False (file: false)	yes
+featureselection	select_unimportant	selectUnimportantFields	flag	True -> true	False (file: false)	yes
+featureselection	importance_value	importanceValue	number	55.5 -> 55.5	0.95 (file: 0.95)	yes
+featureselection	top_n	topNFields	integer	15 -> 15; 5000 -> 1000	10 (file: 10)	yes
+linear	custom_fields	attachment:role_use	flag	True -> true	False (file: false)	yes
+linear	target	attachment:linreg.TargetField	string	Na -> Na		yes
+linear	inputs	attachment:linreg.InputFieldList	list	['Age', 'K'] -> [Age,K]	[] (file: [])	yes
+linear	use_model_name	autoModelName	flag	True -> false	False (file: true)	yes
+linear	model_name	modelName	string	Lin_x -> Lin_x		yes
+linear	use_partitioned_data		flag	True -> (no change)	True	no
+linear	continue_training_existing_model	attachment:objective_choose	flag	True -> updateExistingModel	False (file: buildNewModel)	yes
+linear	objective	attachment:objective_goal	enum(Bagging/Boosting/psm/Standard)	Bagging -> bagging; Boosting -> boosting; psm -> psm; Standard -> standard	standard (file: standard)	yes
+linear	use_auto_data_preparation	attachment:linreg.AutoDataPreparation	flag	False -> false	True (file: true)	yes
+linear	confidence_level	attachment:linreg.CIn	integer	90 -> 90.0; 150 -> 100.0	95.0 (file: 95.0)	yes
+linear	model_selection	attachment:linreg.VarSelectionMethod	enum(BestSubsets/None/ForwardStepwis...)	BestSubsets -> bestSubsets; None -> none; ForwardStepwise -> forwardStepwise	forwardStepwise (file: forwardStepwise)	yes
+linear	criteria_forward_stepwise	attachment:linreg.CriteriaForForwardStepwise	enum(Fstatistics/AdjustedRSquar.../ASE/AICC)	Fstatistics -> FStatistics; AdjustedRSquare -> adjustedRSquare; ASE -> ASE; AICC -> AICC	AICC (file: AICC)	yes
+linear	probability_entry	attachment:linreg.PIn	number	0.07 -> 0.07	0.05 (file: 0.05)	yes
+linear	probability_removal	attachment:linreg.POut	number	0.12 -> 0.12	0.1 (file: 0.1)	yes
+linear	use_max_effects	attachment:linreg.UseCustomMaxEffects	flag	True -> true	False (file: false)	yes
+linear	max_effects	attachment:linreg.MaxEffects	integer	5 -> 5	 (file: [])	yes
+linear	use_max_steps	attachment:linreg.UseCustomMaxSteps	flag	True -> true	False (file: false)	yes
+linear	max_steps	attachment:linreg.MaxSteps	integer	9 -> 9	 (file: [])	yes
+linear	criteria_best_subsets	attachment:linreg.CriteriaForBestSubsets	enum(AdjustedRSquar.../ASE/AICC)	AdjustedRSquare -> adjustedRSquare; ASE -> ASE; AICC -> AICC	AICC (file: AICC)	yes
+linear	combining_rule_continuous	attachment:ensemble_con_method	string	Median -> Median	Mean (file: Mean)	yes
+linear	combining_rule_categorical	attachment:ensemble_cat_method	string	HighestProbability -> HighestProbability	Voting (file: Voting)	yes
+linear	component_models_n	attachment:thread_num	integer	7 -> 7	10 (file: 10)	yes
+linear	use_random_seed		flag	True -> (no change)	True	no
+linear	random_seed	attachment:linreg.RandomSeed	integer	777 -> 777	54752075 (file: 54752075)	yes
+linear	use_custom_model_name	attachment:modelRename	flag	True -> true	False (file: false)	yes
+linear	custom_model_name	modelName / attachment:modelName	string	CMN -> CMN	 (file: Lin_x)	yes
+linear	use_custom_name	autoLabel / attachment:pasw.annotation_autoLabel	flag	True -> false	False (file: true)	yes
+linear	custom_name	label / attachment:pasw.annotation_label	string	CN -> CN		yes
+linear	tooltip	toolTipText / attachment:pasw.annotation_toolTipText	string	tt -> tt		yes
+linear	keywords	attachment:pasw.annotation_keywords	string	k1 -> k1		yes
+linear	annotation	annotation / attachment:pasw.annotation_description	string	an -> an		yes
+linear	partition		?	set failed: The property 'partition' is read-only		no
+stream	date_baseline	dateBaseline	stream	1950 -> 1950; 0 -> 1; 2100 -> 2100	1900	yes
+stream	date_2digit_baseline	date2DigitBaseline	stream	1950 -> 1950; 1900 -> 1900; 2099 -> 2099	1930	yes
+stream	time_rollover	timeRollover	stream	True -> true	false	yes
+stream	import_datetime_as_string	importDatetimeAsString	stream	True -> true	false	yes
+stream	decimal_places	realDecimalPlaces	stream	7 -> 7; 30 -> 30; 100 -> 100; -1 -> 0	3	yes
+stream	decimal_symbol	realDecimalSymbol	stream	Comma -> comma; Period -> period; Default -> (element removed)	period	yes
+stream	angles_in_radians		stream	True -> (no change)		no
+stream	use_max_set_size		stream	True -> (no change)		no
+stream	max_set_size	typeMaximumSetSize	stream	777 -> 777; 0 -> 0	250	yes
+stream	ruleset_evaluation	rulesetMode	stream	FirstHit -> first; Voting -> voting	voting	yes
+stream	refresh_source_nodes	refreshImportSources	stream	True -> true	false	yes
+stream	annotation	annotation	stream	stream note -> stream note		yes
+stream	script	script	stream	print 1 -> print 1		yes
+stream	encoding	fileEncoding	stream	SystemDefault -> (no change); UTF-8 -> UTF-8	serverDefault	yes
+stream	execute_method	scriptDefaultExecution	stream	Script -> true; Normal -> false	false	yes
+stream	stream_rewriting	EnableStreamRewriting	stream	False -> false; True -> true	true	yes
+stream	stream_rewriting_maximise_sql	OptimizeSQL	stream	False -> false; True -> true	true	yes
+stream	stream_rewriting_optimise_clem_execution	OptimizeBackendExec	stream	False -> false; True -> true	true	yes
+stream	stream_rewriting_optimise_syntax_execution	OptimizeSyntaxExec	stream	False -> false; True -> true	true	yes
+stream	enable_parallelism	EnableParallelism	stream	False -> false; True -> true	true	yes
+stream	sql_generation	GenerateSQL	stream	False -> false; True -> true	true	yes
+stream	database_caching	DatabaseCaching	stream	False -> false; True -> true	true	yes
+stream	sql_logging	LogSQL	stream	False -> (no change); True -> true	false	yes
+stream	sql_generation_logging	LogSQLGeneration	stream	False -> (no change); True -> true	false	yes
+stream	sql_log_native	LogNativeSQL	stream	False -> (no change); True -> true	false	yes
+stream	sql_log_prettyprint	LogPrettyPrintSQL	stream	False -> (no change); True -> true	false	yes
+stream	create_model_applier_for_new_models	createApplyNodeForNewModels	stream	False -> false; True -> true	true	yes
+stream	create_source_node_from_builders	createSourceNodeFromBuilders	stream	False -> false; True -> true	true	yes
+stream	has_coordinate_system	useCoordinateSystem	stream	False -> false; True -> true	true	yes
+stream	record_count_feedback_interval	RecordThroughputFreq	stream	333 -> 333	1000	yes
+stream	create_model_applier_update_links	createApplyNodeUpdateLinks	stream	createDisabled -> createDisabled; doNotCreate -> doNotCreate; createEnabled -> createEnabled	createEnabled	yes
+stream	create_source_node_update_links	createSourceNodeUpdateLinks	stream	createDisabled -> createDisabled; doNotCreate -> doNotCreate; createEnabled -> createEnabled	createEnabled	yes
+stream	coordinate_system	coordinateSystem	stream	ETRS_1989_EPSG_Arctic_zone_5-47 -> ETRS_1989_EPSG_Arctic_zone_5-47	WGS_1984_World_Mercator	yes
+stream	deployment_area	scnDeploymentType	stream	Scoring -> scoring; ModelRefresh -> modelRefresh; None -> none	none	yes
+stream	scoring_terminal_node_id	scnScoringTerminalNode	stream	id123 -> id123		yes
+stream	scoring_node_id	scnScoringModelNode	stream	id456 -> id456		yes
+stream	model_build_node_id	scnModelBuildNode	stream	id789 -> id789		yes
+stream	date_format	dateFormat	enum(29 values)	DDMMYY -> format1; MMDDYY -> format2; YYMMDD -> format3; YYYYMMDD -> format4; YYYYDDD -> format24; DAY -> format25; MONTH -> format26; DD-MM-YY -> format9	format23	yes
+stream	time_format	timeFormat	enum(15 values)	HHMMSS -> format1; HHMM -> format2; MMSS -> format3; HH:MM:SS -> format4; HH:MM -> format5; MM:SS -> format6; (H)H:(M)M:(S)S -> format7; (H)H:(M)M -> format8	format4	yes
