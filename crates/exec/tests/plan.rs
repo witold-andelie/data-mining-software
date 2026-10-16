@@ -140,8 +140,14 @@ fn evaluates_a_chain_and_shares_upstream_work() {
     assert_eq!(plan.terminals(), vec!["t1", "t2"]);
     let results = plan.evaluate(&["t1", "t2"], &ExecContext::default());
     assert_eq!(COUNTING_RUNS.load(Ordering::SeqCst), 1);
-    assert_eq!(results["t1"].as_ref().unwrap().row_count(), 2);
-    assert_eq!(results["t2"].as_ref().unwrap().row_count(), 3);
+    assert_eq!(
+        results["t1"].as_ref().unwrap().data().unwrap().row_count(),
+        2
+    );
+    assert_eq!(
+        results["t2"].as_ref().unwrap().data().unwrap().row_count(),
+        3
+    );
     assert_eq!(plan.inputs_of("t1"), vec!["f"]);
 }
 
@@ -261,8 +267,14 @@ fn supernodes_are_expanded_and_keep_their_uid() {
     assert_eq!(plan.inputs_of("t"), vec!["S"]);
     assert_eq!(plan.inputs_of("f"), vec!["in"]);
     let results = plan.evaluate(&["S"], &ExecContext::default());
-    assert_eq!(results["S"].as_ref().unwrap().row_count(), 2);
-    assert_eq!(results["f"].as_ref().unwrap().row_count(), 2);
+    assert_eq!(
+        results["S"].as_ref().unwrap().data().unwrap().row_count(),
+        2
+    );
+    assert_eq!(
+        results["f"].as_ref().unwrap().data().unwrap().row_count(),
+        2
+    );
 }
 
 #[test]
@@ -302,8 +314,19 @@ fn nested_source_and_terminal_supernodes() {
     assert_eq!(plan.terminals(), vec!["t_inner"]);
     assert_eq!(plan.inputs_of("t_inner"), vec!["S3"]);
     let results = plan.evaluate(&["S3", "t_inner"], &ExecContext::default());
-    assert_eq!(results["S3"].as_ref().unwrap().row_count(), 2);
-    assert_eq!(results["t_inner"].as_ref().unwrap().row_count(), 2);
+    assert_eq!(
+        results["S3"].as_ref().unwrap().data().unwrap().row_count(),
+        2
+    );
+    assert_eq!(
+        results["t_inner"]
+            .as_ref()
+            .unwrap()
+            .data()
+            .unwrap()
+            .row_count(),
+        2
+    );
 }
 
 #[test]

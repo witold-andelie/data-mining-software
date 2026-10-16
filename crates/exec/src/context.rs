@@ -1,6 +1,7 @@
 //! What every node can see while running: stream-wide settings and file resolution.
 
 use dms_strfmt::fastinfoset::Element;
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -13,6 +14,9 @@ pub struct ExecContext {
     /// The stream's saved properties (`stream/properties`: date and time formats, decimal symbol,
     /// date baselines, ...); see docs/formats/stream-properties.md.
     pub stream_properties: Option<Arc<Element>>,
+    /// The stream file's attachments by ZIP member (`data/0001.dat`, ...): model nuggets keep
+    /// their PMML there.
+    pub attachments: Arc<HashMap<String, Arc<[u8]>>>,
 }
 
 /// Finds data files a stream references. A path is used as-is when it exists; otherwise (for

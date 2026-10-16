@@ -115,6 +115,7 @@ fn ctx_with_dir(dir: PathBuf) -> ExecContext {
             data_dirs: vec![dir],
         },
         stream_properties: None,
+        attachments: Default::default(),
     }
 }
 

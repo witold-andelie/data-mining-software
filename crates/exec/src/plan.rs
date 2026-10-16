@@ -9,14 +9,14 @@
 use crate::context::ExecContext;
 use crate::error::{ErrorKind, NodeError};
 use crate::operator::{Factory, Operator};
+use crate::output::NodeOutput;
 use crate::registry;
 use dms_catalog::Resolution;
 use dms_stream::{Diagram, NodeRef, Stream, StreamNode};
-use dms_types::Table;
 use std::collections::HashMap;
 use std::sync::Arc;
 
-pub type NodeResult = Result<Arc<Table>, NodeError>;
+pub type NodeResult = Result<NodeOutput, NodeError>;
 
 /// A node ready to evaluate: its inputs (in link order) and its operator, or why it has none.
 pub struct PlannedNode {
@@ -26,6 +26,9 @@ pub struct PlannedNode {
     pub inputs: Vec<usize>,
     /// The uids this node is linked to, as saved (a supernode stays a supernode).
     linked_inputs: Vec<String>,
+    /// For a model nugget: the build node it is linked to (`builderNodeId`), when it is in the
+    /// stream. It runs first, and its model replaces the nugget's saved one, as in Modeler.
+    pub model_from: Option<usize>,
     operator: Result<Box<dyn Operator>, NodeError>,
 }
 
@@ -116,11 +119,14 @@ impl Plan {
                         )),
                     }
                 };
+                let model_from = crate::settings::text(node.settings.as_ref(), "builderNodeId")
+                    .and_then(|builder| by_real.get(builder.trim()).copied());
                 PlannedNode {
                     uid: node.uid.clone(),
                     catalog_id,
                     inputs: resolved.into_iter().flatten().collect(),
                     linked_inputs,
+                    model_from,
                     operator,
                 }
             })
@@ -188,7 +194,7 @@ impl Plan {
                 (Some(Visit::Pending), _) => {
                     set_state(&mut state, index, Visit::Expanded);
                     stack.push((index, true));
-                    for &input in node.inputs.iter().rev() {
+                    for &input in node.inputs.iter().chain(&node.model_from).rev() {
                         if state.get(input) != Some(&Visit::Done) {
                             stack.push((input, false));
                         }
@@ -235,7 +241,13 @@ impl Plan {
                 .get(input)
                 .map_or_else(String::new, |n| n.uid.clone());
             match results.get(input).and_then(Option::as_ref) {
-                Some(Ok(table)) => inputs.push(Arc::clone(table)),
+                Some(Ok(NodeOutput::Data(table))) => inputs.push(Arc::clone(table)),
+                Some(Ok(_)) => {
+                    return Err(NodeError::new(
+                        &node.uid,
+                        ErrorKind::Inputs(format!("{upstream_uid} produces no data")),
+                    ));
+                }
                 _ => {
                     return Err(NodeError::new(&node.uid, ErrorKind::Upstream(upstream_uid)));
                 }
@@ -247,9 +259,16 @@ impl Plan {
                 ErrorKind::Inputs(format!("{} inputs not accepted", inputs.len())),
             ));
         }
+        // A build node that failed or is not implemented leaves the nugget its saved model.
+        let model = node
+            .model_from
+            .and_then(|builder| results.get(builder))
+            .and_then(Option::as_ref)
+            .and_then(|result| result.as_ref().ok())
+            .and_then(NodeOutput::model)
+            .cloned();
         operator
-            .run(&inputs, context)
-            .map(Arc::new)
+            .produce(&inputs, model, context)
             .map_err(|error| error.at(&node.uid))
     }
 }

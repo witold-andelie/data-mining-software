@@ -2,6 +2,7 @@
 
 pub mod aggregate;
 pub mod append;
+pub mod apply;
 pub mod balance;
 pub mod derive;
 pub mod distinct;
