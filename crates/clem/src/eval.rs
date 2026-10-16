@@ -1,9 +1,10 @@
 //! Binding an expression to a data model and evaluating it on records.
 
-use crate::functions::{self, Function};
+use crate::functions::{self, Args, Function, Returns};
 use crate::parser::{BinaryOp, Expr};
+use crate::types::{Ty, unify};
 use crate::{ClemError, Datum};
-use dms_types::{DataModel, MissingSpec, Role, Storage, Value, ValueSpec};
+use dms_types::{DataModel, MissingSpec, Role, Value, ValueSpec};
 use std::cmp::Ordering;
 
 /// What names mean while binding.
@@ -91,6 +92,7 @@ fn bind(expr: &Expr, b: &Bindings<'_>) -> Result<Node, ClemError> {
     Ok(match expr {
         Expr::Literal(value) => Node::Const(Datum::Value(value.clone())),
         Expr::Boolean(truth) => Node::Const(Datum::Bool(*truth)),
+        Expr::Char(c) => Node::Const(Datum::Value(Value::string(c.to_string()))),
         Expr::Undef => Node::Undef,
         Expr::Field(name) => match b.model.position(name) {
             Some(position) => Node::Field(position),
@@ -197,50 +199,28 @@ fn special(name: &str, b: &Bindings<'_>) -> Result<Node, ClemError> {
 }
 
 fn call(name: &str, args: &[Expr], b: &Bindings<'_>) -> Result<Node, ClemError> {
-    let arity = |expected: usize| {
-        if args.len() == expected {
+    let arity = |accepted: &[usize]| {
+        if accepted.contains(&args.len()) {
             Ok(())
         } else {
+            let expected: Vec<String> = accepted.iter().map(usize::to_string).collect();
             Err(ClemError::Arity {
                 function: name.to_string(),
-                expected,
+                expected: expected.join(" or "),
                 found: args.len(),
             })
         }
     };
     match name {
         "@NULL" => {
-            arity(1)?;
+            arity(&[1])?;
             let inner = args
                 .first()
                 .ok_or_else(|| ClemError::Unsupported(name.into()))?;
             Ok(Node::IsNull(Box::new(bind(inner, b)?)))
         }
-        // Oracle: type tests look at the argument's type, not its value (`is_integer` of a null
-        // integer field is true).
-        "is_integer" | "is_real" | "is_number" | "is_string" if args.len() == 1 => {
-            let arg = args
-                .first()
-                .ok_or_else(|| ClemError::Unsupported(name.into()))?;
-            let node = bind(arg, b)?;
-            let known = match ty(&node, b) {
-                Ty::Unknown | Ty::Null => None,
-                Ty::Integer => Some(matches!(name, "is_integer" | "is_number")),
-                Ty::Real => Some(matches!(name, "is_real" | "is_number")),
-                Ty::String => Some(name == "is_string"),
-                _ => Some(false),
-            };
-            match known {
-                Some(truth) => Ok(Node::Const(Datum::Bool(truth))),
-                None => {
-                    let function = functions::lookup(name)
-                        .ok_or_else(|| ClemError::UnknownFunction(name.to_string()))?;
-                    Ok(Node::Call(function, vec![node]))
-                }
-            }
-        }
         "@BLANK" => {
-            arity(1)?;
+            arity(&[1])?;
             let field = match args.first().map(|arg| bind(arg, b)) {
                 Some(Ok(Node::Field(position))) => position,
                 _ => {
@@ -260,18 +240,77 @@ fn call(name: &str, args: &[Expr], b: &Bindings<'_>) -> Result<Node, ClemError> 
         _ => {
             let function = functions::lookup(name)
                 .ok_or_else(|| ClemError::UnknownFunction(name.to_string()))?;
-            arity(function.arity)?;
+            arity(function.arities)?;
+            check_args(&function, args)?;
             let args = args
                 .iter()
                 .map(|arg| {
-                    if name == "not" {
+                    if function.args == Args::Condition {
                         condition(arg, b)
                     } else {
                         bind(arg, b)
                     }
                 })
-                .collect::<Result<_, _>>()?;
+                .collect::<Result<Vec<_>, _>>()?;
+            // A type test is answered by the argument's static type when that is known.
+            if let (Some(test), [arg]) = (function.type_test, args.as_slice()) {
+                let arg_ty = ty(arg, b);
+                if arg_ty.is_known() {
+                    return Ok(Node::Const(Datum::Bool(test(arg_ty))));
+                }
+            }
             Ok(Node::Call(function, args))
+        }
+    }
+}
+
+/// The checks Modeler makes on the written arguments when it compiles a call.
+fn check_args(function: &Function, args: &[Expr]) -> Result<(), ClemError> {
+    let literal = |expr: &Expr| {
+        matches!(
+            expr,
+            Expr::Literal(_) | Expr::Boolean(_) | Expr::Char(_) | Expr::Undef
+        )
+    };
+    let list = |n: usize| match args.get(n) {
+        Some(Expr::List(items)) => Ok(items),
+        _ => Err(ClemError::Type(format!(
+            "{}: argument {} must be a list",
+            function.name,
+            n + 1
+        ))),
+    };
+    match function.args {
+        Args::Any | Args::Condition => Ok(()),
+        Args::CharFirst => match args.first() {
+            Some(Expr::Literal(Value::String(_))) | Some(Expr::Quoted(_)) => {
+                Err(ClemError::Type(format!(
+                    "{} takes a character such as `c`, not a string",
+                    function.name
+                )))
+            }
+            _ => Ok(()),
+        },
+        Args::Fields(n) => {
+            if list(n)?.iter().any(literal) {
+                Err(ClemError::Type(format!(
+                    "{} takes a list of fields",
+                    function.name
+                )))
+            } else {
+                Ok(())
+            }
+        }
+        Args::Uniform(n) => {
+            let items = list(n)?;
+            if items.iter().any(literal) && !items.iter().all(literal) {
+                Err(ClemError::Type(format!(
+                    "{}: the list mixes values and fields",
+                    function.name
+                )))
+            } else {
+                Ok(())
+            }
         }
     }
 }
@@ -452,52 +491,19 @@ fn compare(left: &Datum, right: &Datum) -> Result<Ordering, ClemError> {
     }
 }
 
-/// The type of an expression as far as binding can tell. Modeler types CLEM statically; we
-/// only need it where the type changes values or rejects an expression.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Ty {
-    Integer,
-    Real,
-    String,
-    Date,
-    Time,
-    Timestamp,
-    Bool,
-    /// `undef`: fits any type.
-    Null,
-    Unknown,
-}
-
-fn value_ty(value: &Value) -> Ty {
-    match value {
-        Value::Null => Ty::Null,
-        Value::Integer(_) => Ty::Integer,
-        Value::Real(_) => Ty::Real,
-        Value::String(_) => Ty::String,
-        Value::Date(_) => Ty::Date,
-        Value::Time(_) => Ty::Time,
-        Value::Timestamp(_) => Ty::Timestamp,
-        Value::List(_) => Ty::Unknown,
-    }
-}
-
 /// Recursion follows the bound tree, whose depth the parser bounds.
 fn ty(node: &Node, b: &Bindings<'_>) -> Ty {
     match node {
-        Node::Const(Datum::Value(value)) => value_ty(value),
+        Node::Const(Datum::Value(value)) => Ty::of_value(value),
         Node::Const(Datum::Bool(_)) | Node::Flag { .. } | Node::IsNull(_) | Node::IsBlank(..) => {
             Ty::Bool
         }
         Node::Undef => Ty::Null,
-        Node::Field(position) => match b.model.fields().get(*position).map(|f| f.storage) {
-            Some(Storage::Integer) => Ty::Integer,
-            Some(Storage::Real) => Ty::Real,
-            Some(Storage::String) => Ty::String,
-            Some(Storage::Date) => Ty::Date,
-            Some(Storage::Time) => Ty::Time,
-            Some(Storage::Timestamp) => Ty::Timestamp,
-            _ => Ty::Unknown,
-        },
+        Node::Field(position) => b
+            .model
+            .fields()
+            .get(*position)
+            .map_or(Ty::Unknown, |field| Ty::of_storage(field.storage)),
         Node::Negate(inner) => ty(inner, b),
         Node::Complement(_) | Node::Index => Ty::Integer,
         Node::List(_) => Ty::Unknown,
@@ -505,15 +511,25 @@ fn ty(node: &Node, b: &Bindings<'_>) -> Ty {
             .iter()
             .try_fold(ty(otherwise, b), |acc, (_, value)| unify(acc, ty(value, b)))
             .unwrap_or(Ty::Unknown),
-        Node::Call(function, args) => match function.name {
-            "to_real" | "to_number" | "sqrt" | "exp" | "log" | "log10" | "fracof" => Ty::Real,
-            "to_integer" | "intof" | "round" | "length" => Ty::Integer,
-            "to_string" | "lowertoupper" | "uppertolower" | "trim" | "trimstart" | "trimend"
-            | "substring" => Ty::String,
-            "not" | "member" | "is_integer" | "is_real" | "is_number" | "is_string" => Ty::Bool,
-            "abs" | "negate" | "sign" => args.first().map_or(Ty::Unknown, |arg| ty(arg, b)),
-            _ => Ty::Unknown,
-        },
+        Node::Call(function, args) => {
+            let common = |types: Vec<Ty>| {
+                types
+                    .into_iter()
+                    .try_fold(Ty::Null, unify)
+                    .unwrap_or(Ty::Unknown)
+            };
+            match function.returns {
+                Returns::Fixed(result) => result,
+                Returns::Arg(n) => args.get(n).map_or(Ty::Unknown, |arg| ty(arg, b)),
+                Returns::Common => common(args.iter().map(|arg| ty(arg, b)).collect()),
+                Returns::Items(n) => match args.get(n) {
+                    Some(Node::List(items)) => {
+                        common(items.iter().map(|item| ty(item, b)).collect())
+                    }
+                    _ => Ty::Unknown,
+                },
+            }
+        }
         Node::Chain(first, rest) => rest.iter().fold(ty(first, b), |left, (op, operand)| {
             let right = ty(operand, b);
             let numeric = |t: Ty| matches!(t, Ty::Integer | Ty::Real);
@@ -550,17 +566,6 @@ fn ty(node: &Node, b: &Bindings<'_>) -> Ty {
                 },
             }
         }),
-    }
-}
-
-/// The common type of two `if` branches; `None` when they cannot share one.
-fn unify(a: Ty, b: Ty) -> Option<Ty> {
-    match (a, b) {
-        _ if a == b => Some(a),
-        (Ty::Null, other) | (other, Ty::Null) => Some(other),
-        (Ty::Unknown, _) | (_, Ty::Unknown) => Some(Ty::Unknown),
-        (Ty::Integer, Ty::Real) | (Ty::Real, Ty::Integer) => Some(Ty::Real),
-        _ => None,
     }
 }
 

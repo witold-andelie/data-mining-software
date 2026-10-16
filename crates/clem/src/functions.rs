@@ -4,144 +4,127 @@
 //!
 //! Choices where IBM's documentation is silent are marked GAP and listed for oracle probes.
 
+mod dates;
+mod lists;
+mod numeric;
+mod strings;
+
 use crate::parser::BinaryOp;
+use crate::types::Ty;
 use crate::{ClemError, Datum};
 use dms_types::Value;
+use std::cmp::Ordering;
 
 #[derive(Debug, Clone, Copy)]
 pub struct Function {
     pub name: &'static str,
-    pub arity: usize,
+    /// Accepted argument counts.
+    pub arities: &'static [usize],
+    /// What binding checks about the written arguments.
+    pub args: Args,
+    /// The result type, for binding.
+    pub returns: Returns,
+    /// For type tests: the answer from the argument's static type, when it is known (oracle:
+    /// `is_integer` of a null integer field is true).
+    pub type_test: Option<fn(Ty) -> bool>,
     pub apply: fn(&[Datum]) -> Result<Datum, ClemError>,
 }
 
-const FUNCTIONS: &[Function] = &[
-    f("abs", 1, |a| {
-        numeric1(
-            a,
-            |i| i.checked_abs().map(Value::Integer),
-            |r| Value::real(r.abs()),
-        )
-    }),
-    f("sqrt", 1, |a| real1(a, |r| (r >= 0.0).then(|| r.sqrt()))),
-    f("exp", 1, |a| real1(a, |r| Some(r.exp()))),
-    f("log", 1, |a| real1(a, |r| (r > 0.0).then(|| r.ln()))),
-    f("log10", 1, |a| real1(a, |r| (r > 0.0).then(|| r.log10()))),
-    f("fracof", 1, |a| real1(a, |r| Some(r.fract()))),
-    f("intof", 1, |a| to_integer_with(a, f64::trunc)),
-    // Oracle rule 25: half away from zero, as `f64::round`.
-    f("round", 1, |a| to_integer_with(a, f64::round)),
-    f("sign", 1, |a| {
-        numeric1(
-            a,
-            |i| Some(Value::Integer(i.signum())),
-            |r| Value::real(if r == 0.0 { 0.0 } else { r.signum() }),
-        )
-    }),
-    f("negate", 1, |a| negate(first(a)?)),
-    f("not", 1, |a| {
-        Ok(first(a)?.truth()?.map_or(Datum::NULL, |t| Datum::Bool(!t)))
-    }),
-    // Oracle rule 24: truncates toward zero, also for decimal strings.
-    f("to_integer", 1, |a| {
-        Ok(match parse_number(a)? {
-            Some(Value::Real(r)) => Datum::Value(real_to_integer(r.trunc())),
-            Some(value) => Datum::Value(value),
-            None => Datum::NULL,
-        })
-    }),
-    // Oracle rule 26: both give reals.
-    f("to_real", 1, to_real),
-    f("to_number", 1, to_real),
-    f("to_string", 1, |a| {
-        let value = first(a)?;
-        Ok(if value.is_null() {
-            Datum::NULL
-        } else {
-            Datum::Value(Value::string(value.to_text()?))
-        })
-    }),
-    f("length", 1, |a| {
-        string1(a, |s| {
-            Value::Integer(i64::try_from(s.chars().count()).unwrap_or(i64::MAX))
-        })
-    }),
-    f("lowertoupper", 1, |a| {
-        string1(a, |s| Value::string(s.to_uppercase()))
-    }),
-    f("uppertolower", 1, |a| {
-        string1(a, |s| Value::string(s.to_lowercase()))
-    }),
-    f("trim", 1, |a| string1(a, |s| Value::string(s.trim()))),
-    // Oracle rule 45: `trimstart`; the guide's `trim_start` does not exist.
-    f("trimstart", 1, |a| {
-        string1(a, |s| Value::string(s.trim_start()))
-    }),
-    f("trimend", 1, |a| {
-        string1(a, |s| Value::string(s.trim_end()))
-    }),
-    // substring(N, LEN, STRING): LEN characters from 1-based position N. Oracle rule 42: a
-    // range outside the string gives null instead of being clamped.
-    f("substring", 3, |a| {
-        let (Some(start), Some(length), Some(text)) = (a.first(), a.get(1), a.get(2)) else {
-            return Err(ClemError::Type("substring needs three arguments".into()));
-        };
-        if start.is_null() || length.is_null() || text.is_null() {
-            return Ok(Datum::NULL);
+/// Argument checks Modeler makes when it compiles an expression.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Args {
+    Any,
+    /// The arguments are conditions: a flag field stands for its truth value.
+    Condition,
+    /// The first argument is a backquoted character; `'c'` and `"c"` are rejected (oracle
+    /// rule 44).
+    CharFirst,
+    /// Argument `n` is a list of fields; literals are rejected (oracle rule 30).
+    Fields(usize),
+    /// Argument `n` is a list of only literals or only fields (oracle rule 30, `member`).
+    Uniform(usize),
+}
+
+/// How the result type follows from the arguments.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Returns {
+    Fixed(Ty),
+    /// The type of argument `n`.
+    Arg(usize),
+    /// The common type of all arguments.
+    Common,
+    /// The common type of the items of the list at argument `n`.
+    Items(usize),
+}
+
+impl Function {
+    const fn returns(self, returns: Returns) -> Function {
+        Function { returns, ..self }
+    }
+
+    const fn args(self, args: Args) -> Function {
+        Function { args, ..self }
+    }
+
+    const fn arities(self, arities: &'static [usize]) -> Function {
+        Function { arities, ..self }
+    }
+
+    const fn type_test(self, test: fn(Ty) -> bool) -> Function {
+        Function {
+            type_test: Some(test),
+            ..self
         }
-        let (start, length) = (integer(start)?, integer(length)?);
-        let text = string(text)?;
-        let count = i64::try_from(text.chars().count()).unwrap_or(i64::MAX);
-        if start < 1 || length < 0 || (start - 1).saturating_add(length) > count {
-            return Ok(Datum::NULL);
-        }
-        let skip = usize::try_from(start - 1).unwrap_or(usize::MAX);
-        let take = usize::try_from(length).unwrap_or(usize::MAX);
-        Ok(Datum::Value(Value::string(
-            text.chars().skip(skip).take(take).collect::<String>(),
-        )))
-    }),
-    // member(ITEM, LIST)
-    f("member", 2, |a| {
-        let (Some(item), Some(Datum::Value(Value::List(list)))) = (a.first(), a.get(1)) else {
-            return Err(ClemError::Type("member needs an item and a list".into()));
-        };
-        if item.is_null() {
-            return Ok(Datum::NULL);
-        }
-        let item = item.clone().into_value()?;
-        Ok(Datum::Bool(list.iter().any(|v| v.total_cmp(&item).is_eq())))
-    }),
-    f("is_integer", 1, |a| {
-        kind(a, |v| matches!(v, Value::Integer(_)))
-    }),
-    f("is_real", 1, |a| kind(a, |v| matches!(v, Value::Real(_)))),
-    f("is_number", 1, |a| {
-        kind(a, |v| matches!(v, Value::Integer(_) | Value::Real(_)))
-    }),
-    f("is_string", 1, |a| {
-        kind(a, |v| matches!(v, Value::String(_)))
-    }),
+    }
+}
+
+const LOGIC: &[Function] = &[f("not", 1, |a| {
+    Ok(first(a)?.truth()?.map_or(Datum::NULL, |t| Datum::Bool(!t)))
+})
+.returns(Returns::Fixed(Ty::Bool))
+.args(Args::Condition)];
+
+const GROUPS: &[&[Function]] = &[
+    LOGIC,
+    numeric::FUNCTIONS,
+    lists::FUNCTIONS,
+    strings::FUNCTIONS,
+    dates::FUNCTIONS,
 ];
 
+/// Argument counts by number, for `f`.
+const ARITIES: [&[usize]; 6] = [&[0], &[1], &[2], &[3], &[4], &[5]];
+
+/// A function taking `arity` arguments (at most 5; others use `arities`), of unknown result
+/// type until `returns` says otherwise.
 const fn f(
     name: &'static str,
     arity: usize,
     apply: fn(&[Datum]) -> Result<Datum, ClemError>,
 ) -> Function {
-    Function { name, arity, apply }
+    Function {
+        name,
+        arities: ARITIES[arity],
+        args: Args::Any,
+        returns: Returns::Fixed(Ty::Unknown),
+        type_test: None,
+        apply,
+    }
 }
 
 pub fn lookup(name: &str) -> Option<Function> {
-    FUNCTIONS
+    GROUPS
         .iter()
+        .flat_map(|group| group.iter())
         .find(|function| function.name == name)
         .copied()
 }
 
 /// Names of all implemented functions (for coverage reports).
 pub fn names() -> impl Iterator<Item = &'static str> {
-    FUNCTIONS.iter().map(|function| function.name)
+    GROUPS
+        .iter()
+        .flat_map(|group| group.iter().map(|function| function.name))
 }
 
 fn first(args: &[Datum]) -> Result<Datum, ClemError> {
@@ -174,6 +157,45 @@ fn string(datum: &Datum) -> Result<String, ClemError> {
         other => Err(ClemError::Type(format!(
             "expected a string, found {other:?}"
         ))),
+    }
+}
+
+/// Extracts a single character from a one-character string (`Token::Char` or `subscrs`).
+fn char_arg(datum: &Datum) -> Result<char, ClemError> {
+    match datum {
+        Datum::Value(Value::String(s)) => {
+            let mut chars = s.chars();
+            match (chars.next(), chars.next()) {
+                (Some(c), None) => Ok(c),
+                _ => Err(ClemError::Type(format!(
+                    "expected a single character, found {s:?}"
+                ))),
+            }
+        }
+        other => Err(ClemError::Type(format!(
+            "expected a character, found {other:?}"
+        ))),
+    }
+}
+
+/// Total ordering across comparable CLEM values (numbers, strings, dates, times, timestamps).
+fn compare_values(left: &Value, right: &Value) -> Result<Ordering, ClemError> {
+    let comparable = matches!(
+        (left, right),
+        (
+            Value::Integer(_) | Value::Real(_),
+            Value::Integer(_) | Value::Real(_)
+        ) | (Value::String(_), Value::String(_))
+            | (Value::Date(_), Value::Date(_))
+            | (Value::Time(_), Value::Time(_))
+            | (Value::Timestamp(_), Value::Timestamp(_))
+    );
+    if comparable {
+        Ok(left.total_cmp(right))
+    } else {
+        Err(ClemError::Type(format!(
+            "cannot compare {left:?} with {right:?}"
+        )))
     }
 }
 
@@ -403,17 +425,22 @@ pub fn matches(text: Datum, pattern: Datum) -> Result<Datum, ClemError> {
         let mut next = vec![false; text.len() + 1];
         for j in 0..=text.len() {
             match token {
-                None => next[j] = reachable[j] || (j > 0 && next[j - 1]),
+                None => {
+                    next[j] = reachable.get(j).copied().unwrap_or(false)
+                        || (j > 0 && next.get(j - 1).copied().unwrap_or(false));
+                }
                 Some(wanted) => {
                     next[j] = j > 0
-                        && reachable[j - 1]
+                        && reachable.get(j - 1).copied().unwrap_or(false)
                         && wanted.is_none_or(|c| text.get(j - 1) == Some(&c));
                 }
             }
         }
         reachable = next;
     }
-    Ok(Datum::Bool(reachable[text.len()]))
+    Ok(Datum::Bool(
+        reachable.get(text.len()).copied().unwrap_or(false),
+    ))
 }
 
 /// A truncated remainder moved to the sign of the divisor.
