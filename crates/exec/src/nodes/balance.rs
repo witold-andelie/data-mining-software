@@ -1,0 +1,136 @@
+//! Balance (Record Ops): duplicates or drops records by condition-specific factors.
+//!
+//! Settings: `balanceDirectives/entries/entry[n]/{condition,factor}` (CLEM condition, real
+//! factor), `balanceTrainingPartitionOnly` (default true; only applies when the input has a
+//! partition field: records outside the training partition then pass unchanged).
+//! Evidence: `docs/formats/nodes/balance.md` and the team streams (`'heart disease' = 2` factor
+//! 1.25; `default = 0.0` factor 1.0 where `default` is an ordinary data field).
+//!
+//! A record matching a directive gets `floor(factor)` copies plus one more with probability
+//! `frac(factor)`; a record matching no directive keeps one copy.
+//! GAP: Modeler's random number generator is unknown, so non-integral factors use the deterministic
+//! seeded generator of `sample.rs` and cannot match Modeler's random output; integral factors
+//! (0.0, 1.0, 2.0, ...) are exact.
+//! GAP (unverified against Modeler): a record matching several directives gets the product of their
+//! factors; copies stay adjacent to the original record; a condition that evaluates to `$null$`
+//! does not match (rule 39).
+
+use super::field_util::record_number;
+use super::sample::SeededRng;
+use super::select::{Condition, Verdict};
+use crate::context::ExecContext;
+use crate::error::OperatorError;
+use crate::operator::{Arity, Operator};
+use crate::settings;
+use dms_stream::StreamNode;
+use dms_types::{Role, Table, ValueSpec};
+use std::sync::Arc;
+
+const SEED: u64 = 0xBA1A_17CE_0000_0001;
+
+struct Directive {
+    condition: Condition,
+    factor: f64,
+}
+
+struct Balance {
+    directives: Vec<Directive>,
+    training_only: bool,
+}
+
+pub fn build(node: &StreamNode) -> Result<Box<dyn Operator>, OperatorError> {
+    let s = node.settings.as_ref();
+    let training_only = settings::flag(s, "balanceTrainingPartitionOnly")?.unwrap_or(true);
+    let mut directives = Vec::new();
+    for entry in settings::children(s, "balanceDirectives/entries", "entry") {
+        let condition = entry.child("condition").map(|e| e.text());
+        let factor_text = entry.child("factor").map(|e| e.text()).unwrap_or_default();
+        let factor: f64 = factor_text
+            .trim()
+            .parse()
+            .ok()
+            .filter(|f: &f64| f.is_finite() && (0.0..=1000.0).contains(f))
+            .ok_or_else(|| {
+                OperatorError::Settings(format!("balance factor {factor_text:?} is not valid"))
+            })?;
+        directives.push(Directive {
+            condition: Condition::parse(condition, "balance condition")?,
+            factor,
+        });
+    }
+    Ok(Box::new(Balance {
+        directives,
+        training_only,
+    }))
+}
+
+impl Operator for Balance {
+    fn arity(&self) -> Arity {
+        Arity::Exactly(1)
+    }
+
+    fn run(&self, inputs: &[Arc<Table>], _context: &ExecContext) -> Result<Table, OperatorError> {
+        let input = inputs
+            .first()
+            .ok_or_else(|| OperatorError::Inputs("Balance needs one input".into()))?;
+        let model = input.model();
+        let bound = self
+            .directives
+            .iter()
+            .map(|d| d.condition.bind(model).map(|b| (b, d.factor)))
+            .collect::<Result<Vec<_>, _>>()?;
+        // (position of the partition field, its training value)
+        let training = if self.training_only {
+            match model
+                .fields()
+                .iter()
+                .position(|f| f.role == Role::Partition)
+            {
+                Some(position) => {
+                    let value = model
+                        .fields()
+                        .get(position)
+                        .and_then(|f| match &f.values {
+                            ValueSpec::Categories(values) => values.first().cloned(),
+                            _ => None,
+                        })
+                        .ok_or_else(|| {
+                            OperatorError::Data("partition values are not known".into())
+                        })?;
+                    Some((position, value))
+                }
+                None => None,
+            }
+        } else {
+            None
+        };
+        let mut rng = SeededRng::new(SEED);
+        let mut out = Vec::new();
+        for (index, row) in input.rows().iter().enumerate() {
+            let in_scope = match &training {
+                Some((position, value)) => row
+                    .get(*position)
+                    .is_some_and(|v| v.total_cmp(value).is_eq() && !v.is_null()),
+                None => true,
+            };
+            let mut factor = 1.0_f64;
+            if in_scope {
+                for (condition, f) in &bound {
+                    if condition.verdict(row, record_number(index))? == Verdict::True {
+                        factor *= f;
+                    }
+                }
+            }
+            let whole = factor.floor();
+            let mut copies = whole as usize;
+            let frac = factor - whole;
+            if frac > 0.0 && rng.next_f64() < frac {
+                copies = copies.saturating_add(1);
+            }
+            for _ in 0..copies {
+                out.push(row.clone());
+            }
+        }
+        Table::new(model.clone(), out).map_err(|error| OperatorError::Data(error.to_string()))
+    }
+}
