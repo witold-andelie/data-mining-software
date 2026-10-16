@@ -4,7 +4,7 @@
 
 | Scope | Implemented | Total |
 |---|---|---|
-| MVP | 9 | 100 |
+| MVP | 16 | 100 |
 | later | 0 | 13 |
 | out of scope | 0 | 34 |
 
@@ -39,14 +39,14 @@
 
 | Node | Id | Scope | Status | Modeler identifiers |
 |---|---|---|---|---|
-| Select | `select` | MVP | missing | `SelectNode` |
-| Sample | `sample` | MVP | missing | `SampleNode` |
-| Balance | `balance` | MVP | missing | `BalanceNode` |
-| Aggregate | `aggregate` | MVP | missing | `AggregateNode` |
+| Select | `select` | MVP | done | `SelectNode` |
+| Sample | `sample` | MVP | done | `SampleNode` |
+| Balance | `balance` | MVP | done | `BalanceNode` |
+| Aggregate | `aggregate` | MVP | done | `AggregateNode` |
 | RFM Aggregate | `rfm_aggregate` | MVP | missing | `RFMAggregateNode` |
-| Sort | `sort` | MVP | missing | `SortNode` |
-| Merge | `merge` | MVP | missing | `MergeNode` |
-| Append | `append` | MVP | missing | `AppendNode` |
+| Sort | `sort` | MVP | done | `SortNode` |
+| Merge | `merge` | MVP | done | `MergeNode` |
+| Append | `append` | MVP | done | `AppendNode` |
 | Distinct | `distinct` | MVP | missing | `DistinctNode` |
 | SMOTE (Python) | `smote` | MVP | missing | `smote!spss.smote` |
 | Streaming TS | `streaming_ts` | later | missing | `spss.ts!ts_streaming` |

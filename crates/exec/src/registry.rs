@@ -14,6 +14,13 @@ const BUILT_IN: &[(&str, Factory)] = &[
     ("var_file", nodes::var_file::build),
     ("statistics_file", nodes::statistics_file::build),
     ("type", nodes::r#type::build),
+    ("select", nodes::select::build),
+    ("sample", nodes::sample::build),
+    ("sort", nodes::sort::build),
+    ("aggregate", nodes::aggregate::build),
+    ("append", nodes::append::build),
+    ("merge", nodes::merge::build),
+    ("balance", nodes::balance::build),
 ];
 
 pub fn factory(catalog_id: &str) -> Option<Factory> {
