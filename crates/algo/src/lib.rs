@@ -12,6 +12,7 @@ pub mod chaid;
 mod common;
 pub mod kmeans;
 pub mod stats;
+pub mod twostep;
 
 pub use common::{
     categories, data_dictionary, data_field, field_categories, mining_field, mining_schema,

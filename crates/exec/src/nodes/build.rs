@@ -15,6 +15,12 @@
 //! `modelInputFieldSelection` fields unless `autoModelFieldSelection`, else the Type's `Input`
 //! and `Both` fields.
 //!
+//! TwoStep (`BuildTwoStepNode`) also keeps its settings in the node's XML
+//! (`docs/formats/nodes/twostep.md`): `standardizeFields`, `autoCluster` with `minClusters` and
+//! `maxClusters`, else `numClusters`, `clusteringCriterion` (`BIC`, `AIC`), `clusterLabelType`
+//! (`STRING`, `NUMBER`) and `clusterLabel`; inputs as for K-Means. Outlier handling
+//! (`excludeOutliers`) and the Euclidean distance are rejected.
+//!
 //! Rejected until implemented: frequency and analysis weights, split models, boosting and
 //! bagging, the interactive builder, misclassification costs; for C&R Tree the overfit
 //! prevention set (Modeler draws it with its own random generator; CHAID ignores the setting,
@@ -30,6 +36,7 @@ use dms_algo::Dataset;
 use dms_algo::cart::{self, CartSettings, Impurity, MinSize};
 use dms_algo::chaid::{self, ChaidSettings, ChiSquare, Method};
 use dms_algo::kmeans::{self, KMeansSettings};
+use dms_algo::twostep::{self, Criterion, TwoStepSettings};
 use dms_pmml::Pmml;
 use dms_stream::StreamNode;
 use dms_types::{DataModel, Role, Table};
@@ -42,6 +49,7 @@ pub fn build(node: &StreamNode) -> Result<Box<dyn Operator>, OperatorError> {
         "Cart!spss.tree-extension" => Algorithm::Cart,
         "Chaid!spss.tree-extension" => Algorithm::Chaid,
         "BuildKMeansNode" => Algorithm::KMeans(kmeans_settings(node)?),
+        "BuildTwoStepNode" => Algorithm::TwoStep(twostep_settings(node)?),
         other => {
             return Err(OperatorError::Settings(format!(
                 "training {other} is not implemented yet"
@@ -68,6 +76,7 @@ enum Algorithm {
     Chaid,
     /// The settings, and the custom input fields (`None`: the Type roles).
     KMeans((KMeansSettings, Option<Vec<String>>)),
+    TwoStep((TwoStepSettings, Option<Vec<String>>)),
 }
 
 struct Build {
@@ -104,6 +113,12 @@ impl Operator for Build {
                 .map_err(|error| OperatorError::Data(format!("K-Means: {error}")))?;
             return Ok(NodeOutput::Model(Arc::new(pmml)));
         }
+        if let Algorithm::TwoStep((settings, custom)) = &self.algorithm {
+            let fields = cluster_inputs(&table, custom.as_deref())?;
+            let pmml = twostep::train(&table, &fields, settings)
+                .map_err(|error| OperatorError::Data(format!("TwoStep: {error}")))?;
+            return Ok(NodeOutput::Model(Arc::new(pmml)));
+        }
         let parameters = self.parameters(context)?;
         tree_checks(&parameters)?;
         let (target, fields) = roles(&table, &parameters, "tree.")?;
@@ -118,8 +133,8 @@ impl Operator for Build {
                 .map_err(|error| OperatorError::Data(format!("C&R Tree: {error}")))?,
             Algorithm::Chaid => chaid::train(&dataset, &chaid_settings(&parameters)?)
                 .map_err(|error| OperatorError::Data(format!("CHAID: {error}")))?,
-            Algorithm::KMeans(_) => {
-                return Err(OperatorError::Settings("K-Means has no target".into()));
+            Algorithm::KMeans(_) | Algorithm::TwoStep(_) => {
+                return Err(OperatorError::Settings("clustering has no target".into()));
             }
         };
         Ok(NodeOutput::Model(Arc::new(pmml)))
@@ -212,6 +227,64 @@ fn kmeans_settings(
             } else {
                 defaults.set_encoding
             },
+            name,
+        },
+        custom,
+    ))
+}
+
+/// TwoStep settings from the node's XML.
+fn twostep_settings(
+    node: &StreamNode,
+) -> Result<(TwoStepSettings, Option<Vec<String>>), OperatorError> {
+    let s = node.settings.as_ref();
+    let defaults = TwoStepSettings::default();
+    if settings::flag(s, "excludeOutliers")?.unwrap_or(false) {
+        return Err(OperatorError::Settings(
+            "TwoStep outlier handling (excludeOutliers) is not supported yet".into(),
+        ));
+    }
+    if settings::text(s, "distanceMeasure").is_some_and(|d| d.trim() == "Euclidean") {
+        return Err(OperatorError::Settings(
+            "TwoStep with the Euclidean distance is not supported yet".into(),
+        ));
+    }
+    let count = |name: &str, default: usize| -> Result<usize, OperatorError> {
+        Ok(settings::integer(s, name)?
+            .and_then(|n| usize::try_from(n).ok())
+            .filter(|&n| n > 0)
+            .unwrap_or(default))
+    };
+    let criterion = match settings::text(s, "clusteringCriterion")
+        .as_deref()
+        .map(str::trim)
+    {
+        None | Some("") | Some("BIC") => Criterion::Bic,
+        Some("AIC") => Criterion::Aic,
+        Some(other) => {
+            return Err(OperatorError::Settings(format!(
+                "TwoStep clusteringCriterion {other:?} is not supported"
+            )));
+        }
+    };
+    let (_, custom) = kmeans_settings(node)?;
+    let name = (!settings::flag(s, "autoModelName")?.unwrap_or(true))
+        .then(|| settings::text(s, "modelName"))
+        .flatten()
+        .filter(|n| !n.trim().is_empty());
+    Ok((
+        TwoStepSettings {
+            standardize: settings::flag(s, "standardizeFields")?.unwrap_or(true),
+            auto_clusters: settings::flag(s, "autoCluster")?.unwrap_or(true),
+            min_clusters: count("minClusters", defaults.min_clusters)?,
+            max_clusters: count("maxClusters", defaults.max_clusters)?,
+            clusters: count("numClusters", defaults.clusters)?,
+            criterion,
+            label: settings::text(s, "clusterLabel")
+                .filter(|l| !l.is_empty())
+                .unwrap_or(defaults.label),
+            numeric_labels: settings::text(s, "clusterLabelType")
+                .is_some_and(|t| t.trim() == "NUMBER"),
             name,
         },
         custom,
