@@ -37,8 +37,10 @@ pub enum QuoteMode {
     Include,
     /// Quote characters are removed wherever they occur.
     Discard,
-    /// A field that starts with a quote ends at the matching quote; both are removed and the
-    /// text between (delimiters included) is the value.
+    /// In a field that starts with a quote, every quote toggles quoted text: the quotes are
+    /// removed and delimiters between a pair are text. The field ends at a delimiter outside the
+    /// pairs (`exports/export_main.csv`: `"say ""hi"""` reads `say hi`, and
+    /// `"q ""and"" semi;colon,comma"` reads `q and semi;colon,comma`).
     #[default]
     PairAndDiscard,
 }
@@ -388,24 +390,27 @@ impl Scanner<'_> {
         }
     }
 
-    /// The index of the quote that closes the one opened at `open`, if the text has one; a pair
-    /// of quotes inside stands for one quote character.
-    fn closing_quote(&mut self, open: usize, quote: char) -> Option<usize> {
+    /// The value of the field whose first quote is at `open`, and the index after its last
+    /// character, if every quote in it is paired before the text ends.
+    fn quoted_field(&mut self, open: usize, quote: char) -> Option<(String, usize)> {
         if self.unclosed.contains(&quote) {
             return None;
         }
+        let mut value = String::new();
+        let mut inside = true;
         let mut index = open + 1;
         while let Some(&c) = self.chars.get(index) {
             if c == quote {
-                if self.chars.get(index + 1) == Some(&quote) {
-                    index += 2;
-                    continue;
-                }
-                if self.ends_field(index + 1) {
-                    return Some(index);
-                }
+                inside = !inside;
+            } else if !inside && self.ends_field(index) {
+                return Some((value, index));
+            } else {
+                value.push(c);
             }
             index += 1;
+        }
+        if !inside {
+            return Some((value, index));
         }
         self.unclosed.insert(quote);
         None
@@ -429,16 +434,10 @@ fn parse_records(text: &str, options: &DelimitedOptions) -> Vec<Vec<String>> {
         if at_field_start
             && let Some(mode) = scanner.quote_mode(c)
             && mode == QuoteMode::PairAndDiscard
-            && let Some(close) = scanner.closing_quote(index, c)
+            && let Some((value, end)) = scanner.quoted_field(index, c)
         {
-            let inner: String = scanner
-                .chars
-                .get(index + 1..close)
-                .unwrap_or_default()
-                .iter()
-                .collect();
-            field.push_str(&inner.replace(&format!("{c}{c}"), &c.to_string()));
-            index = close + 1;
+            field.push_str(&value);
+            index = end;
             at_field_start = false;
             continue;
         }
@@ -851,7 +850,8 @@ mod tests {
             &DelimitedOptions::default(),
         );
         assert_eq!(column(&paired, "a"), [Value::string("x,y")]);
-        assert_eq!(column(&paired, "b"), [Value::string("say \"hi\"")]);
+        // Every quote toggles (`exports/export_main.csv`); a doubled quote is not an escape.
+        assert_eq!(column(&paired, "b"), [Value::string("say hi")]);
 
         let include = DelimitedOptions {
             double_quote: QuoteMode::Include,
