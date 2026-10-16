@@ -7,6 +7,7 @@ use crate::settings;
 use dms_clem::{Bindings, Compiled, Datum, Expr, compile, compile_condition, parse};
 use dms_strfmt::fastinfoset::Element;
 use dms_types::{DataModel, Field, Measurement, Storage, Table, Value};
+use std::cmp::Ordering;
 
 /// Parses a CLEM setting; an empty (or blank) setting is `None`.
 pub(crate) fn parse_optional(
@@ -288,4 +289,33 @@ pub(crate) fn position(model: &DataModel, name: &str) -> Result<usize, OperatorE
     model
         .position(name)
         .ok_or_else(|| OperatorError::Data(format!("input has no field {name:?}")))
+}
+
+/// A grouping key of field values, ordered (and equal) by `Value::total_cmp`, for
+/// `BTreeMap` lookups (Aggregate, Set to Flag).
+pub(crate) struct GroupKey(pub(crate) Vec<Value>);
+
+impl PartialEq for GroupKey {
+    fn eq(&self, other: &Self) -> bool {
+        self.cmp(other) == Ordering::Equal
+    }
+}
+
+impl Eq for GroupKey {}
+
+impl PartialOrd for GroupKey {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for GroupKey {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.0
+            .iter()
+            .zip(&other.0)
+            .map(|(a, b)| a.total_cmp(b))
+            .find(|ordering| ordering.is_ne())
+            .unwrap_or_else(|| self.0.len().cmp(&other.0.len()))
+    }
 }
