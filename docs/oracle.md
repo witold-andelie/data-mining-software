@@ -1,6 +1,6 @@
 # 标准答案（oracle）
 
-> 更新：2026-10-15
+> 更新：2026-10-16
 
 IBM SPSS Modeler 只用作测试对照：用它跑同一个流，导出结果，Rust 版的输出逐项比对。Modeler 不被链接、打包或分发；它的输出只存在本地 `oracle/`（gitignored）。
 
@@ -22,10 +22,24 @@ cargo xtask oracle ibm-demos druglearn.str [--timeout 600]
 2. 用 `xtask/oracle/modeler_oracle.py` 生成脚本（Jython 2.7，只用 IBM 公开的 Python 脚本接口），通过 `clemb -script … -execute` 在本地批处理模式运行（不需要 Modeler Server，也不弹界面）。
 3. 脚本：
    - 源节点引用的文件不存在时，按文件名在 Modeler 的 `Demos`、`corpus/<label>/`、`DMS_ORACLE_DATA_DIRS` 中查找并替换；流自带的导出节点改写到 `exports/`。
-   - 逐个运行终端节点（一个分支失败不影响其他分支，结果记在 `runs`），把生成的模型导出为 PMML（`models/`）。
+   - 逐个运行终端节点（一个分支失败不影响其他分支，结果记在 `runs`），把生成的模型导出为 PMML（`models/`），把输出节点生成的 `DocumentOutput` 导出到 `outputs/NN_<type>_<id>.<ext>`（记在 `manifest.json` 的 `"outputs"` 下，含 `id`、`type`、`label`、`file`、`format`）。
    - 在每个终端节点的上游接一个 Flat File 导出（UTF-8、逗号、带表头），写到 `data/`。
    - `manifest.json` 记录导出、重定位、缺失的数据文件和所有错误。
 4. xtask 写 `provenance.json`：流的 sha256、Modeler 版本、数据目录、耗时、每个输出文件的大小和 sha256。
+
+## 输出节点（`outputs/`）导出格式
+
+`taskrunner.exportDocumentToFile(output, path, fmt)` 对不同输出节点支持的 `FileFormat` 不同（不支持的格式会写出 0 字节文件）。脚本按优先级尝试 `COMMA_DELIMITED`（`.csv`）→ `JSON`（`.json`）→ `PLAIN_TEXT`（`.txt`）→ `HTML`（`.html`），取第一个非空结果：
+
+| 节点类型 | 导出格式（`format`） | 文件内容与表结构 | 数值与特殊值打印规则 |
+|---|---|---|---|
+| `dataaudit`（Data Audit） | `csv`（`.csv`） | 两张逗号分隔表，中间隔一个空行：<br>1. **Audit 统计表**：默认表头 `Field,Measurement,Min,Max,Mean,Std. Dev,Skewness,Unique,Valid`；开启 `advanced_stats`/`median_stats` 时表头扩展为 `Field,Measurement,Min,Max,Sum,Range,Mean,Mean Std. Err.,Std. Dev,Variance,Skewness,Skewness Std. Err.,Kurtosis,Kurtosis Std. Err.,Median,Mode,Unique,Valid`。<br>2. **Quality 质量表**：表头 `Field,Measurement,Outliers,Extremes,Action,Impute Missing,Method,% Complete,Valid Records,Null Value,Empty String,White Space,Blank Value`。 | 连续型统计量（Mean、Std. Dev、Skewness、Kurtosis 等）受流属性 `decimal_places = 15` 控制（15 位小数）；整数统计量（Count、Unique、Valid、整数字段的 Min/Max/Sum/Range/Median）不带小数；`% Complete` 固定 3 位小数（如 `91.667`）；不适用项输出 `--`；存在并列众数时 `Mode` 末尾附上角标 `¹`（UTF-8 `0xC2 0xB9`，取最小众数）。 |
+| `analysis`（Analysis） | `json`（`.json`） | 单行 JSON 树 `{"data": [...]}`。每个节点含 `"title"`（如 `"Results for output field <target>"`、`"Comparing $R-<target> with <target>"`、分组标题 `"<by_field> = <val>"`）和嵌套 `"data"` 或表格 `"table"`（二维字符串数组，配 `"format"`）：<br>- 准确率表（`FORMAT_ROW_HEADER` 或带分区列的 `FORMAT_ROW_AND_COLUMN_HEADER`）：行 `["Correct", count, pct]`、`["Wrong", count, pct]`、`["Total", count, ""]`。<br>- 混淆矩阵（`coincidence = true`，`FORMAT_MATRIX`）：首行 `["" 或分区说明, pred_cat1, ...]`，后续每行 `[actual_cat, n1, n2, ...]`。<br>- 置信度表（`confidence = true`，`FORMAT_ROW_HEADER`）：`Range`、`Mean Correct`、`Mean Incorrect`、`Always Correct Above`、`Always Incorrect Below`、`100% Accuracy Above`、`N Fold Correct Above`。<br>- 评估指标（`Evaluation Metrics`）：`["Model", "AUC", "Gini"]`。 | 计数为整数字符串（千位以上带逗号，如 `"1,660"`）；百分比最多 2 位小数并去掉尾随零（如 `"66.67%"`、`"80.5%"`、`"75%"`）；置信度与 AUC/Gini 固定最多 3 位小数且去尾零（不受 `decimal_places = 15` 影响）。 |
+| `matrix`（Matrix） | `csv`（`.csv`） | 单张逗号分隔交叉表：<br>- **仅计数或数值函数**（单行/单元格）：表头 `<row_field>,<col_cat1>,<col_cat2>,...[,Total]`；每行 `<row_val>,<v1>,<v2>,...`；开启 `include_totals` 时末列/末行为 `Total`（`cell_contents = Function` 时不输出 `Total` 行列）。<br>- **勾选百分比/期望值/残差**（多子行）：第二列插入统计量标签列（表头为空 `<row_field>,,<col_cat1>,...,Total`），每个 `<row_val>` 展开为 `Count`、`Expected`、`Residual`、`Row %`、`Column %`、`Total %` 子行（仅首子行带 `<row_val>`，其余子行首列为空）。 | 计数为整数；百分比、期望值、残差及单元格聚合函数（`Mean`/`Sum`/`Min`/`Max`/`SDev`）固定 3 位小数（如 `75.000`、`2.917`），整百或空桶输出整数 `100` 或 `0`（不受 `decimal_places = 15` 影响）；包含缺失值时字符串空串对应空列头/行头，系统缺失值 `$null$` 输出 `$null$`。 |
+| `statistics`（Statistics） | `json`（`.json`） | 单行 JSON 树 `{"data": [...]}`：<br>1. 每个 `examine` 字段一个分支（`"title": "<field>"` → `"title": "Statistics"`），含 `FORMAT_ROW_HEADER` 表 `[[stat_name, value], ...]`（`Count`、`Mean`、`Sum`、`Min`、`Max`、`Range`、`Variance`、`Standard Deviation`、`Standard Error of Mean`、`Median`、`Mode`），多众数时附说明节点 `"*Multiple modes exist.  The smallest value is shown."`。<br>2. 相关性表（`"title": "Pearson Correlations"`，`FORMAT_ROW_AND_COLUMN_HEADER`）：首行 `["", f1, f2, ...]`，每行 `[fi, "r/Label", ...]`（JSON 中 `/` 转义为 `\/`）。 | 实数统计量与相关系数 `r` 按 `decimal_places = 15` 输出 15 位小数；`Count` 及整数输入字段的 `Sum`/`Min`/`Max`/`Range`/`Median` 输出整数；多众数时 `Mode` 值末尾带 `*`；开启 `label_correlations` 时单元格格式为 `<r>/<Strength>`（如 `"-0.513557827673264/Weak"`）。 |
+| `means`（Means） | `csv`（`.csv`） | 单张逗号分隔表：<br>- `BetweenGroups`：表头 `Field,Mean (<g1>),Std. Dev. (<g1>),Std. Err. (<g1>),Count (<g1>),...,F-Test,df1,df2[,Importance]`（`output_view = Advanced` 时包含 `F-Test,df1,df2,Importance`，`Simple` 视图仅含分组统计与 `Importance`）。每行对应一个 `test_fields` 字段。 | `Mean`、`Std. Dev.`、`Std. Err.`、`F-Test`、`Importance` 均按 `decimal_places = 15` 输出 15 位小数；`Count`、`df1`、`df2` 为整数；样本量为 1 的组 `Std. Dev.` 输出 `$null$`，`Std. Err.` 输出 `--`。 |
+| `table`（Table） | `csv`（`.csv`） | 逗号分隔表：首行为字段名表头，后续每行一条记录。 | 实数按 `decimal_places = 15` 输出 15 位小数，整数原样输出；数值型与符号型系统缺失值输出 `$null$`，空字符串输出空字段（注意：这与 `outputfile` 导出到 `data/` 时把 `$null$` 写成空字段不同）。 |
+| `report` / 图表节点 | `txt` / `html` | `report` 导出为纯文本（`.txt`）；图形节点（`distribution`、`histogram`、`plot`）仅支持 `HTML`（`.html`，内嵌 base64 PNG）。 | — |
 
 ## 可复现性（实测）
 
@@ -36,13 +50,14 @@ cargo xtask oracle ibm-demos druglearn.str [--timeout 600]
 | 流 | 结果 |
 |---|---|
 | `ibm-demos/druglearn.str` | 2 个模型、1 份数据，0 错误 |
-| `team/cluster_analysis.str` | 3 个模型、7 份数据；1 个散点图节点失败：它引用的 `$KM-K-Means` 在该分支上不存在（流本身的问题，Modeler 界面里同样报错） |
-| `team/decision_trees_heart.str` | 2 个模型、4 份数据，0 错误 |
-| `team/linear_regression.str` | 3 个模型、3 份数据，0 错误 |
-| `team/logistic_regression.str` | 2 个模型、6 份数据，0 错误 |
-| `team/model_comparison.str` | 4 个模型、6 份数据，0 错误（`tree_credit.sav` 用 Modeler Demos 里的） |
-| `team/stream_1_M.str` | 9 份数据，0 错误 |
-| `team/stream_2_M.str` | 5 份数据，0 错误 |
+| `team/cluster_analysis.str` | 3 个模型、8 份输出（2 `dataaudit`、1 `statistics`、3 `matrix`、1 `table`、1 `transform`）、7 份数据；1 个散点图节点失败：它引用的 `$KM-K-Means` 在该分支上不存在（流本身的问题，Modeler 界面里同样报错） |
+| `team/decision_trees_heart.str` | 2 个模型、4 份输出（1 `dataaudit`、2 `analysis`、1 `distribution`）、4 份数据，0 错误 |
+| `team/linear_regression.str` | 3 个模型、3 份输出（1 `dataaudit`、2 `plot`）、3 份数据，0 错误 |
+| `team/logistic_regression.str` | 2 个模型、7 份输出（1 `dataaudit`、1 `analysis`、1 `table`、2 `distribution`、2 `histogram`）、6 份数据，0 错误 |
+| `team/model_comparison.str` | 4 个模型、5 份输出（1 `dataaudit`、2 `analysis`、1 `table`、1 `histogram`）、6 份数据，0 错误（`tree_credit.sav` 用 Modeler Demos 里的） |
+| `team/stream_1_M.str` | 13 份输出（3 `dataaudit`、6 `distribution`、4 `histogram`）、9 份数据，0 错误 |
+| `team/stream_2_M.str` | 5 份输出（1 `dataaudit`、4 `table`）、5 份数据，0 错误 |
+| `outputs/*.str`（10 个） | 输出节点的探针流（`xtask/oracle/probes/output_streams.py` 生成：2 `dataaudit`、2 `analysis`、3 `matrix`、1 `statistics`、1 `means`、1 `table`），全部 1 份输出、1 份数据、0 错误 |
 
 团队流的数据文件已加入 `team` 语料（`str,csv,sav,dat,txt`）。
 
@@ -63,4 +78,4 @@ Modeler 导出 CSV 时不转义字段里的双引号（值 `a"b` 写成 `"a"b"`�
 ## 已知限制
 
 - 只遍历顶层节点；超节点内部的源节点和终端节点还没处理。
-- 输出到屏幕的节点（表格、分析、图形）在批处理模式下没有输出，脚本改为导出它们的输入数据；分析类节点本身的统计结果暂未导出。
+- 图形节点（`distribution`、`histogram`、`plot`）的 `DocumentOutput` 只能导出为内嵌 PNG 的 HTML，不能导出数值表，因此仍需结合 `data/` 里的上游输入数据做校验。

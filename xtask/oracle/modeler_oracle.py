@@ -4,6 +4,7 @@
 #
 # For one stream it writes into OUT_DIR:
 #   models/NN_<label>.xml      PMML of every model the stream builds (terminals run one by one)
+#   outputs/NN_<type>_<id>.ext document output produced by each output terminal node
 #   data/NN_<type>_<id>.csv    the records reaching each terminal node (UTF-8, comma, header row)
 #   exports/<name>             files written by the stream's own export nodes
 #   manifest.json              what was exported, relocated or missing, and every error
@@ -21,8 +22,20 @@ DATA_DIRS = @DATA_DIRS@
 MAX_SEARCH_DEPTH = 4
 ERRORS = (modeler.api.ModelerException, java.lang.Exception, Exception)
 
-manifest = {"stream": STREAM_PATH, "runs": [], "models": [], "data": [], "relocated": [],
-            "missing_data": [], "errors": []}
+# Preferred structured export formats for DocumentOutput objects, in priority order:
+#   1. COMMA_DELIMITED (.csv): Data Audit, Matrix, Means, Table, Transform
+#   2. JSON (.json): Analysis, Statistics
+#   3. PLAIN_TEXT (.txt): Report
+#   4. HTML (.html): fallback for graphical or HTML-only outputs
+DOCUMENT_FORMATS = [
+    ("csv", "csv", modeler.api.FileFormat.COMMA_DELIMITED),
+    ("json", "json", modeler.api.FileFormat.JSON),
+    ("text", "txt", modeler.api.FileFormat.PLAIN_TEXT),
+    ("html", "html", modeler.api.FileFormat.HTML),
+]
+
+manifest = {"stream": STREAM_PATH, "runs": [], "models": [], "outputs": [], "data": [],
+            "relocated": [], "missing_data": [], "errors": []}
 
 
 def message(exc):
@@ -61,7 +74,7 @@ def find_data_file(name):
                     if depth < MAX_SEARCH_DEPTH:
                         pending.append((child, depth + 1))
                 elif child.getName().lower() == wanted:
-                    return child.getPath().replace("\\", "/")
+                    return child.getPath().replace(chr(92), "/")
     return None
 
 
@@ -84,7 +97,7 @@ def relocate_files(stream):
         path = file_property(node)
         if path is None:
             continue
-        name = path.replace("\\", "/").split("/")[-1]
+        name = path.replace(chr(92), "/").split("/")[-1]
         if node.isInitial():
             if java.io.File(path).exists():
                 continue
@@ -110,6 +123,7 @@ def relocate_files(stream):
 def run_terminals(stream, taskrunner):
     # Run each terminal node on its own so one failing branch does not stop the others.
     outputs = []
+    terminal_outputs = []
     for terminal in terminal_nodes(stream):
         results = []
         entry = {"node": describe(terminal), "ok": True}
@@ -120,7 +134,10 @@ def run_terminals(stream, taskrunner):
             record_error("run_terminal", terminal, e)
         manifest["runs"].append(entry)
         outputs.extend(results)
+        for result in results:
+            terminal_outputs.append((terminal, result))
     export_models(outputs, taskrunner)
+    export_documents(terminal_outputs, taskrunner)
 
 
 def export_models(outputs, taskrunner):
@@ -141,6 +158,44 @@ def export_models(outputs, taskrunner):
             manifest["models"].append(entry)
         except ERRORS, e:
             record_error("export_model", None, e)
+
+
+def export_documents(terminal_outputs, taskrunner):
+    out_dir = java.io.File("%s/outputs" % OUT_DIR)
+    if not out_dir.exists():
+        out_dir.mkdirs()
+    index = 0
+    for terminal, output in terminal_outputs:
+        if not isinstance(output, modeler.api.DocumentOutput):
+            continue
+        index += 1
+        base = "%s/outputs/%02d_%s_%s" % (
+            OUT_DIR, index, file_safe(terminal.getTypeName()), file_safe(terminal.getID()))
+        exported = False
+        last_err = None
+        for fmt_name, ext, fmt_obj in DOCUMENT_FORMATS:
+            path = "%s.%s" % (base, ext)
+            f = java.io.File(path)
+            if f.exists():
+                f.delete()
+            try:
+                taskrunner.exportDocumentToFile(output, path, fmt_obj)
+            except ERRORS, e:
+                last_err = e
+                if f.exists():
+                    f.delete()
+                continue
+            if f.exists() and f.length() > 0:
+                entry = describe(terminal)
+                entry["file"] = path
+                entry["format"] = fmt_name
+                manifest["outputs"].append(entry)
+                exported = True
+                break
+            if f.exists():
+                f.delete()
+        if not exported and last_err is not None:
+            record_error("export_output", terminal, last_err)
 
 
 def terminal_nodes(stream):
