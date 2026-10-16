@@ -46,6 +46,20 @@ cargo xtask oracle ibm-demos druglearn.str [--timeout 600]
 
 团队流的数据文件已加入 `team` 语料（`str,csv,sav,dat,txt`）。
 
+2026-10-16 起导出用 `decimal_places = 15`（实数按 15 位小数导出），上表各流已全部重跑。另外：
+
+| 流 | 结果 |
+|---|---|
+| `ibm-demos/condlearn.str` | 2 个模型、1 份数据，0 错误 |
+| `ibm-demos/condplot.str` | 3 份数据，0 错误 |
+| `ibm-demos/pm_binaryclassifier.str` | 1 个模型、2 份数据，0 错误（约 4 分钟） |
+| `ibm-demos/pm_decisionlist.str` | 3 份数据，0 错误 |
+| `ibm-demos/bayes_bankloan.str`、`bayes_churn_retrain.str` | 部分导出；本机 Modeler 不认识 Bayes Net 节点（`unknownterminal`），其下游的评估、分析节点随之失败 |
+| `ibm-demos/telco_coxreg.str` | 部分导出；Cox 节点未知，两个图节点没有可用字段 |
+| `records/*.str`（30 个） | 记录操作节点的探针流（`xtask/oracle/probes/record_streams.py` 生成），全部 1 份数据、0 错误 |
+
+Modeler 导出 CSV 时不转义字段里的双引号（值 `a"b` 写成 `"a"b"`），`xtask compare` 按这种方言读取 oracle 文件。
+
 ## 已知限制
 
 - 只遍历顶层节点；超节点内部的源节点和终端节点还没处理。
