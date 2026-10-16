@@ -272,7 +272,10 @@ fn nested_source_and_terminal_supernodes() {
         vec![
             supernode(
                 "S1",
-                vec![node("src", "DelimitedFileImportNode"), output_connector("out1")],
+                vec![
+                    node("src", "DelimitedFileImportNode"),
+                    output_connector("out1"),
+                ],
                 vec![link("src", "out1")],
             ),
             supernode(
