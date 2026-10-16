@@ -11,6 +11,7 @@ pub mod cart;
 pub mod chaid;
 mod common;
 pub mod kmeans;
+pub mod logistic;
 pub mod stats;
 pub mod twostep;
 
