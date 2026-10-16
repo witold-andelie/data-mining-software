@@ -29,6 +29,7 @@ const FUNCTIONS: &[Function] = &[
     f("log10", 1, |a| real1(a, |r| (r > 0.0).then(|| r.log10()))),
     f("fracof", 1, |a| real1(a, |r| Some(r.fract()))),
     f("intof", 1, |a| to_integer_with(a, f64::trunc)),
+    // Oracle rule 25: half away from zero, as `f64::round`.
     f("round", 1, |a| to_integer_with(a, f64::round)),
     f("sign", 1, |a| {
         numeric1(
@@ -41,21 +42,23 @@ const FUNCTIONS: &[Function] = &[
     f("not", 1, |a| {
         Ok(first(a)?.truth()?.map_or(Datum::NULL, |t| Datum::Bool(!t)))
     }),
-    // GAP: whether to_integer rounds or truncates reals; rounding half away from zero.
-    f("to_integer", 1, |a| to_number(a, true)),
-    f("to_real", 1, |a| {
-        to_number(a, false).map(|d| match d {
-            Datum::Value(Value::Integer(i)) => Datum::Value(Value::Real(i as f64)),
-            other => other,
+    // Oracle rule 24: truncates toward zero, also for decimal strings.
+    f("to_integer", 1, |a| {
+        Ok(match parse_number(a)? {
+            Some(Value::Real(r)) => Datum::Value(real_to_integer(r.trunc())),
+            Some(value) => Datum::Value(value),
+            None => Datum::NULL,
         })
     }),
-    f("to_number", 1, |a| to_number(a, false)),
+    // Oracle rule 26: both give reals.
+    f("to_real", 1, to_real),
+    f("to_number", 1, to_real),
     f("to_string", 1, |a| {
         let value = first(a)?;
         Ok(if value.is_null() {
             Datum::NULL
         } else {
-            Datum::Value(Value::string(value.to_text()))
+            Datum::Value(Value::string(value.to_text()?))
         })
     }),
     f("length", 1, |a| {
@@ -70,14 +73,15 @@ const FUNCTIONS: &[Function] = &[
         string1(a, |s| Value::string(s.to_lowercase()))
     }),
     f("trim", 1, |a| string1(a, |s| Value::string(s.trim()))),
-    f("trim_start", 1, |a| {
+    // Oracle rule 45: `trimstart`; the guide's `trim_start` does not exist.
+    f("trimstart", 1, |a| {
         string1(a, |s| Value::string(s.trim_start()))
     }),
     f("trimend", 1, |a| {
         string1(a, |s| Value::string(s.trim_end()))
     }),
-    // substring(N, LEN, STRING): LEN characters from 1-based position N.
-    // GAP: out-of-range positions; we return the characters that exist.
+    // substring(N, LEN, STRING): LEN characters from 1-based position N. Oracle rule 42: a
+    // range outside the string gives null instead of being clamped.
     f("substring", 3, |a| {
         let (Some(start), Some(length), Some(text)) = (a.first(), a.get(1), a.get(2)) else {
             return Err(ClemError::Type("substring needs three arguments".into()));
@@ -87,8 +91,12 @@ const FUNCTIONS: &[Function] = &[
         }
         let (start, length) = (integer(start)?, integer(length)?);
         let text = string(text)?;
-        let skip = usize::try_from(start.saturating_sub(1)).unwrap_or(0);
-        let take = usize::try_from(length).unwrap_or(0);
+        let count = i64::try_from(text.chars().count()).unwrap_or(i64::MAX);
+        if start < 1 || length < 0 || (start - 1).saturating_add(length) > count {
+            return Ok(Datum::NULL);
+        }
+        let skip = usize::try_from(start - 1).unwrap_or(usize::MAX);
+        let take = usize::try_from(length).unwrap_or(usize::MAX);
         Ok(Datum::Value(Value::string(
             text.chars().skip(skip).take(take).collect::<String>(),
         )))
@@ -202,40 +210,44 @@ fn to_integer_with(args: &[Datum], round: fn(f64) -> f64) -> Result<Datum, ClemE
     }
 }
 
-/// An integral real as an integer, or the real itself when it does not fit.
+/// An integral real as an integer; null outside the integer range (oracle rule 24:
+/// `to_integer(1e20)` is null).
 fn real_to_integer(value: f64) -> Value {
-    if value.is_finite() && value.abs() < 9.0e18 {
+    // 2^63: the first real above the integer range.
+    const LIMIT: f64 = 9_223_372_036_854_775_808.0;
+    if (-LIMIT..LIMIT).contains(&value) {
         Value::Integer(value as i64)
     } else {
-        Value::real(value)
+        Value::Null
     }
 }
 
-/// GAP: unparsable strings give null.
-fn to_number(args: &[Datum], integer_result: bool) -> Result<Datum, ClemError> {
-    let value = match first(args)? {
-        Datum::Value(Value::Null) => return Ok(Datum::NULL),
+/// A number from a number or a string (trimmed); unparsable strings give `None` like null.
+fn parse_number(args: &[Datum]) -> Result<Option<Value>, ClemError> {
+    Ok(match first(args)? {
+        Datum::Value(Value::Null) => None,
         Datum::Value(Value::String(text)) => {
             let text = text.trim();
             match text.parse::<i64>() {
-                Ok(i) => Value::Integer(i),
-                Err(_) => match text.parse::<f64>() {
-                    Ok(r) => Value::real(r),
-                    Err(_) => return Ok(Datum::NULL),
-                },
+                Ok(i) => Some(Value::Integer(i)),
+                Err(_) => text.parse::<f64>().ok().map(Value::real),
             }
         }
-        Datum::Value(v @ (Value::Integer(_) | Value::Real(_))) => v,
+        Datum::Value(value @ (Value::Integer(_) | Value::Real(_))) => Some(value),
         other => {
             return Err(ClemError::Type(format!(
                 "cannot convert {other:?} to a number"
             )));
         }
-    };
-    Ok(Datum::Value(match (integer_result, value) {
-        (true, Value::Real(r)) => real_to_integer(r.round()),
-        (_, other) => other,
-    }))
+    })
+}
+
+fn to_real(args: &[Datum]) -> Result<Datum, ClemError> {
+    Ok(match parse_number(args)? {
+        Some(Value::Integer(i)) => Datum::Value(Value::Real(i as f64)),
+        Some(value) => Datum::Value(value),
+        None => Datum::NULL,
+    })
 }
 
 fn string1(args: &[Datum], apply: fn(&str) -> Value) -> Result<Datum, ClemError> {
@@ -257,53 +269,162 @@ fn kind(args: &[Datum], test: fn(&Value) -> bool) -> Result<Datum, ClemError> {
 pub fn negate(value: Datum) -> Result<Datum, ClemError> {
     Ok(match value {
         Datum::Value(Value::Null) => Datum::NULL,
-        Datum::Value(Value::Integer(i)) => Datum::Value(
-            i.checked_neg()
-                .map_or_else(|| Value::real(-(i as f64)), Value::Integer),
-        ),
+        Datum::Value(Value::Integer(i)) => Datum::Value(Value::Integer(i.wrapping_neg())),
         other => Datum::Value(Value::real(-number(&other)?)),
     })
 }
 
-/// `+ - * / ** div rem`. Integers stay integers for `+ - * div rem` and non-negative integer
-/// powers, falling back to reals on overflow. GAP: `/` always gives a real.
+/// `~~`: bitwise complement of an integer.
+pub fn complement(value: Datum) -> Result<Datum, ClemError> {
+    match value {
+        Datum::Value(Value::Null) => Ok(Datum::NULL),
+        Datum::Value(Value::Integer(i)) => Ok(Datum::Value(Value::Integer(!i))),
+        other => Err(ClemError::Type(format!(
+            "~~ needs an integer, found {other:?}"
+        ))),
+    }
+}
+
+/// `&&=_0` and `&&/=_0`: whether two integers share no set bit, or some.
+pub fn bits_test(op: BinaryOp, left: Datum, right: Datum) -> Result<Datum, ClemError> {
+    if left.is_null() || right.is_null() {
+        return Ok(Datum::NULL);
+    }
+    let shared = integer(&left)? & integer(&right)?;
+    Ok(Datum::Bool((shared == 0) == (op == BinaryOp::BitsClear)))
+}
+
+/// Arithmetic and bitwise operators, as the oracle showed them (docs/clem/oracle-results.md
+/// rules 17-23): integers are 64-bit and wrap on overflow; `/` always gives a real; `div`
+/// truncates toward zero, `rem` takes the sign of the dividend and `mod` that of the divisor;
+/// any division by zero gives null; real overflow gives an infinity.
 pub fn arithmetic(op: BinaryOp, left: Datum, right: Datum) -> Result<Datum, ClemError> {
     if left.is_null() || right.is_null() {
         return Ok(Datum::NULL);
     }
     if let (Datum::Value(Value::Integer(a)), Datum::Value(Value::Integer(b))) = (&left, &right) {
-        let (a, b) = (*a, *b);
-        let exact = match op {
-            BinaryOp::Add => a.checked_add(b),
-            BinaryOp::Subtract => a.checked_sub(b),
-            BinaryOp::Multiply => a.checked_mul(b),
-            // GAP: sign of `div`/`rem` with negative operands; truncation toward zero.
-            BinaryOp::Div | BinaryOp::Rem if b == 0 => return Ok(Datum::NULL),
-            BinaryOp::Div => a.checked_div(b),
-            BinaryOp::Rem => a.checked_rem(b),
-            BinaryOp::Power if b >= 0 => u32::try_from(b).ok().and_then(|e| a.checked_pow(e)),
-            _ => None,
-        };
-        if let Some(value) = exact {
-            return Ok(Datum::Value(Value::Integer(value)));
-        }
-    }
-    if matches!(op, BinaryOp::Div | BinaryOp::Rem) {
-        return Err(ClemError::Type("div and rem need integer operands".into()));
+        return integer_arithmetic(op, *a, *b);
     }
     let (a, b) = (number(&left)?, number(&right)?);
     let result = match op {
         BinaryOp::Add => a + b,
         BinaryOp::Subtract => a - b,
         BinaryOp::Multiply => a * b,
-        BinaryOp::Divide if b == 0.0 => return Ok(Datum::NULL),
+        BinaryOp::Divide | BinaryOp::Div | BinaryOp::Rem | BinaryOp::Mod if b == 0.0 => {
+            return Ok(Datum::NULL);
+        }
         BinaryOp::Divide => a / b,
         BinaryOp::Power => a.powf(b),
+        // Oracle rule 20: `div` on reals gives a 32-bit integer (`1e10 div 1` is
+        // -2147483648, the x86 result for an out-of-range conversion).
+        BinaryOp::Div => {
+            let quotient = (a / b).trunc();
+            let value = if (f64::from(i32::MIN)..=f64::from(i32::MAX)).contains(&quotient) {
+                quotient as i64
+            } else {
+                i64::from(i32::MIN)
+            };
+            return Ok(Datum::Value(Value::Integer(value)));
+        }
+        BinaryOp::Rem => a % b,
+        // GAP: `mod` on reals; floored like on integers.
+        BinaryOp::Mod => floored(a % b, b),
+        other => {
+            return Err(ClemError::Type(format!("{other:?} needs integer operands")));
+        }
+    };
+    Ok(Datum::Value(Value::real(result)))
+}
+
+fn integer_arithmetic(op: BinaryOp, a: i64, b: i64) -> Result<Datum, ClemError> {
+    let value = match op {
+        BinaryOp::Add => a.wrapping_add(b),
+        BinaryOp::Subtract => a.wrapping_sub(b),
+        BinaryOp::Multiply => a.wrapping_mul(b),
+        BinaryOp::Divide if b == 0 => return Ok(Datum::NULL),
+        BinaryOp::Divide => return Ok(Datum::Value(Value::Real(a as f64 / b as f64))),
+        BinaryOp::Div | BinaryOp::Rem | BinaryOp::Mod if b == 0 => return Ok(Datum::NULL),
+        BinaryOp::Div => a.wrapping_div(b),
+        BinaryOp::Rem => a.wrapping_rem(b),
+        BinaryOp::Mod => floored(a.wrapping_rem(b), b),
+        // Oracle rules 22-23: an integer power out of range is the smallest integer (`2 ** 63`,
+        // `10 ** 20`); a negative exponent truncates the real power (`2 ** -1` is 0).
+        BinaryOp::Power => match u32::try_from(b) {
+            Ok(exponent) => a.checked_pow(exponent).unwrap_or(i64::MIN),
+            Err(_) if b < 0 => match real_to_integer((a as f64).powf(b as f64).trunc()) {
+                Value::Integer(value) => value,
+                _ => return Ok(Datum::NULL),
+            },
+            Err(_) => match a {
+                0 | 1 => a,
+                -1 => 1 - 2 * (b & 1),
+                _ => i64::MIN,
+            },
+        },
+        BinaryOp::BitAnd => a & b,
+        BinaryOp::BitAndNot => a & !b,
+        BinaryOp::BitOr => a | b,
+        BinaryOp::BitXor => a ^ b,
+        // Oracle rule 15: a negative shift count gives 0. GAP: `>>` by a negative count.
+        BinaryOp::ShiftLeft => u32::try_from(b)
+            .ok()
+            .and_then(|count| a.checked_shl(count))
+            .unwrap_or(0),
+        BinaryOp::ShiftRight => match u32::try_from(b) {
+            Ok(count) => a.checked_shr(count).unwrap_or(if a < 0 { -1 } else { 0 }),
+            Err(_) => 0,
+        },
         other => return Err(ClemError::Type(format!("{other:?} is not arithmetic"))),
     };
-    Ok(Datum::Value(if result.is_finite() {
-        Value::Real(result)
+    Ok(Datum::Value(Value::Integer(value)))
+}
+
+/// `STRING matches PATTERN` (oracle rule 46): case-sensitive; `*` matches any text, `?` one
+/// character, a backslash makes the next character literal; everything else is literal.
+pub fn matches(text: Datum, pattern: Datum) -> Result<Datum, ClemError> {
+    if text.is_null() || pattern.is_null() {
+        return Ok(Datum::NULL);
+    }
+    let text: Vec<char> = string(&text)?.chars().collect();
+    let mut tokens = Vec::new();
+    let mut chars = string(&pattern)?.chars().collect::<Vec<_>>().into_iter();
+    while let Some(c) = chars.next() {
+        tokens.push(match c {
+            '*' => None,
+            '?' => Some(None),
+            '\\' => Some(Some(chars.next().unwrap_or('\\'))),
+            other => Some(Some(other)),
+        });
+    }
+    // reachable[j]: the pattern so far can match the first j characters (O(n*m) time).
+    let mut reachable = vec![false; text.len() + 1];
+    reachable[0] = true;
+    for token in tokens {
+        let mut next = vec![false; text.len() + 1];
+        for j in 0..=text.len() {
+            match token {
+                None => next[j] = reachable[j] || (j > 0 && next[j - 1]),
+                Some(wanted) => {
+                    next[j] = j > 0
+                        && reachable[j - 1]
+                        && wanted.is_none_or(|c| text.get(j - 1) == Some(&c));
+                }
+            }
+        }
+        reachable = next;
+    }
+    Ok(Datum::Bool(reachable[text.len()]))
+}
+
+/// A truncated remainder moved to the sign of the divisor.
+fn floored<T>(remainder: T, divisor: T) -> T
+where
+    T: Copy + PartialOrd + Default + std::ops::Add<Output = T>,
+{
+    let zero = T::default();
+    if remainder != zero && (remainder < zero) != (divisor < zero) {
+        remainder + divisor
     } else {
-        Value::Null
-    }))
+        remainder
+    }
 }

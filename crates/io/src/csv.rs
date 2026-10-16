@@ -1,7 +1,8 @@
 //! Delimited text output in the convention of Modeler's Flat File export with the settings the
 //! oracle uses (UTF-8, comma, double quotes, header row): field names are quoted only when
-//! needed, string values are always quoted (inner quotes doubled, spaces kept), numbers, dates and
-//! times are not, and `$null$` is an empty field.
+//! needed, string values are always quoted (spaces kept), numbers, dates and times are not, and
+//! `$null$` is an empty field. Inner quotes are doubled (RFC 4180); Modeler leaves them as they
+//! are, which `xtask compare` reads as Modeler's dialect.
 //! Reals use the shortest text that reads back to the same value.
 
 use dms_types::{Table, Value};

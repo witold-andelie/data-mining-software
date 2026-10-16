@@ -24,8 +24,8 @@ pub enum Token {
 
 /// Operators, longest first so that `/==` wins over `/=` and `/`.
 const OPERATORS: &[&str] = &[
-    "/==", "**", "/=", "==", "><", ">=", "<=", "&&", "||", "<<", ">>", "~~", "*", "/", "+", "-",
-    ">", "<", "=",
+    "&&/=_0", "&&=_0", "&&~~", "||/&", "/==", "**", "/=", "==", "><", ">=", "<=", "&&", "||", "<<",
+    ">>", "~~", "*", "/", "+", "-", ">", "<", "=",
 ];
 
 /// Maximum expression length in characters.
@@ -51,19 +51,36 @@ pub fn tokenize(source: &str) -> Result<Vec<(usize, Token)>, ClemError> {
             message: message.to_string(),
         };
         match c {
+            // Comments (oracle: `#` to the end of the line and `/* ... */`; `//` is no comment).
+            '#' => {
+                while chars.get(i).is_some_and(|&(_, c)| c != '\n') {
+                    i += 1;
+                }
+            }
+            '/' if chars.get(i + 1).is_some_and(|&(_, c)| c == '*') => {
+                i += 2;
+                loop {
+                    match (chars.get(i), chars.get(i + 1)) {
+                        (Some(&(_, '*')), Some(&(_, '/'))) => break,
+                        (Some(_), _) => i += 1,
+                        (None, _) => return Err(syntax("unterminated comment")),
+                    }
+                }
+                i += 2;
+            }
             '(' => push(&mut tokens, &mut i, position, Token::LParen),
             ')' => push(&mut tokens, &mut i, position, Token::RParen),
             '[' => push(&mut tokens, &mut i, position, Token::LBracket),
             ']' => push(&mut tokens, &mut i, position, Token::RBracket),
             ',' => push(&mut tokens, &mut i, position, Token::Comma),
             '"' => {
-                let (text, next) = delimited(&chars, i + 1, '"', true)
-                    .ok_or_else(|| syntax("unterminated string"))?;
+                let (text, next) =
+                    delimited(&chars, i + 1, '"').ok_or_else(|| syntax("unterminated string"))?;
                 tokens.push((position, Token::String(text)));
                 i = next;
             }
             '\'' => {
-                let (text, next) = delimited(&chars, i + 1, '\'', false)
+                let (text, next) = delimited(&chars, i + 1, '\'')
                     .ok_or_else(|| syntax("unterminated quoted name"))?;
                 tokens.push((position, Token::Quoted(text)));
                 i = next;
@@ -117,23 +134,28 @@ fn slice(source: &str, chars: &[(usize, char)], start: usize, end: usize) -> Str
     source.get(from..to).unwrap_or_default().to_string()
 }
 
-/// Text up to the closing delimiter. In strings a backslash escapes the next character (IBM
-/// documents `\\` and `\$`; the full escape list is a documentation gap).
-fn delimited(
-    chars: &[(usize, char)],
-    mut i: usize,
-    end: char,
-    escapes: bool,
-) -> Option<(String, usize)> {
+/// Text up to the closing delimiter. Both quote kinds take the escapes the oracle confirmed
+/// (docs/clem/oracle-results.md rule 41): `\t`, `\n`, `\\` and the escaped delimiter; any other
+/// backslash stays as written (`"A"` has six characters). Doubled quotes are no escape.
+fn delimited(chars: &[(usize, char)], mut i: usize, end: char) -> Option<(String, usize)> {
     let mut text = String::new();
     loop {
         let &(_, c) = chars.get(i)?;
         if c == end {
             return Some((text, i + 1));
         }
-        if escapes && c == '\\' {
+        if c == '\\' {
             let &(_, escaped) = chars.get(i + 1)?;
-            text.push(escaped);
+            match escaped {
+                't' => text.push('\t'),
+                'n' => text.push('\n'),
+                '\\' => text.push('\\'),
+                e if e == end => text.push(e),
+                other => {
+                    text.push('\\');
+                    text.push(other);
+                }
+            }
             i += 2;
         } else {
             text.push(c);
