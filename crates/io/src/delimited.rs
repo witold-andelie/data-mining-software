@@ -10,7 +10,8 @@
 //! `fraud_info.csv`, `customer_bank_data.csv` and `goods.dat`):
 //! - Field names are kept exactly as written (no trimming: `"sex "` stays `sex `); a missing
 //!   header gives `field1`, `field2`, ... (`oracle/probes/settings_variablefile/s090.str`).
-//! - An empty field is `Null`, whatever the storage.
+//! - An empty field is the empty string in a string column and `Null` otherwise; a field missing
+//!   from a short record is `Null` (`oracle/probes/clem_semantics`, `oracle/records/*`).
 //! - Storage inference inspects the first `scan_lines` (default 50, `scanLineCount`) records:
 //!   a column is `Integer` when every non-empty scanned value is a whole number that fits 64 bits,
 //!   `Real` when every one is a finite decimal number, `Date`/`Time`/`Timestamp` when date
@@ -278,14 +279,13 @@ pub fn read_table(bytes: &[u8], options: &DelimitedOptions) -> Result<Table, Del
     let mut fields = Vec::with_capacity(width);
     let mut columns: Vec<Vec<Value>> = Vec::with_capacity(width);
     for (index, name) in names.iter().enumerate() {
-        let raw: Vec<Option<&str>> = records
+        let cells: Vec<Option<&str>> = records
             .iter()
-            .map(|record| {
-                record
-                    .get(index)
-                    .map(String::as_str)
-                    .filter(|value| !value.is_empty())
-            })
+            .map(|record| record.get(index).map(String::as_str))
+            .collect();
+        let raw: Vec<Option<&str>> = cells
+            .iter()
+            .map(|cell| cell.filter(|value| !value.is_empty()))
             .collect();
         let forced = options
             .overrides
@@ -294,9 +294,14 @@ pub fn read_table(bytes: &[u8], options: &DelimitedOptions) -> Result<Table, Del
             .map(|choice| choice.storage)
             .filter(|storage| *storage != Storage::Unknown);
         let storage = forced.unwrap_or_else(|| infer_storage(&raw, options));
-        let values = raw
+        let values = cells
             .iter()
-            .map(|cell| cell.map_or(Value::Null, |text| convert(text, storage, options)))
+            .map(|cell| match cell {
+                Some(text) if !text.is_empty() || storage == Storage::String => {
+                    convert(text, storage, options)
+                }
+                _ => Value::Null,
+            })
             .collect();
         let mut field = Field::new(name.clone(), storage);
         field.measurement = match storage {
@@ -817,7 +822,7 @@ mod tests {
             ]
         );
         assert!(table.model().field("sex ").is_some());
-        assert_eq!(column(&table, "sex "), [Value::string("F"), Value::Null]);
+        assert_eq!(column(&table, "sex "), [Value::string("F"), Value::string("")]);
         assert_eq!(
             column(&table, "Age"),
             [Value::Integer(23), Value::Integer(47)]
