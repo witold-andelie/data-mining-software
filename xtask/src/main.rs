@@ -32,7 +32,14 @@ commands:
                              each terminal node with the Modeler oracle export";
 
 /// Crates with real-file and oracle tests behind their `corpus` feature.
-const CORPUS_CRATES: &[&str] = &["dms-strfmt", "dms-stream", "dms-sav", "dms-io", "dms-clem"];
+const CORPUS_CRATES: &[&str] = &[
+    "dms-strfmt",
+    "dms-stream",
+    "dms-sav",
+    "dms-io",
+    "dms-clem",
+    "dms-pmml",
+];
 
 fn test_corpus() -> Result<()> {
     corpus::run(&["verify".to_string()])?;

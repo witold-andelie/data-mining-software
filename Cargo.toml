@@ -14,6 +14,7 @@ dms-engine = { path = "crates/engine" }
 dms-strfmt = { path = "crates/strfmt" }
 dms-sav = { path = "crates/sav" }
 dms-types = { path = "crates/types" }
+dms-pmml = { path = "crates/pmml" }
 dms-clem = { path = "crates/clem" }
 dms-io = { path = "crates/io" }
 dms-stream = { path = "crates/stream" }
