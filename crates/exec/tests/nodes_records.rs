@@ -248,7 +248,7 @@ fn sample_first_n_one_in_n_max_size_and_discard_mode() {
         vec![Value::Integer(3), Value::Integer(4)]
     );
 
-    // 1-in-2 keeps indices 0 and 2 -> ids 1 and 3; with max_size=1 keeps only id 1.
+    // 1-in-2 keeps 1-based records 2, 4, ... -> ids 2 and 4; with max_size=1 keeps only id 2.
     let one_in_2 = run(
         sample::build,
         vec![p("sampleMethod", "oneInN"), p("sampleOneInN", "2")],
@@ -257,7 +257,7 @@ fn sample_first_n_one_in_n_max_size_and_discard_mode() {
     .unwrap();
     assert_eq!(
         col(&one_in_2, "id"),
-        vec![Value::Integer(1), Value::Integer(3)]
+        vec![Value::Integer(2), Value::Integer(4)]
     );
 
     let capped = run(
@@ -271,7 +271,22 @@ fn sample_first_n_one_in_n_max_size_and_discard_mode() {
         sample_table(),
     )
     .unwrap();
-    assert_eq!(col(&capped, "id"), vec![Value::Integer(1)]);
+    assert_eq!(col(&capped, "id"), vec![Value::Integer(2)]);
+
+    // In discard mode, 1-in-2 drops even 1-based records and keeps odd ones (1, 3), capped by max_size.
+    let discard_capped = run(
+        sample::build,
+        vec![
+            p("sampleMode", "discard"),
+            p("sampleMethod", "oneInN"),
+            p("sampleOneInN", "2"),
+            p("sampleUseMaxSize", "true"),
+            p("sampleMaxSize", "1"),
+        ],
+        sample_table(),
+    )
+    .unwrap();
+    assert_eq!(col(&discard_capped, "id"), vec![Value::Integer(1)]);
 }
 
 #[test]
@@ -339,7 +354,7 @@ fn sort_orders_by_multiple_keys_and_places_nulls_first_in_ascending() {
     ];
     let table = Table::new(DataModel::new(fields).unwrap(), rows).unwrap();
 
-    // group Ascending (0), val Descending (true); ties preserve input order (seq 2 before 4).
+    // group Ascending (0), val Descending (true); ties reverse input order (seq 4 before 2).
     let sorted = run(
         sort::build,
         vec![g(
@@ -358,10 +373,81 @@ fn sort_orders_by_multiple_keys_and_places_nulls_first_in_ascending() {
     assert_eq!(
         col(&sorted, "seq"),
         vec![
-            Value::Integer(2),
             Value::Integer(4),
+            Value::Integer(2),
             Value::Integer(3),
             Value::Integer(1),
+        ]
+    );
+}
+
+#[test]
+fn sort_places_nulls_last_in_both_directions_and_orders_strings_case_insensitively() {
+    let fields = vec![
+        Field::new("s", Storage::String),
+        Field::new("rv", Storage::Real),
+        Field::new("id", Storage::Integer),
+    ];
+    let rows = vec![
+        vec![Value::string("Apple"), Value::Real(0.0), Value::Integer(2)],
+        vec![Value::string("apple"), Value::Real(2.5), Value::Integer(4)],
+        vec![Value::string("APPLE"), Value::Null, Value::Integer(14)],
+        vec![Value::string(""), Value::Real(18.5), Value::Integer(15)],
+        vec![Value::string(""), Value::Null, Value::Integer(11)],
+        vec![Value::Null, Value::Real(1.0), Value::Integer(99)],
+    ];
+    let table = Table::new(DataModel::new(fields).unwrap(), rows).unwrap();
+
+    // s Ascending, rv Descending: "" < "apple" < "Apple" < "APPLE" < Null; for "", rv=18.5 precedes rv=Null.
+    let asc = run(
+        sort::build,
+        vec![g(
+            "sortKeys",
+            vec![g(
+                "rows",
+                vec![
+                    g("row", vec![p("field", "s"), p("direction", "0")]),
+                    g("row", vec![p("field", "rv"), p("direction", "1")]),
+                ],
+            )],
+        )],
+        table.clone(),
+    )
+    .unwrap();
+    assert_eq!(
+        col(&asc, "id"),
+        vec![
+            Value::Integer(15),
+            Value::Integer(11),
+            Value::Integer(4),
+            Value::Integer(2),
+            Value::Integer(14),
+            Value::Integer(99),
+        ]
+    );
+
+    // s Descending: "APPLE" > "Apple" > "apple" > "", ties on "" reverse input order (11 before 15), and Null still last.
+    let desc = run(
+        sort::build,
+        vec![g(
+            "sortKeys",
+            vec![g(
+                "rows",
+                vec![g("row", vec![p("field", "s"), p("direction", "1")])],
+            )],
+        )],
+        table,
+    )
+    .unwrap();
+    assert_eq!(
+        col(&desc, "id"),
+        vec![
+            Value::Integer(14),
+            Value::Integer(2),
+            Value::Integer(4),
+            Value::Integer(11),
+            Value::Integer(15),
+            Value::Integer(99),
         ]
     );
 }
@@ -445,51 +531,87 @@ fn aggregate_groups_by_keys_computes_statistics_and_respects_contiguous_mode() {
     )
     .unwrap();
 
-    // Non-contiguous: groups are sorted by key ("A", then "B").
-    assert_eq!(col(&out, "k"), vec![Value::string("A"), Value::string("B")]);
+    // Non-contiguous: groups are emitted in order of first appearance ("B", then "A").
+    assert_eq!(col(&out, "k"), vec![Value::string("B"), Value::string("A")]);
     assert_eq!(
         col(&out, "x_Sum"),
-        vec![Value::Integer(6), Value::Integer(30)]
+        vec![Value::Integer(30), Value::Integer(6)]
     );
     assert_eq!(
         col(&out, "x_Mean"),
-        vec![Value::Real(3.0), Value::Real(15.0)]
+        vec![Value::Real(15.0), Value::Real(3.0)]
     );
     assert_eq!(
         col(&out, "x_Min"),
-        vec![Value::Integer(2), Value::Integer(10)]
+        vec![Value::Integer(10), Value::Integer(2)]
     );
     assert_eq!(
         col(&out, "x_Max"),
-        vec![Value::Integer(4), Value::Integer(20)]
+        vec![Value::Integer(20), Value::Integer(4)]
     );
     assert_eq!(
         col(&out, "x_Count"),
         vec![Value::Integer(2), Value::Integer(2)]
     );
     assert_eq!(
-        col(&out, "x_Var"),
-        vec![Value::Real(2.0), Value::Real(50.0)]
+        col(&out, "x_Variance"),
+        vec![Value::Real(50.0), Value::Real(2.0)]
     );
     assert_eq!(
         col(&out, "x_Median"),
-        vec![Value::Real(3.0), Value::Real(15.0)]
+        vec![Value::Real(15.0), Value::Real(3.0)]
     );
-    // Group A has 3 records (one with null x); group B has 2 records.
+    assert_eq!(
+        col(&out, "x_FirstQuartile"),
+        vec![Value::Real(10.0), Value::Real(2.0)]
+    );
+    assert_eq!(
+        col(&out, "x_ThirdQuartile"),
+        vec![Value::Real(20.0), Value::Real(4.0)]
+    );
+    // Group B has 2 records; group A has 3 records (one with null x).
     assert_eq!(
         col(&out, "No_records"),
-        vec![Value::Integer(3), Value::Integer(2)]
+        vec![Value::Integer(2), Value::Integer(3)]
     );
 
-    // Contiguous keys: B, A, B stay 3 separate groups in stream order.
+    // Contiguous keys: B, A, B stay 3 separate groups in stream order; prefix `PRE_` joins with `_` -> `PRE__x_Sum`.
     let contig = run(
         aggregate::build,
         vec![
             g("aggregateKeyFields", vec![p("field", "k")]),
             p("aggregateContiguousKeys", "true"),
             p("aggregateIncludeCount", "false"),
-            p("aggregateNameExtension", "agg_"),
+            p("aggregateNameExtension", "PRE_"),
             p("aggregateExtensionPosition", "Prefix"),
+            g(
+                "aggregateFields",
+                vec![g(
+                    "rows",
+                    vec![g("row", vec![p("field", "x"), p("sum", "true")])],
+                )],
+            ),
+        ],
+        table.clone(),
+    )
+    .unwrap();
+    assert_eq!(
+        col(&contig, "k"),
+        vec![Value::string("B"), Value::string("A"), Value::string("B")]
+    );
+    assert_eq!(
+        col(&contig, "PRE__x_Sum"),
+        vec![Value::Integer(10), Value::Integer(6), Value::Integer(20)]
+    );
+    assert!(contig.model().field("Record_Count").is_none());
+
+    // Suffix `_SUF` joins with `_` -> `x_Sum__SUF`.
+    let suf = run(
+        aggregate::build,
+        vec![
+            g("aggregateKeyFields", vec![p("field", "k")]),
+            p("aggregateNameExtension", "_SUF"),
+            p("aggregateExtensionPosition", "Suffix"),
             g(
                 "aggregateFields",
                 vec![g(
@@ -502,14 +624,9 @@ fn aggregate_groups_by_keys_computes_statistics_and_respects_contiguous_mode() {
     )
     .unwrap();
     assert_eq!(
-        col(&contig, "k"),
-        vec![Value::string("B"), Value::string("A"), Value::string("B")]
+        col(&suf, "x_Sum__SUF"),
+        vec![Value::Integer(30), Value::Integer(6)]
     );
-    assert_eq!(
-        col(&contig, "agg_x_Sum"),
-        vec![Value::Integer(10), Value::Integer(6), Value::Integer(20)]
-    );
-    assert!(contig.model().field("Record_Count").is_none());
 }
 
 #[test]
@@ -617,7 +734,7 @@ fn append_matches_by_name_case_position_and_adds_tag_field() {
     );
     assert_eq!(
         col(&all_case, "Src"),
-        vec![Value::Integer(1), Value::Integer(2)]
+        vec![Value::string("1"), Value::string("2")]
     );
 
     // Match by position ( incompatible storage at position 1 fails; compatible succeeds).
@@ -689,7 +806,7 @@ fn merge_inputs() -> (Table, Table) {
 #[test]
 fn merge_by_order_and_filter_table_group_drops_and_renames_duplicates() {
     let (left, right) = merge_inputs();
-    // Default order merge renames second input's duplicate fields to 2_<name>.
+    // Default order merge renames duplicate fields on every input to <tag>_<name>.
     let ordered = run_many(merge::build, vec![], vec![left.clone(), right.clone()]).unwrap();
     let names: Vec<&str> = ordered
         .model()
@@ -699,7 +816,7 @@ fn merge_by_order_and_filter_table_group_drops_and_renames_duplicates() {
         .collect();
     assert_eq!(
         names,
-        vec!["ID", "Name", "Shared", "2_ID", "2_Shared", "Score"]
+        vec!["1_ID", "Name", "1_Shared", "2_ID", "2_Shared", "Score"]
     );
     assert_eq!(ordered.row_count(), 3);
 
@@ -711,6 +828,8 @@ fn merge_by_order_and_filter_table_group_drops_and_renames_duplicates() {
             vec![g(
                 "rows",
                 vec![
+                    g("row", vec![p("name", "ID"), p("rename", "ID")]),
+                    g("row", vec![p("name", "Shared"), p("rename", "Shared")]),
                     g("row", vec![p("name", "2_ID"), p("drop", "true")]),
                     g("row", vec![p("name", "2_Shared"), p("drop", "true")]),
                     g("row", vec![p("name", "Score"), p("rename", "FinalScore")]),
@@ -733,7 +852,7 @@ fn merge_by_order_and_filter_table_group_drops_and_renames_duplicates() {
 fn merge_by_key_inner_full_outer_partial_outer_and_anti() {
     let (left, right) = merge_inputs();
 
-    // Inner join: only ID = 2 matches; key ID is coalesced, non-key Shared becomes Shared and 2_Shared.
+    // Inner join: only ID = 2 matches; key ID is coalesced, non-key Shared becomes 1_Shared and 2_Shared.
     let inner = run_many(
         merge::build,
         vec![
@@ -745,10 +864,11 @@ fn merge_by_key_inner_full_outer_partial_outer_and_anti() {
     )
     .unwrap();
     assert_eq!(col(&inner, "ID"), vec![Value::Integer(2)]);
-    assert_eq!(col(&inner, "Shared"), vec![Value::Integer(20)]);
+    assert_eq!(col(&inner, "1_Shared"), vec![Value::Integer(20)]);
     assert_eq!(col(&inner, "2_Shared"), vec![Value::Integer(200)]);
 
-    // Partial outer join keeping tag "1": keeps null-key from 1, ID=1, and ID=2 (not ID=3 or null-key from 2).
+    // Partial outer join keeping tag "1": by ascending key (ID=1 unmatched, ID=2 matched), then
+    // the null key from input 1.
     let partial = run_many(
         merge::build,
         vec![
@@ -781,14 +901,14 @@ fn merge_by_key_inner_full_outer_partial_outer_and_anti() {
     .unwrap();
     assert_eq!(
         col(&partial, "ID"),
-        vec![Value::Null, Value::Integer(1), Value::Integer(2)]
+        vec![Value::Integer(1), Value::Integer(2), Value::Null]
     );
     assert_eq!(
         col(&partial, "Score"),
-        vec![Value::Null, Value::Null, Value::Integer(95)]
+        vec![Value::Null, Value::Integer(95), Value::Null]
     );
 
-    // Full outer join: keeps both null keys (never matched), ID=1, ID=2, ID=3.
+    // Full outer join: by ascending key, matched or not, and both null keys last.
     let full = run_many(
         merge::build,
         vec![
@@ -802,15 +922,15 @@ fn merge_by_key_inner_full_outer_partial_outer_and_anti() {
     assert_eq!(
         col(&full, "ID"),
         vec![
-            Value::Null,
-            Value::Null,
             Value::Integer(1),
             Value::Integer(2),
             Value::Integer(3),
+            Value::Null,
+            Value::Null,
         ]
     );
 
-    // Anti join: records in primary dataset (1) not matched in dataset 2 -> ID=1 and Null.
+    // Anti join: records in primary dataset (1) not matched in dataset 2 -> ID=1 and Null, with original field names.
     let anti = run_many(
         merge::build,
         vec![
@@ -822,6 +942,7 @@ fn merge_by_key_inner_full_outer_partial_outer_and_anti() {
     )
     .unwrap();
     assert_eq!(col(&anti, "ID"), vec![Value::Integer(1), Value::Null]);
+    assert!(anti.model().field("Shared").is_some());
 }
 
 #[test]
@@ -831,12 +952,13 @@ fn merge_by_condition_and_settings_validation() {
         merge::build,
         vec![
             p("mergeMode", "condition"),
-            p("mergeCondition", "Score > 90 and ID = 1"),
+            p("mergeCondition", "Score > 90 and '1_ID' = 1"),
         ],
         vec![left, right],
     )
     .unwrap();
-    assert_eq!(col(&cond, "ID"), vec![Value::Integer(1)]);
+    assert_eq!(col(&cond, "1_ID"), vec![Value::Integer(1)]);
+    assert_eq!(col(&cond, "2_ID"), vec![Value::Integer(2)]);
     assert_eq!(col(&cond, "Score"), vec![Value::Integer(95)]);
 
     assert!(merge::build(&node(vec![p("mergeMode", "key")])).is_err());
@@ -900,6 +1022,43 @@ fn balance_applies_factors_and_respects_training_partition_only() {
             Value::Integer(1),
             Value::Integer(2),
             Value::Integer(3),
+        ]
+    );
+
+    // When a record matches multiple directives, the first matching directive wins (oracle: balance_multi_match).
+    let multi = g(
+        "balanceDirectives",
+        vec![g(
+            "entries",
+            vec![
+                g("entry", vec![p("factor", "2.0"), p("condition", "id = 1")]),
+                g(
+                    "entry",
+                    vec![p("factor", "3.0"), p("condition", "age >= 0")],
+                ),
+            ],
+        )],
+    );
+    let first_wins = run(
+        balance::build,
+        vec![p("balanceTrainingPartitionOnly", "false"), multi],
+        sample_table(),
+    )
+    .unwrap();
+    // id=1 matches both (first wins -> 2 copies); id=2 and id=4 match only second (3 copies each);
+    // id=3 has age=null -> 1 copy.
+    assert_eq!(
+        col(&first_wins, "id"),
+        vec![
+            Value::Integer(1),
+            Value::Integer(1),
+            Value::Integer(2),
+            Value::Integer(2),
+            Value::Integer(2),
+            Value::Integer(3),
+            Value::Integer(4),
+            Value::Integer(4),
+            Value::Integer(4),
         ]
     );
 
