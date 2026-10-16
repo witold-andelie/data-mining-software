@@ -19,9 +19,20 @@ pub struct ExecContext {
     pub attachments: Arc<HashMap<String, Arc<[u8]>>>,
     /// Overrides the stream's `realDecimalPlaces` (the oracle exports with 15).
     pub decimal_places: Option<usize>,
+    /// Where export nodes write: their file name in this directory instead of the path they
+    /// were saved with (the oracle redirects exports the same way, into `exports/`).
+    pub export_dir: Option<PathBuf>,
 }
 
 impl ExecContext {
+    /// The file an export node writes for its saved path `configured`.
+    pub fn export_path(&self, configured: &str) -> PathBuf {
+        match &self.export_dir {
+            Some(dir) => dir.join(file_name(configured).unwrap_or_else(|| "export".to_string())),
+            None => PathBuf::from(configured),
+        }
+    }
+
     /// Decimal places for reals in documents: the override, else the stream's
     /// `realDecimalPlaces`, else Modeler's default 3.
     pub fn decimal_places(&self) -> usize {

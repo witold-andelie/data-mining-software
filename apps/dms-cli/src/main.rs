@@ -330,6 +330,8 @@ fn run(path: &Path, args: &[String]) -> Result<(), String> {
                 .collect(),
         ),
         decimal_places: None,
+        // Export nodes write under the output directory, never over the stream's own paths.
+        export_dir: Some(out.join("exports")),
     };
     let results = plan.evaluate(&exported, &context);
     std::fs::create_dir_all(&out).map_err(|e| format!("cannot create {}: {e}", out.display()))?;
