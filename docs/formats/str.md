@@ -79,3 +79,7 @@ Python 脚本接口的属性名与文件中的元素名不同，映射要逐个�
 - 扩展节点 `@properties` 附件里的设置格式。
 - 元素在 `properties` 中的顺序是否稳定（目前读取不依赖顺序）。
 - 节点设置的完整映射表：需要按节点逐个探针（P2 的工作）。
+
+## 节点设置映射
+
+各节点的脚本属性到文件元素的映射见 [`nodes/`](nodes/)（每个节点类型一个文件，`common.md` 为所有节点共有的属性），汇总的机器可读表见 [`node-settings.tsv`](node-settings.tsv)。均由差分探针 `cargo xtask probe settings_<type>` 得到。
