@@ -6,8 +6,11 @@
 //! `includeIncompleteRecords/includeIncompleteRecordsList/includeIncompleteRecords[i]/
 //! inputNodeTagName` (the inputs whose unmatched records a partial outer join keeps),
 //! `tagTable/tagNames/tag[@id]/name` (maps those tag names to inputs), `mergePrimaryDataset` (the
-//! input an anti join reports; default 1), `mergeRenameDuplicateFields` (default true), and
-//! `filterTableGroup/{defaultDrop,rows/row}` (drops/renames fields in the merged output).
+//! input an anti join reports; default 1), `mergeRenameDuplicateFields` (default true),
+//! `filterTableGroup/{defaultDrop,rows/row}` (drops/renames fields in the merged output), and
+//! `filterTableGroup/entries/entry/{tag, filterTable/rows/row}` (drops fields of the input with
+//! that tag name, before duplicates are counted: `team/cluster_analysis` drops input 1's copies
+//! of the shared fields, so input 2's keep their names; renaming there is not supported).
 //! Encodings from `docs/formats/nodes/merge.md`.
 //!
 //! Rules (settled by `oracle/records/merge_order`, `merge_key_inner`, `merge_key_full_outer`,
@@ -79,6 +82,8 @@ struct Merge {
     input_tags: HashMap<usize, String>,
     default_drop: bool,
     filter_rows: HashMap<String, FilterRow>,
+    /// Tag name -> the field names `filterTableGroup/entries` drops from that input.
+    input_drops: HashMap<String, HashSet<String>>,
 }
 
 pub fn build(node: &StreamNode) -> Result<Box<dyn Operator>, OperatorError> {
@@ -183,6 +188,27 @@ pub fn build(node: &StreamNode) -> Result<Box<dyn Operator>, OperatorError> {
         let rename = settings::text(Some(row), "rename").filter(|r| !r.trim().is_empty());
         filter_rows.insert(name, FilterRow { drop, rename });
     }
+    let mut input_drops: HashMap<String, HashSet<String>> = HashMap::new();
+    for entry in settings::children(s, "filterTableGroup/entries", "entry") {
+        let tag = settings::text(Some(entry), "tag").unwrap_or_default();
+        if settings::flag(Some(entry), "filterTable/defaultDrop")?.unwrap_or(false) {
+            return Err(OperatorError::Settings(format!(
+                "filterTableGroup: input {tag:?} drops fields by default; not supported yet"
+            )));
+        }
+        let drops = input_drops.entry(tag.clone()).or_default();
+        for row in settings::children(Some(entry), "filterTable/rows", "row") {
+            let name = row.child("name").map(|e| e.text()).unwrap_or_default();
+            if settings::text(Some(row), "rename").is_some_and(|r| !r.trim().is_empty()) {
+                return Err(OperatorError::Settings(format!(
+                    "filterTableGroup: renaming {name:?} of input {tag:?} is not supported yet"
+                )));
+            }
+            if settings::flag(Some(row), "drop")?.unwrap_or(false) {
+                drops.insert(name);
+            }
+        }
+    }
     Ok(Box::new(Merge {
         mode,
         outer_inputs,
@@ -191,6 +217,7 @@ pub fn build(node: &StreamNode) -> Result<Box<dyn Operator>, OperatorError> {
         input_tags,
         default_drop,
         filter_rows,
+        input_drops,
     }))
 }
 
@@ -267,10 +294,23 @@ impl Operator for Merge {
         }
 
         // Count how many inputs contain each field name (for disambiguating duplicates).
+        let tag_of = |n: usize| {
+            self.input_tags
+                .get(&n)
+                .cloned()
+                .unwrap_or_else(|| (n + 1).to_string())
+        };
+        let dropped_by_tag = |n: usize, name: &str| {
+            self.input_drops
+                .get(&tag_of(n))
+                .is_some_and(|drops| drops.contains(name))
+        };
         let mut name_counts: HashMap<&str, usize> = HashMap::new();
-        for input in inputs {
+        for (n, input) in inputs.iter().enumerate() {
             for field in input.model().fields() {
-                *name_counts.entry(field.name.as_str()).or_insert(0) += 1;
+                if !dropped_by_tag(n, &field.name) {
+                    *name_counts.entry(field.name.as_str()).or_insert(0) += 1;
+                }
             }
         }
 
@@ -281,13 +321,13 @@ impl Operator for Merge {
         let mut seen_raw: HashSet<String> = HashSet::new();
 
         for (n, input) in inputs.iter().enumerate() {
-            let tag = self
-                .input_tags
-                .get(&n)
-                .cloned()
-                .unwrap_or_else(|| (n + 1).to_string());
+            let tag = tag_of(n);
             let mut map = Vec::new();
             for field in input.model().fields() {
+                if dropped_by_tag(n, &field.name) {
+                    map.push(FieldAction::Drop);
+                    continue;
+                }
                 let is_later_dup = !seen_raw.insert(field.name.clone());
                 let is_shared = name_counts.get(field.name.as_str()).copied().unwrap_or(0) > 1;
                 if is_later_dup
