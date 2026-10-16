@@ -4,7 +4,7 @@
 
 | Scope | Implemented | Total |
 |---|---|---|
-| MVP | 32 | 90 |
+| MVP | 35 | 90 |
 | later | 0 | 23 |
 | out of scope | 0 | 34 |
 
@@ -175,12 +175,12 @@
 
 | Node | Id | Scope | Status | Modeler identifiers |
 |---|---|---|---|---|
-| Flat File | `flat_file_export` | MVP | missing | `TextFileExportNode` |
+| Flat File | `flat_file_export` | MVP | done | `TextFileExportNode` |
 | Excel | `excel_export` | MVP | missing | `ExcelNode` |
 | Statistics Export (.sav) | `statistics_export` | MVP | missing | `SPSSExportNode` |
 | Database | `database_export` | MVP | missing | `ODBCExportNode`, `DBExportNode` |
-| XML | `xml_export` | MVP | missing | `xml_export!spss.xml_data` |
-| JSON | `json_export` | MVP | missing | `json_export!pasw.json` |
+| XML | `xml_export` | MVP | done | `xml_export!spss.xml_data` |
+| JSON | `json_export` | MVP | done | `json_export!pasw.json` |
 | SAS | `sas_export` | MVP | missing | `SASExportNode` |
 | Extension Export | `extension_export` | later | missing | `ExtensionExportNode` |
 | Data Collection | `data_collection_export` | out of scope | missing | `DimensionsExportNode` |
