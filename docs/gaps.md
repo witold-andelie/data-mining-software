@@ -8,6 +8,6 @@
 4. **附件格式**：PMML（标准，P3 用）、StatXML、PSMData、扩展节点设置附件、`SCF\x01` 二进制、长度前缀格式。
 5. **节点目录里仍未映射的标识**：没有样例的节点（如 Random Trees、GLE、LSVM、Extension Output）。遇到新样例时用 `dms-cli coverage` 发现并补上。
 6. **在 Mac 上跑通 `cargo xtask ci`**（P0 完成标准，用户安排在后面）。
-7. **Python 桥设计**：Python 环境检测、Arrow 交换格式、模型持久化、错误和取消。
+7. **Python 桥设计**（Python 节点已移到“以后”，暂缓）：Python 环境检测、Arrow 交换格式、模型持久化、错误和取消。
 8. **CI**：私有仓库用 GitHub Actions 要消耗分钟数（macOS 机器按 10 倍计）。目前做法是本地 Windows 和 Mac 各跑 `cargo xtask ci`。
 9. **oracle 覆盖面**：超节点内部的节点；分析、数据审核、统计等输出节点本身的结果（目前只导出它们的输入数据）。

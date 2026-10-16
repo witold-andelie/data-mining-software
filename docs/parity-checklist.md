@@ -4,8 +4,8 @@
 
 | Scope | Implemented | Total |
 |---|---|---|
-| MVP | 22 | 100 |
-| later | 0 | 13 |
+| MVP | 22 | 90 |
+| later | 0 | 23 |
 | out of scope | 0 | 34 |
 
 ## Sources
@@ -48,7 +48,7 @@
 | Merge | `merge` | MVP | done | `MergeNode` |
 | Append | `append` | MVP | done | `AppendNode` |
 | Distinct | `distinct` | MVP | done | `DistinctNode` |
-| SMOTE (Python) | `smote` | MVP | missing | `smote!spss.smote` |
+| SMOTE (Python) | `smote` | later | missing | `smote!spss.smote` |
 | Streaming TS | `streaming_ts` | later | missing | `spss.ts!ts_streaming` |
 | Extension Transform | `extension_transform` | later | missing | `ExtensionDataTransformNode` |
 | Space-Time-Boxes | `space_time_boxes` | out of scope | missing | `stb!spss.stb` |
@@ -93,7 +93,7 @@
 | Web | `web` | MVP | missing | `WebNode` |
 | Evaluation | `evaluation` | MVP | missing | `EvaluationNode` |
 | E-Plot | `eplot` | later | missing | `EPlotNode` |
-| t-SNE (Python) | `tsne` | MVP | missing | `tsne!spss.tsne` |
+| t-SNE (Python) | `tsne` | later | missing | `tsne!spss.tsne` |
 | Map Visualization | `map_visualization` | out of scope | missing | `MapVisualizationNode` |
 
 ## Modeling
@@ -129,13 +129,13 @@
 | LSVM | `lsvm` | later | missing | (unmapped) |
 | Self-Learning Response Model | `slrm` | later | missing | `spss.selflearning!selflearning` |
 | Temporal Causal Model | `tcm` | later | missing | `tcm!pasw.timeseries-extension` |
-| Random Forest (Python) | `random_forest` | MVP | missing | `rf!spss.rf` |
-| XGBoost Tree (Python) | `xgboost_tree` | MVP | missing | `xgboosttree!spss.xgboost` |
-| XGBoost Linear (Python) | `xgboost_linear` | MVP | missing | `xgboostlinear!spss.xgboost` |
-| One-Class SVM (Python) | `one_class_svm` | MVP | missing | `ocsvm!spss.ocsvm-extension` |
-| HDBSCAN (Python) | `hdbscan` | MVP | missing | `hdbscan!spss.hdbscan` |
-| Gaussian Mixture (Python) | `gmm` | MVP | missing | `gmm!spss.gmm` |
-| KDE (Python) | `kde` | MVP | missing | `kde!pasw.kde` |
+| Random Forest (Python) | `random_forest` | later | missing | `rf!spss.rf` |
+| XGBoost Tree (Python) | `xgboost_tree` | later | missing | `xgboosttree!spss.xgboost` |
+| XGBoost Linear (Python) | `xgboost_linear` | later | missing | `xgboostlinear!spss.xgboost` |
+| One-Class SVM (Python) | `one_class_svm` | later | missing | `ocsvm!spss.ocsvm-extension` |
+| HDBSCAN (Python) | `hdbscan` | later | missing | `hdbscan!spss.hdbscan` |
+| Gaussian Mixture (Python) | `gmm` | later | missing | `gmm!spss.gmm` |
+| KDE (Python) | `kde` | later | missing | `kde!pasw.kde` |
 | Extension Model | `extension_model` | later | missing | `ExtensionBuildModelNode`, `ExtensionApplyModelNode` |
 | Statistics Model | `statistics_model` | out of scope | missing | `BuildSPSSModelNode`, `ApplySPSSModelNode` |
 | R Build | `r_model` | out of scope | missing | `r!spss.rstats` |
@@ -165,7 +165,7 @@
 | Means | `means` | MVP | done | `MeansNode` |
 | Report | `report` | MVP | missing | `ReportNode` |
 | Set Globals | `set_globals` | MVP | missing | `SetGlobalsNode` |
-| KDE Simulation (Python) | `kde_simulation` | MVP | missing | `kde_export!pasw.kde` |
+| KDE Simulation (Python) | `kde_simulation` | later | missing | `kde_export!pasw.kde` |
 | Extension Output | `extension_output` | later | missing | (unmapped) |
 | Statistics Output | `statistics_output` | out of scope | missing | `SPSSProcedureNode`, `SPSSSyntaxNode`, `SPSSCustomTableNode` |
 | Simulation Fit | `simulation_fit` | out of scope | missing | `simulation_fit!spss.simulation` |

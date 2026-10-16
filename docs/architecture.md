@@ -27,5 +27,5 @@
 
 - **流文件**：原生格式是文本（TOML 或 JSON），可以进 git 和做代码评审。`.str` 只导入；导入时识别不了的节点和参数原样保留，界面上提示。
 - **两套执行器**：参考执行器写得简单直接，作为优化执行器的对照；两者在测试里必须给出相同结果。
-- **Python 节点**：Modeler 自带的 Python 3.10 里是 scikit-learn 1.1.1、xgboost 0.82、imbalanced-learn 0.8.0、hdbscan 0.8.29。我们的 Python 节点用同样的库，在用户自己的 Python 环境里以子进程运行。与 Modeler 对比的差分测试在 Windows 上用同版本环境；Apple 芯片 Mac 上没有 xgboost 0.82，用新版本，允许细微差异。
+- **Python 节点**（2026-10-16 起移出 MVP、归入“以后”：团队的流一个都没用到；`dms-python` 随之推后）：Modeler 自带的 Python 3.10 里是 scikit-learn 1.1.1、xgboost 0.82、imbalanced-learn 0.8.0、hdbscan 0.8.29。我们的 Python 节点用同样的库，在用户自己的 Python 环境里以子进程运行。与 Modeler 对比的差分测试在 Windows 上用同版本环境；Apple 芯片 Mac 上没有 xgboost 0.82，用新版本，允许细微差异。
 - **跨平台**：Windows x64 和 macOS aarch64。不依赖 BLAS（faer 是纯 Rust），便于在 Mac 上直接编译。
