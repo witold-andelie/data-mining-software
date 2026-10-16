@@ -44,7 +44,7 @@ const BUILT_IN: &[(&str, Factory)] = &[
 ];
 
 /// Registered while their implementation is under way; not counted as implemented.
-const PENDING: &[&str] = &["flat_file_export", "json_export", "xml_export"];
+const PENDING: &[&str] = &[];
 
 /// Model nodes whose nuggets score (`nodes::apply`) while their build nodes cannot train yet;
 /// they do not count as implemented.
