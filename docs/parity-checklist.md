@@ -4,7 +4,7 @@
 
 | Scope | Implemented | Total |
 |---|---|---|
-| MVP | 16 | 100 |
+| MVP | 18 | 100 |
 | later | 0 | 13 |
 | out of scope | 0 | 34 |
 
@@ -47,7 +47,7 @@
 | Sort | `sort` | MVP | done | `SortNode` |
 | Merge | `merge` | MVP | done | `MergeNode` |
 | Append | `append` | MVP | done | `AppendNode` |
-| Distinct | `distinct` | MVP | missing | `DistinctNode` |
+| Distinct | `distinct` | MVP | done | `DistinctNode` |
 | SMOTE (Python) | `smote` | MVP | missing | `smote!spss.smote` |
 | Streaming TS | `streaming_ts` | later | missing | `spss.ts!ts_streaming` |
 | Extension Transform | `extension_transform` | later | missing | `ExtensionDataTransformNode` |
@@ -71,7 +71,7 @@
 | RFM Analysis | `rfm_analysis` | MVP | missing | `RFMAnalysisNode` |
 | Partition | `partition` | MVP | done | `PartitionNode` |
 | Set to Flag | `set_to_flag` | MVP | missing | `SetToFlagNode` |
-| Restructure | `restructure` | MVP | missing | `RestructureNode` |
+| Restructure | `restructure` | MVP | done | `RestructureNode` |
 | Transpose | `transpose` | MVP | missing | `TransposeNode` |
 | Field Reorder | `field_reorder` | MVP | missing | `FieldReorderNode` |
 | Time Intervals | `time_intervals` | MVP | missing | `TimeIntervalsNode` |
