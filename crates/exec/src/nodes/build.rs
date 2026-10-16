@@ -21,6 +21,15 @@
 //! (`STRING`, `NUMBER`) and `clusterLabel`; inputs as for K-Means. Outlier handling
 //! (`excludeOutliers`) and the Euclidean distance are rejected.
 //!
+//! Logistic (`BuildLogisticNode`) keeps its settings in the node's XML
+//! (`docs/formats/nodes/logreg.md`): `logisticProcedure` (`Multinomial` default, `Binomial`),
+//! `includeConstant`, `LogregMethod` / `LogregBinomialMethod` (Enter only), `modelType`
+//! (`mainEffects` only), expert convergence (`maximumIterations`, `maximumStepHalving`,
+//! `parameterConvergence`, `logLikelihoodConvergence`, `singularityTolerance`),
+//! `multinomialBaseCategory`, and the Type roles or `modelTargetFieldSelection` /
+//! `modelInputFieldSelection` when `autoModelFieldSelection` is false. Stepwise methods, custom
+//! terms, full factorial models, a non-zero cell `delta`, and scaling are rejected.
+//!
 //! Rejected until implemented: frequency and analysis weights, split models, boosting and
 //! bagging, the interactive builder, misclassification costs; for C&R Tree the overfit
 //! prevention set (Modeler draws it with its own random generator; CHAID ignores the setting,
@@ -36,6 +45,7 @@ use dms_algo::Dataset;
 use dms_algo::cart::{self, CartSettings, Impurity, MinSize};
 use dms_algo::chaid::{self, ChaidSettings, ChiSquare, Method};
 use dms_algo::kmeans::{self, KMeansSettings};
+use dms_algo::logistic::{self, LogisticSettings, Procedure};
 use dms_algo::twostep::{self, Criterion, TwoStepSettings};
 use dms_pmml::Pmml;
 use dms_stream::StreamNode;
@@ -50,6 +60,7 @@ pub fn build(node: &StreamNode) -> Result<Box<dyn Operator>, OperatorError> {
         "Chaid!spss.tree-extension" => Algorithm::Chaid,
         "BuildKMeansNode" => Algorithm::KMeans(kmeans_settings(node)?),
         "BuildTwoStepNode" => Algorithm::TwoStep(twostep_settings(node)?),
+        "BuildLogisticNode" => Algorithm::Logistic(logistic_settings(node)?),
         other => {
             return Err(OperatorError::Settings(format!(
                 "training {other} is not implemented yet"
@@ -77,7 +88,11 @@ enum Algorithm {
     /// The settings, and the custom input fields (`None`: the Type roles).
     KMeans((KMeansSettings, Option<Vec<String>>)),
     TwoStep((TwoStepSettings, Option<Vec<String>>)),
+    /// The settings, an optional custom target, and optional custom inputs.
+    Logistic(LogisticSpec),
 }
+
+type LogisticSpec = (LogisticSettings, Option<String>, Option<Vec<String>>);
 
 struct Build {
     algorithm: Algorithm,
@@ -119,6 +134,18 @@ impl Operator for Build {
                 .map_err(|error| OperatorError::Data(format!("TwoStep: {error}")))?;
             return Ok(NodeOutput::Model(Arc::new(pmml)));
         }
+        if let Algorithm::Logistic((settings, target, inputs)) = &self.algorithm {
+            let (target, fields) = supervised_fields(&table, target.as_deref(), inputs.as_deref())?;
+            let dataset = Dataset {
+                table: &table,
+                target,
+                inputs: &fields,
+                frequency: None,
+            };
+            let pmml = logistic::train(&dataset, settings)
+                .map_err(|error| OperatorError::Data(format!("Logistic: {error}")))?;
+            return Ok(NodeOutput::Model(Arc::new(pmml)));
+        }
         let parameters = self.parameters(context)?;
         tree_checks(&parameters)?;
         let (target, fields) = roles(&table, &parameters, "tree.")?;
@@ -133,7 +160,7 @@ impl Operator for Build {
                 .map_err(|error| OperatorError::Data(format!("C&R Tree: {error}")))?,
             Algorithm::Chaid => chaid::train(&dataset, &chaid_settings(&parameters)?)
                 .map_err(|error| OperatorError::Data(format!("CHAID: {error}")))?,
-            Algorithm::KMeans(_) | Algorithm::TwoStep(_) => {
+            Algorithm::KMeans(_) | Algorithm::TwoStep(_) | Algorithm::Logistic(_) => {
                 return Err(OperatorError::Settings("clustering has no target".into()));
             }
         };
@@ -289,6 +316,143 @@ fn twostep_settings(
         },
         custom,
     ))
+}
+
+/// Logistic settings from the node's XML.
+fn logistic_settings(node: &StreamNode) -> Result<LogisticSpec, OperatorError> {
+    let s = node.settings.as_ref();
+    let unsupported =
+        |what: &str| OperatorError::Settings(format!("Logistic: {what} is not supported yet"));
+    let procedure = match settings::text(s, "logisticProcedure")
+        .as_deref()
+        .map(str::trim)
+    {
+        None | Some("") | Some("Multinomial") => Procedure::Multinomial,
+        Some("Binomial") => Procedure::Binomial,
+        Some(other) => {
+            return Err(OperatorError::Settings(format!(
+                "Logistic logisticProcedure {other:?} is not supported"
+            )));
+        }
+    };
+    match procedure {
+        Procedure::Multinomial => match settings::text(s, "LogregMethod").as_deref().map(str::trim)
+        {
+            None | Some("") | Some("enter") => {}
+            Some(other) => return Err(unsupported(&format!("method {other}"))),
+        },
+        Procedure::Binomial => match settings::text(s, "LogregBinomialMethod")
+            .as_deref()
+            .map(str::trim)
+        {
+            None | Some("") | Some("Enter") => {}
+            Some(other) => return Err(unsupported(&format!("binomial method {other}"))),
+        },
+    }
+    match settings::text(s, "modelType").as_deref().map(str::trim) {
+        None | Some("") | Some("mainEffects") => {}
+        Some(other) => return Err(unsupported(&format!("modelType {other}"))),
+    }
+    match settings::text(s, "scale").as_deref().map(str::trim) {
+        None | Some("") | Some("none") => {}
+        Some(other) => return Err(unsupported(&format!("scale {other}"))),
+    }
+    if !settings::children(s, "customEffects", "persistentObjectListMember").is_empty() {
+        return Err(unsupported("custom terms"));
+    }
+    for row in settings::children(s, "logisticInputsTable/rows", "row") {
+        match settings::text(Some(row), "contrast")
+            .as_deref()
+            .map(str::trim)
+        {
+            None | Some("") | Some("Indicator") => {}
+            Some(other) => return Err(unsupported(&format!("binomial contrast {other}"))),
+        }
+    }
+    let defaults = LogisticSettings::default();
+    let custom_target =
+        settings::text(s, "modelTargetFieldSelection").filter(|name| !name.trim().is_empty());
+    let custom_inputs = if settings::flag(s, "autoModelFieldSelection")?.unwrap_or(true) {
+        None
+    } else {
+        let names: Vec<String> = settings::children(s, "modelInputFieldSelection", "field")
+            .into_iter()
+            .map(|f| f.text().trim().to_string())
+            .filter(|name| !name.is_empty())
+            .collect();
+        if names.is_empty() { None } else { Some(names) }
+    };
+    let name = (!settings::flag(s, "autoModelName")?.unwrap_or(true))
+        .then(|| settings::text(s, "modelName"))
+        .flatten()
+        .filter(|n| !n.trim().is_empty());
+    let base = settings::text(s, "multinomialBaseCategory").filter(|c| !c.trim().is_empty());
+    Ok((
+        LogisticSettings {
+            procedure,
+            include_constant: settings::flag(s, "includeConstant")?.unwrap_or(true),
+            max_iterations: settings::integer(s, "maximumIterations")?
+                .and_then(|n| usize::try_from(n).ok())
+                .unwrap_or(defaults.max_iterations),
+            max_step_halving: settings::integer(s, "maximumStepHalving")?
+                .and_then(|n| usize::try_from(n).ok())
+                .unwrap_or(defaults.max_step_halving),
+            parameter_convergence: settings::real(s, "parameterConvergence")?
+                .unwrap_or(defaults.parameter_convergence),
+            log_likelihood_convergence: settings::real(s, "logLikelihoodConvergence")?
+                .unwrap_or(defaults.log_likelihood_convergence),
+            singularity: settings::real(s, "singularityTolerance")?.unwrap_or(defaults.singularity),
+            delta: settings::real(s, "delta")?.unwrap_or(defaults.delta),
+            base_category: base,
+            name,
+        },
+        if settings::flag(s, "autoModelFieldSelection")?.unwrap_or(true) {
+            None
+        } else {
+            custom_target
+        },
+        custom_inputs,
+    ))
+}
+
+/// The target and inputs a supervised model uses: the custom names, else the Type roles.
+fn supervised_fields(
+    table: &Table,
+    target: Option<&str>,
+    inputs: Option<&[String]>,
+) -> Result<(usize, Vec<usize>), OperatorError> {
+    let model = table.model();
+    let position = |name: &str| {
+        model.position(name).ok_or_else(|| {
+            OperatorError::Data(format!("the model field {name} is not in the input"))
+        })
+    };
+    let target = if let Some(name) = target.filter(|name| !name.is_empty()) {
+        position(name)?
+    } else {
+        let fields = model.fields();
+        let targets: Vec<usize> = (0..fields.len())
+            .filter(|&i| fields[i].role == Role::Target)
+            .collect();
+        let [target] = targets[..] else {
+            return Err(OperatorError::Settings(format!(
+                "the model needs exactly one target field, the input has {}",
+                targets.len()
+            )));
+        };
+        target
+    };
+    let inputs = if let Some(names) = inputs.filter(|names| !names.is_empty()) {
+        names
+            .iter()
+            .map(|name| position(name))
+            .collect::<Result<Vec<_>, _>>()?
+    } else {
+        (0..model.fields().len())
+            .filter(|&i| matches!(model.fields()[i].role, Role::Input | Role::Both))
+            .collect()
+    };
+    Ok((target, inputs))
 }
 
 /// The fields a clustering model uses: the custom list, else the Type's inputs.
