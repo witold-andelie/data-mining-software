@@ -9,12 +9,24 @@
 //! | nugget | fields |
 //! |---|---|
 //! | C&R Tree, CHAID | `$R-<target>` prediction; `$RC-<target>` confidence (`calculateConfidences`); `$RRP-<target>` raw propensity, the probability of the second (true) category (`calculateRawPropensities`) |
-//! | Logistic | `$L-`, `$LP-` (confidence), `$LRP-` (raw propensity), same switches |
+//! | Logistic | `$L-<target>` prediction; `$LP-<target>` confidence (`calculateConfidences`); `$LRP-<target>` raw propensity (`calculateRawPropensities`); `$LP-<category>` for every target category when enabled (below) |
 //! | K-Means | `$KM-<model name>`: `cluster-<cluster name>`; `$KMD-<model name>`: the Euclidean distance to that center, when the nugget's `buildSettings` set `generateDistanceField` |
 //! | TwoStep | `$T-<model name>`: the cluster name (`cluster-<n>`), by the log-likelihood distance; an integer with numeric labels (`buildSettings` `clusterLabelType` `NUMBER`) |
 //!
-//! When the input already has a field of that name (another model on the same target), the
-//! fields get the first free index: `$R1-`, `$RC1-`, `$RRP1-` (`team/model_comparison`).
+//! `$LP-<category>` is a real field, one per target category, in `Prediction::probabilities`
+//! order (the target `DataField` values). The value is that category's probability; a missing
+//! model input is an empty prediction, so the cell is null, as are `$L-` and `$LP-`. The nugget
+//! writes them when `appendProbabilities` is true (`models/logreg_multinomial`: `$LP-drugA` …
+//! `$LP-drugY` after `$LP-Drug`). The binomial procedure writes them even when the flag is false
+//! (`models/logreg_binomial`: `logisticProcedure` `Binomial`, `appendProbabilities` false,
+//! `$LP-1` and `$LP-2`). A multinomial nugget with the flag false does not
+//! (`team/logistic_regression`, `team/model_comparison`: `$L-`, `$LP-`, `$LRP-` only). None of
+//! those oracles has a missing logistic input.
+//!
+//! When the input already has a field of that name (another model on the same target), every
+//! score field of the nugget takes the first free index of the prediction field: `$R1-`,
+//! `$RC1-`, `$RRP1-` (`team/model_comparison`). Category probabilities use that same index
+//! (`$LP1-<category>`).
 //! GAP: K-Means cluster distance (`showClusterProximity`) and TwoStep outlier handling
 //! (`excludeOutliers`, a noise cluster) are rejected until an oracle covers them.
 
@@ -33,7 +45,7 @@ use std::sync::Arc;
 enum Kind {
     /// Decision trees and rule sets: `$R-`, `$RC-`, `$RRP-`.
     Rule,
-    /// Logistic regression: `$L-`, `$LP-`, `$LRP-`.
+    /// Logistic regression: `$L-`, `$LP-`, `$LRP-`, and `$LP-<category>` when enabled.
     Logistic,
     /// K-Means: `$KM-<model name>`.
     KMeans,
@@ -80,6 +92,12 @@ pub fn build(node: &StreamNode) -> Result<Box<dyn Operator>, OperatorError> {
             .map(str::to_string),
         confidences: settings::flag(s, "calculateConfidences")?.unwrap_or(true),
         raw_propensities: settings::flag(s, "calculateRawPropensities")?.unwrap_or(false),
+        // `$LP-<category>`: the flag, or always for the binomial procedure
+        // (`models/logreg_binomial` leaves `appendProbabilities` false and still writes them).
+        all_probabilities: kind == Kind::Logistic
+            && (settings::flag(s, "appendProbabilities")?.unwrap_or(false)
+                || settings::text(s, "logisticProcedure")
+                    .is_some_and(|procedure| procedure.trim() == "Binomial")),
         distance: kind == Kind::KMeans
             && build_setting(s, "generateDistanceField").as_deref() == Some("true"),
         numeric_labels: kind == Kind::TwoStep
@@ -94,6 +112,8 @@ struct Apply {
     pmml_member: Option<String>,
     confidences: bool,
     raw_propensities: bool,
+    /// Logistic: one real `$LP-<category>` field per target category.
+    all_probabilities: bool,
     /// K-Means: also the distance to the cluster center (`$KMD-`).
     distance: bool,
     /// TwoStep: clusters are numbers (`$T-` is an integer field).
@@ -252,6 +272,26 @@ impl Apply {
                 predictions.iter().map(|p| real(p.confidence)).collect(),
             ));
         }
+        if self.all_probabilities {
+            let categories = category_names(pmml, &target, predictions);
+            if categories.len() > MAX_CATEGORY_FIELDS {
+                return Err(OperatorError::Data(format!(
+                    "the logistic model lists {} target categories; at most {MAX_CATEGORY_FIELDS} \
+                     probability fields are written",
+                    categories.len()
+                )));
+            }
+            for category in &categories {
+                columns.push(column(
+                    &format!("$LP{index}-{category}"),
+                    Storage::Real,
+                    predictions
+                        .iter()
+                        .map(|prediction| real(category_probability(prediction, category)))
+                        .collect(),
+                ));
+            }
+        }
         if self.raw_propensities {
             columns.push(column(
                 &format!("{propensity_prefix}{index}-{target}"),
@@ -343,4 +383,34 @@ fn typed(value: &PmmlValue, storage: Storage) -> Value {
 
 fn real(value: Option<f64>) -> Value {
     value.map_or(Value::Null, Value::real)
+}
+
+/// A model file can list as many categories as it likes; cap the columns we allocate.
+const MAX_CATEGORY_FIELDS: usize = 10_000;
+
+/// Category names in score order. A row with no probabilities (a missing input) does not
+/// decide the columns; the target's `DataField` values are that same order.
+fn category_names(pmml: &Pmml, target: &str, predictions: &[Prediction]) -> Vec<String> {
+    if let Some(prediction) = predictions.iter().find(|p| !p.probabilities.is_empty()) {
+        return prediction
+            .probabilities
+            .iter()
+            .map(|(category, _)| category.clone())
+            .collect();
+    }
+    pmml.data_dictionary
+        .iter()
+        .find(|field| field.name == target)
+        .map(|field| field.values.clone())
+        .unwrap_or_default()
+}
+
+/// The probability of `category` on this row. An empty list is a missing score (null), not a
+/// zero. Names are the strings `Prediction::probabilities` already uses.
+fn category_probability(prediction: &Prediction, category: &str) -> Option<f64> {
+    prediction
+        .probabilities
+        .iter()
+        .find(|(name, _)| name == category)
+        .map(|(_, probability)| *probability)
 }

@@ -46,8 +46,8 @@ const BUILT_IN: &[(&str, Factory)] = &[
 ];
 
 /// Registered while their implementation is under way; not counted as implemented.
-/// TwoStep numbers clusters differently on larger data, Logistic nuggets lack the per-category
-/// `$LP-` fields and multinomial coefficients on separated data differ (the GAPs in
+/// TwoStep numbers clusters differently on larger data, and multinomial Logistic coefficients
+/// on separated data differ from Modeler's (the GAPs in
 /// `dms_algo::twostep` and `dms_algo::logistic`).
 const PENDING: &[&str] = &["twostep", "logistic"];
 

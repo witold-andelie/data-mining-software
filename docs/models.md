@@ -20,7 +20,7 @@
 |---|---|
 | C&R Tree（CART） | `$R-<目标>`、`$RC-<目标>` |
 | CHAID | `$R-`、`$RC-`、`$RRP-` |
-| Logistic | `$L-`、`$LP-`、`$LRP-` |
+| Logistic | `$L-`、`$LP-`、`$LRP-`；每个目标类别一个 `$LP-<类别>`（`appendProbabilities` 为真，或二项过程时总是输出） |
 | Linear | `$L-` |
 | K-Means | `$KM-<模型名>` |
 | TwoStep | `$T-<模型名>` |
