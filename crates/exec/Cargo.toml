@@ -11,7 +11,9 @@ publish.workspace = true
 dms-strfmt.workspace = true
 dms-stream.workspace = true
 dms-types.workspace = true
+dms-clem.workspace = true
 dms-catalog.workspace = true
+dms-io = { version = "0.1.0", path = "../io" }
 
 [lints]
 workspace = true

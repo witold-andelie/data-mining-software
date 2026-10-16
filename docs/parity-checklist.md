@@ -4,7 +4,7 @@
 
 | Scope | Implemented | Total |
 |---|---|---|
-| MVP | 1 | 100 |
+| MVP | 9 | 100 |
 | later | 0 | 13 |
 | out of scope | 0 | 34 |
 
@@ -12,9 +12,9 @@
 
 | Node | Id | Scope | Status | Modeler identifiers |
 |---|---|---|---|---|
-| Var. File | `var_file` | MVP | missing | `DelimitedFileImportNode` |
+| Var. File | `var_file` | MVP | done | `DelimitedFileImportNode` |
 | Fixed File | `fixed_file` | MVP | missing | `FixedFileImportNode` |
-| Statistics File (.sav) | `statistics_file` | MVP | missing | `SPSSInputNode` |
+| Statistics File (.sav) | `statistics_file` | MVP | done | `SPSSInputNode` |
 | Excel | `excel_import` | MVP | missing | `ExcelInputNode` |
 | Database | `database_import` | MVP | missing | `ODBCImportNode`, `DBImportNode` |
 | User Input | `user_input` | MVP | missing | `UserInputNode` |
@@ -60,16 +60,16 @@
 | Node | Id | Scope | Status | Modeler identifiers |
 |---|---|---|---|---|
 | Auto Data Prep | `auto_data_prep` | MVP | missing | `AutoDataPrepNode` |
-| Type | `type` | MVP | missing | `TypeNode` |
-| Filter | `filter` | MVP | missing | `FilterNode` |
-| Derive | `derive` | MVP | missing | `DeriveNode` |
+| Type | `type` | MVP | done | `TypeNode` |
+| Filter | `filter` | MVP | done | `FilterNode` |
+| Derive | `derive` | MVP | done | `DeriveNode` |
 | Ensemble | `ensemble` | MVP | missing | `EnsembleNode` |
-| Filler | `filler` | MVP | missing | `FillerNode` |
+| Filler | `filler` | MVP | done | `FillerNode` |
 | Anonymize | `anonymize` | MVP | missing | `AnonymizeNode` |
-| Reclassify | `reclassify` | MVP | missing | `ReclassifyNode` |
+| Reclassify | `reclassify` | MVP | done | `ReclassifyNode` |
 | Binning | `binning` | MVP | missing | `BinningNode` |
 | RFM Analysis | `rfm_analysis` | MVP | missing | `RFMAnalysisNode` |
-| Partition | `partition` | MVP | missing | `PartitionNode` |
+| Partition | `partition` | MVP | done | `PartitionNode` |
 | Set to Flag | `set_to_flag` | MVP | missing | `SetToFlagNode` |
 | Restructure | `restructure` | MVP | missing | `RestructureNode` |
 | Transpose | `transpose` | MVP | missing | `TransposeNode` |
