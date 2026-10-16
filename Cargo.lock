@@ -119,6 +119,8 @@ name = "dms-exec"
 version = "0.1.0"
 dependencies = [
  "dms-catalog",
+ "dms-clem",
+ "dms-io",
  "dms-stream",
  "dms-strfmt",
  "dms-types",
@@ -128,7 +130,9 @@ dependencies = [
 name = "dms-io"
 version = "0.1.0"
 dependencies = [
+ "dms-sav",
  "dms-types",
+ "encoding_rs",
 ]
 
 [[package]]
