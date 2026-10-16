@@ -4,7 +4,7 @@
 
 | Scope | Implemented | Total |
 |---|---|---|
-| MVP | 19 | 100 |
+| MVP | 22 | 100 |
 | later | 0 | 13 |
 | out of scope | 0 | 34 |
 
@@ -157,12 +157,12 @@
 | Node | Id | Scope | Status | Modeler identifiers |
 |---|---|---|---|---|
 | Table | `table` | MVP | done | `TableNode` |
-| Matrix | `matrix` | MVP | missing | `MatrixNode` |
+| Matrix | `matrix` | MVP | done | `MatrixNode` |
 | Analysis | `analysis` | MVP | missing | `AnalysisNode` |
 | Data Audit | `data_audit` | MVP | missing | `DataAuditNode` |
 | Transform | `transform` | MVP | missing | `TransformNode` |
-| Statistics | `statistics` | MVP | missing | `StatisticsNode` |
-| Means | `means` | MVP | missing | `MeansNode` |
+| Statistics | `statistics` | MVP | done | `StatisticsNode` |
+| Means | `means` | MVP | done | `MeansNode` |
 | Report | `report` | MVP | missing | `ReportNode` |
 | Set Globals | `set_globals` | MVP | missing | `SetGlobalsNode` |
 | KDE Simulation (Python) | `kde_simulation` | MVP | missing | `kde_export!pasw.kde` |
