@@ -5,6 +5,7 @@ pub mod analysis;
 pub mod append;
 pub mod apply;
 pub mod balance;
+pub mod build;
 pub mod data_audit;
 pub mod derive;
 pub mod distinct;

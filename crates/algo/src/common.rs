@@ -5,23 +5,32 @@ use dms_pmml::{DataField, DataType, InvalidTreatment, MiningField, OpType, Outli
 use dms_types::{Measurement, Storage, Value, ValueSpec};
 
 /// The categories of field `position` in PMML text form: the declared values of an
-/// instantiated field (`ValueSpec::Categories` / `Flag`, false value first), otherwise the
-/// distinct non-null values in order of appearance. Empty for continuous fields.
+/// instantiated field, otherwise the distinct non-null values in order of appearance; blanks
+/// (user-missing values) are not categories (`models/cart_surrogates`: `Credit_rating` declares
+/// 0, 1 and the missing 9, the model lists 0 and 1). Empty for continuous fields. A flag lists
+/// its true value first, the order the Type node saves and Modeler's `DataDictionary` uses
+/// (`models/cart_default`: `Cholesterol` HIGH, NORMAL); trees send the first category of a
+/// subset left, so the order decides the children.
 pub fn categories(dataset: &Dataset<'_>, position: usize) -> Vec<String> {
     let Some(field) = dataset.table.model().fields().get(position) else {
         return Vec::new();
     };
+    let valid = |value: &&Value| !field.is_missing(value);
     match &field.values {
-        ValueSpec::Categories(values) => values.iter().map(text).collect(),
+        ValueSpec::Categories(values) => values.iter().filter(valid).map(text).collect(),
         ValueSpec::Flag {
             true_value,
             false_value,
-        } => vec![text(false_value), text(true_value)],
+        } => [true_value, false_value]
+            .into_iter()
+            .filter(valid)
+            .map(text)
+            .collect(),
         _ if field.measurement == Measurement::Continuous => Vec::new(),
         _ => {
             let mut seen: Vec<String> = Vec::new();
             for row in dataset.table.rows() {
-                if let Some(value) = row.get(position).filter(|v| !v.is_null()) {
+                if let Some(value) = row.get(position).filter(valid) {
                     let value = text(value);
                     if !seen.contains(&value) {
                         seen.push(value);
