@@ -251,11 +251,17 @@ pub fn compare_documents(actual: &Document, expected: &Document) -> Comparison {
         }
         let (a, e) = (a.unwrap_or(&empty), e.unwrap_or(&empty));
         // A CSV export carries no table titles; compare them only when the oracle has them.
-        if e.title.is_some() && a.title != e.title {
-            out.diffs.push(format!(
-                "table {t} title: actual={:?}, expected={:?}",
-                a.title, e.title
-            ));
+        if e.title.is_some() {
+            out.total += 1;
+            if a.title == e.title {
+                out.matched += 1;
+                out.exact += 1;
+            } else if out.diffs.len() < 12 {
+                out.diffs.push(format!(
+                    "table {t} title: actual={:?}, expected={:?}",
+                    a.title, e.title
+                ));
+            }
         }
         compare_cells(t, "header", &a.header, &e.header, &mut out);
         for r in 0..a.rows.len().max(e.rows.len()) {
