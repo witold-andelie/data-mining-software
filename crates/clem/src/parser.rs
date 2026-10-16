@@ -1,10 +1,10 @@
 //! CLEM syntax tree and parser.
 //!
 //! Precedence follows IBM's Table 17 (lower binds tighter): `div rem mod` (2), `**` (3),
-//! `* /` (4), `+ - ><` (5), `> >= < <=` (6), `= == /= /==` (7), `and` (9), `or` (10). Binary
-//! operators associate to the left; unary minus binds tightest. The user guide contradicts
-//! itself on `**` versus `div`/`rem` and is silent on associativity and unary minus; these are
-//! listed for oracle probes in docs/clem/reference.md section 10.
+//! `* /` and the bitwise operators (4), `+ - ><` (5), `> >= < <= &&=_0 &&/=_0 matches` (6),
+//! `= == /= /==` (7), `and` (9), `or` (10). Every level, `**` included, associates to the left
+//! and unary minus binds tightest; the oracle confirmed all of this where the user guide was
+//! silent or contradicted itself (docs/clem/oracle-results.md rules 1-16).
 
 use crate::ClemError;
 use crate::lexer::{Token, tokenize};
@@ -20,6 +20,10 @@ const MAX_OPERATORS: usize = 1 << 16;
 #[derive(Debug, Clone, PartialEq)]
 pub enum Expr {
     Literal(Value),
+    /// `true` or `false`.
+    Boolean(bool),
+    /// `undef`: null, but `= undef` and `/= undef` test for null instead of giving null.
+    Undef,
     /// A bare name that is not a function: a field.
     Field(String),
     /// `'...'`: a field if the data model has it, otherwise a string.
@@ -27,6 +31,8 @@ pub enum Expr {
     /// `@NAME` or another zero-argument special (`@FIELD`, `@PARTITION_FIELD`, `@INDEX`, ...).
     Special(String),
     Negate(Box<Expr>),
+    /// `~~`: bitwise complement.
+    Complement(Box<Expr>),
     /// One precedence level applied left to right: `first op1 e1 op2 e2 ...`. Kept flat so long
     /// operator chains do not deepen the tree.
     Chain(Box<Expr>, Vec<(BinaryOp, Expr)>),
@@ -47,6 +53,14 @@ pub enum BinaryOp {
     Power,
     Div,
     Rem,
+    /// `mod`: the remainder of floored division (sign of the divisor), unlike `rem`.
+    Mod,
+    BitAnd,
+    BitAndNot,
+    BitOr,
+    BitXor,
+    ShiftLeft,
+    ShiftRight,
     Concat,
     Equal,
     NotEqual,
@@ -54,6 +68,12 @@ pub enum BinaryOp {
     GreaterEqual,
     Less,
     LessEqual,
+    /// `&&=_0`: `(a && b) = 0`.
+    BitsClear,
+    /// `&&/=_0`: `(a && b) /= 0`.
+    BitsSet,
+    /// `STRING matches PATTERN`: `*` any text, `?` one character, `\` escapes.
+    Matches,
     And,
     Or,
 }
@@ -64,7 +84,10 @@ pub fn parse(source: &str) -> Result<Expr, ClemError> {
         .iter()
         .filter(|(_, token)| match token {
             Token::Op(_) => true,
-            Token::Name(name) => matches!(name.as_str(), "and" | "or" | "div" | "rem" | "mod"),
+            Token::Name(name) => matches!(
+                name.as_str(),
+                "and" | "or" | "div" | "rem" | "mod" | "matches"
+            ),
             _ => false,
         })
         .count();
@@ -110,6 +133,9 @@ const LEVELS: [Level; 7] = [
         Token::Op(">=") => Some(BinaryOp::GreaterEqual),
         Token::Op("<") => Some(BinaryOp::Less),
         Token::Op("<=") => Some(BinaryOp::LessEqual),
+        Token::Op("&&=_0") => Some(BinaryOp::BitsClear),
+        Token::Name(n) if n == "matches" => Some(BinaryOp::Matches),
+        Token::Op("&&/=_0") => Some(BinaryOp::BitsSet),
         _ => None,
     },
     |t| match t {
@@ -121,6 +147,12 @@ const LEVELS: [Level; 7] = [
     |t| match t {
         Token::Op("*") => Some(BinaryOp::Multiply),
         Token::Op("/") => Some(BinaryOp::Divide),
+        Token::Op("&&") => Some(BinaryOp::BitAnd),
+        Token::Op("&&~~") => Some(BinaryOp::BitAndNot),
+        Token::Op("||") => Some(BinaryOp::BitOr),
+        Token::Op("||/&") => Some(BinaryOp::BitXor),
+        Token::Op("<<") => Some(BinaryOp::ShiftLeft),
+        Token::Op(">>") => Some(BinaryOp::ShiftRight),
         _ => None,
     },
     |t| matches!(t, Token::Op("**")).then_some(BinaryOp::Power),
@@ -199,7 +231,8 @@ impl Parser {
         loop {
             let op = match self.peek() {
                 Some(Token::Name(n)) if n == "div" => BinaryOp::Div,
-                Some(Token::Name(n)) if n == "rem" || n == "mod" => BinaryOp::Rem,
+                Some(Token::Name(n)) if n == "rem" => BinaryOp::Rem,
+                Some(Token::Name(n)) if n == "mod" => BinaryOp::Mod,
                 _ => return Ok(chain(first, rest)),
             };
             self.next += 1;
@@ -223,6 +256,11 @@ impl Parser {
             Some(Token::Op("+")) => {
                 self.next += 1;
                 self.nested(|parser| parser.unary())
+            }
+            Some(Token::Op("~~")) => {
+                self.next += 1;
+                self.nested(|parser| parser.unary())
+                    .map(|expr| Expr::Complement(Box::new(expr)))
             }
             _ => self.primary(),
         }
@@ -262,7 +300,9 @@ impl Parser {
             }
             Token::LBracket => self.list(),
             Token::Name(name) if name == "if" => self.conditional(),
-            Token::Name(name) if name == "undef" => Ok(Expr::Literal(Value::Null)),
+            Token::Name(name) if name == "undef" => Ok(Expr::Undef),
+            Token::Name(name) if name == "true" => Ok(Expr::Boolean(true)),
+            Token::Name(name) if name == "false" => Ok(Expr::Boolean(false)),
             Token::Name(name) => {
                 if self.peek() == Some(&Token::LParen) {
                     self.next += 1;

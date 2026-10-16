@@ -31,8 +31,8 @@ commands:
                              run a corpus stream with dms-cli and compare the data reaching
                              each terminal node with the Modeler oracle export";
 
-/// Crates with real-file tests behind their `corpus` feature.
-const CORPUS_CRATES: &[&str] = &["dms-strfmt", "dms-stream", "dms-sav"];
+/// Crates with real-file and oracle tests behind their `corpus` feature.
+const CORPUS_CRATES: &[&str] = &["dms-strfmt", "dms-stream", "dms-sav", "dms-io", "dms-clem"];
 
 fn test_corpus() -> Result<()> {
     corpus::run(&["verify".to_string()])?;

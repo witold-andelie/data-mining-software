@@ -91,6 +91,7 @@ name = "dms-clem"
 version = "0.1.0"
 dependencies = [
  "dms-types",
+ "serde_json",
 ]
 
 [[package]]

@@ -162,12 +162,15 @@ struct Cell {
 }
 
 fn compare_files(expected: &Path, actual: &Path) -> Result<Vec<String>> {
-    let read = |path: &Path| {
+    let read = |path: &Path, dialect: Dialect| {
         fs::read_to_string(path)
             .map_err(|e| format!("cannot read {}: {e}", path.display()))
-            .map(|text| parse_csv(text.trim_start_matches('\u{feff}')))
+            .map(|text| parse_csv(text.trim_start_matches('\u{feff}'), dialect))
     };
-    let (expected, actual) = (read(expected)?, read(actual)?);
+    let (expected, actual) = (
+        read(expected, Dialect::Modeler)?,
+        read(actual, Dialect::Rfc4180)?,
+    );
     let mut problems = Vec::new();
     let header = |rows: &[Vec<Cell>]| -> Vec<String> {
         rows.first()
@@ -231,8 +234,11 @@ fn cells_match(expected: &Cell, actual: &Cell) -> bool {
                     } else {
                         0.0
                     };
+                    // The printed rounding plus a relative error: a half-way value such as
+                    // 40257.7955 printed as 40257.796 differs by slightly more than 0.0005 in
+                    // binary.
                     let relative = 1e-9 * a.abs().max(b.abs()).max(1.0);
-                    (a - b).abs() <= rounding.max(relative) * (1.0 + 1e-9)
+                    (a - b).abs() <= rounding + relative
                 }
                 _ => false,
             }
@@ -241,8 +247,17 @@ fn cells_match(expected: &Cell, actual: &Cell) -> bool {
     }
 }
 
-/// RFC 4180 records: quoted cells may contain separators, doubled quotes and newlines.
-fn parse_csv(text: &str) -> Vec<Vec<Cell>> {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Dialect {
+    /// Our exports: quoted cells may contain separators, doubled quotes and newlines.
+    Rfc4180,
+    /// Modeler's Flat File export does not escape quotes inside quoted cells (oracle:
+    /// `"a\"b"` is exported as `"a"b"`), so a quote closes a cell only before a separator, a
+    /// line end or the end of the file.
+    Modeler,
+}
+
+fn parse_csv(text: &str, dialect: Dialect) -> Vec<Vec<Cell>> {
     let mut rows = Vec::new();
     let mut row = Vec::new();
     let mut cell = String::new();
@@ -251,12 +266,17 @@ fn parse_csv(text: &str) -> Vec<Vec<Cell>> {
     let mut chars = text.chars().peekable();
     while let Some(c) = chars.next() {
         if in_quotes {
-            match c {
-                '"' if chars.peek() == Some(&'"') => {
+            match (c, dialect) {
+                ('"', Dialect::Rfc4180) if chars.peek() == Some(&'"') => {
                     chars.next();
                     cell.push('"');
                 }
-                '"' => in_quotes = false,
+                ('"', Dialect::Modeler)
+                    if !matches!(chars.peek(), None | Some(',' | '\r' | '\n')) =>
+                {
+                    cell.push('"');
+                }
+                ('"', _) => in_quotes = false,
                 _ => cell.push(c),
             }
             continue;
@@ -301,12 +321,33 @@ mod tests {
 
     #[test]
     fn parses_quotes_and_nulls() {
-        let rows = parse_csv("a,b\r\n\"x,\"\"y\"\"\",,\n1.5,\"\"\n");
+        let rows = parse_csv("a,b\r\n\"x,\"\"y\"\"\",,\n1.5,\"\"\n", Dialect::Rfc4180);
         assert_eq!(
             rows[1],
             vec![c("x,\"y\"", true), c("", false), c("", false)]
         );
         assert_eq!(rows[2], vec![c("1.5", false), c("", true)]);
+    }
+
+    #[test]
+    fn reads_modeler_unescaped_quotes() {
+        // Modeler exports the value a"b as "a"b" and a lone quote as """.
+        let rows = parse_csv(
+            r#"x,y,z
+"a"b",""",3
+"#,
+            Dialect::Modeler,
+        );
+        assert_eq!(rows[1], vec![c("a\"b", true), c("\"", true), c("3", false)]);
+    }
+
+    #[test]
+    fn half_way_rounding_matches() {
+        assert!(cells_match(&c("40257.796", false), &c("40257.7955", false)));
+        assert!(!cells_match(
+            &c("40257.796", false),
+            &c("40257.7944", false)
+        ));
     }
 
     #[test]

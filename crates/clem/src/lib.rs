@@ -11,7 +11,7 @@ mod parser;
 use dms_types::Value;
 use std::fmt;
 
-pub use eval::{Bindings, Compiled, compile};
+pub use eval::{Bindings, Compiled, compile, compile_condition};
 pub use functions::names as function_names;
 pub use parser::{BinaryOp, Expr, parse};
 
@@ -29,14 +29,13 @@ impl Datum {
         matches!(self, Datum::Value(Value::Null))
     }
 
-    /// Truth for conditions: `Some(bool)`, or `None` for null. Numbers count as true unless 0
-    /// (the guide treats false and 0 alike).
+    /// Truth for conditions: `Some(bool)`, or `None` for null. Numbers are no conditions
+    /// (oracle: Modeler 19 rejects `if 1 then`, `1 and 1` and a Select on `1`, although the
+    /// guide calls false and 0 alike); flag fields are mapped when binding.
     pub fn truth(&self) -> Result<Option<bool>, ClemError> {
         match self {
             Datum::Bool(b) => Ok(Some(*b)),
             Datum::Value(Value::Null) => Ok(None),
-            Datum::Value(Value::Integer(i)) => Ok(Some(*i != 0)),
-            Datum::Value(Value::Real(r)) => Ok(Some(*r != 0.0)),
             Datum::Value(other) => Err(ClemError::Type(format!("{other:?} is not a condition"))),
         }
     }
@@ -51,13 +50,15 @@ impl Datum {
         }
     }
 
-    /// Text for `><` and `to_string`. GAP: Modeler's real formatting; we use the shortest
-    /// round-trip form.
-    pub fn to_text(&self) -> String {
+    /// Text for `><` and `to_string`: reals with six decimals whatever the stream's
+    /// `decimal_places` (oracle rule 27; Modeler's constant folding prints `1.0 >< "u"` as
+    /// `1u`, which only constant expressions show). Truth values have no text (oracle: type
+    /// error). GAP: dates and times print as ISO here, not in the stream's formats.
+    pub fn to_text(&self) -> Result<String, ClemError> {
         match self {
-            Datum::Bool(true) => "true".into(),
-            Datum::Bool(false) => "false".into(),
-            Datum::Value(value) => value.to_string(),
+            Datum::Bool(_) => Err(ClemError::Type("a condition has no text".into())),
+            Datum::Value(Value::Real(r)) => Ok(format!("{r:.6}")),
+            Datum::Value(value) => Ok(value.to_string()),
         }
     }
 }

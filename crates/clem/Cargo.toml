@@ -10,5 +10,12 @@ publish.workspace = true
 [dependencies]
 dms-types.workspace = true
 
+[dev-dependencies]
+serde_json = "1"
+
+[features]
+# Tests against the Modeler oracle exports of `cargo xtask probe clem_semantics` (local only).
+corpus = []
+
 [lints]
 workspace = true
