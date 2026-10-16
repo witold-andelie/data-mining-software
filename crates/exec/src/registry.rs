@@ -32,8 +32,11 @@ pub fn factory(catalog_id: &str) -> Option<Factory> {
         .map(|(_, factory)| *factory)
 }
 
+/// Nodes the planner implements itself, without an operator (supernodes are expanded).
+const PLANNED: &[&str] = &["supernode"];
+
 pub fn is_implemented(catalog_id: &str) -> bool {
-    factory(catalog_id).is_some()
+    factory(catalog_id).is_some() || PLANNED.contains(&catalog_id)
 }
 
 pub fn implemented() -> impl Iterator<Item = &'static str> {
