@@ -25,7 +25,15 @@ const BUILT_IN: &[(&str, Factory)] = &[
     ("append", nodes::append::build),
     ("merge", nodes::merge::build),
     ("balance", nodes::balance::build),
+    ("data_audit", nodes::data_audit::build),
+    ("statistics", nodes::statistics::build),
+    ("means", nodes::means::build),
+    ("matrix", nodes::matrix::build),
+    ("analysis", nodes::analysis::build),
 ];
+
+/// Registered while their implementation is under way; not counted as implemented.
+const PENDING: &[&str] = &["data_audit", "statistics", "means", "matrix", "analysis"];
 
 /// Model nodes whose nuggets score (`nodes::apply`) while their build nodes cannot train yet;
 /// they do not count as implemented.
@@ -59,7 +67,8 @@ fn nugget_or_builder(node: &StreamNode) -> Result<Box<dyn Operator>, OperatorErr
 const PLANNED: &[&str] = &["supernode"];
 
 pub fn is_implemented(catalog_id: &str) -> bool {
-    BUILT_IN.iter().any(|(id, _)| *id == catalog_id) || PLANNED.contains(&catalog_id)
+    (BUILT_IN.iter().any(|(id, _)| *id == catalog_id) && !PENDING.contains(&catalog_id))
+        || PLANNED.contains(&catalog_id)
 }
 
 pub fn implemented() -> impl Iterator<Item = &'static str> {
