@@ -187,9 +187,13 @@ for size in [20, 60, 100]:
                [("cluster_num_auto", False), ("num_clusters", size)])
 build_case("ts_leaves200", "drug.csv", ALL_INPUTS, [("cluster_num_auto", False), ("num_clusters", 200)])
 # Every prefix from 9 to 19 records, one cluster per record: the leaf order after each insertion.
-for size in range(9, 20):
+for size in range(3, 20):
     write_csv("prefix%d.csv" % size, header, records[:size])
     build_case("ts_prefix%d" % size, "prefix%d.csv" % size, ALL_INPUTS,
+               [("cluster_num_auto", False), ("num_clusters", size)])
+# One continuous field (Age) only, every record its own cluster.
+for size in [8, 9, 12, 16, 17]:
+    build_case("ts_age%d" % size, "prefix%d.csv" % size, ["Age"],
                [("cluster_num_auto", False), ("num_clusters", size)])
 # Settings on the full data.
 build_case("ts_fixed10", "drug.csv", ALL_INPUTS, [("cluster_num_auto", False), ("num_clusters", 10)])
