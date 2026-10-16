@@ -4,7 +4,7 @@
 
 | Scope | Implemented | Total |
 |---|---|---|
-| MVP | 31 | 90 |
+| MVP | 32 | 90 |
 | later | 0 | 23 |
 | out of scope | 0 | 34 |
 
@@ -148,7 +148,7 @@
 | Apriori | `apriori` | MVP | missing | `BuildAprioriNode`, `ApplyAprioriNode` |
 | CARMA | `carma` | MVP | missing | `BuildCarmaNode`, `ApplyCarmaNode` |
 | Sequence | `sequence` | MVP | missing | `BuildSequenceNode`, `ApplySequenceNode` |
-| K-Means | `kmeans` | MVP | missing | `BuildKMeansNode`, `ApplyKMeansNode` |
+| K-Means | `kmeans` | MVP | done | `BuildKMeansNode`, `ApplyKMeansNode` |
 | Kohonen | `kohonen` | MVP | missing | `TrainKohonenNode`, `ApplyKohonenNode` |
 | TwoStep | `twostep` | MVP | missing | `BuildTwoStepNode`, `ApplyTwoStepNode` |
 

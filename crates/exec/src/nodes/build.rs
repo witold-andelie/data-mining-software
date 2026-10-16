@@ -9,6 +9,12 @@
 //! target, inputs `Input` and `Both`). With `usePartitionedData` and a partition field, only the
 //! training partition (the field's first value) trains.
 //!
+//! K-Means (`BuildKMeansNode`) keeps its settings in the node's XML (`docs/formats/nodes/kmeans.md`):
+//! `numClusters`; with `expertMode` the `encodingValueForSets` and, when `stoppingCondition` is
+//! `CUSTOM`, `numberIterations` and `changeTolerance` (otherwise Modeler's defaults). Inputs are the
+//! `modelInputFieldSelection` fields unless `autoModelFieldSelection`, else the Type's `Input`
+//! and `Both` fields.
+//!
 //! Rejected until implemented: frequency and analysis weights, split models, boosting and
 //! bagging, the interactive builder, misclassification costs; for C&R Tree the overfit
 //! prevention set (Modeler draws it with its own random generator; CHAID ignores the setting,
@@ -23,6 +29,7 @@ use crate::settings;
 use dms_algo::Dataset;
 use dms_algo::cart::{self, CartSettings, Impurity, MinSize};
 use dms_algo::chaid::{self, ChaidSettings, ChiSquare, Method};
+use dms_algo::kmeans::{self, KMeansSettings};
 use dms_pmml::Pmml;
 use dms_stream::StreamNode;
 use dms_types::{DataModel, Role, Table};
@@ -34,6 +41,7 @@ pub fn build(node: &StreamNode) -> Result<Box<dyn Operator>, OperatorError> {
     let algorithm = match node.type_identifier().as_str() {
         "Cart!spss.tree-extension" => Algorithm::Cart,
         "Chaid!spss.tree-extension" => Algorithm::Chaid,
+        "BuildKMeansNode" => Algorithm::KMeans(kmeans_settings(node)?),
         other => {
             return Err(OperatorError::Settings(format!(
                 "training {other} is not implemented yet"
@@ -54,10 +62,12 @@ pub fn build(node: &StreamNode) -> Result<Box<dyn Operator>, OperatorError> {
     }))
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 enum Algorithm {
     Cart,
     Chaid,
+    /// The settings, and the custom input fields (`None`: the Type roles).
+    KMeans((KMeansSettings, Option<Vec<String>>)),
 }
 
 struct Build {
@@ -87,9 +97,15 @@ impl Operator for Build {
         let input = inputs
             .first()
             .ok_or_else(|| OperatorError::Inputs("a build node needs one input".into()))?;
+        let table = self.training_records(input)?;
+        if let Algorithm::KMeans((settings, custom)) = &self.algorithm {
+            let fields = cluster_inputs(&table, custom.as_deref())?;
+            let pmml = kmeans::train(&table, &fields, settings)
+                .map_err(|error| OperatorError::Data(format!("K-Means: {error}")))?;
+            return Ok(NodeOutput::Model(Arc::new(pmml)));
+        }
         let parameters = self.parameters(context)?;
         tree_checks(&parameters)?;
-        let table = self.training_records(input)?;
         let (target, fields) = roles(&table, &parameters, "tree.")?;
         let dataset = Dataset {
             table: &table,
@@ -102,6 +118,9 @@ impl Operator for Build {
                 .map_err(|error| OperatorError::Data(format!("C&R Tree: {error}")))?,
             Algorithm::Chaid => chaid::train(&dataset, &chaid_settings(&parameters)?)
                 .map_err(|error| OperatorError::Data(format!("CHAID: {error}")))?,
+            Algorithm::KMeans(_) => {
+                return Err(OperatorError::Settings("K-Means has no target".into()));
+            }
         };
         Ok(NodeOutput::Model(Arc::new(pmml)))
     }
@@ -146,6 +165,74 @@ impl Build {
         DataModel::new(model.fields().to_vec())
             .and_then(|model| Table::new(model, rows))
             .map_err(|error| OperatorError::Data(format!("training records: {error}")))
+    }
+}
+
+/// K-Means settings from the node's XML.
+fn kmeans_settings(
+    node: &StreamNode,
+) -> Result<(KMeansSettings, Option<Vec<String>>), OperatorError> {
+    let s = node.settings.as_ref();
+    let defaults = KMeansSettings::default();
+    let expert = settings::flag(s, "expertMode")?.unwrap_or(false);
+    let custom_stop =
+        expert && settings::text(s, "stoppingCondition").is_some_and(|c| c.trim() == "CUSTOM");
+    let clusters = settings::integer(s, "numClusters")?.unwrap_or(5);
+    let iterations = if custom_stop {
+        settings::integer(s, "numberIterations")?.unwrap_or(20)
+    } else {
+        20
+    };
+    let custom = if settings::flag(s, "autoModelFieldSelection")?.unwrap_or(true) {
+        None
+    } else {
+        Some(
+            settings::children(s, "modelInputFieldSelection", "field")
+                .into_iter()
+                .map(|f| f.text().trim().to_string())
+                .filter(|name| !name.is_empty())
+                .collect(),
+        )
+    };
+    let name = (!settings::flag(s, "autoModelName")?.unwrap_or(true))
+        .then(|| settings::text(s, "modelName"))
+        .flatten()
+        .filter(|n| !n.trim().is_empty());
+    Ok((
+        KMeansSettings {
+            clusters: usize::try_from(clusters.max(1)).unwrap_or(1),
+            max_iterations: usize::try_from(iterations.max(0)).unwrap_or(0),
+            tolerance: if custom_stop {
+                settings::real(s, "changeTolerance")?.unwrap_or(defaults.tolerance)
+            } else {
+                defaults.tolerance
+            },
+            set_encoding: if expert {
+                settings::real(s, "encodingValueForSets")?.unwrap_or(defaults.set_encoding)
+            } else {
+                defaults.set_encoding
+            },
+            name,
+        },
+        custom,
+    ))
+}
+
+/// The fields a clustering model uses: the custom list, else the Type's inputs.
+fn cluster_inputs(table: &Table, custom: Option<&[String]>) -> Result<Vec<usize>, OperatorError> {
+    let model = table.model();
+    match custom {
+        Some(names) => names
+            .iter()
+            .map(|name| {
+                model.position(name).ok_or_else(|| {
+                    OperatorError::Data(format!("the model field {name} is not in the input"))
+                })
+            })
+            .collect(),
+        None => Ok((0..model.fields().len())
+            .filter(|&i| matches!(model.fields()[i].role, Role::Input | Role::Both))
+            .collect()),
     }
 }
 

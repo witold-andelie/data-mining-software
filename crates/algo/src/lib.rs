@@ -10,9 +10,12 @@
 pub mod cart;
 pub mod chaid;
 mod common;
+pub mod kmeans;
 pub mod stats;
 
-pub use common::{categories, data_dictionary, mining_schema};
+pub use common::{
+    categories, data_dictionary, data_field, field_categories, mining_field, mining_schema,
+};
 
 use dms_types::Table;
 use std::fmt;

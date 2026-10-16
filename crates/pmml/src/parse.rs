@@ -286,7 +286,7 @@ fn parse_define_function(node: roxmltree::Node<'_, '_>) -> Result<DefineFunction
     })
 }
 
-fn parse_value_str(text: &str) -> Value {
+pub(crate) fn parse_value_str(text: &str) -> Value {
     if let Ok(n) = text.trim().parse::<f64>()
         && n.is_finite()
     {
@@ -393,6 +393,55 @@ fn parse_expr(node: roxmltree::Node<'_, '_>, depth: usize) -> Result<Expr, PmmlE
             Ok(Expr::Apply {
                 function,
                 args,
+                map_missing_to,
+            })
+        }
+        "MapValues" => {
+            let output = req_attr(node, "outputColumn")?.to_string();
+            let default = node.attribute("defaultValue").map(parse_value_str);
+            let map_missing_to = node.attribute("mapMissingTo").map(parse_value_str);
+            let mut pairs = Vec::new();
+            let mut rows = Vec::new();
+            for child in node.children().filter(roxmltree::Node::is_element) {
+                match child.tag_name().name() {
+                    "FieldColumnPair" => pairs.push((
+                        req_attr(child, "field")?.to_string(),
+                        req_attr(child, "column")?.to_string(),
+                    )),
+                    "InlineTable" => {
+                        for row in child
+                            .children()
+                            .filter(|n| n.is_element() && n.tag_name().name() == "row")
+                        {
+                            rows.push(
+                                row.children()
+                                    .filter(roxmltree::Node::is_element)
+                                    .map(|cell| {
+                                        (
+                                            cell.tag_name().name().to_string(),
+                                            cell.text().unwrap_or("").to_string(),
+                                        )
+                                    })
+                                    .collect(),
+                            );
+                        }
+                    }
+                    tag if is_skipped_element(tag) => {}
+                    tag => {
+                        return Err(PmmlError::Parse(format!(
+                            "unsupported element {tag:?} in MapValues"
+                        )));
+                    }
+                }
+            }
+            if pairs.is_empty() {
+                return Err(PmmlError::Parse("MapValues without FieldColumnPair".into()));
+            }
+            Ok(Expr::MapValues {
+                pairs,
+                output,
+                rows,
+                default,
                 map_missing_to,
             })
         }

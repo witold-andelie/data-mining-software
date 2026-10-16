@@ -173,6 +173,18 @@ pub enum Expr {
         value: String,
         map_missing_to: Option<f64>,
     },
+    /// `MapValues`: the output column of the `InlineTable` row whose input columns equal the
+    /// fields (`FieldColumnPair`s); `map_missing_to` when a field is missing, `default` when no row
+    /// matches. Modeler's K-Means codes flags and sets this way (`models/kmeans_categorical`).
+    MapValues {
+        /// `(field, column)` pairs.
+        pairs: Vec<(String, String)>,
+        output: String,
+        /// Rows of `(column, value)` cells.
+        rows: Vec<Vec<(String, String)>>,
+        default: Option<Value>,
+        map_missing_to: Option<Value>,
+    },
     /// `Apply`: a built-in function (`+`, `*`, `if`, `equal`, `sqrt`, ...) or a `DefineFunction`.
     Apply {
         function: String,
