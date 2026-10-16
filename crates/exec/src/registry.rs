@@ -38,10 +38,13 @@ const BUILT_IN: &[(&str, Factory)] = &[
     ("transpose", nodes::transpose::build),
     ("field_reorder", nodes::field_reorder::build),
     ("history", nodes::history::build),
+    ("flat_file_export", nodes::flat_file_export::build),
+    ("json_export", nodes::json_export::build),
+    ("xml_export", nodes::xml_export::build),
 ];
 
 /// Registered while their implementation is under way; not counted as implemented.
-const PENDING: &[&str] = &[];
+const PENDING: &[&str] = &["flat_file_export", "json_export", "xml_export"];
 
 /// Model nodes whose nuggets score (`nodes::apply`) while their build nodes cannot train yet;
 /// they do not count as implemented.

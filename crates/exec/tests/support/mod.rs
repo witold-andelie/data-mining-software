@@ -67,6 +67,7 @@ pub fn evaluate_stream_output(
         stream_properties: stream.properties.clone().map(Arc::new),
         attachments: Arc::new(attachments),
         decimal_places: Some(15),
+        export_dir: None,
     };
 
     let plan = Plan::new(&stream);
