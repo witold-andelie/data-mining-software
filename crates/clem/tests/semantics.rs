@@ -642,3 +642,69 @@ fn date_and_time_functions() {
         text("2020-01-31 12:30:00")
     );
 }
+
+/// Sequence functions over all records (oracle rules 59-62).
+#[test]
+fn sequence_functions_over_records() {
+    let model = DataModel::new(vec![Field::new("a", Storage::Integer)]).unwrap();
+    let bindings = Bindings {
+        model: &model,
+        current_field: None,
+    };
+    let rows: Vec<Vec<Value>> = [Some(7), Some(-7), Some(7), Some(-7), None]
+        .iter()
+        .map(|a| vec![a.map_or(Value::Null, Value::Integer)])
+        .collect();
+    let run = |source: &str| {
+        compile(&parse(source).unwrap(), &bindings)
+            .unwrap()
+            .eval_records(&rows)
+            .unwrap()
+    };
+    let ints = |values: &[Option<i64>]| -> Vec<Datum> {
+        values
+            .iter()
+            .map(|v| Datum::Value(v.map_or(Value::Null, Value::Integer)))
+            .collect()
+    };
+    assert_eq!(
+        run("@OFFSET(a, 1)"),
+        ints(&[None, Some(7), Some(-7), Some(7), Some(-7)])
+    );
+    assert_eq!(
+        run("@OFFSET(a, -1)"),
+        ints(&[Some(-7), Some(7), Some(-7), None, None])
+    );
+    assert_eq!(
+        run("@DIFF1(a)"),
+        ints(&[None, Some(-14), Some(14), Some(-14), None])
+    );
+    assert_eq!(
+        run("@SUM(a)"),
+        ints(&[Some(7), Some(0), Some(7), Some(0), Some(0)])
+    );
+    assert_eq!(
+        run("@MAX(a, 2)"),
+        ints(&[Some(7), Some(7), Some(7), Some(7), Some(-7)])
+    );
+    assert_eq!(
+        run("@SINCE(a < 0)"),
+        ints(&[Some(2), Some(3), Some(1), Some(2), Some(1)])
+    );
+    assert_eq!(
+        run("@SINCE(@THIS(a) = a)"),
+        ints(&[Some(2), Some(3), Some(2), Some(2), Some(6)])
+    );
+    assert_eq!(
+        run("@INDEX"),
+        ints(&[Some(1), Some(2), Some(3), Some(4), Some(5)])
+    );
+    let reals = run("@MEAN(a, 3)");
+    assert_eq!(reals[3], Datum::Value(Value::Real(-7.0 / 3.0)));
+    let sdev = run("@SDEV(a)");
+    assert_eq!(sdev[0], Datum::NULL);
+    assert_eq!(run("@SDEV(a, 3)")[0], Datum::Value(Value::Real(0.0)));
+    // A record evaluated alone has no neighbours.
+    let alone = compile(&parse("@OFFSET(a, 1)").unwrap(), &bindings).unwrap();
+    assert_eq!(alone.eval(&[Value::Integer(1)], 5).unwrap(), Datum::NULL);
+}

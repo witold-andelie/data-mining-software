@@ -16,8 +16,8 @@
 //! values (`ValueSpec`) are reset since they may no longer hold.
 
 use super::field_util::{
-    bind, bind_condition, coerce_column, eval, eval_condition, field_list, field_value,
-    infer_storage, parse_required, position, record_number,
+    bind, bind_condition, coerce_column, conditions, field_list, field_values, infer_storage,
+    parse_required, position,
 };
 use crate::context::ExecContext;
 use crate::error::OperatorError;
@@ -111,29 +111,26 @@ impl Operator for Filler {
                 .field(name)
                 .map(|f| f.missing.clone())
                 .unwrap_or_default();
+            // Expressions run over all records first so that sequence functions see the others.
+            // GAP: they see the input values, not the values this node has already replaced.
+            let hits = condition
+                .as_ref()
+                .map(|c| conditions("fillerCondition", c, rows))
+                .transpose()?;
+            let replacements = field_values("fillerReplaceExpression", &replacement, rows)?;
             let mut column = Vec::with_capacity(rows.len());
-            for (i, row) in rows.iter().enumerate() {
-                let index = record_number(i);
+            for (i, (row, replacement)) in rows.iter().zip(replacements).enumerate() {
                 let old = row.get(current).cloned().unwrap_or(Value::Null);
-                let hit = match (&self.mode, &condition) {
-                    (Mode::Always, _) => true,
-                    (Mode::Conditional(_), Some(c)) => {
-                        eval_condition("fillerCondition", c, row, index)?
+                let hit = match &self.mode {
+                    Mode::Always => true,
+                    Mode::Conditional(_) => {
+                        hits.as_ref().is_some_and(|hits| hits.get(i) == Some(&true))
                     }
-                    (Mode::Blanks, _) => missing.is_blank(&old),
-                    (Mode::Nulls, _) => old.is_null(),
-                    (Mode::BlanksAndNulls, _) => old.is_null() || missing.is_blank(&old),
-                    (Mode::Conditional(_), None) => false,
+                    Mode::Blanks => missing.is_blank(&old),
+                    Mode::Nulls => old.is_null(),
+                    Mode::BlanksAndNulls => old.is_null() || missing.is_blank(&old),
                 };
-                column.push(if hit {
-                    field_value(
-                        "fillerReplaceExpression",
-                        eval("fillerReplaceExpression", &replacement, row, index)?,
-                        index,
-                    )?
-                } else {
-                    old
-                });
+                column.push(if hit { replacement } else { old });
             }
             replaced.push((current, column));
         }

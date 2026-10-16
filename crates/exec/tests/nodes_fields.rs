@@ -131,6 +131,53 @@ fn derive_formula_appends_a_field_with_inferred_storage() {
 }
 
 #[test]
+fn derive_sequence_functions_see_the_other_records() {
+    let derive = |formula: &str| {
+        let out = run(
+            derive::build,
+            derive_settings(
+                vec![
+                    p("deriveType", "formula"),
+                    p("deriveFormulaExpression", formula),
+                ],
+                "seq",
+            ),
+            people(),
+        )
+        .unwrap();
+        col(&out, "seq")
+    };
+    assert_eq!(
+        derive("@OFFSET(age, 1)"),
+        vec![Value::Null, int(20), int(40), Value::Null]
+    );
+    assert_eq!(
+        derive("@SUM(age)"),
+        vec![int(20), int(60), int(60), int(120)]
+    );
+    assert_eq!(
+        derive("@SINCE0(age > 30)"),
+        vec![int(2), int(0), int(1), int(0)]
+    );
+    let flags = run(
+        derive::build,
+        derive_settings(
+            vec![
+                p("deriveType", "flag"),
+                p("deriveFlagFieldCondition", "@OFFSET(name, -1) = \"c\""),
+            ],
+            "before_c",
+        ),
+        people(),
+    )
+    .unwrap();
+    assert_eq!(
+        col(&flags, "before_c"),
+        vec![s("F"), s("T"), s("F"), s("F")]
+    );
+}
+
+#[test]
 fn derive_formula_mixing_integers_and_reals_is_real_and_replaces_same_name() {
     let out = run(
         derive::build,

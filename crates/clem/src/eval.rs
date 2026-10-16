@@ -2,9 +2,11 @@
 
 use crate::functions::{self, Args, Function, Returns};
 use crate::parser::{BinaryOp, Expr};
+use crate::sequence::{self, Statistic};
 use crate::types::{Ty, unify};
 use crate::{ClemError, Datum};
 use dms_types::{DataModel, MissingSpec, Role, Value, ValueSpec};
+use std::cell::RefCell;
 use std::cmp::Ordering;
 
 /// What names mean while binding.
@@ -19,6 +21,59 @@ pub struct Bindings<'a> {
 #[derive(Debug, Clone)]
 pub struct Compiled {
     root: Node,
+    /// Sequence functions that need all records first, in dependency order: one may use the
+    /// columns of those before it.
+    accumulators: Vec<Accumulator>,
+}
+
+/// A sequence function evaluated over all records before the expression itself.
+#[derive(Debug, Clone)]
+struct Accumulator {
+    kind: Sequence,
+    value: Node,
+    window: Option<Node>,
+}
+
+#[derive(Debug, Clone)]
+enum Sequence {
+    Statistic(Statistic),
+    /// `@SINCE` and `@SINCE0`; `uses_this` when the condition looks at the current record
+    /// through `@THIS`, which needs the condition per pair of records.
+    Since {
+        include_current: bool,
+        uses_this: bool,
+    },
+    LastNonBlank(MissingSpec),
+}
+
+/// Bound to the data model while binding, with the sequence functions found so far.
+struct Binder<'a> {
+    model: &'a DataModel,
+    current_field: Option<usize>,
+    accumulators: RefCell<Vec<Accumulator>>,
+}
+
+impl<'a> Binder<'a> {
+    fn new(bindings: &Bindings<'a>) -> Binder<'a> {
+        Binder {
+            model: bindings.model,
+            current_field: bindings.current_field,
+            accumulators: RefCell::new(Vec::new()),
+        }
+    }
+
+    fn accumulate(&self, accumulator: Accumulator) -> Node {
+        let mut accumulators = self.accumulators.borrow_mut();
+        accumulators.push(accumulator);
+        Node::Column(accumulators.len() - 1)
+    }
+
+    fn finish(self, root: Node) -> Compiled {
+        Compiled {
+            root,
+            accumulators: self.accumulators.into_inner(),
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -45,25 +100,32 @@ enum Node {
     IsBlank(usize, MissingSpec),
     /// `@INDEX`: 1-based record number.
     Index,
+    /// `@OFFSET(value, by)`: `value` on the record `by` records earlier (later when negative);
+    /// null outside the records.
+    Offset(Box<Node>, Box<Node>),
+    /// `@THIS(value)`: `value` on the record a `@SINCE` condition is evaluated for.
+    This(Box<Node>),
+    /// The result of accumulator `n` on the current record.
+    Column(usize),
 }
 
 pub fn compile(expr: &Expr, bindings: &Bindings<'_>) -> Result<Compiled, ClemError> {
-    Ok(Compiled {
-        root: bind(expr, bindings)?,
-    })
+    let binder = Binder::new(bindings);
+    let root = bind(expr, &binder)?;
+    Ok(binder.finish(root))
 }
 
 /// Compiles an expression used as a condition (Select, Flag Derive): a flag field then stands
 /// for its truth value.
 pub fn compile_condition(expr: &Expr, bindings: &Bindings<'_>) -> Result<Compiled, ClemError> {
-    Ok(Compiled {
-        root: condition(expr, bindings)?,
-    })
+    let binder = Binder::new(bindings);
+    let root = condition(expr, &binder)?;
+    Ok(binder.finish(root))
 }
 
 /// Binds an expression in a condition position. Modeler accepts only conditions and fields
 /// whose measurement is flag there (oracle: `if 1 then` and a continuous field are rejected).
-fn condition(expr: &Expr, b: &Bindings<'_>) -> Result<Node, ClemError> {
+fn condition(expr: &Expr, b: &Binder<'_>) -> Result<Node, ClemError> {
     let name = match expr {
         Expr::Field(name) | Expr::Quoted(name) => name,
         _ => return bind(expr, b),
@@ -88,7 +150,7 @@ fn condition(expr: &Expr, b: &Bindings<'_>) -> Result<Node, ClemError> {
     }
 }
 
-fn bind(expr: &Expr, b: &Bindings<'_>) -> Result<Node, ClemError> {
+fn bind(expr: &Expr, b: &Binder<'_>) -> Result<Node, ClemError> {
     Ok(match expr {
         Expr::Literal(value) => Node::Const(Datum::Value(value.clone())),
         Expr::Boolean(truth) => Node::Const(Datum::Bool(*truth)),
@@ -160,7 +222,7 @@ fn bind(expr: &Expr, b: &Bindings<'_>) -> Result<Node, ClemError> {
     })
 }
 
-fn special(name: &str, b: &Bindings<'_>) -> Result<Node, ClemError> {
+fn special(name: &str, b: &Binder<'_>) -> Result<Node, ClemError> {
     let partition = || {
         b.model
             .fields()
@@ -198,7 +260,7 @@ fn special(name: &str, b: &Bindings<'_>) -> Result<Node, ClemError> {
     }
 }
 
-fn call(name: &str, args: &[Expr], b: &Bindings<'_>) -> Result<Node, ClemError> {
+fn call(name: &str, args: &[Expr], b: &Binder<'_>) -> Result<Node, ClemError> {
     let arity = |accepted: &[usize]| {
         if accepted.contains(&args.len()) {
             Ok(())
@@ -219,6 +281,100 @@ fn call(name: &str, args: &[Expr], b: &Bindings<'_>) -> Result<Node, ClemError> 
                 .ok_or_else(|| ClemError::Unsupported(name.into()))?;
             Ok(Node::IsNull(Box::new(bind(inner, b)?)))
         }
+        "@OFFSET" => {
+            arity(&[2])?;
+            let (value, by) = two(args)?;
+            Ok(Node::Offset(
+                Box::new(bind(value, b)?),
+                Box::new(bind(by, b)?),
+            ))
+        }
+        // `@DIFF1(f)` is `f - @OFFSET(f, 1)`, `@DIFF1(f, g)` is `@DIFF1(f) / @DIFF1(g)` and
+        // `@DIFF2(f)` is `@DIFF1(f) - @OFFSET(@DIFF1(f), 1)`; the oracle shows integer wrapping
+        // and null on division by zero, as for the operators.
+        "@DIFF1" => {
+            arity(&[1, 2])?;
+            let difference = |expr: &Expr| difference(bind(expr, b)?);
+            match args {
+                [value] => difference(value),
+                [value, by] => Ok(Node::Chain(
+                    Box::new(difference(value)?),
+                    vec![(BinaryOp::Divide, difference(by)?)],
+                )),
+                _ => Err(ClemError::Unsupported(name.into())),
+            }
+        }
+        "@DIFF2" => {
+            arity(&[1])?;
+            let value = args
+                .first()
+                .ok_or_else(|| ClemError::Unsupported(name.into()))?;
+            difference(difference(bind(value, b)?)?)
+        }
+        "@THIS" => {
+            arity(&[1])?;
+            let value = args
+                .first()
+                .ok_or_else(|| ClemError::Unsupported(name.into()))?;
+            Ok(Node::This(Box::new(bind(value, b)?)))
+        }
+        "@MEAN" | "@AVE" | "@SUM" | "@MIN" | "@MAX" | "@SDEV" => {
+            arity(&[1, 2])?;
+            let statistic = match name {
+                "@SUM" => Statistic::Sum,
+                "@MIN" => Statistic::Min,
+                "@MAX" => Statistic::Max,
+                "@SDEV" => Statistic::Sdev,
+                _ => Statistic::Mean,
+            };
+            let value = args
+                .first()
+                .ok_or_else(|| ClemError::Unsupported(name.into()))?;
+            let accumulator = Accumulator {
+                kind: Sequence::Statistic(statistic),
+                value: bind(value, b)?,
+                window: args.get(1).map(|window| bind(window, b)).transpose()?,
+            };
+            Ok(b.accumulate(accumulator))
+        }
+        "@SINCE" | "@SINCE0" => {
+            arity(&[1])?;
+            let test = args
+                .first()
+                .ok_or_else(|| ClemError::Unsupported(name.into()))?;
+            let value = condition(test, b)?;
+            let accumulator = Accumulator {
+                kind: Sequence::Since {
+                    include_current: name == "@SINCE0",
+                    uses_this: uses_this(&value),
+                },
+                value,
+                window: None,
+            };
+            Ok(b.accumulate(accumulator))
+        }
+        "@LAST_NON_BLANK" => {
+            arity(&[1])?;
+            let field = match args.first().map(|arg| bind(arg, b)) {
+                Some(Ok(Node::Field(position))) => position,
+                _ => {
+                    return Err(ClemError::Type(
+                        "@LAST_NON_BLANK needs a field as its argument".into(),
+                    ));
+                }
+            };
+            let missing = b
+                .model
+                .fields()
+                .get(field)
+                .map(|f| f.missing.clone())
+                .unwrap_or_default();
+            Ok(b.accumulate(Accumulator {
+                kind: Sequence::LastNonBlank(missing),
+                value: Node::Field(field),
+                window: None,
+            }))
+        }
         "@BLANK" => {
             arity(&[1])?;
             let field = match args.first().map(|arg| bind(arg, b)) {
@@ -236,6 +392,20 @@ fn call(name: &str, args: &[Expr], b: &Bindings<'_>) -> Result<Node, ClemError> 
                 .map(|f| f.missing.clone())
                 .unwrap_or_default();
             Ok(Node::IsBlank(field, missing))
+        }
+        // `FIELD(N)`: the Nth character of a string field, as `subscrs(N, FIELD)`.
+        _ if args.len() == 1 && b.model.position(name).is_some() => {
+            let (Some(subscrs), Some(position), Some(n)) = (
+                functions::lookup("subscrs"),
+                b.model.position(name),
+                args.first(),
+            ) else {
+                return Err(ClemError::UnknownFunction(name.to_string()));
+            };
+            Ok(Node::Call(
+                subscrs,
+                vec![bind(n, b)?, Node::Field(position)],
+            ))
         }
         _ => {
             let function = functions::lookup(name)
@@ -261,6 +431,46 @@ fn call(name: &str, args: &[Expr], b: &Bindings<'_>) -> Result<Node, ClemError> 
             }
             Ok(Node::Call(function, args))
         }
+    }
+}
+
+fn two(args: &[Expr]) -> Result<(&Expr, &Expr), ClemError> {
+    match args {
+        [first, second] => Ok((first, second)),
+        _ => Err(ClemError::Type("two arguments expected".into())),
+    }
+}
+
+/// `value - @OFFSET(value, 1)`.
+fn difference(value: Node) -> Result<Node, ClemError> {
+    let previous = Node::Offset(
+        Box::new(value.clone()),
+        Box::new(Node::Const(Datum::Value(Value::Integer(1)))),
+    );
+    Ok(Node::Chain(
+        Box::new(value),
+        vec![(BinaryOp::Subtract, previous)],
+    ))
+}
+
+/// Whether `@THIS` occurs in a bound expression.
+fn uses_this(node: &Node) -> bool {
+    match node {
+        Node::This(_) => true,
+        Node::Const(_)
+        | Node::Undef
+        | Node::Field(_)
+        | Node::Flag { .. }
+        | Node::IsBlank(..)
+        | Node::Index
+        | Node::Column(_) => false,
+        Node::Negate(inner) | Node::Complement(inner) | Node::IsNull(inner) => uses_this(inner),
+        Node::Offset(value, by) => uses_this(value) || uses_this(by),
+        Node::Chain(first, rest) => uses_this(first) || rest.iter().any(|(_, n)| uses_this(n)),
+        Node::If(branches, otherwise) => {
+            uses_this(otherwise) || branches.iter().any(|(c, v)| uses_this(c) || uses_this(v))
+        }
+        Node::Call(_, items) | Node::List(items) => items.iter().any(uses_this),
     }
 }
 
@@ -315,80 +525,267 @@ fn check_args(function: &Function, args: &[Expr]) -> Result<(), ClemError> {
     }
 }
 
+/// Above this many condition evaluations, `@SINCE` with `@THIS` gives up instead of running for
+/// hours (each record may look back over all earlier records).
+const MAX_SINCE_STEPS: u64 = 50_000_000;
+
 impl Compiled {
-    /// Evaluates on one record; `index` is the 1-based record number (`@INDEX`).
+    /// Evaluates on every record, in order; sequence functions (`@OFFSET`, `@MEAN`, `@SINCE`,
+    /// ...) see the other records. `@INDEX` of the first record is 1.
+    pub fn eval_records<R: AsRef<[Value]>>(&self, rows: &[R]) -> Result<Vec<Datum>, ClemError> {
+        self.evaluate(rows, 1)
+    }
+
+    /// Evaluates on one record as if it stood alone: sequence functions see no other record.
+    /// `index` is its `@INDEX`.
     pub fn eval(&self, row: &[Value], index: u64) -> Result<Datum, ClemError> {
-        eval(&self.root, row, index)
+        // The record is known to the caller; report the error itself.
+        let mut results = self
+            .evaluate(std::slice::from_ref(&row), index)
+            .map_err(|error| match error {
+                ClemError::Record { error, .. } => *error,
+                other => other,
+            })?;
+        results
+            .pop()
+            .ok_or_else(|| ClemError::Unsupported("no record to evaluate".into()))
+    }
+
+    fn evaluate<R: AsRef<[Value]>>(
+        &self,
+        rows: &[R],
+        first_index: u64,
+    ) -> Result<Vec<Datum>, ClemError> {
+        let mut columns: Vec<Vec<Datum>> = Vec::with_capacity(self.accumulators.len());
+        for accumulator in &self.accumulators {
+            let records = Records {
+                rows,
+                first_index,
+                columns: &columns,
+            };
+            let column = accumulator.compute(&records)?;
+            columns.push(column);
+        }
+        let records = Records {
+            rows,
+            first_index,
+            columns: &columns,
+        };
+        records.all(&self.root)
+    }
+}
+
+/// The records an expression runs over, and the accumulator columns computed so far.
+struct Records<'a, R> {
+    rows: &'a [R],
+    first_index: u64,
+    columns: &'a [Vec<Datum>],
+}
+
+impl<R: AsRef<[Value]>> Records<'_, R> {
+    fn value(&self, row: usize, position: usize) -> Option<&Value> {
+        self.rows.get(row)?.as_ref().get(position)
+    }
+
+    fn column(&self, n: usize, at: At) -> Datum {
+        self.columns
+            .get(n)
+            .and_then(|column| column.get(at.row))
+            .cloned()
+            .unwrap_or(Datum::NULL)
+    }
+
+    /// `node` on every record.
+    fn all(&self, node: &Node) -> Result<Vec<Datum>, ClemError> {
+        (0..self.rows.len())
+            .map(|row| {
+                eval(node, self, At { row, this: row }).map_err(|error| ClemError::Record {
+                    index: sequence::index(self.first_index, row),
+                    error: Box::new(error),
+                })
+            })
+            .collect()
+    }
+}
+
+/// Where an expression is evaluated: on record `row`, for the record `this` (`@THIS`), which
+/// differs only inside a `@SINCE` condition.
+#[derive(Debug, Clone, Copy)]
+struct At {
+    row: usize,
+    this: usize,
+}
+
+impl Accumulator {
+    fn compute<R: AsRef<[Value]>>(
+        &self,
+        records: &Records<'_, R>,
+    ) -> Result<Vec<Datum>, ClemError> {
+        match &self.kind {
+            Sequence::Statistic(statistic) => {
+                let values = records.all(&self.value)?;
+                let windows = self
+                    .window
+                    .as_ref()
+                    .map(|window| records.all(window))
+                    .transpose()?;
+                sequence::statistic(*statistic, &values, windows.as_deref())
+            }
+            Sequence::LastNonBlank(missing) => Ok(sequence::last_non_blank(
+                &records.all(&self.value)?,
+                missing,
+            )),
+            Sequence::Since {
+                include_current,
+                uses_this: false,
+            } => {
+                let conditions = records
+                    .all(&self.value)?
+                    .iter()
+                    .map(Datum::truth)
+                    .collect::<Result<Vec<_>, _>>()?;
+                Ok(sequence::since(
+                    &conditions,
+                    *include_current,
+                    records.first_index,
+                ))
+            }
+            Sequence::Since {
+                include_current,
+                uses_this: true,
+            } => {
+                let mut steps = 0u64;
+                let mut out = Vec::with_capacity(records.rows.len());
+                for this in 0..records.rows.len() {
+                    let newest = if *include_current { this + 1 } else { this };
+                    let mut back = None;
+                    for row in (0..newest).rev() {
+                        steps += 1;
+                        if steps > MAX_SINCE_STEPS {
+                            return Err(ClemError::Unsupported(
+                                "@SINCE with @THIS over this many records".into(),
+                            ));
+                        }
+                        if eval(&self.value, records, At { row, this })?.truth()? == Some(true) {
+                            back = Some(this - row);
+                            break;
+                        }
+                    }
+                    out.push(Datum::Value(Value::Integer(match back {
+                        Some(back) => i64::try_from(back).unwrap_or(i64::MAX),
+                        None => sequence::index(records.first_index, this).saturating_add(1),
+                    })));
+                }
+                Ok(out)
+            }
+        }
     }
 }
 
 /// Recursion follows the bound tree, whose depth the parser bounds.
-fn eval(node: &Node, row: &[Value], index: u64) -> Result<Datum, ClemError> {
+fn eval<R: AsRef<[Value]>>(
+    node: &Node,
+    records: &Records<'_, R>,
+    at: At,
+) -> Result<Datum, ClemError> {
     match node {
         Node::Const(datum) => Ok(datum.clone()),
         Node::Undef => Ok(Datum::NULL),
         Node::Field(position) => Ok(Datum::Value(
-            row.get(*position).cloned().unwrap_or(Value::Null),
+            records
+                .value(at.row, *position)
+                .cloned()
+                .unwrap_or(Value::Null),
         )),
         // GAP: a value that is neither flag value; null.
         Node::Flag {
             position,
             true_value,
             false_value,
-        } => Ok(match row.get(*position) {
+        } => Ok(match records.value(at.row, *position) {
             Some(value) if value.total_cmp(true_value).is_eq() => Datum::Bool(true),
             Some(value) if value.total_cmp(false_value).is_eq() => Datum::Bool(false),
             _ => Datum::NULL,
         }),
-        Node::Index => Ok(Datum::Value(Value::Integer(
-            i64::try_from(index).unwrap_or(i64::MAX),
-        ))),
-        Node::IsNull(inner) => Ok(Datum::Bool(eval(inner, row, index)?.is_null())),
+        Node::Index => Ok(Datum::Value(Value::Integer(sequence::index(
+            records.first_index,
+            at.row,
+        )))),
+        Node::Column(n) => Ok(records.column(*n, at)),
+        Node::This(inner) => eval(
+            inner,
+            records,
+            At {
+                row: at.this,
+                this: at.this,
+            },
+        ),
+        Node::Offset(value, by) => {
+            let target = match eval(by, records, at)? {
+                Datum::Value(Value::Null) => return Ok(Datum::NULL),
+                Datum::Value(Value::Integer(by)) => i64::try_from(at.row)
+                    .ok()
+                    .and_then(|row| row.checked_sub(by))
+                    .and_then(|row| usize::try_from(row).ok())
+                    .filter(|row| *row < records.rows.len()),
+                other => {
+                    return Err(ClemError::Type(format!(
+                        "@OFFSET needs an integer offset, found {other:?}"
+                    )));
+                }
+            };
+            match target {
+                Some(row) => eval(value, records, At { row, this: at.this }),
+                None => Ok(Datum::NULL),
+            }
+        }
+        Node::IsNull(inner) => Ok(Datum::Bool(eval(inner, records, at)?.is_null())),
         Node::IsBlank(position, missing) => Ok(Datum::Bool(
-            row.get(*position)
+            records
+                .value(at.row, *position)
                 .is_some_and(|value| missing.is_blank(value)),
         )),
-        Node::Negate(inner) => functions::negate(eval(inner, row, index)?),
-        Node::Complement(inner) => functions::complement(eval(inner, row, index)?),
+        Node::Negate(inner) => functions::negate(eval(inner, records, at)?),
+        Node::Complement(inner) => functions::complement(eval(inner, records, at)?),
         Node::If(branches, otherwise) => {
             for (condition, value) in branches {
                 // A null condition falls through to the else branch.
-                if eval(condition, row, index)?.truth()? == Some(true) {
-                    return eval(value, row, index);
+                if eval(condition, records, at)?.truth()? == Some(true) {
+                    return eval(value, records, at);
                 }
             }
-            eval(otherwise, row, index)
+            eval(otherwise, records, at)
         }
         Node::List(items) => Ok(Datum::Value(Value::List(
             items
                 .iter()
-                .map(|item| eval(item, row, index).and_then(Datum::into_value))
+                .map(|item| eval(item, records, at).and_then(Datum::into_value))
                 .collect::<Result<Vec<_>, _>>()?
                 .into(),
         ))),
         Node::Call(function, args) => {
             let values = args
                 .iter()
-                .map(|arg| eval(arg, row, index))
+                .map(|arg| eval(arg, records, at))
                 .collect::<Result<Vec<_>, _>>()?;
             (function.apply)(&values)
         }
         Node::Chain(first, rest) => {
-            let mut acc = eval(first, row, index)?;
+            let mut acc = eval(first, records, at)?;
             let mut left_undef = matches!(**first, Node::Undef);
             for (op, operand) in rest {
                 let undef = left_undef || matches!(operand, Node::Undef);
                 acc = match op {
-                    BinaryOp::And => and(acc, || eval(operand, row, index))?,
-                    BinaryOp::Or => or(acc, || eval(operand, row, index))?,
+                    BinaryOp::And => and(acc, || eval(operand, records, at))?,
+                    BinaryOp::Or => or(acc, || eval(operand, records, at))?,
                     // Oracle: comparing with the keyword `undef` tests for null and is never
                     // null itself, while `m = m` on a null `m` is null.
                     BinaryOp::Equal | BinaryOp::NotEqual if undef => {
-                        let right = eval(operand, row, index)?;
+                        let right = eval(operand, records, at)?;
                         let equal = acc.is_null() == right.is_null();
                         Datum::Bool(equal == (*op == BinaryOp::Equal))
                     }
-                    _ => binary(*op, acc, eval(operand, row, index)?)?,
+                    _ => binary(*op, acc, eval(operand, records, at)?)?,
                 };
                 left_undef = false;
             }
@@ -492,7 +889,7 @@ fn compare(left: &Datum, right: &Datum) -> Result<Ordering, ClemError> {
 }
 
 /// Recursion follows the bound tree, whose depth the parser bounds.
-fn ty(node: &Node, b: &Bindings<'_>) -> Ty {
+fn ty(node: &Node, b: &Binder<'_>) -> Ty {
     match node {
         Node::Const(Datum::Value(value)) => Ty::of_value(value),
         Node::Const(Datum::Bool(_)) | Node::Flag { .. } | Node::IsNull(_) | Node::IsBlank(..) => {
@@ -506,6 +903,19 @@ fn ty(node: &Node, b: &Bindings<'_>) -> Ty {
             .map_or(Ty::Unknown, |field| Ty::of_storage(field.storage)),
         Node::Negate(inner) => ty(inner, b),
         Node::Complement(_) | Node::Index => Ty::Integer,
+        Node::Offset(value, _) | Node::This(value) => ty(value, b),
+        Node::Column(n) => match b.accumulators.borrow().get(*n) {
+            Some(Accumulator {
+                kind: Sequence::Statistic(Statistic::Mean | Statistic::Sdev),
+                ..
+            }) => Ty::Real,
+            Some(Accumulator {
+                kind: Sequence::Since { .. },
+                ..
+            }) => Ty::Integer,
+            Some(accumulator) => ty(&accumulator.value, b),
+            None => Ty::Unknown,
+        },
         Node::List(_) => Ty::Unknown,
         Node::If(branches, otherwise) => branches
             .iter()
@@ -570,7 +980,7 @@ fn ty(node: &Node, b: &Bindings<'_>) -> Ty {
 }
 
 /// Converts an integer-typed branch to real.
-fn widen(node: &mut Node, b: &Bindings<'_>) {
+fn widen(node: &mut Node, b: &Binder<'_>) {
     if ty(node, b) == Ty::Integer
         && let Some(to_real) = functions::lookup("to_real")
     {

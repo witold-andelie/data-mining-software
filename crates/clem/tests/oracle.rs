@@ -15,13 +15,13 @@
 )]
 
 use dms_clem::{Bindings, Compiled, Datum, compile, compile_condition, parse};
-use dms_types::{DataModel, Field, Storage, Value, calendar};
+use dms_types::{DataModel, Field, MissingSpec, Storage, Value, calendar};
 use std::collections::{BTreeMap, HashMap};
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
 /// Expressions that agree with Modeler (values, or both reject); raise it as CLEM grows.
-const AGREED_AT_LEAST: usize = 704;
+const AGREED_AT_LEAST: usize = 758;
 
 fn probe_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../oracle/probes/clem_semantics")
@@ -152,10 +152,29 @@ fn clem_matches_modeler_on_probe_expressions() {
     let manifest: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(dir.join("manifest.json")).unwrap()).unwrap();
     let (model, rows) = input();
-    let bindings = Bindings {
-        model: &model,
-        current_field: None,
-    };
+    // The `blanks` cases run behind a Type node that defines blanks: -4 and null on `m`,
+    // "z" and white space on `w`.
+    let mut fields = model.fields().to_vec();
+    for field in &mut fields {
+        match field.name.as_str() {
+            "m" => {
+                field.missing = MissingSpec {
+                    values: vec![Value::Integer(-4)],
+                    null_is_blank: true,
+                    ..MissingSpec::default()
+                };
+            }
+            "w" => {
+                field.missing = MissingSpec {
+                    values: vec![Value::string("z")],
+                    whitespace_is_blank: true,
+                    ..MissingSpec::default()
+                };
+            }
+            _ => {}
+        }
+    }
+    let blanks_model = DataModel::new(fields).unwrap();
     let mut exports: HashMap<String, Vec<Vec<Option<String>>>> = HashMap::new();
     let mut tallies: BTreeMap<String, Tally> = BTreeMap::new();
     let mut report = String::new();
@@ -165,12 +184,25 @@ fn clem_matches_modeler_on_probe_expressions() {
             .unwrap_or_else(|| panic!("{key} in {entry}"))
             .to_string()
     };
-    for entry in manifest["expressions"].as_array().unwrap() {
-        let (source, field, group) = (
-            text(entry, "expr"),
-            text(entry, "field"),
-            text(entry, "group"),
+    let cases = manifest["expressions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|entry| (entry, &model))
+        .chain(
+            manifest["blanks"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|entry| (entry, &blanks_model)),
         );
+    for (entry, model) in cases {
+        let bindings = Bindings {
+            model,
+            current_field: None,
+        };
+        let (source, field) = (text(entry, "expr"), text(entry, "field"));
+        let group = entry["group"].as_str().unwrap_or("blanks").to_string();
         let flag = text(entry, "kind") == "L";
         let modeler_error = entry["error"].as_str();
         // Ours: one exported cell per record, or the first error.
@@ -184,12 +216,11 @@ fn clem_matches_modeler_on_probe_expressions() {
             })
             .map_err(|e| e.to_string());
         let ours: Result<Vec<Option<String>>, String> = compiled.and_then(|compiled| {
-            rows.iter()
-                .enumerate()
-                .map(|(i, row)| {
-                    let datum = compiled
-                        .eval(row, u64::try_from(i + 1).unwrap())
-                        .map_err(|e| format!("record {}: {e}", i + 1))?;
+            compiled
+                .eval_records(&rows)
+                .map_err(|e| e.to_string())?
+                .into_iter()
+                .map(|datum| {
                     if flag {
                         let truth = datum.truth().map_err(|e| e.to_string())?;
                         // Null conditions store the false value (oracle rule 33); the flag

@@ -15,9 +15,8 @@
 //! factors; copies stay adjacent to the original record; a condition that evaluates to `$null$`
 //! does not match (rule 39).
 
-use super::field_util::record_number;
 use super::sample::SeededRng;
-use super::select::{Condition, Verdict};
+use super::select::Condition;
 use crate::context::ExecContext;
 use crate::error::OperatorError;
 use crate::operator::{Arity, Operator};
@@ -77,8 +76,11 @@ impl Operator for Balance {
         let bound = self
             .directives
             .iter()
-            .map(|d| d.condition.bind(model).map(|b| (b, d.factor)))
-            .collect::<Result<Vec<_>, _>>()?;
+            .map(|d| {
+                let truths = d.condition.bind(model)?.truths(input.rows())?;
+                Ok((truths, d.factor))
+            })
+            .collect::<Result<Vec<_>, OperatorError>>()?;
         // (position of the partition field, its training value)
         let training = if self.training_only {
             match model
@@ -115,8 +117,8 @@ impl Operator for Balance {
             };
             let mut factor = 1.0_f64;
             if in_scope {
-                for (condition, f) in &bound {
-                    if condition.verdict(row, record_number(index))? == Verdict::True {
+                for (truths, f) in &bound {
+                    if truths.get(index) == Some(&Some(true)) {
                         factor *= f;
                     }
                 }
