@@ -956,18 +956,24 @@ fn parse_clustering_model(node: roxmltree::Node<'_, '_>) -> Result<ClusteringMod
                 let id = child.attribute("id").map(str::to_string);
                 let name = child.attribute("name").map(str::to_string);
                 let size = opt_f64_attr(child, "size")?;
-                let mut center = Vec::new();
+                let mut center = None;
+                let mut variances = Vec::new();
+                let mut category_counts = Vec::new();
                 for sub in child.children().filter(roxmltree::Node::is_element) {
-                    if sub.tag_name().name() == "Array" {
-                        center = parse_array_f64(sub)?;
-                        break;
+                    match sub.tag_name().name() {
+                        "Array" if center.is_none() => center = Some(parse_array_f64(sub)?),
+                        "Partition" => category_counts = parse_partition_counts(sub)?,
+                        "Covariances" => variances = parse_diagonal(sub)?,
+                        _ => {}
                     }
                 }
                 clusters.push(Cluster {
                     id,
                     name,
                     size,
-                    center,
+                    center: center.unwrap_or_default(),
+                    variances,
+                    category_counts,
                 });
             }
             "MissingValueWeights" => {
@@ -1016,8 +1022,12 @@ fn parse_comparison_measure(node: roxmltree::Node<'_, '_>) -> Result<ComparisonM
     )?;
 
     let mut metric = None;
+    let mut log_likelihood = false;
     for child in node.children().filter(roxmltree::Node::is_element) {
         let tag = child.tag_name().name();
+        if tag == "Extension" && child.attribute("name") == Some("x-measure") {
+            log_likelihood = child.attribute("value") == Some("loglikelihood");
+        }
         if is_skipped_element(tag) {
             continue;
         }
@@ -1049,7 +1059,47 @@ fn parse_comparison_measure(node: roxmltree::Node<'_, '_>) -> Result<ComparisonM
         kind,
         metric,
         compare,
+        log_likelihood,
     })
+}
+
+/// A cluster's `Partition`: the counts array of each `PartitionFieldStats`, by field.
+fn parse_partition_counts(
+    node: roxmltree::Node<'_, '_>,
+) -> Result<Vec<(String, Vec<f64>)>, PmmlError> {
+    let mut counts = Vec::new();
+    for stats in node
+        .children()
+        .filter(|c| c.is_element() && c.tag_name().name() == "PartitionFieldStats")
+    {
+        let field = req_attr(stats, "field")?.to_string();
+        if let Some(array) = stats
+            .children()
+            .find(|c| c.is_element() && c.tag_name().name() == "Array")
+        {
+            counts.push((field, parse_array_f64(array)?));
+        }
+    }
+    Ok(counts)
+}
+
+/// The diagonal of a cluster's `Covariances`; a full matrix is not supported.
+fn parse_diagonal(node: roxmltree::Node<'_, '_>) -> Result<Vec<f64>, PmmlError> {
+    let Some(matrix) = node
+        .children()
+        .find(|c| c.is_element() && c.tag_name().name() == "Matrix")
+    else {
+        return Ok(Vec::new());
+    };
+    if matrix.attribute("kind") != Some("diagonal") {
+        return Err(PmmlError::Unsupported(
+            "cluster Covariances other than a diagonal matrix".into(),
+        ));
+    }
+    matrix
+        .children()
+        .find(|c| c.is_element() && c.tag_name().name() == "Array")
+        .map_or(Ok(Vec::new()), parse_array_f64)
 }
 
 fn parse_general_regression_model(

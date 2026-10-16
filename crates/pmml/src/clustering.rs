@@ -1,7 +1,17 @@
 //! Scoring of PMML 4.3 center-based `ClusteringModel` (distance/similarity metrics, compare
-//! functions, field weights, and missing-value weight adjustments).
+//! functions, field weights, and missing-value weight adjustments), and of SPSS TwoStep's
+//! distribution-based models with the log-likelihood distance (`log_likelihood`).
+//!
+//! TwoStep (Chiu et al. 2001; `models/twostep_default`, `team/cluster_analysis`): a cluster v
+//! of size N_v has the log-likelihood
+//! xi_v = -N_v * (sum_k 1/2 ln(s2_k + s2_vk) + sum_k E_vk)
+//! over the continuous fields k (DataField optype), with s2_k the field's variance over the training data
+//! (its `fieldWeight`) and s2_vk the cluster's maximum-likelihood variance (the PMML saves the
+//! sample variance, times (N_v - 1) / N_v), and E_vk = -sum_l (N_vkl / N_v) ln(N_vkl / N_v) the
+//! entropy of each categorical field's counts. A record joins the cluster j minimising
+//! d(j, s) = xi_j + xi_s - xi_<j,s>, the first on a tie; the distance is its affinity.
 
-use crate::expr::as_f64;
+use crate::expr::{as_f64, value_matches_str};
 use crate::score::{Env, empty_prediction};
 use crate::{
     ClusteringModel, CompareFunction, MeasureKind, Metric, ModelClass, Pmml, PmmlError, Prediction,
@@ -9,13 +19,16 @@ use crate::{
 };
 
 pub(crate) fn score(
-    _pmml: &Pmml,
+    pmml: &Pmml,
     model: &ClusteringModel,
     env: &Env<'_>,
 ) -> Result<Prediction, PmmlError> {
     if model.model_class == ModelClass::DistributionBased {
+        if model.measure.log_likelihood {
+            return score_log_likelihood(pmml, model, env);
+        }
         return Err(PmmlError::Unsupported(
-            "distributionBased ClusteringModel".into(),
+            "distributionBased ClusteringModel without the log-likelihood distance".into(),
         ));
     }
 
@@ -161,4 +174,185 @@ fn eval_compare(cmp: CompareFunction, x: f64, y: f64) -> Result<f64, PmmlError> 
         CompareFunction::Equal => Ok(if diff == 0.0 { 1.0 } else { 0.0 }),
         CompareFunction::Table => Err(PmmlError::Unsupported("table compareFunction".into())),
     }
+}
+
+/// Sufficient statistics of a TwoStep cluster: size, per continuous field the mean and the
+/// maximum-likelihood variance, per categorical field the category counts.
+struct Stats {
+    n: f64,
+    means: Vec<f64>,
+    variances: Vec<f64>,
+    counts: Vec<Vec<f64>>,
+}
+
+impl Stats {
+    /// xi = -n * (sum_k 1/2 ln(total_k + var_k) + sum_k entropy_k).
+    fn log_likelihood(&self, totals: &[f64]) -> f64 {
+        let continuous: f64 = totals
+            .iter()
+            .zip(&self.variances)
+            .map(|(total, var)| 0.5 * (total + var).ln())
+            .sum();
+        let entropy: f64 = self
+            .counts
+            .iter()
+            .flat_map(|counts| counts.iter())
+            .filter(|&&count| count > 0.0)
+            .map(|&count| {
+                let p = count / self.n;
+                -p * p.ln()
+            })
+            .sum();
+        -self.n * (continuous + entropy)
+    }
+
+    /// This cluster with one more record: `x` its continuous values, `categories` the index of
+    /// its category per categorical field.
+    fn with(&self, x: &[f64], categories: &[usize]) -> Stats {
+        let n = self.n + 1.0;
+        let mut means = Vec::with_capacity(x.len());
+        let mut variances = Vec::with_capacity(x.len());
+        for ((&mean, &var), &value) in self.means.iter().zip(&self.variances).zip(x) {
+            let delta = value - mean;
+            means.push(mean + delta / n);
+            variances.push((self.n * var + self.n * delta * delta / n) / n);
+        }
+        let counts = self
+            .counts
+            .iter()
+            .zip(categories)
+            .map(|(counts, &category)| {
+                let mut counts = counts.clone();
+                if counts.len() <= category {
+                    counts.resize(category + 1, 0.0);
+                }
+                counts[category] += 1.0;
+                counts
+            })
+            .collect();
+        Stats {
+            n,
+            means,
+            variances,
+            counts,
+        }
+    }
+}
+
+fn score_log_likelihood(
+    pmml: &Pmml,
+    model: &ClusteringModel,
+    env: &Env<'_>,
+) -> Result<Prediction, PmmlError> {
+    // The continuous fields own the center coordinates (TwoStep leaves `isCenterField` unset,
+    // so true, on its categorical fields); the DataField's optype tells them apart.
+    let is_continuous = |field: &crate::ClusteringField| {
+        pmml.data_dictionary
+            .iter()
+            .find(|f| f.name == field.field)
+            .is_some_and(|f| f.optype == crate::OpType::Continuous)
+    };
+    let (continuous, categorical): (Vec<&crate::ClusteringField>, Vec<_>) =
+        model.fields.iter().partition(|f| is_continuous(f));
+    let totals: Vec<f64> = continuous.iter().map(|f| f.weight).collect();
+
+    let mut x = Vec::with_capacity(continuous.len());
+    for field in &continuous {
+        let value = env
+            .get(&field.field)
+            .ok_or_else(|| PmmlError::UnknownField(field.field.clone()))?;
+        if *value == Value::Missing {
+            return Ok(empty_prediction());
+        }
+        x.push(as_f64(value, &field.field)?);
+    }
+    // Each categorical value as an index into the field's DataField values; an unseen category
+    // gets the next index (a count of zero in every cluster).
+    let mut categories = Vec::with_capacity(categorical.len());
+    for field in &categorical {
+        let value = env
+            .get(&field.field)
+            .ok_or_else(|| PmmlError::UnknownField(field.field.clone()))?;
+        if *value == Value::Missing {
+            return Ok(empty_prediction());
+        }
+        let values = pmml
+            .data_dictionary
+            .iter()
+            .find(|f| f.name == field.field)
+            .map(|f| f.values.as_slice())
+            .unwrap_or_default();
+        categories.push(
+            values
+                .iter()
+                .position(|v| value_matches_str(value, v))
+                .unwrap_or(values.len()),
+        );
+    }
+
+    let record = Stats {
+        n: 0.0,
+        means: vec![0.0; x.len()],
+        variances: vec![0.0; x.len()],
+        counts: vec![Vec::new(); categories.len()],
+    }
+    .with(&x, &categories);
+    let record_xi = record.log_likelihood(&totals);
+
+    let mut best: Option<(usize, f64)> = None;
+    for (idx, cluster) in model.clusters.iter().enumerate() {
+        let n = cluster.size.unwrap_or(0.0);
+        if cluster.center.len() != x.len() || cluster.variances.len() != x.len() {
+            return Err(PmmlError::Score(format!(
+                "cluster {} needs a center and a variance per continuous field",
+                idx + 1
+            )));
+        }
+        let scale = if n > 1.0 { (n - 1.0) / n } else { 0.0 };
+        let counts = categorical
+            .iter()
+            .map(|field| {
+                cluster
+                    .category_counts
+                    .iter()
+                    .find(|(name, _)| *name == field.field)
+                    .map(|(_, counts)| counts.clone())
+                    .ok_or_else(|| {
+                        PmmlError::Score(format!(
+                            "cluster {} has no counts for {}",
+                            idx + 1,
+                            field.field
+                        ))
+                    })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let stats = Stats {
+            n,
+            means: cluster.center.clone(),
+            variances: cluster.variances.iter().map(|v| v * scale).collect(),
+            counts,
+        };
+        let distance = stats.log_likelihood(&totals) + record_xi
+            - stats.with(&x, &categories).log_likelihood(&totals);
+        if best.is_none_or(|(_, d)| distance < d) {
+            best = Some((idx, distance));
+        }
+    }
+
+    let Some((idx, distance)) = best else {
+        return Ok(empty_prediction());
+    };
+    let cluster = &model.clusters[idx];
+    let name = cluster
+        .name
+        .clone()
+        .or_else(|| cluster.id.clone())
+        .unwrap_or_else(|| (idx + 1).to_string());
+    Ok(Prediction {
+        value: Value::Text(name.clone()),
+        confidence: None,
+        probabilities: Vec::new(),
+        entity_id: Some(cluster.id.clone().unwrap_or(name)),
+        affinity: Some(distance),
+    })
 }

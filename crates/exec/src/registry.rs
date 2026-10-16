@@ -48,7 +48,7 @@ const PENDING: &[&str] = &["flat_file_export", "json_export", "xml_export"];
 
 /// Model nodes whose nuggets score (`nodes::apply`) while their build nodes cannot train yet;
 /// they do not count as implemented.
-const SCORING_ONLY: &[&str] = &["logistic"];
+const SCORING_ONLY: &[&str] = &["logistic", "twostep"];
 
 pub fn factory(catalog_id: &str) -> Option<Factory> {
     BUILT_IN

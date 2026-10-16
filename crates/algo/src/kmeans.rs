@@ -220,6 +220,8 @@ pub fn train(
             name: Some((index + 1).to_string()),
             size: Some(size as f64),
             center: center.into_iter().map(six_digits).collect(),
+            variances: Vec::new(),
+            category_counts: Vec::new(),
         })
         .collect();
     let header = ModelHeader {
@@ -249,6 +251,7 @@ pub fn train(
                 kind: MeasureKind::Distance,
                 metric: Metric::Euclidean,
                 compare: CompareFunction::AbsDiff,
+                log_likelihood: false,
             },
             fields: clustering_fields,
             clusters,

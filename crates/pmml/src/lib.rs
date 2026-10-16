@@ -310,6 +310,9 @@ pub struct ComparisonMeasure {
     pub metric: Metric,
     /// `compareFunction` default for fields without their own.
     pub compare: CompareFunction,
+    /// SPSS's `x-measure` extension says `loglikelihood`: a distribution-based TwoStep model
+    /// whose clusters are compared by the log-likelihood distance, not by `metric`.
+    pub log_likelihood: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -351,6 +354,12 @@ pub struct Cluster {
     pub size: Option<f64>,
     /// The center, one coordinate per center field (`Array`).
     pub center: Vec<f64>,
+    /// The diagonal of `Covariances`: one sample variance per center field
+    /// (distribution-based models).
+    pub variances: Vec<f64>,
+    /// `Partition/PartitionFieldStats`: per non-center field, its category counts in the order
+    /// of the field's `DataField` values (distribution-based models).
+    pub category_counts: Vec<(String, Vec<f64>)>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
