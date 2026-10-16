@@ -358,3 +358,287 @@ fn flag_fields_are_conditions() {
     let condition = dms_clem::compile_condition(&parse("smoker").unwrap(), &bindings).unwrap();
     assert_eq!(condition.eval(&row, 1).unwrap(), Datum::Bool(true));
 }
+
+#[test]
+fn numeric_and_bitwise_functions() {
+    // 29: `min`/`max` propagate null and widen mixed integer/real to real.
+    assert_eq!(eval("min(age, 10)"), int(10));
+    assert_eq!(eval("max(age, 10)"), int(40));
+    assert_eq!(eval("min(1, 2.5)"), real(1.0));
+    assert_eq!(eval("max(age, income)"), real(40.0));
+    assert_eq!(eval("min(undef, 1)"), Datum::NULL);
+    assert_eq!(eval("max(undef, 1)"), Datum::NULL);
+    assert!(eval_with("max(1, 2, 3)", None, &row()).is_err());
+
+    // Trig & hyperbolic functions.
+    assert_eq!(eval("sin(0)"), real(0.0));
+    assert_eq!(eval("cos(0)"), real(1.0));
+    assert_eq!(eval("tan(0)"), real(0.0));
+    assert_eq!(eval("arcsin(0)"), real(0.0));
+    assert_eq!(eval("arcsin(2)"), Datum::NULL);
+    assert_eq!(eval("arccos(1)"), real(0.0));
+    assert_eq!(eval("arccos(-2)"), Datum::NULL);
+    assert_eq!(eval("arctan(0)"), real(0.0));
+    assert_eq!(eval("arctan2(0, 1)"), real(0.0));
+    assert_eq!(eval("sinh(0)"), real(0.0));
+    assert_eq!(eval("cosh(0)"), real(1.0));
+    assert_eq!(eval("tanh(0)"), real(0.0));
+    assert_eq!(eval("arcsinh(0)"), real(0.0));
+    assert_eq!(eval("arccosh(1)"), real(0.0));
+    assert_eq!(eval("arccosh(0.5)"), Datum::NULL);
+    assert_eq!(eval("arctanh(0)"), real(0.0));
+    assert_eq!(eval("arctanh(1)"), Datum::NULL);
+
+    // 31: bitwise integer inspection functions.
+    assert_eq!(eval("integer_bitcount(7)"), int(3));
+    assert_eq!(eval("integer_bitcount(-1)"), int(0));
+    assert_eq!(eval("integer_bitcount(-2)"), int(1));
+    assert_eq!(eval("integer_leastbit(12)"), int(2));
+    assert_eq!(eval("integer_leastbit(0)"), int(31));
+    assert_eq!(eval("integer_length(8)"), int(4));
+    assert_eq!(eval("integer_length(7)"), int(3));
+    assert_eq!(eval("integer_length(0)"), int(1));
+    assert_eq!(eval("integer_length(-1)"), int(1));
+    assert_eq!(eval("integer_length(-8)"), int(3));
+    assert_eq!(eval("testbit(5, 0)"), Datum::Bool(true));
+    assert_eq!(eval("testbit(5, 1)"), Datum::Bool(false));
+    assert_eq!(eval("testbit(5, 2)"), Datum::Bool(true));
+}
+
+#[test]
+fn list_functions() {
+    let model = DataModel::new(vec![
+        Field::new("a", Storage::Integer),
+        Field::new("b", Storage::Integer),
+        Field::new("m", Storage::Integer),
+        Field::new("x", Storage::Real),
+        Field::new("s", Storage::String),
+        Field::new("w", Storage::String),
+    ])
+    .unwrap();
+    let bindings = Bindings {
+        model: &model,
+        current_field: None,
+    };
+    let rec = [
+        Value::Integer(7),
+        Value::Integer(2),
+        Value::Null,
+        Value::Real(2.5),
+        Value::string("hello"),
+        Value::string("abc"),
+    ];
+    let run = |source: &str| {
+        compile(&parse(source).unwrap(), &bindings)
+            .unwrap()
+            .eval(&rec, 1)
+            .unwrap()
+    };
+
+    // 30: multi-field list aggregations ignore nulls; sample sdev uses N - 1.
+    assert_eq!(run("sum_n([a, b])"), int(9));
+    assert_eq!(run("sum_n([a, m])"), int(7));
+    assert_eq!(run("sum_n([m])"), Datum::NULL);
+    assert_eq!(run("mean_n([a, b])"), real(4.5));
+    assert_eq!(run("mean_n([a, m])"), real(7.0));
+    assert_eq!(run("max_n([a, m])"), int(7));
+    assert_eq!(run("min_n([m, x])"), real(2.5));
+    assert_eq!(run("min_n([a, x])"), real(2.5));
+    assert_eq!(run("sdev_n([a, b])"), real(12.5f64.sqrt()));
+    assert_eq!(run("count_nulls([a, m])"), int(1));
+    assert_eq!(run("count_non_nulls([a, m])"), int(1));
+    assert_eq!(run("first_non_null([m, a])"), int(7));
+    assert_eq!(run("first_non_null_index([m, a])"), int(2));
+    assert_eq!(run("first_non_null_index([m])"), int(0));
+    assert_eq!(run("last_non_null([a, m])"), int(7));
+    assert_eq!(run("last_non_null_index([a, m])"), int(1));
+    assert_eq!(run("max_index([a, b])"), int(1));
+    assert_eq!(run("min_index([a, b])"), int(2));
+    assert_eq!(run("max_index([m])"), int(0));
+    assert_eq!(run("value_at(1, [a, b])"), int(7));
+    assert_eq!(run("value_at(2, [a, b])"), int(2));
+    assert_eq!(run("value_at(0, [a, b])"), Datum::NULL);
+    assert_eq!(run("value_at(3, [a, b])"), Datum::NULL);
+    assert_eq!(run("count_equal(7, [a, b])"), int(1));
+    assert_eq!(run("count_equal(m, [a, b])"), Datum::NULL);
+    assert_eq!(run("count_not_equal(7, [a, b])"), int(1));
+    assert_eq!(run("count_greater_than(3, [a, b])"), int(1));
+    assert_eq!(run("count_less_than(3, [a, b])"), int(1));
+    assert_eq!(run("first_index(2, [a, b])"), int(2));
+    assert_eq!(run("last_index(7, [a, b])"), int(1));
+    assert_eq!(run("first_index(\"abc\", [s, w])"), int(2));
+
+    // 30: literals in multi-field lists and mixed literal/field lists in `member` are rejected
+    // when the expression is compiled.
+    let rejects = |source: &str| compile(&parse(source).unwrap(), &bindings).is_err();
+    assert!(rejects("count_equal(7, [a, b, 7])"));
+    assert!(rejects("first_index(\"p\", [\"q\", \"p\"])"));
+    assert!(rejects("member(3, [1, m])"));
+    assert!(!rejects("member(3, [1, 2])"));
+}
+
+#[test]
+fn string_and_character_functions() {
+    let text = |s: &str| Datum::Value(Value::string(s));
+    // 42-43: substring_between, subscrs, last.
+    assert_eq!(eval("substring_between(2, 4, \"hello\")"), text("ell"));
+    assert_eq!(eval("substring_between(4, 2, \"hello\")"), Datum::NULL);
+    assert_eq!(eval("substring_between(2, 10, \"hello\")"), Datum::NULL);
+    assert_eq!(eval("subscrs(1, \"hello\")"), text("h"));
+    assert_eq!(eval("subscrs(0, \"hello\")"), Datum::NULL);
+    assert_eq!(eval("subscrs(10, \"hello\")"), Datum::NULL);
+    assert_eq!(eval("last(\"abc\")"), text("c"));
+    assert_eq!(eval("last(\"\")"), Datum::NULL);
+
+    // 44: character functions require backquoted `c`; strmember vs locchar on empty string.
+    assert_eq!(eval("locchar(`o`, 1, \"hello world\")"), int(5));
+    assert_eq!(eval("locchar(`o`, 6, \"hello world\")"), int(8));
+    assert_eq!(eval("locchar(`o`, 0, \"hello\")"), Datum::NULL);
+    assert_eq!(eval("locchar(`o`, 1, \"\")"), Datum::NULL);
+    assert_eq!(eval("locchar_back(`o`, 11, \"hello world\")"), int(8));
+    assert_eq!(eval("locchar_back(`o`, 5, \"hello world\")"), int(5));
+    assert_eq!(eval("locchar_back(`o`, 20, \"hello world\")"), Datum::NULL);
+    assert_eq!(eval("stripchar(` `, \"a b c\")"), text("abc"));
+    assert_eq!(eval("skipchar(` `, 1, \"  padded\")"), int(3));
+    assert_eq!(eval("skipchar_back(` `, 10, \"  padded  \")"), int(8));
+    assert_eq!(eval("strmember(`o`, \"hello\")"), int(5));
+    assert_eq!(eval("strmember(`o`, \"\")"), int(0));
+    for source in [
+        "locchar('o', 1, \"hello\")",
+        "locchar(\"o\", 1, \"hello\")",
+        "stripchar(' ', \"hello\")",
+        "strmember('o', \"hello\")",
+    ] {
+        assert!(eval_with(source, None, &row()).is_err(), "{source}");
+    }
+
+    // 45: startstring/endstring clamp; allbutfirst/allbutlast return null past length.
+    assert_eq!(eval("startstring(3, \"hello\")"), text("hel"));
+    assert_eq!(eval("startstring(30, \"hello\")"), text("hello"));
+    assert_eq!(eval("startstring(0, \"hello\")"), text(""));
+    assert_eq!(eval("startstring(-1, \"hello\")"), Datum::NULL);
+    assert_eq!(eval("endstring(3, \"hello\")"), text("llo"));
+    assert_eq!(eval("endstring(30, \"hello\")"), text("hello"));
+    assert_eq!(eval("allbutfirst(2, \"hello\")"), text("llo"));
+    assert_eq!(eval("allbutfirst(5, \"hello\")"), text(""));
+    assert_eq!(eval("allbutfirst(6, \"hello\")"), Datum::NULL);
+    assert_eq!(eval("allbutlast(2, \"hello\")"), text("hel"));
+    assert_eq!(eval("allbutlast(5, \"hello\")"), text(""));
+    assert_eq!(eval("allbutlast(6, \"hello\")"), Datum::NULL);
+
+    // 46-48: alphabefore, replace, replicate, substring searches, char codes, soundex.
+    assert_eq!(eval("alphabefore(\"B\", \"a\")"), Datum::Bool(true));
+    assert_eq!(eval("alphabefore(\"a\", \"B\")"), Datum::Bool(false));
+    assert_eq!(eval("replace(\"l\", \"L\", \"hello\")"), text("heLLo"));
+    assert_eq!(eval("replace(\"\", \"y\", \"abc\")"), text("abc"));
+    assert_eq!(eval("replicate(3, \"ab\")"), text("ababab"));
+    assert_eq!(eval("replicate(0, \"ab\")"), text(""));
+    assert_eq!(eval("replicate(-1, \"ab\")"), Datum::NULL);
+    assert_eq!(eval("count_substring(\"aaaa\", \"aa\")"), int(3));
+    assert_eq!(eval("issubstring(\"wor\", \"hello world\")"), int(7));
+    assert_eq!(eval("issubstring(\"wor\", \"\")"), int(0));
+    assert_eq!(eval("issubstring(\"o\", 6, \"hello world\")"), int(8));
+    assert_eq!(eval("issubstring(\"o\", 6, \"hello\")"), Datum::NULL);
+    assert_eq!(eval("hassubstring(\"hello world\", \"wor\")"), int(7));
+    assert_eq!(eval("issubstring_count(\"o\", 2, \"hello world\")"), int(8));
+    assert_eq!(
+        eval("issubstring_lim(\"wor\", 1, 1, 11, \"hello world\")"),
+        int(0)
+    );
+    assert_eq!(eval("isstartstring(\"he\", \"hello\")"), int(1));
+    assert_eq!(eval("hasstartstring(\"hello\", \"he\")"), int(1));
+    assert_eq!(eval("isendstring(\"ld\", \"hello world\")"), int(10));
+    assert_eq!(eval("hasendstring(\"hello world\", \"ld\")"), int(10));
+    assert_eq!(eval("ismidstring(\"llo\", \"hello world\")"), int(3));
+    assert_eq!(eval("ismidstring(\"llo\", \"Hello\")"), int(0));
+    assert_eq!(eval("ismidstring(\"he\", \"hello world\")"), int(0));
+    assert_eq!(eval("hasmidstring(\"hello world\", \"llo\")"), int(3));
+    assert_eq!(eval("isalphacode(`a`)"), Datum::Bool(true));
+    assert_eq!(eval("isalphacode(`1`)"), Datum::Bool(false));
+    assert_eq!(eval("islowercode(`a`)"), Datum::Bool(true));
+    assert_eq!(eval("isuppercode(`A`)"), Datum::Bool(true));
+    assert_eq!(eval("isnumbercode(`5`)"), Datum::Bool(true));
+    assert_eq!(eval("unicode_value(`A`)"), int(65));
+    assert_eq!(eval("unicode_char(65)"), text("A"));
+    assert_eq!(eval("soundex(\"Smith\")"), text("S530"));
+    assert_eq!(eval("soundex_difference(\"Smith\", \"Smythe\")"), int(4));
+}
+
+#[test]
+fn date_and_time_functions() {
+    let text = |s: &str| Datum::Value(Value::string(s));
+    // 50-55: 1900-01-01 baseline, to_date parsing & 2-digit year rollover, calendar arithmetic.
+    assert_eq!(eval("date_in_days(to_date(\"1900-01-01\"))"), int(0));
+    assert_eq!(eval("date_in_days(to_date(\"1900-01-02\"))"), int(1));
+    assert_eq!(eval("date_in_days(to_date(\"1899-12-31\"))"), int(-1));
+    assert_eq!(eval("date_in_days(to_date(\"2020-01-31\"))"), int(43859));
+    assert_eq!(
+        eval("datetime_in_seconds(to_date(\"1900-01-02\"))"),
+        real(86_400.0)
+    );
+    assert_eq!(eval("to_string(datetime_date(0))"), text("1900-01-01"));
+    assert_eq!(eval("to_string(datetime_date(1))"), text("1900-01-01"));
+    assert_eq!(eval("to_string(datetime_date(86400))"), text("1900-01-02"));
+    assert_eq!(
+        eval("to_string(datetime_date(2020, 1, 31))"),
+        text("2020-01-31")
+    );
+    assert!(eval_with("to_date(0)", None, &row()).is_err());
+    assert_eq!(
+        eval("to_string(to_date(\"31/01/2020\"))"),
+        text("2020-01-31")
+    );
+    assert_eq!(eval("to_date(\"2020-02-30\")"), Datum::NULL);
+    assert_eq!(eval("to_date(\"01-31-2020\")"), Datum::NULL);
+    assert_eq!(eval("to_string(to_date(\"20-01-31\"))"), text("1931-01-20"));
+    assert_eq!(eval("to_string(to_date(\"31-01-29\"))"), text("2029-01-31"));
+    assert_eq!(eval("to_string(to_date(\"31-01-30\"))"), text("1930-01-31"));
+    assert_eq!(eval("to_string(to_date(\"31-01-00\"))"), text("2000-01-31"));
+    assert_eq!(eval("to_string(to_date(\"31-01-99\"))"), text("1999-01-31"));
+    assert_eq!(eval("to_date(\"50-01-31\")"), Datum::NULL);
+    assert_eq!(
+        eval("date_days_difference(to_date(\"2020-01-31\"), to_date(\"2021-03-01\"))"),
+        int(395)
+    );
+    assert_eq!(
+        eval("date_weeks_difference(to_date(\"2020-01-01\"), to_date(\"2020-01-15\"))"),
+        real(2.0)
+    );
+    assert_eq!(
+        eval("to_string(date_add_months(1, to_date(\"2020-01-31\")))"),
+        text("2020-02-29")
+    );
+    assert_eq!(
+        eval("date_add_years(1, to_date(\"2020-02-29\"))"),
+        Datum::NULL
+    );
+    assert_eq!(
+        eval("to_string(date_add_years(1, to_date(\"2020-01-31\")))"),
+        text("2021-01-31")
+    );
+    assert_eq!(eval("datetime_year(to_date(\"2020-01-31\"))"), int(2020));
+    assert_eq!(eval("datetime_month(to_date(\"2020-01-31\"))"), int(1));
+    assert_eq!(eval("datetime_day(to_date(\"2020-01-31\"))"), int(31));
+    assert_eq!(eval("datetime_weekday(to_date(\"2020-01-31\"))"), int(6));
+    assert_eq!(eval("datetime_day_name(6)"), text("Friday"));
+    assert_eq!(eval("datetime_day_short_name(6)"), text("Fri"));
+    assert_eq!(eval("datetime_month_name(1)"), text("January"));
+    assert_eq!(eval("datetime_month_short_name(1)"), text("Jan"));
+    assert_eq!(
+        eval("date_before(to_date(\"2020-01-31\"), to_date(\"2021-03-01\"))"),
+        Datum::Bool(true)
+    );
+    assert_eq!(eval("is_date(to_date(\"2020-01-31\"))"), Datum::Bool(true));
+    assert_eq!(
+        eval("is_datetime(to_date(\"2020-01-31\"))"),
+        Datum::Bool(true)
+    );
+    assert_eq!(eval("to_string(to_time(\"1:2:3\"))"), text("01:02:03"));
+    assert_eq!(eval("time_in_secs(to_time(\"01:02:03\"))"), int(3723));
+    assert_eq!(eval("time_in_mins(to_time(\"01:30:00\"))"), real(90.0));
+    assert_eq!(eval("time_in_hours(to_time(\"01:30:00\"))"), real(1.5));
+    assert_eq!(
+        eval("to_string(to_timestamp(\"2020-01-31 12:30:00\"))"),
+        text("2020-01-31 12:30:00")
+    );
+}

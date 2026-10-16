@@ -22,6 +22,8 @@ pub enum Expr {
     Literal(Value),
     /// `true` or `false`.
     Boolean(bool),
+    /// `` `c` ``: a character (a one-character string to functions that take strings).
+    Char(char),
     /// `undef`: null, but `= undef` and `/= undef` test for null instead of giving null.
     Undef,
     /// A bare name that is not a function: a field.
@@ -291,7 +293,7 @@ impl Parser {
             Token::Integer(i) => Ok(Expr::Literal(Value::Integer(i))),
             Token::Real(r) => Ok(Expr::Literal(Value::real(r))),
             Token::String(s) => Ok(Expr::Literal(Value::string(s))),
-            Token::Char(c) => Ok(Expr::Literal(Value::string(c.to_string()))),
+            Token::Char(c) => Ok(Expr::Char(c)),
             Token::Quoted(name) => Ok(Expr::Quoted(name)),
             Token::LParen => {
                 let inner = self.expression()?;

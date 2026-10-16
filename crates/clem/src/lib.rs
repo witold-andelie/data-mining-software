@@ -7,6 +7,7 @@ mod eval;
 mod functions;
 mod lexer;
 mod parser;
+mod types;
 
 use dms_types::Value;
 use std::fmt;
@@ -73,7 +74,8 @@ pub enum ClemError {
     UnknownFunction(String),
     Arity {
         function: String,
-        expected: usize,
+        /// The accepted argument counts, e.g. `1 or 3`.
+        expected: String,
         found: usize,
     },
     /// Valid CLEM we do not implement yet.

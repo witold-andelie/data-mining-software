@@ -21,7 +21,7 @@ use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
 /// Expressions that agree with Modeler (values, or both reject); raise it as CLEM grows.
-const AGREED_AT_LEAST: usize = 530;
+const AGREED_AT_LEAST: usize = 704;
 
 fn probe_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../oracle/probes/clem_semantics")
