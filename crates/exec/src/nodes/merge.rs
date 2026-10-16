@@ -211,7 +211,7 @@ impl PartialOrd for KeyTuple {
 impl Ord for KeyTuple {
     fn cmp(&self, other: &Self) -> Ordering {
         for (a, b) in self.0.iter().zip(&other.0) {
-            let ordering = super::sort::compare_non_null(a, b);
+            let ordering = super::sort::compare_ascending(a, b);
             if ordering != Ordering::Equal {
                 return ordering;
             }

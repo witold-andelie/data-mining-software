@@ -77,6 +77,17 @@ pub(crate) fn compare_non_null(a: &Value, b: &Value) -> Ordering {
     }
 }
 
+/// Ascending Sort order of two values, nulls last: the order Modeler also groups by in Merge
+/// and Distinct.
+pub(crate) fn compare_ascending(a: &Value, b: &Value) -> Ordering {
+    match (a.is_null(), b.is_null()) {
+        (true, true) => Ordering::Equal,
+        (true, false) => Ordering::Greater,
+        (false, true) => Ordering::Less,
+        (false, false) => compare_non_null(a, b),
+    }
+}
+
 /// Sort rows with resolved keys: nulls always sort last regardless of direction.
 pub(crate) fn compare_rows(keys: &[(usize, bool)], a: &[Value], b: &[Value]) -> Ordering {
     for &(position, descending) in keys {

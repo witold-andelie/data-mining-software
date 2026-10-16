@@ -822,7 +822,10 @@ mod tests {
             ]
         );
         assert!(table.model().field("sex ").is_some());
-        assert_eq!(column(&table, "sex "), [Value::string("F"), Value::string("")]);
+        assert_eq!(
+            column(&table, "sex "),
+            [Value::string("F"), Value::string("")]
+        );
         assert_eq!(
             column(&table, "Age"),
             [Value::Integer(23), Value::Integer(47)]
