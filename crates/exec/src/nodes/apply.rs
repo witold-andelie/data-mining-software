@@ -1,5 +1,5 @@
 //! Model nuggets (`ApplyCartRuleNode`, `ApplyChaidRuleNode`, `ApplyLogisticNode`,
-//! `ApplyKMeansNode`): score every record with the model and append Modeler's score fields
+//! `ApplyKMeansNode`, `ApplyTwoStepNode`): score every record with the model and append Modeler's score fields
 //! (`docs/models.md`).
 //!
 //! The model is the one the linked build node trained in this evaluation, else the PMML the
@@ -11,10 +11,12 @@
 //! | C&R Tree, CHAID | `$R-<target>` prediction; `$RC-<target>` confidence (`calculateConfidences`); `$RRP-<target>` raw propensity, the probability of the second (true) category (`calculateRawPropensities`) |
 //! | Logistic | `$L-`, `$LP-` (confidence), `$LRP-` (raw propensity), same switches |
 //! | K-Means | `$KM-<model name>`: `cluster-<cluster name>`; `$KMD-<model name>`: the Euclidean distance to that center, when the nugget's `buildSettings` set `generateDistanceField` |
+//! | TwoStep | `$T-<model name>`: the cluster name (`cluster-<n>`), by the log-likelihood distance |
 //!
 //! When the input already has a field of that name (another model on the same target), the
 //! fields get the first free index: `$R1-`, `$RC1-`, `$RRP1-` (`team/model_comparison`).
-//! GAP: K-Means cluster distance (`showClusterProximity`) is rejected until an oracle covers it.
+//! GAP: K-Means cluster distance (`showClusterProximity`) and TwoStep outlier handling
+//! (`excludeOutliers`, a noise cluster) are rejected until an oracle covers them.
 
 use super::field_util::{Column, with_columns};
 use crate::context::ExecContext;
@@ -35,6 +37,8 @@ enum Kind {
     Logistic,
     /// K-Means: `$KM-<model name>`.
     KMeans,
+    /// TwoStep: `$T-<model name>`.
+    TwoStep,
 }
 
 pub fn build(node: &StreamNode) -> Result<Box<dyn Operator>, OperatorError> {
@@ -45,6 +49,7 @@ pub fn build(node: &StreamNode) -> Result<Box<dyn Operator>, OperatorError> {
         }
         "ApplyLogisticNode" => Kind::Logistic,
         "ApplyKMeansNode" => Kind::KMeans,
+        "ApplyTwoStepNode" => Kind::TwoStep,
         other => {
             return Err(OperatorError::Settings(format!(
                 "model nugget {other} is not supported yet"
@@ -56,10 +61,18 @@ pub fn build(node: &StreamNode) -> Result<Box<dyn Operator>, OperatorError> {
             "K-Means cluster distance (showClusterProximity) is not supported yet".into(),
         ));
     }
+    if kind == Kind::TwoStep && build_setting(s, "excludeOutliers").as_deref() == Some("true") {
+        return Err(OperatorError::Settings(
+            "TwoStep outlier handling (excludeOutliers) is not supported yet".into(),
+        ));
+    }
     let model_name = settings::text(s, "modelName")
         .filter(|name| !name.trim().is_empty())
         .or_else(|| node.name.clone())
-        .unwrap_or_else(|| "K-Means".to_string());
+        .unwrap_or_else(|| match kind {
+            Kind::TwoStep => "TwoStep".to_string(),
+            _ => "K-Means".to_string(),
+        });
     Ok(Box::new(Apply {
         kind,
         pmml_member: settings::element(s, "model")
@@ -192,6 +205,20 @@ impl Apply {
                 ));
             }
             return Ok(columns);
+        }
+        if self.kind == Kind::TwoStep {
+            let values = predictions
+                .iter()
+                .map(|p| match &p.value {
+                    PmmlValue::Missing => Value::Null,
+                    value => Value::string(text(value)),
+                })
+                .collect();
+            return Ok(vec![column(
+                &format!("$T-{}", self.model_name),
+                Storage::String,
+                values,
+            )]);
         }
         let target = target_name(pmml)?;
         let (value_prefix, confidence_prefix, propensity_prefix) = match self.kind {
