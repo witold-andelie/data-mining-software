@@ -34,6 +34,7 @@ const BUILT_IN: &[(&str, Factory)] = &[
     ("chaid", model_node),
     ("kmeans", model_node),
     ("twostep", model_node),
+    ("logistic", model_node),
     ("binning", nodes::binning::build),
     ("set_to_flag", nodes::set_to_flag::build),
     ("transpose", nodes::transpose::build),
@@ -45,13 +46,14 @@ const BUILT_IN: &[(&str, Factory)] = &[
 ];
 
 /// Registered while their implementation is under way; not counted as implemented.
-/// TwoStep trains Modeler's clusters but numbers them differently on larger data (the GAP in
-/// `dms_algo::twostep`).
-const PENDING: &[&str] = &["twostep"];
+/// TwoStep numbers clusters differently on larger data, Logistic nuggets lack the per-category
+/// `$LP-` fields and multinomial coefficients on separated data differ (the GAPs in
+/// `dms_algo::twostep` and `dms_algo::logistic`).
+const PENDING: &[&str] = &["twostep", "logistic"];
 
 /// Model nodes whose nuggets score (`nodes::apply`) while their build nodes cannot train yet;
 /// they do not count as implemented.
-const SCORING_ONLY: &[&str] = &["logistic"];
+const SCORING_ONLY: &[&str] = &[];
 
 pub fn factory(catalog_id: &str) -> Option<Factory> {
     BUILT_IN
