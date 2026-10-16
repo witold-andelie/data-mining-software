@@ -3,14 +3,24 @@
 //! Settings: `appendMode` (`name` default | `position`), `appendMatchCase` (field names compare
 //! case-sensitively; default false), `appendIncludeAllFields` (true = fields of all inputs, false
 //! = only the main (first) input's fields), `appendIncludeTag` and `appendTagField` (default
-//! `Input`). Encodings from docs/formats/nodes/append.md (probe only; no corpus stream uses it).
+//! `Input`). Encodings from `docs/formats/nodes/append.md`.
 //!
-//! Fields missing from an input are null. In position mode the fields are named by the first
-//! input that has that position. A field whose storage differs between inputs is widened
-//! (integer + real = real); other conflicts are a data error.
+//! Rules (settled by `oracle/records/append_name_main`, `append_name_all_case`,
+//! `append_position_all`, `append_position_main`):
+//! - Fields missing from an input are null (`append_name_main`, `append_name_all_case`,
+//!   `append_position_all`).
+//! - In position mode, fields are named by the first input that has that position
+//!   (`append_position_all`, `append_position_main`).
+//! - In name mode, `appendMatchCase=false` (default) matches field names case-insensitively
+//!   (`Name` and `name` collapse into `Name` in `append_name_main`), whereas `appendMatchCase=true`
+//!   keeps distinct case variants as separate columns (`append_name_all_case`).
+//! - A field whose storage differs between inputs is widened (`Integer` + `Real` = `Real`, as on
+//!   `num` across `append_1.csv` and `append_2.csv`); other conflicts are a data error.
+//! - When `appendIncludeTag` is enabled, the tag field has `Storage::String` and holds the input's
+//!   1-based index as a string (`"1"`, `"2"`, ...; `append_name_main`, `append_name_all_case`,
+//!   `append_position_main`).
 //!
-//! GAP (unverified against Modeler): the tag field holds the input's 1-based number as an
-//! integer; metadata (measurement, roles, value labels) comes from the first input with the field.
+//! GAP: metadata (measurement, roles, value labels) comes from the first input with the field.
 
 use crate::context::ExecContext;
 use crate::error::OperatorError;
@@ -130,7 +140,7 @@ impl Operator for Append {
             mapping.push(map);
         }
         if let Some(name) = &self.tag {
-            fields.push(Field::new(name.clone(), Storage::Integer));
+            fields.push(Field::new(name.clone(), Storage::String));
         }
         let model =
             DataModel::new(fields).map_err(|error| OperatorError::Data(error.to_string()))?;
@@ -139,6 +149,7 @@ impl Operator for Append {
         let mut rows = Vec::new();
         for (n, input) in inputs.iter().enumerate() {
             let map = mapping.get(n).map(Vec::as_slice).unwrap_or_default();
+            let tag_value = Value::string((n + 1).to_string());
             for row in input.rows() {
                 let mut out = vec![Value::Null; width];
                 for (position, value) in row.iter().enumerate() {
@@ -156,7 +167,7 @@ impl Operator for Append {
                     }
                 }
                 if let Some(slot) = tag_position.and_then(|p| out.get_mut(p)) {
-                    *slot = Value::Integer(n as i64 + 1);
+                    *slot = tag_value.clone();
                 }
                 rows.push(out);
             }

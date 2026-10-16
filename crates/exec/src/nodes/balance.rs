@@ -6,14 +6,22 @@
 //! Evidence: `docs/formats/nodes/balance.md` and the team streams (`'heart disease' = 2` factor
 //! 1.25; `default = 0.0` factor 1.0 where `default` is an ordinary data field).
 //!
-//! A record matching a directive gets `floor(factor)` copies plus one more with probability
-//! `frac(factor)`; a record matching no directive keeps one copy.
+//! Rules (settled by `oracle/records/balance_int_factors`, `balance_multi_match`):
+//! - A record matching a directive gets `floor(factor)` copies plus one more with probability
+//!   `frac(factor)` (`factor = 0.0` drops the record, `1.0` keeps 1 copy, `2.0` keeps 2, `3.0`
+//!   keeps 3); a record matching no directive keeps one copy (`balance_int_factors`).
+//! - Copies of a record stay adjacent to the original record in input order
+//!   (`balance_int_factors`, `balance_multi_match`).
+//! - A condition that evaluates to `$null$` does not match (`balance_int_factors` row 15 has
+//!   `iv = null` under `iv = 10`; `balance_multi_match` rows 11, 15, 16 have `iv = null` under
+//!   `iv >= 0`).
+//! - Directives are evaluated in order and the **first** matching directive wins; subsequent
+//!   matching directives are ignored (`balance_multi_match` with `[2.0, grp = "A"]` then
+//!   `[3.0, iv >= 0]` gives 2 copies—not 6—to rows 4, 6, 10, 14 where both conditions hold).
+//!
 //! GAP: Modeler's random number generator is unknown, so non-integral factors use the deterministic
 //! seeded generator of `sample.rs` and cannot match Modeler's random output; integral factors
 //! (0.0, 1.0, 2.0, ...) are exact.
-//! GAP (unverified against Modeler): a record matching several directives gets the product of their
-//! factors; copies stay adjacent to the original record; a condition that evaluates to `$null$`
-//! does not match (rule 39).
 
 use super::sample::SeededRng;
 use super::select::Condition;
@@ -119,7 +127,8 @@ impl Operator for Balance {
             if in_scope {
                 for (truths, f) in &bound {
                     if truths.get(index) == Some(&Some(true)) {
-                        factor *= f;
+                        factor = *f;
+                        break;
                     }
                 }
             }

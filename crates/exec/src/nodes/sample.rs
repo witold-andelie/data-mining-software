@@ -4,16 +4,26 @@
 //! include the sample, default | `discard` = pass the records outside the sample), `sampleMethod`
 //! (`firstN` default | `oneInN` | `random`), `sampleFirstN` (default 10000), `sampleOneInN`
 //! (default 2, >= 1), `sampleRandom` (percent in 0..=100, default 50.0),
-//! `sampleUseMaxSize`/`sampleMaxSize` (cap on the size of the sample, default 10000),
+//! `sampleUseMaxSize`/`sampleMaxSize` (cap on the number of output records, default 10000),
 //! `sampleUseRandomSeed`/`sampleRandomSeed` (non-negative seed). Encodings per
 //! `docs/formats/nodes/sample.md`.
+//!
+//! Rules (settled by `oracle/records/sample_first_n`, `sample_first_discard`, `sample_one_in_n`,
+//! `sample_one_in_n_max`, `sample_one_in_n_discard_max`):
+//! - `oneInN` selects every `n`-th record in 1-based record numbering: records `n, 2n, 3n, ...`
+//!   (0-based `(index + 1) % n == 0`; `sample_one_in_n` with `n = 3` keeps ids 3, 6, 9, 12, 15;
+//!   `sample_one_in_n_max` with `n = 2` keeps ids 2, 4, 6).
+//! - In `discard` mode, the complement of the sample is passed (`sample_first_discard` with
+//!   `first_n = 5` keeps ids 6..16; `sample_one_in_n_discard_max` with `n = 2` passes the odd
+//!   1-based records 1, 3, 5).
+//! - `sampleUseMaxSize`/`sampleMaxSize` caps the number of output records emitted, after applying
+//!   the include/discard filter (`sample_one_in_n_max` caps included records at 3 -> ids 2, 4, 6;
+//!   `sample_one_in_n_discard_max` caps non-sampled records at 3 -> ids 1, 3, 5).
 //!
 //! GAP: random sampling does NOT match Modeler. Modeler's random number generator is unknown and
 //! not reproducible here, so we draw from a deterministic seeded generator (splitmix64; without a
 //! saved seed a fixed constant). The same input and seed always give the same sample, but not
 //! Modeler's sample.
-//! GAP: for `oneInN` we select records 1, n+1, 2n+1, ... (0-based `index % n == 0`); which record
-//! of each block Modeler selects is unverified.
 //! Not supported (`build` fails): `sampleProcedure=complex` (strata, clusters, weights).
 
 use crate::context::ExecContext;
@@ -146,21 +156,16 @@ impl Operator for Sample {
             .first()
             .ok_or_else(|| OperatorError::Inputs("Sample needs one input".into()))?;
         let mut rng = SeededRng::new(self.seed);
-        let mut selected_count = 0usize;
         let mut kept = Vec::new();
         for (index, row) in input.rows().iter().enumerate() {
-            let mut selected = match self.method {
+            if self.max_size.is_some_and(|max| kept.len() >= max) {
+                break;
+            }
+            let selected = match self.method {
                 Method::First(n) => index < n,
-                Method::OneInN(n) => index % n == 0,
+                Method::OneInN(n) => (index + 1).is_multiple_of(n),
                 Method::RandomPercent(percent) => rng.next_f64() * 100.0 < percent,
             };
-            if selected {
-                if self.max_size.is_some_and(|max| selected_count >= max) {
-                    selected = false;
-                } else {
-                    selected_count += 1;
-                }
-            }
             if selected != self.discard {
                 kept.push(row.clone());
             }

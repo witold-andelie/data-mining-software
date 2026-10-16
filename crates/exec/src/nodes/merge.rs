@@ -8,26 +8,36 @@
 //! `tagTable/tagNames/tag[@id]/name` (maps those tag names to inputs), `mergePrimaryDataset` (the
 //! input an anti join reports; default 1), `mergeRenameDuplicateFields` (default true), and
 //! `filterTableGroup/{defaultDrop,rows/row}` (drops/renames fields in the merged output).
-//! Encodings from `docs/formats/nodes/merge.md`; verified against oracle `team/stream_2_M` (key
-//! `ID`, partial outer, tag 1) and `team/cluster_analysis` (order merge of 3 inputs with duplicate
-//! fields dropped via `filterTableGroup`).
+//! Encodings from `docs/formats/nodes/merge.md`.
+//!
+//! Rules (settled by `oracle/records/merge_order`, `merge_key_inner`, `merge_key_full_outer`,
+//! `merge_key_partial_outer`, `merge_key_anti`, `merge_condition`, `oracle/team/stream_2_M`, and
+//! `oracle/team/cluster_analysis`):
+//! - Output fields: the first input's fields, then each later input's fields in order. In key
+//!   merge, a key field in a later input is coalesced into the first input's key column; any
+//!   other non-key field name that appears in more than one input is renamed to `<tag>_<field>`
+//!   on **every** input that has it (including input 1: `1_k`, `1_val`, `2_k`, `2_val` in
+//!   `merge_condition`) when `mergeRenameDuplicateFields` is true, unless dropped or explicitly
+//!   renamed by `filterTableGroup`. In `anti` join, only the primary dataset's fields are emitted
+//!   with their original names (`merge_key_anti`: `k,l_id,val,l_num`).
+//! - Order merge pairs records by position and stops at the shortest input (`merge_order`).
+//! - Key merge: records with equal non-null keys are combined (`""` is an empty string, not null,
+//!   so `""` matches `""`); null keys (`$null$`) never match any record (`merge_key_inner`,
+//!   `merge_key_full_outer`, `merge_key_partial_outer`, `merge_key_anti`).
+//! - Key merge row order: by ascending key in the Sort node's collation, matched and unmatched
+//!   keys alike (`merge_key_full_outer`: `""`, `A`, `B`, then the unmatched `C`, `L1`, `R1`;
+//!   `team/stream_2_M` interleaves them by `ID`); within one key each input's records come in
+//!   reverse input order, as Sort orders ties (`merge_key_inner`: key `""` emits `l_id=7` then
+//!   `l_id=4`; key `"B"` emits `(5, 105)`, `(5, 101)`, `(1, 105)`, `(1, 101)`).
+//! - Anti join returns the primary input's records whose key is null or absent from the other
+//!   inputs, ordered by ascending key with nulls last (`merge_key_anti`: `"C"` then `"L1"`).
+//! - Condition merge evaluates `mergeCondition` on the cross product of input rows in a combined
+//!   model where duplicate field names are disambiguated as `<tag>_<field>` on every input (and
+//!   also accessible by bare name on input 1).
 //!
 //! Ignored (performance hints only): `mergeSingleLargeInput`/`mergeSingleLargeInputTag`,
 //! `mergePreSortedInput`/`existingSortKeys`.
 //! Not supported (`build` fails): `mergeCommonKeys=false`, non-empty `mergeRankConditions`.
-//!
-//! Output fields: the first input's fields, then each later input's fields in order. In key merge,
-//! a key field in a later input is coalesced into the first input's key column; any other duplicate
-//! field name is dropped via `filterTableGroup`, renamed to `<tag>_<field>` when
-//! `mergeRenameDuplicateFields` is true, or rejected with a data error.
-//!
-//! Key merge: records with equal keys are combined; several records with one key combine as a
-//! cross product; null keys never match (they stay separate records). Output is ordered by key
-//! (GAP: verified on `team/stream_2_M` whose IDs are ascending); incomplete records have nulls for
-//! the missing inputs. Order merge stops at the shortest input.
-//! Condition merge: evaluates `mergeCondition` on the cross product of input rows in a combined
-//! model where duplicate field names are disambiguated as `<tag>_<field>` (GAP: condition merge
-//! pairing semantics and join types beyond inner are unverified against Modeler).
 
 use super::select::Condition;
 use crate::context::ExecContext;
@@ -196,10 +206,12 @@ impl PartialOrd for KeyTuple {
     }
 }
 
+/// Keys order as the Sort node orders values (Modeler sorts each input by key before joining,
+/// inferred from the shared tie and collation behaviour).
 impl Ord for KeyTuple {
     fn cmp(&self, other: &Self) -> Ordering {
         for (a, b) in self.0.iter().zip(&other.0) {
-            let ordering = a.total_cmp(b);
+            let ordering = super::sort::compare_non_null(a, b);
             if ordering != Ordering::Equal {
                 return ordering;
             }
@@ -276,8 +288,9 @@ impl Operator for Merge {
                 .unwrap_or_else(|| (n + 1).to_string());
             let mut map = Vec::new();
             for field in input.model().fields() {
-                let is_dup = !seen_raw.insert(field.name.clone());
-                if is_dup
+                let is_later_dup = !seen_raw.insert(field.name.clone());
+                let is_shared = name_counts.get(field.name.as_str()).copied().unwrap_or(0) > 1;
+                if is_later_dup
                     && key_names.contains(&field.name)
                     && let Some(&target) = key_targets.get(&field.name)
                 {
@@ -287,11 +300,14 @@ impl Operator for Merge {
                     });
                     continue;
                 }
+                let is_dup_non_key = is_shared && !key_names.contains(&field.name);
                 let tagged = format!("{tag}_{}", field.name);
-                let filter_row = if is_dup {
-                    self.filter_rows
-                        .get(&tagged)
-                        .or_else(|| self.filter_rows.get(&field.name))
+                let filter_row = if is_later_dup || is_dup_non_key {
+                    self.filter_rows.get(&tagged).or_else(|| {
+                        (!is_later_dup)
+                            .then(|| self.filter_rows.get(&field.name))
+                            .flatten()
+                    })
                 } else {
                     self.filter_rows
                         .get(&field.name)
@@ -305,10 +321,10 @@ impl Operator for Merge {
                 let mut out_field = field.clone();
                 if let Some(rename) = filter_row.and_then(|r| r.rename.as_ref()) {
                     out_field.name = rename.clone();
-                } else if is_dup {
+                } else if is_dup_non_key {
                     if self.rename_duplicates {
                         out_field.name = tagged;
-                    } else {
+                    } else if is_later_dup {
                         return Err(OperatorError::Data(format!(
                             "field {:?} appears in several inputs; duplicate fields are not supported when mergeRenameDuplicateFields is false",
                             field.name
@@ -378,8 +394,8 @@ impl Merge {
         condition: &Condition,
     ) -> Result<Vec<Vec<Option<usize>>>, OperatorError> {
         // Build an evaluation model containing every input field: unique fields keep their name;
-        // fields present in multiple inputs keep their bare name on the first input and `<tag>_<name>`
-        // on later inputs (or `<tag>_<name>` if the first input's tag is explicitly referenced).
+        // fields present in multiple inputs are exposed both under `<tag>_<name>` on every input
+        // and under the bare `<name>` on the first input that has it.
         let mut eval_fields: Vec<Field> = Vec::new();
         let mut seen: HashSet<&str> = HashSet::new();
         for (n, input) in inputs.iter().enumerate() {
@@ -389,13 +405,18 @@ impl Merge {
                 .cloned()
                 .unwrap_or_else(|| (n + 1).to_string());
             for field in input.model().fields() {
-                let mut f = field.clone();
-                if !seen.insert(field.name.as_str())
-                    || name_counts.get(field.name.as_str()).copied().unwrap_or(0) > 1 && n > 0
-                {
-                    f.name = format!("{tag}_{}", field.name);
+                let is_shared = name_counts.get(field.name.as_str()).copied().unwrap_or(0) > 1;
+                let is_first = seen.insert(field.name.as_str());
+                if is_shared {
+                    let mut tagged = field.clone();
+                    tagged.name = format!("{tag}_{}", field.name);
+                    eval_fields.push(tagged);
+                    if is_first {
+                        eval_fields.push(field.clone());
+                    }
+                } else {
+                    eval_fields.push(field.clone());
                 }
-                eval_fields.push(f);
             }
         }
         let eval_model =
@@ -420,11 +441,25 @@ impl Merge {
         }
         let mut indices = vec![0usize; inputs.len()];
         let mut combined = Vec::with_capacity(eval_model.len());
+        let mut seen_row = HashSet::new();
         for ordinal in 0..total {
             combined.clear();
-            for (input, &row) in inputs.iter().zip(&indices) {
-                if let Some(row) = input.rows().get(row) {
-                    combined.extend(row.iter().cloned());
+            seen_row.clear();
+            for (input, &row_idx) in inputs.iter().zip(&indices) {
+                if let Some(row) = input.rows().get(row_idx) {
+                    for (field, val) in input.model().fields().iter().zip(row) {
+                        let is_shared =
+                            name_counts.get(field.name.as_str()).copied().unwrap_or(0) > 1;
+                        let is_first = seen_row.insert(field.name.as_str());
+                        if is_shared {
+                            combined.push(val.clone());
+                            if is_first {
+                                combined.push(val.clone());
+                            }
+                        } else {
+                            combined.push(val.clone());
+                        }
+                    }
                 }
             }
             if bound.truth_of(&combined, ordinal.saturating_add(1))? == Some(true) {
@@ -483,20 +518,6 @@ impl Merge {
             }
         };
         let mut combos = Vec::new();
-        // Null keys sort first and never match.
-        for (n, i) in null_keyed {
-            let mut present = vec![false; count];
-            if let Some(p) = present.get_mut(n) {
-                *p = true;
-            }
-            if keeps(&present) {
-                let mut combo = vec![None; count];
-                if let Some(slot) = combo.get_mut(n) {
-                    *slot = Some(i);
-                }
-                combos.push(combo);
-            }
-        }
         for lists in groups.values() {
             let present: Vec<bool> = lists.iter().map(|l| !l.is_empty()).collect();
             if !keeps(&present) {
@@ -507,7 +528,7 @@ impl Merge {
                 let options: Vec<Option<usize>> = if list.is_empty() {
                     vec![None]
                 } else {
-                    list.iter().map(|&i| Some(i)).collect()
+                    list.iter().rev().map(|&i| Some(i)).collect()
                 };
                 product = product
                     .into_iter()
@@ -521,6 +542,21 @@ impl Merge {
                     .collect();
             }
             combos.extend(product);
+        }
+        // Null keys never match; inferred from the Sort node: after the other keys, in reverse
+        // input order (no oracle case has a null key).
+        for &(n, i) in null_keyed.iter().rev() {
+            let mut present = vec![false; count];
+            if let Some(p) = present.get_mut(n) {
+                *p = true;
+            }
+            if keeps(&present) {
+                let mut combo = vec![None; count];
+                if let Some(slot) = combo.get_mut(n) {
+                    *slot = Some(i);
+                }
+                combos.push(combo);
+            }
         }
         combos
     }
@@ -558,7 +594,8 @@ impl Merge {
             .get(self.primary)
             .map(Vec::as_slice)
             .unwrap_or_default();
-        let rows = primary
+        let sort_keys: Vec<(usize, bool)> = positions.iter().map(|&p| (p, false)).collect();
+        let mut rows: Vec<Vec<Value>> = primary
             .rows()
             .iter()
             .filter(|row| {
@@ -570,6 +607,8 @@ impl Merge {
             })
             .cloned()
             .collect();
+        rows.reverse();
+        rows.sort_by(|a, b| super::sort::compare_rows(&sort_keys, a, b));
         Table::new(primary.model().clone(), rows)
             .map_err(|error| OperatorError::Data(error.to_string()))
     }

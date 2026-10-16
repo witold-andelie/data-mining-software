@@ -7,25 +7,41 @@
 //! custom extension added to every aggregated field name) and `aggregateExtensionPosition`
 //! (`Suffix` default | `Prefix`), `aggregateIncludeCount` (default true) and
 //! `aggregateCountFieldName` (default `Record_Count`). Evidence: `docs/formats/nodes/aggregate.md`
-//! and oracle `team/stream_2_M` (key `ID`, `ACCOUNT_CURRENT`/`ACCOUNT_SAVE` max -> columns
-//! `ACCOUNT_CURRENT_Max`, `ACCOUNT_SAVE_Max`, then `No_accounts`).
+//! and `oracle/team/stream_2_M`.
 //!
-//! Output fields: the key fields, then per aggregate row its statistics (order Sum, Mean, Min,
-//! Max, SDev, Median, Count, Var, Q1, Q3), then the record count. Nulls are ignored by every
-//! statistic; a statistic over no valid value is null.
+//! Rules (settled by `oracle/records/agg_all_stats`, `agg_ext_prefix`, `agg_ext_suffix`,
+//! `agg_no_count`, `agg_contiguous`, `agg_no_keys`, and `oracle/team/stream_2_M`):
+//! - Output fields: the key fields, then per aggregate row its statistics in the fixed order
+//!   `_Sum`, `_Mean`, `_Min`, `_Max`, `_SDev`, `_Median`, `_Count`, `_Variance`,
+//!   `_FirstQuartile`, `_ThirdQuartile` (`agg_all_stats`, `agg_no_keys`), then the record count
+//!   field when `aggregateIncludeCount` is true (`agg_no_count` omits it).
+//! - When `aggregateNameExtension` is non-empty, Modeler joins the extension to `{field}_{Stat}`
+//!   with `_`: `{ext}_{field}_{Stat}` when `aggregateExtensionPosition=Prefix` (`agg_ext_prefix`:
+//!   extension `PRE_` gives `PRE__iv_Sum`), and `{field}_{Stat}_{ext}` when `Suffix`
+//!   (`agg_ext_suffix`: extension `_SUF` gives `iv_Sum__SUF`).
+//! - When `aggregateContiguousKeys` is false (default) and key fields are present, groups are
+//!   emitted in order of their first appearance in the input (`agg_all_stats`, `agg_ext_prefix`,
+//!   `agg_ext_suffix`, `agg_no_count`, `team/stream_2_M`); key equality is exact (`"B"`, `"A"`,
+//!   `"C"`, `""`, `"D"`). When `aggregateContiguousKeys` is true, a new group starts whenever a
+//!   key value differs from the preceding record (`agg_contiguous`). With no key fields, all
+//!   records collapse into a single summary row (`agg_no_keys`).
+//! - Nulls are ignored by every statistic; `Count` counts non-null values (0 when all values in
+//!   the group are null), while `Record_Count` counts all records in the group (`agg_all_stats`
+//!   group `"D"`). Any other statistic over zero valid values is null.
+//! - `Variance` and `SDev` use the sample denominator `n - 1` and return null when `n < 2`
+//!   (`agg_all_stats` group `"C"` has `n = 1`).
+//! - `Median` of an even count is the mean of the two middle values (`agg_all_stats` group `"A"`
+//!   `rv` `[1.25, 2.5, 5.0, 10.0]` -> `3.75`).
+//! - `FirstQuartile` and `ThirdQuartile` are Tukey hinges: the median of the lower half and upper
+//!   half of the sorted non-null values, including the median element in both halves when `n` is
+//!   odd (`agg_all_stats`, `agg_ext_prefix`, `agg_no_keys`: for `n = 13` sorted values, Q1 is row
+//!   index 3 (`7.0` / `0.5`) and Q3 is row index 9 (`30.0` / `5.0`); for `n = 6` `rv` in group
+//!   `"B"`, Q1 is `0.0` and Q3 is `9.0`; for `n = 4` `rv` in group `"A"`, Q1 is `1.875` and Q3 is
+//!   `7.5`; for `n = 1`, Q1 = Q3 = the single value).
 //!
 //! Not supported (`build` fails): `aggregateExpressionsTable` (expression aggregates),
 //! `aggregateAllowApproximation`.
-//!
-//! GAP (unverified against Modeler): the suffixes of Sum, Mean, SDev, Median, Count, Var, Q1, Q3
-//! (`_Max` is confirmed by `team/stream_2_M`) and how `aggregateNameExtension` combines with them;
-//! the group order when `aggregateContiguousKeys` is false (we sort groups by key, which matches
-//! the oracle stream); the sample (n-1) formulas for SDev and Var and null for fewer than two
-//! values; Median of an even count is the mean of the two middle values; quartiles use position
-//! p(n+1) with linear interpolation; Count counts valid values; an empty input without key fields
-//! emits one summary row with count 0 (with key fields it emits no rows).
 
-use super::field_util::extended_name;
 use crate::context::ExecContext;
 use crate::error::OperatorError;
 use crate::operator::{Arity, Operator};
@@ -33,7 +49,36 @@ use crate::settings;
 use dms_stream::StreamNode;
 use dms_types::{Field, Storage, Table, Value};
 use std::cmp::Ordering;
+use std::collections::BTreeMap;
 use std::sync::Arc;
+
+/// A key of the non-contiguous grouping, ordered by `Value::total_cmp`.
+struct GroupKey(Vec<Value>);
+
+impl PartialEq for GroupKey {
+    fn eq(&self, other: &Self) -> bool {
+        self.cmp(other) == Ordering::Equal
+    }
+}
+
+impl Eq for GroupKey {}
+
+impl PartialOrd for GroupKey {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for GroupKey {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.0
+            .iter()
+            .zip(&other.0)
+            .map(|(a, b)| a.total_cmp(b))
+            .find(|ordering| ordering.is_ne())
+            .unwrap_or_else(|| self.0.len().cmp(&other.0.len()))
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Stat {
@@ -57,9 +102,9 @@ const STATS: [(Stat, &str, &str); 10] = [
     (Stat::SDev, "stddev", "_SDev"),
     (Stat::Median, "median", "_Median"),
     (Stat::Count, "count", "_Count"),
-    (Stat::Var, "variance", "_Var"),
-    (Stat::Q1, "firstQuartile", "_Q1"),
-    (Stat::Q3, "thirdQuartile", "_Q3"),
+    (Stat::Var, "variance", "_Variance"),
+    (Stat::Q1, "firstQuartile", "_FirstQuartile"),
+    (Stat::Q3, "thirdQuartile", "_ThirdQuartile"),
 ];
 
 struct Aggregate {
@@ -166,13 +211,12 @@ impl Operator for Aggregate {
             .ok_or_else(|| OperatorError::Inputs("Aggregate needs one input".into()))?;
         let model = input.model();
         let rows = input.rows();
-        let key_positions: Vec<(usize, bool)> = self
+        let key_positions: Vec<usize> = self
             .keys
             .iter()
             .map(|k| {
                 model
                     .position(k)
-                    .map(|p| (p, false))
                     .ok_or_else(|| OperatorError::Data(format!("unknown key field {k:?}")))
             })
             .collect::<Result<_, _>>()?;
@@ -184,27 +228,50 @@ impl Operator for Aggregate {
             value_positions.push((position, name, stats));
         }
 
-        // Groups as lists of row indexes.
-        let mut order: Vec<usize> = (0..rows.len()).collect();
-        let mut groups: Vec<Vec<usize>> = Vec::new();
-        if !self.contiguous && !key_positions.is_empty() {
-            order.sort_by(|&a, &b| match (rows.get(a), rows.get(b)) {
-                (Some(x), Some(y)) => super::sort::compare_rows(&key_positions, x, y),
-                _ => Ordering::Equal,
-            });
-        }
+        // Groups as lists of row indexes, preserving first-appearance order.
         let same_key = |a: usize, b: usize| match (rows.get(a), rows.get(b)) {
-            (Some(x), Some(y)) => {
-                super::sort::compare_rows(&key_positions, x, y) == Ordering::Equal
-            }
+            (Some(x), Some(y)) => key_positions.iter().all(|&p| {
+                let vx = x.get(p).unwrap_or(&Value::Null);
+                let vy = y.get(p).unwrap_or(&Value::Null);
+                vx.total_cmp(vy) == Ordering::Equal
+            }),
             _ => false,
         };
-        for &index in &order {
-            match groups.last_mut() {
-                Some(group) if group.last().is_some_and(|&last| same_key(last, index)) => {
+        let mut groups: Vec<Vec<usize>> = Vec::new();
+        // Group of each key seen so far (non-contiguous mode).
+        let mut group_of: BTreeMap<GroupKey, usize> = BTreeMap::new();
+        for index in 0..rows.len() {
+            if key_positions.is_empty() {
+                if let Some(group) = groups.first_mut() {
                     group.push(index);
+                } else {
+                    groups.push(vec![index]);
                 }
-                _ => groups.push(vec![index]),
+            } else if self.contiguous {
+                match groups.last_mut() {
+                    Some(group) if group.last().is_some_and(|&last| same_key(last, index)) => {
+                        group.push(index);
+                    }
+                    _ => groups.push(vec![index]),
+                }
+            } else {
+                let key = GroupKey(
+                    key_positions
+                        .iter()
+                        .map(|&p| {
+                            rows.get(index)
+                                .and_then(|row| row.get(p))
+                                .cloned()
+                                .unwrap_or(Value::Null)
+                        })
+                        .collect(),
+                );
+                let next = groups.len();
+                let slot = *group_of.entry(key).or_insert(next);
+                match groups.get_mut(slot) {
+                    Some(group) => group.push(index),
+                    None => groups.push(vec![index]),
+                }
             }
         }
         if groups.is_empty() && key_positions.is_empty() {
@@ -213,7 +280,7 @@ impl Operator for Aggregate {
 
         // Output model.
         let mut fields: Vec<Field> = Vec::new();
-        for &(position, _) in &key_positions {
+        for &position in &key_positions {
             if let Some(field) = model.fields().get(position) {
                 fields.push(field.clone());
             }
@@ -223,20 +290,20 @@ impl Operator for Aggregate {
                 .fields()
                 .get(position)
                 .map_or(Storage::Unknown, |f| f.storage);
-            let base = if self.extension.is_empty() {
-                name.clone()
-            } else {
-                extended_name(name, &self.extension, self.prefix)
-            };
             for &stat in stats {
                 let suffix = STATS
                     .iter()
                     .find(|(s, _, _)| *s == stat)
                     .map_or("", |(_, _, suffix)| *suffix);
-                fields.push(Field::new(
-                    format!("{base}{suffix}"),
-                    stat_storage(stat, storage),
-                ));
+                let default_name = format!("{name}{suffix}");
+                let col_name = if self.extension.is_empty() {
+                    default_name
+                } else if self.prefix {
+                    format!("{}_{default_name}", self.extension)
+                } else {
+                    format!("{default_name}_{}", self.extension)
+                };
+                fields.push(Field::new(col_name, stat_storage(stat, storage)));
             }
         }
         if let Some(name) = &self.count_field {
@@ -249,7 +316,7 @@ impl Operator for Aggregate {
         for group in &groups {
             let mut out = Vec::with_capacity(out_model.len());
             let first = group.first().and_then(|&i| rows.get(i));
-            for &(position, _) in &key_positions {
+            for &position in &key_positions {
                 out.push(
                     first
                         .and_then(|row| row.get(position))
@@ -342,30 +409,35 @@ fn compute(stat: Stat, values: &[&Value], field: &str) -> Result<Value, Operator
         }
         Stat::Median | Stat::Q1 | Stat::Q3 => {
             numbers.sort_by(f64::total_cmp);
-            let p = match stat {
-                Stat::Q1 => 0.25,
-                Stat::Q3 => 0.75,
-                _ => 0.5,
+            let len = numbers.len();
+            let value = match stat {
+                Stat::Median => median_sorted(&numbers),
+                Stat::Q1 => {
+                    let half = len.div_ceil(2);
+                    median_sorted(numbers.get(..half).unwrap_or(&numbers))
+                }
+                _ => {
+                    let start = len / 2;
+                    median_sorted(numbers.get(start..).unwrap_or(&numbers))
+                }
             };
-            Value::real(percentile(&numbers, p))
+            Value::real(value)
         }
         Stat::Count | Stat::Min | Stat::Max => Value::Null,
     })
 }
 
-/// Weighted-average percentile at position p(n+1) on sorted data.
-fn percentile(sorted: &[f64], p: f64) -> f64 {
+/// Median of a non-empty sorted slice (mean of the two middle elements when `len` is even).
+fn median_sorted(sorted: &[f64]) -> f64 {
     let n = sorted.len();
     let at = |i: usize| sorted.get(i).copied().unwrap_or(f64::NAN);
-    let position = p * (n as f64 + 1.0);
-    if position < 1.0 {
-        return at(0);
+    if n == 0 {
+        return f64::NAN;
     }
-    if position >= n as f64 {
-        return at(n.saturating_sub(1));
+    let mid = n / 2;
+    if n.is_multiple_of(2) {
+        (at(mid - 1) + at(mid)) / 2.0
+    } else {
+        at(mid)
     }
-    let lower = position.floor();
-    let fraction = position - lower;
-    let i = lower as usize - 1;
-    at(i) + fraction * (at(i + 1) - at(i))
 }
