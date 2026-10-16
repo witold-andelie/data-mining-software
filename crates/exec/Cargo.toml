@@ -14,6 +14,8 @@ dms-types.workspace = true
 dms-clem.workspace = true
 dms-catalog.workspace = true
 dms-io = { version = "0.1.0", path = "../io" }
+dms-pmml.workspace = true
+dms-algo.workspace = true
 
 [lints]
 workspace = true

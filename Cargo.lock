@@ -127,9 +127,11 @@ dependencies = [
 name = "dms-exec"
 version = "0.1.0"
 dependencies = [
+ "dms-algo",
  "dms-catalog",
  "dms-clem",
  "dms-io",
+ "dms-pmml",
  "dms-stream",
  "dms-strfmt",
  "dms-types",

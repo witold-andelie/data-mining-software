@@ -309,7 +309,7 @@ fn run(path: &Path, args: &[String]) -> Result<(), String> {
         }
     }
     let out = out.ok_or("run needs --out <dir>")?;
-    let (_, stream) = open(path)?;
+    let (archive, stream) = open(path)?;
     let plan = dms_exec::Plan::new(&stream);
     let mut exported: Vec<&str> = Vec::new();
     for terminal in plan.terminals() {
@@ -322,6 +322,13 @@ fn run(path: &Path, args: &[String]) -> Result<(), String> {
     let context = dms_exec::ExecContext {
         files: dms_exec::FileResolver { data_dirs },
         stream_properties: stream.properties.clone().map(std::sync::Arc::new),
+        attachments: std::sync::Arc::new(
+            archive
+                .attachments
+                .into_iter()
+                .map(|attachment| (attachment.name, attachment.bytes.into()))
+                .collect(),
+        ),
     };
     let results = plan.evaluate(&exported, &context);
     std::fs::create_dir_all(&out).map_err(|e| format!("cannot create {}: {e}", out.display()))?;
@@ -329,7 +336,7 @@ fn run(path: &Path, args: &[String]) -> Result<(), String> {
     let mut report_failed = Vec::new();
     for uid in &exported {
         match results.get(*uid) {
-            Some(Ok(table)) => {
+            Some(Ok(dms_exec::NodeOutput::Data(table))) => {
                 let file = out.join(format!("{uid}.csv"));
                 let mut writer = std::io::BufWriter::new(
                     std::fs::File::create(&file)
@@ -342,6 +349,7 @@ fn run(path: &Path, args: &[String]) -> Result<(), String> {
                     json!({ "uid": uid, "rows": table.row_count(), "fields": table.model().len() }),
                 );
             }
+            Some(Ok(_)) => report_failed.push(json!({ "uid": uid, "error": "produces no data" })),
             Some(Err(error)) => {
                 report_failed.push(json!({ "uid": uid, "error": error.to_string() }))
             }

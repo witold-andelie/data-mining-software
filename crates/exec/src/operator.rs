@@ -2,6 +2,8 @@
 
 use crate::context::ExecContext;
 use crate::error::OperatorError;
+use crate::output::NodeOutput;
+use dms_pmml::Pmml;
 use dms_stream::StreamNode;
 use dms_types::Table;
 use std::sync::Arc;
@@ -28,6 +30,20 @@ pub trait Operator: Send + Sync {
 
     /// Produces the node's output data from its inputs (in link order).
     fn run(&self, inputs: &[Arc<Table>], context: &ExecContext) -> Result<Table, OperatorError>;
+
+    /// Produces whatever the node produces. Data nodes keep the default; build nodes return a
+    /// model and output nodes a document. `model` is the model of the build node linked to a
+    /// model nugget, when that build node ran in this evaluation.
+    fn produce(
+        &self,
+        inputs: &[Arc<Table>],
+        model: Option<Arc<Pmml>>,
+        context: &ExecContext,
+    ) -> Result<NodeOutput, OperatorError> {
+        let _ = model;
+        self.run(inputs, context)
+            .map(|table| NodeOutput::Data(Arc::new(table)))
+    }
 }
 
 /// Builds an operator from a stream node's saved settings.
