@@ -1,2 +1,10 @@
 [alias]
 xtask = "run --quiet --package xtask --"
+
+# The Windows dev machine has 16 GB RAM and runs several builds (agents) at once; on
+# 2026-10-16 it ran out of virtual memory. Bound per-invocation parallelism.
+[build]
+jobs = 8
+
+[env]
+RUST_TEST_THREADS = "8"
