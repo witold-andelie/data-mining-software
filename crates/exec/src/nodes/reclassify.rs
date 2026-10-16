@@ -220,7 +220,14 @@ impl Reclassify {
             };
             values.push(finish(mapped, output_storage));
         }
-        let mut column = Column::inferred(name, Measurement::Default, values)?;
+        // The new field keeps the source's measurement level, not its values (team/stream_1_M:
+        // `edu_4cat` from the ordinal `ed` is audited as Ordinal).
+        let measurement = input
+            .model()
+            .fields()
+            .get(current)
+            .map_or(Measurement::Default, |field| field.measurement);
+        let mut column = Column::inferred(name, measurement, values)?;
         if column.field.storage == Storage::Unknown {
             column.field.storage = output_storage;
         }
