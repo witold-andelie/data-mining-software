@@ -4,7 +4,7 @@
 
 | Scope | Implemented | Total |
 |---|---|---|
-| MVP | 22 | 90 |
+| MVP | 23 | 90 |
 | later | 0 | 23 |
 | out of scope | 0 | 34 |
 
@@ -159,7 +159,7 @@
 | Table | `table` | MVP | done | `TableNode` |
 | Matrix | `matrix` | MVP | done | `MatrixNode` |
 | Analysis | `analysis` | MVP | missing | `AnalysisNode` |
-| Data Audit | `data_audit` | MVP | missing | `DataAuditNode` |
+| Data Audit | `data_audit` | MVP | done | `DataAuditNode` |
 | Transform | `transform` | MVP | missing | `TransformNode` |
 | Statistics | `statistics` | MVP | done | `StatisticsNode` |
 | Means | `means` | MVP | done | `MeansNode` |
