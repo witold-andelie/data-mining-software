@@ -31,14 +31,26 @@ const BUILT_IN: &[(&str, Factory)] = &[
     ("matrix", nodes::matrix::build),
     ("analysis", nodes::analysis::build),
     ("cart", model_node),
+    ("chaid", model_node),
+    ("binning", nodes::binning::build),
+    ("set_to_flag", nodes::set_to_flag::build),
+    ("transpose", nodes::transpose::build),
+    ("field_reorder", nodes::field_reorder::build),
+    ("history", nodes::history::build),
 ];
 
 /// Registered while their implementation is under way; not counted as implemented.
-const PENDING: &[&str] = &[];
+const PENDING: &[&str] = &[
+    "binning",
+    "set_to_flag",
+    "transpose",
+    "field_reorder",
+    "history",
+];
 
 /// Model nodes whose nuggets score (`nodes::apply`) while their build nodes cannot train yet;
 /// they do not count as implemented.
-const SCORING_ONLY: &[&str] = &["chaid", "logistic", "kmeans"];
+const SCORING_ONLY: &[&str] = &["logistic", "kmeans"];
 
 pub fn factory(catalog_id: &str) -> Option<Factory> {
     BUILT_IN
