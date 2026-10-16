@@ -15,6 +15,7 @@ const LAYERS: &[(&str, u8)] = &[
     ("dms-clem", 1),
     ("dms-catalog", 2),
     ("dms-io", 2),
+    ("dms-algo", 2),
     ("dms-exec", 3),
     ("dms-engine", 4),
     ("dms-cli", APPS),

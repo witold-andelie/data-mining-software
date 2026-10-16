@@ -80,6 +80,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "dms-algo"
+version = "0.1.0"
+dependencies = [
+ "dms-pmml",
+ "dms-types",
+ "serde_json",
+]
+
+[[package]]
 name = "dms-catalog"
 version = "0.1.0"
 dependencies = [
