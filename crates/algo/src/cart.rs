@@ -34,6 +34,17 @@
 //!
 //! Supported: empirical priors and equal misclassification costs, no frequency or case weights.
 //! Other settings return [`AlgoError::Unsupported`].
+//!
+//! GAP: the overfit prevention set (`tree.UseOverFitPreventionSet`, `train_pct`) is rejected.
+//! `oracle/cart_ofs/*` (`xtask/oracle/probes/cart_ofs_streams.py`: a regression tree of `y = id`
+//! on `x = id` grown to one record per leaf, so its leaves list the growing records) shows the
+//! shape of the draw: one uniform number per record in input order, the record held out when it
+//! falls below the percentage (`ofs_s1_n50` is a prefix of `ofs_s1`; the 50% hold-out of
+//! `ofs_s1_pct50` contains the 30% one of `ofs_s1`). The generator behind it is not
+//! `java.util.Random` (which Partition and Sample use) nor MT19937 (32 or 64 bit, several
+//! uniform conversions and stream offsets), `std::mt19937` canonical doubles or minstd, so the
+//! held-out records cannot be reproduced yet (`team/model_comparison`, seed 54752075: Modeler
+//! grows on 1198 of 1680 records).
 
 use crate::common::{
     class_summary, data_dictionary, mining_schema, regression_summary, split_text, value_range,
