@@ -4,7 +4,7 @@
 
 | Scope | Implemented | Total |
 |---|---|---|
-| MVP | 51 | 90 |
+| MVP | 52 | 90 |
 | later | 0 | 23 |
 | out of scope | 0 | 34 |
 
@@ -17,7 +17,7 @@
 | Statistics File (.sav) | `statistics_file` | MVP | done | `SPSSInputNode` |
 | Excel | `excel_import` | MVP | missing | `ExcelInputNode` |
 | Database | `database_import` | MVP | missing | `ODBCImportNode`, `DBImportNode` |
-| User Input | `user_input` | MVP | missing | `UserInputNode` |
+| User Input | `user_input` | MVP | done | `UserInputNode` |
 | XML | `xml_import` | MVP | missing | `xml_import!spss.xml_data` |
 | JSON | `json_import` | MVP | done | `json_import!pasw.json` |
 | SAS File | `sas_import` | MVP | missing | `SASInputNode` |
