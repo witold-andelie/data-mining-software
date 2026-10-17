@@ -2,7 +2,7 @@
 
 use std::fmt;
 
-/// What went wrong while reading a system file.
+/// What went wrong while reading or writing a system file.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ErrorKind {
     /// The input ended inside the named structure.
@@ -19,6 +19,8 @@ pub enum ErrorKind {
     LimitExceeded(&'static str),
     /// ZLIB data could not be decompressed or does not match its trailer.
     Decompress(String),
+    /// The writer refused the input.
+    Write(String),
 }
 
 /// A read failure at `offset` (bytes from the start of the input).
@@ -45,6 +47,7 @@ impl fmt::Display for Error {
             ErrorKind::Malformed(what) => write!(f, "malformed: {what}"),
             ErrorKind::LimitExceeded(what) => write!(f, "limit exceeded: {what}"),
             ErrorKind::Decompress(what) => write!(f, "decompression failed: {what}"),
+            ErrorKind::Write(what) => write!(f, "{what}"),
         }
     }
 }

@@ -4,7 +4,7 @@
 
 | Scope | Implemented | Total |
 |---|---|---|
-| MVP | 36 | 90 |
+| MVP | 37 | 90 |
 | later | 0 | 23 |
 | out of scope | 0 | 34 |
 
@@ -177,7 +177,7 @@
 |---|---|---|---|---|
 | Flat File | `flat_file_export` | MVP | done | `TextFileExportNode` |
 | Excel | `excel_export` | MVP | done | `ExcelNode` |
-| Statistics Export (.sav) | `statistics_export` | MVP | missing | `SPSSExportNode` |
+| Statistics Export (.sav) | `statistics_export` | MVP | done | `SPSSExportNode` |
 | Database | `database_export` | MVP | missing | `ODBCExportNode`, `DBExportNode` |
 | XML | `xml_export` | MVP | done | `xml_export!spss.xml_data` |
 | JSON | `json_export` | MVP | done | `json_export!pasw.json` |

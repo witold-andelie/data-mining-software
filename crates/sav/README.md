@@ -1,7 +1,7 @@
 # dms-sav
 
 IBM SPSS Statistics system files (`.sav`, bytecode-compressed data, ZLIB `.zsav`): dictionary and
-case data reader. Layer L0, standalone.
+case data reader, plus a writer for the records the reader parses. Layer L0, standalone.
 
 - Spec source (documentation only): GNU PSPP Developers Guide, chapter "System File Format",
   <https://www.gnu.org/software/pspp/pspp-dev/html_node/System-File-Format.html> and its
@@ -25,6 +25,17 @@ windows-1252, and have trailing spaces/NULs removed. Numbers, dates and user-mis
 raw: `Value::SystemMissing` is distinct, user-missing values are exposed through
 `Variable::missing`, and `Format::is_date_time` tells date/time formats (seconds since
 1582-10-14).
+
+## Writer
+
+[`write_bytes`](src/lib.rs) writes a little-endian bytecode-compressed system file (`$FL2`, bias
+100): header, variable records (continuation records, labels, up to three missing values), value
+labels (records 3 and 4, or subtype 21 when the string is wider than 8 bytes), machine integer
+and float info (subtypes 3 and 4), display parameters (11), long names (13), very long strings
+(14), extended case count (16), character encoding (20), long-string missing values (22) and the
+dictionary terminator. The caller supplies any other extension (Modeler's role attribute is
+subtype 18) through the variables' role codes, which the writer emits as subtype 18. ZLIB
+(`$FL3`) is not written.
 
 ## Not supported
 
