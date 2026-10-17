@@ -12,6 +12,7 @@ const BUILT_IN: &[(&str, Factory)] = &[
     ("filler", nodes::filler::build),
     ("reclassify", nodes::reclassify::build),
     ("filter", nodes::filter::build),
+    ("anonymize", nodes::anonymize::build),
     ("partition", nodes::partition::build),
     ("restructure", nodes::restructure::build),
     ("var_file", nodes::var_file::build),

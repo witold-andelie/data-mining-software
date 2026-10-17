@@ -4,7 +4,7 @@
 
 | Scope | Implemented | Total |
 |---|---|---|
-| MVP | 53 | 90 |
+| MVP | 54 | 90 |
 | later | 0 | 23 |
 | out of scope | 0 | 34 |
 
@@ -65,7 +65,7 @@
 | Derive | `derive` | MVP | done | `DeriveNode` |
 | Ensemble | `ensemble` | MVP | missing | `EnsembleNode` |
 | Filler | `filler` | MVP | done | `FillerNode` |
-| Anonymize | `anonymize` | MVP | missing | `AnonymizeNode` |
+| Anonymize | `anonymize` | MVP | done | `AnonymizeNode` |
 | Reclassify | `reclassify` | MVP | done | `ReclassifyNode` |
 | Binning | `binning` | MVP | done | `BinningNode` |
 | RFM Analysis | `rfm_analysis` | MVP | missing | `RFMAnalysisNode` |
