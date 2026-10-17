@@ -165,6 +165,27 @@ fn c50_builders_match_every_split_count_and_distribution() {
     }
 }
 
+/// Probe `c50_globalprune_streams`: global and local pruning, empty branches and the
+/// many-values rule on synthetic exception blocks; every unweighted case, exactly.
+#[test]
+fn c50_globalprune_trees_match_every_split_count_and_distribution() {
+    let root = support::repo_root();
+    let mut cases: Vec<String> = std::fs::read_dir(root.join("corpus/c50_globalprune"))
+        .unwrap()
+        .filter_map(|e| {
+            let name = e.unwrap().file_name().into_string().unwrap();
+            name.strip_suffix(".str").map(str::to_owned)
+        })
+        .filter(|c| !c.contains("w2"))
+        .collect();
+    cases.sort();
+    assert!(cases.len() >= 100, "{} cases", cases.len());
+    for case in &cases {
+        Fixture::load("c50_globalprune", case).compare();
+    }
+    println!("GLOBALPRUNE {} trees exact", cases.len());
+}
+
 /// Case weights through the algorithm (the node still rejects `useWeight`): probe
 /// `c50_weighted_streams`, settings as each stream sets them.
 #[test]
