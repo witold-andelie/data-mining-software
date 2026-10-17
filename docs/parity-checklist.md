@@ -4,7 +4,7 @@
 
 | Scope | Implemented | Total |
 |---|---|---|
-| MVP | 60 | 85 |
+| MVP | 61 | 85 |
 | later | 0 | 23 |
 | license blocked | 0 | 5 |
 | out of scope | 0 | 34 |
@@ -119,7 +119,7 @@
 | KNN | `knn` | license blocked | missing | `spss.KNN_id!KNNbuilder` |
 | Bayes Net | `bayes_net` | license blocked | missing | `spss.bayesian_id!buildBN` |
 | Discriminant | `discriminant` | license blocked | missing | `spss.discriminant_id!builddiscriminant` |
-| PCA/Factor | `pca_factor` | MVP | missing | `BuildPCANode`, `ApplyPCANode` |
+| PCA/Factor | `pca_factor` | MVP | done | `BuildPCANode`, `ApplyPCANode` |
 | Feature Selection | `feature_selection` | MVP | done | `BuildFeatureSelectionNode`, `ApplyFeatureSelectionNode`, `FeatureSelectionModelNode` |
 | Anomaly | `anomaly` | MVP | missing | `BuildAnomalyNode`, `ApplyAnomalyNode` |
 | Time Series | `time_series` | MVP | missing | `BuildTimeSeriesNode`, `ApplyTimeSeriesNode`, `spss.ts!ts_builder` |

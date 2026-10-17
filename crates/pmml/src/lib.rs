@@ -28,6 +28,10 @@ mod tree;
 pub use neural::{NeuralNetworkModel, NeuralOutputKind, NeuralTarget};
 pub use score::Scorer;
 
+/// `MiningModel` method of a PCA/Factor model: Modeler exports one `GeneralRegressionModel` per
+/// factor, side by side; scoring evaluates each (`Scorer::score_factors`).
+pub const FACTOR_SCORES: &str = "factorScores";
+
 use std::fmt;
 
 /// A value of an input field, a derived field or a prediction.

@@ -53,6 +53,7 @@ use crate::settings;
 use dms_algo::Dataset;
 use dms_algo::cart::{self, CartSettings, Impurity, MinSize};
 use dms_algo::chaid::{self, ChaidSettings, ChiSquare, Method};
+use dms_algo::factor::{self, FactorCount, FactorSettings};
 use dms_algo::kmeans::{self, KMeansSettings};
 use dms_algo::linear::{self, LinearSettings, Selection, Style};
 use dms_algo::logistic::{self, LogisticSettings, Method as LogisticMethod, Procedure};
@@ -79,6 +80,7 @@ pub fn build(node: &StreamNode) -> Result<Box<dyn Operator>, OperatorError> {
         "BuildLogisticNode" => Algorithm::Logistic(logistic_settings(node)?),
         "LinearRegression!spss.alm-extension" => Algorithm::Linear,
         "BuildRegressionNode" => Algorithm::Regression(regression_settings(node)?),
+        "BuildPCANode" => Algorithm::Factor(factor_settings(node)?),
         other => {
             return Err(OperatorError::Settings(format!(
                 "training {other} is not implemented yet"
@@ -112,6 +114,8 @@ enum Algorithm {
     Linear,
     /// The settings, an optional custom target, and optional custom inputs.
     Regression(RegressionSpec),
+    /// PCA/Factor settings and the custom input fields (`None`: the Type roles).
+    Factor((FactorSettings, Option<Vec<String>>)),
 }
 
 type RegressionSpec = (LinearSettings, Option<String>, Option<Vec<String>>);
@@ -150,6 +154,12 @@ impl Operator for Build {
             let fields = cluster_inputs(&table, custom.as_deref())?;
             let pmml = kmeans::train(&table, &fields, settings)
                 .map_err(|error| OperatorError::Data(format!("K-Means: {error}")))?;
+            return Ok(NodeOutput::Model(Arc::new(pmml)));
+        }
+        if let Algorithm::Factor((settings, custom)) = &self.algorithm {
+            let fields = cluster_inputs(&table, custom.as_deref())?;
+            let pmml = factor::train(&table, &fields, settings)
+                .map_err(|error| OperatorError::Data(format!("PCA/Factor: {error}")))?;
             return Ok(NodeOutput::Model(Arc::new(pmml)));
         }
         if let Algorithm::TwoStep((settings, custom)) = &self.algorithm {
@@ -205,7 +215,8 @@ impl Operator for Build {
             Algorithm::KMeans(_)
             | Algorithm::TwoStep(_)
             | Algorithm::Logistic(_)
-            | Algorithm::Regression(_) => {
+            | Algorithm::Regression(_)
+            | Algorithm::Factor(_) => {
                 return Err(OperatorError::Settings("clustering has no target".into()));
             }
         };
@@ -376,6 +387,98 @@ impl Build {
 }
 
 /// K-Means settings from the node's XML.
+/// PCA/Factor (`BuildPCANode`, `oracle/models_next/factor_*`): principal components of the
+/// correlation matrix with complete records, factors by eigenvalue or by count, no rotation or
+/// varimax, regression scores. Anything else is rejected (`crates/algo/src/factor.rs`).
+fn factor_settings(
+    node: &StreamNode,
+) -> Result<(FactorSettings, Option<Vec<String>>), OperatorError> {
+    let s = node.settings.as_ref();
+    let unsupported =
+        |what: &str| OperatorError::Settings(format!("PCA/Factor {what} is not supported yet"));
+    let expert = settings::flag(s, "expertMode")?.unwrap_or(false);
+    let text = |name: &str| settings::text(s, name).map(|t| t.trim().to_string());
+    if text("extractionMethod")
+        .as_deref()
+        .is_some_and(|m| m != "Principal Components")
+    {
+        return Err(unsupported("extraction method"));
+    }
+    if expert {
+        if text("matrixType")
+            .as_deref()
+            .is_some_and(|m| m != "Correlation")
+        {
+            return Err(unsupported("covariance matrix"));
+        }
+        if !settings::flag(s, "includeCompleteRecs")?.unwrap_or(true) {
+            return Err(unsupported("pairwise deletion"));
+        }
+        if text("factorScoresMethod")
+            .as_deref()
+            .is_some_and(|m| m != "Regression")
+        {
+            return Err(unsupported("factor score method"));
+        }
+    }
+    if settings::flag(s, "useWeight")?.unwrap_or(false)
+        || settings::flag(s, "useFrequency")?.unwrap_or(false)
+    {
+        return Err(unsupported("weights or frequencies"));
+    }
+    let count = if !expert {
+        FactorCount::Eigenvalue(1.0)
+    } else {
+        match text("limitFactors").as_deref() {
+            None | Some("By Eigenvalue") => {
+                FactorCount::Eigenvalue(settings::real(s, "eigenvalueLimit")?.unwrap_or(1.0))
+            }
+            Some("By Maximum") => {
+                let max = settings::integer(s, "maxFactorLimit")?.unwrap_or(5);
+                FactorCount::Maximum(
+                    usize::try_from(max).map_err(|_| unsupported("maxFactorLimit"))?,
+                )
+            }
+            Some(_) => return Err(unsupported("factor limit")),
+        }
+    };
+    let varimax = if !expert {
+        None
+    } else {
+        match text("rotationMethod").as_deref() {
+            None | Some("No Rotation") => None,
+            Some("Varimax") => {
+                let sweeps = settings::integer(s, "maxIterations")?.unwrap_or(25);
+                Some(usize::try_from(sweeps).map_err(|_| unsupported("maxIterations"))?)
+            }
+            Some(_) => return Err(unsupported("rotation")),
+        }
+    };
+    let custom = if settings::flag(s, "autoModelFieldSelection")?.unwrap_or(true) {
+        None
+    } else {
+        Some(
+            settings::children(s, "modelInputFieldSelection", "field")
+                .into_iter()
+                .map(|f| f.text().trim().to_string())
+                .filter(|name| !name.is_empty())
+                .collect(),
+        )
+    };
+    let name = (!settings::flag(s, "autoModelName")?.unwrap_or(true))
+        .then(|| settings::text(s, "modelName"))
+        .flatten()
+        .filter(|n| !n.trim().is_empty());
+    Ok((
+        FactorSettings {
+            count,
+            varimax,
+            name,
+        },
+        custom,
+    ))
+}
+
 fn kmeans_settings(
     node: &StreamNode,
 ) -> Result<(KMeansSettings, Option<Vec<String>>), OperatorError> {
