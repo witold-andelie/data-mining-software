@@ -50,11 +50,10 @@ const BUILT_IN: &[(&str, Factory)] = &[
 ];
 
 /// Registered while their implementation is under way; not counted as implemented.
-/// TwoStep numbers clusters differently on larger data, and multinomial Logistic coefficients
-/// on separated data differ from Modeler's (the GAPs in
-/// `dms_algo::twostep` and `dms_algo::logistic`); Linear trains only without data preparation
+/// TwoStep numbers clusters differently on larger data (the GAP in `dms_algo::twostep`);
+/// Linear trains only without data preparation
 /// and model selection, which a new Linear node enables (`dms_algo::linear`).
-const PENDING: &[&str] = &["twostep", "logistic", "linear"];
+const PENDING: &[&str] = &["twostep", "linear"];
 
 /// Model nodes whose nuggets score (`nodes::apply`) while their build nodes cannot train yet;
 /// they do not count as implemented.

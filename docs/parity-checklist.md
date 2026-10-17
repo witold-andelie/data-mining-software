@@ -4,7 +4,7 @@
 
 | Scope | Implemented | Total |
 |---|---|---|
-| MVP | 38 | 90 |
+| MVP | 39 | 90 |
 | later | 0 | 23 |
 | out of scope | 0 | 34 |
 
@@ -111,7 +111,7 @@
 | Decision List | `decision_list` | MVP | missing | `BuildDecisionListNode`, `ApplyDecisionListNode`, `ApplyDecisionListSplitModelNode` |
 | Linear | `linear` | MVP | missing | `LinearRegression!spss.alm-extension`, `ApplyLinearRegressionSplitModelNode` |
 | Regression | `regression` | MVP | done | `BuildRegressionNode`, `ApplyRegressionNode` |
-| Logistic | `logistic` | MVP | missing | `BuildLogisticNode`, `ApplyLogisticNode`, `ApplyLogisticSplitModelNode` |
+| Logistic | `logistic` | MVP | done | `BuildLogisticNode`, `ApplyLogisticNode`, `ApplyLogisticSplitModelNode` |
 | GenLin | `genlin` | MVP | missing | `spss.generalizedlinear_id!buildgeneralizedlinear` |
 | Neural Net | `neural_net` | MVP | missing | `TrainNetNode`, `ApplyNetNode`, `ApplyNeuralNetSplitModelNode`, `neuralnet!spss.neuralnet-extension` |
 | SVM | `svm` | MVP | missing | `spss.svm_id!buildSVM` |
