@@ -7,25 +7,39 @@
 //!   multiway symbols; depth-first ids; flags true before false; largest default
 //!   child (first on ties); parent prediction resolves tied class counts.
 //! - `models/c50_default`: numeric cut description-length correction, statistical
-//!   leaf pruning; all splits/counts/scores are checked by the corpus test.
+//!   leaf pruning, six-significant-digit thresholds (K = 0.0373315). Rounding is
+//!   applied only when it preserves the observed partition. GAP: closer inputs
+//!   need a threshold-precision probe. All eight oracle trees use exact comparison.
 //! - `c50_min_child`: at least two branches must reach min_child_records.
 //! - Of equal gain ratios the field first in input order wins (`models/c50_default`:
 //!   `Sex` over `Cholesterol`, mirror-image partitions; `c50_weight`: `flag` over
-//!   `noise`). GAP: `c50_weight` also picks `code` over the earlier `ord` on identical
-//!   partitions, likely last-bit rounding of Modeler's single-precision counts.
-//! - GAP costs (`c50_costs`, B->C 8, C->B 2): every node's score is the class of least
-//!   expected cost (ties to the parent's class) and the exported counts stay raw. The
-//!   kept `x <= 9` subtree under `amber, flag = T` is explained if a node's error bound
-//!   is computed on the number of errors and then scaled by their mean cost. Growth
-//!   changes too: at that node `x` passes the average-gain test only when classes are
-//!   weighted by cost, but neither row-sum nor column-sum class factors reproduce the
-//!   tree, so cost training stays rejected.
+//!   `noise`). `c50_costs`/`c50_weight`: nominal wins an equal-ratio tie with an
+//!   ordinal field having identical partitions (`code` over `ord`). GAP: the
+//!   oracles do not distinguish a measurement preference from an ordinal penalty.
+//! - `c50_costs` (B->C 8, C->B 2): minimize sum(count[actual]*cost[actual][predicted]),
+//!   retaining the parent's class on ties. Counts stay raw. Bound the number of
+//!   misclassified cases, then multiply by their mean cost; for zero observed
+//!   errors retain the ordinary bound. Under amber/flag=T/x<=9 this gives leaf
+//!   8.75954415583688 versus subtree 7.567663573829303, so the split stays.
+//! - Growth uses raw counts even with costs. The average-gain denominator includes
+//!   zero-gain fields: x gain 0.09645172825007178 exceeds 0.5040579037580681/7
+//!   at that 18-case node (but not the previous positive-candidates-only average
+//!   0.12601447593951703). This reproduces `c50_costs` and the seven earlier trees
+//!   without cost-dependent class factors. GAP: counting only globally variable
+//!   fields can also fit this fixture; duplicate/constant-field probes are needed.
+//! - `c50_costs`: after pruning, merge symbolic sibling leaves with the same score,
+//!   even without groupSymbolicValues (red/code in {2,3}); recompute distributions.
 //! - Case weights scaled to sum to the record count are implemented in the algorithm
-//!   (`C50Settings::weight_field`) but the node rejects `useWeight`. GAP (`c50_weight`):
-//!   besides the tie above, Modeler prunes the `x <= 9` split under `code = 3, flag = T`
-//!   (12 records, 5 versus 1 errors) for a reason neither weighted nor unweighted error
-//!   bounds explain, exports leaf counts as float32 (`1.5546559`) with internal counts
-//!   as their double sums, and exports two leaves with all-zero distributions.
+//!   (`C50Settings::weight_field`, diagnostic only) but the node rejects `useWeight`.
+//!   `c50_weight` leaf counts use eight significant decimal digits, NOT f32 (e.g.
+//!   3.1093117408906883 -> 3.1093117, not 3.1093118). Totals sum printed child counts.
+//!   GAP: node 34 (red/code=3/flag=T) prunes x<=9 although its weighted bounds are
+//!   5.403606975510416 versus 3.197396295622889. Nodes 23/24 (red/code=1/5<x<=11)
+//!   have all-zero distributions despite nonzero counts. Internal distributions
+//!   are NOT always child sums: node 4 A=15.546559 versus child sum 15.5465589;
+//!   nodes 3/4/8/9/13/14/33 match independently rounded raw counts instead. The
+//!   internal summation below is still diagnostic; 20 of 36 nodes match exactly,
+//!   and the full weighted contract is explicitly ignored, not claimed passing.
 //! - `c50_group_symbols`: greedy gain-ratio grouping of symbolic categories.
 //! - `c50_prune90`: pruning confidence is (100 - severity)/100.
 //! - `c50_no_global_prune`: local pruning alone. GAP: pruning slack (.5 global,
@@ -39,13 +53,32 @@
 //!
 //! Rejected settings (never silently substituted): boosting/trials
 //! (`c50_boost_tree`, `c50_boost_rules`: GAP reweighting/stopping),
-//! costs (`c50_costs`: GAP cost-dependent training weights), case/frequency
-//! weights (`c50_weight`: GAP normalized effective counts), winnowing
+//! costs combined with weights/rules/boosting (no combined oracle), case/frequency
+//! weights (`c50_weight`: GAP pruning and internal distributions), winnowing
 //! (`c50_winnow`: GAP elimination criterion), Simple Generality/expected noise
 //! (`c50_generality`, `c50_noise20`: GAP preset mapping), adjusted-propensity
 //! training (`c50_partition`: GAP calibration pooling/rounding), cross-validation,
 //! split-field training and missing/unknown training predictors (no captured
 //! c50_missing oracle). PMML scoring supports rules and boosts independently.
+//!
+//! Follow-up probes (specifications only; none run here):
+//! - Copy the 384 rows of models_ml/tree_train.csv. Keep inputs x,cat,flag,ord,code,
+//!   constant,noise; y nominal A/B/C; disable partitioning and boosting; expert
+//!   min-child=2, severity=75. Costs default=1, B->C=8, C->B=2. Export one contrast
+//!   at a time removing constant, adding 1/4/16 constant copies, then removing ord.
+//!   This separates gain-denominator hypotheses without changing the records.
+//! - Same data/settings, costs off: swap ord/code input order; then change only
+//!   ord's measurement to nominal. This distinguishes tie preference/penalty.
+//! - Same 384 rows, costs off, weightField=weight, useWeight=true: toggle only
+//!   global pruning; repeat with weights multiplied by 10, then all weights=1.
+//!   Export both PMML and training scores; inspect nodes by path, not numeric id.
+//!   Also isolate the 12 red/code=3/flag=T rows with x in {4,6,8,10,12,14}:
+//!   two rows per x, labels C/(A,C)/C/A/A/A respectively, weight=384/494 each.
+//!   Compare this alone and with the remaining 372 rows restored to distinguish
+//!   local pruning from a tree-wide error budget. Re-export the full weighted tree
+//!   with row order reversed to test the zero-distribution/rounding anomalies.
+//! - For numeric output precision, x={1.0000001,1.0000002}, ten A then ten B,
+//!   y nominal, minimum child=2, costs/weights/boosting off; inspect threshold.
 
 use crate::{AlgoError, Dataset, categories, data_dictionary, mining_schema};
 use dms_pmml::{
@@ -66,8 +99,10 @@ pub struct C50Settings {
     pub pruning_severity: f64,
     pub global_pruning: bool,
     pub group_symbolics: bool,
-    /// Position of the case-weight field (`useWeight` with `weightField`), if any.
+    /// Diagnostic case weights; the exec node rejects these until the GAPs above close.
     pub weight_field: Option<usize>,
+    /// Explicit actual/predicted costs; absent off-diagonal entries use default_cost.
+    pub costs: Option<MisclassificationCosts>,
     /// A rule set instead of a tree (`modelFormat` `ruleSet`): [`crate::c50_rules`].
     pub rules: bool,
     /// Boosting trials (`useBoosting` with `boostingTrials`): [`crate::c50_boost`].
@@ -82,9 +117,64 @@ impl Default for C50Settings {
             global_pruning: true,
             group_symbolics: false,
             weight_field: None,
+            costs: None,
             rules: false,
             boost_trials: None,
         }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct MisclassificationCosts {
+    pub default_cost: f64,
+    pub entries: Vec<(String, String, f64)>,
+}
+
+impl MisclassificationCosts {
+    fn matrix(&self, classes: &[String]) -> Result<Vec<Vec<f64>>, AlgoError> {
+        if !self.default_cost.is_finite() || self.default_cost <= 0.0 {
+            return Err(AlgoError::Settings(
+                "C5.0 default cost must be finite and positive".into(),
+            ));
+        }
+        if self.entries.len() > MAX_NODES {
+            return Err(AlgoError::Unsupported("C5.0 cost entry limit".into()));
+        }
+        let mut matrix = vec![vec![self.default_cost; classes.len()]; classes.len()];
+        for (i, row) in matrix.iter_mut().enumerate() {
+            if let Some(diagonal) = row.get_mut(i) {
+                *diagonal = 0.0;
+            }
+        }
+        let mut seen = std::collections::HashSet::new();
+        for (actual, predicted, cost) in &self.entries {
+            if !cost.is_finite() || *cost < 0.0 || (actual == predicted && *cost != 0.0) {
+                return Err(AlgoError::Settings(
+                    "C5.0 costs must be finite, nonnegative, and zero on the diagonal".into(),
+                ));
+            }
+            let from = classes.iter().position(|s| s == actual);
+            let to = classes.iter().position(|s| s == predicted);
+            let (Some(from), Some(to)) = (from, to) else {
+                return Err(AlgoError::Settings(
+                    "C5.0 cost refers to an unknown target category".into(),
+                ));
+            };
+            if !seen.insert((from, to)) {
+                return Err(AlgoError::Settings("C5.0 duplicate cost entry".into()));
+            }
+            if let Some(cell) = matrix.get_mut(from).and_then(|r| r.get_mut(to)) {
+                *cell = *cost;
+            }
+        }
+        if matrix
+            .iter()
+            .flatten()
+            .any(|c| *c > f64::MAX / (MAX_ROWS as f64 * MAX_CATEGORIES as f64))
+        {
+            return Err(AlgoError::Settings("C5.0 costs are too large".into()));
+        }
+        Ok(matrix)
     }
 }
 
@@ -98,6 +188,7 @@ enum Column {
         values: Vec<usize>,
         labels: Vec<String>,
         flag: bool,
+        ordinal: bool,
     },
 }
 
@@ -107,6 +198,7 @@ struct Data {
     targets: Vec<usize>,
     /// Case weights scaled to sum to the number of records (all 1 without a weight field).
     weights: Vec<f64>,
+    costs: Option<Vec<Vec<f64>>>,
 }
 
 impl Data {
@@ -161,8 +253,18 @@ impl Data {
                         },
                     )
                     .collect::<Result<Vec<f64>, _>>()?;
-                let scale = raw.len() as f64 / raw.iter().sum::<f64>();
-                raw.into_iter().map(|w| w * scale).collect()
+                let total = raw.iter().sum::<f64>();
+                if !total.is_finite() {
+                    return Err(AlgoError::Data("C5.0 case-weight sum overflow".into()));
+                }
+                let scale = raw.len() as f64 / total;
+                let scaled: Vec<f64> = raw.into_iter().map(|w| w * scale).collect();
+                if scaled.iter().any(|w| !w.is_finite() || *w <= 0.0) {
+                    return Err(AlgoError::Data(
+                        "C5.0 case-weight normalization overflow or underflow".into(),
+                    ));
+                }
+                scaled
             }
         };
         let mut columns = Vec::new();
@@ -236,6 +338,7 @@ impl Data {
                     values: codes,
                     labels,
                     flag,
+                    ordinal: field.measurement == Measurement::Ordinal,
                 });
             }
         }
@@ -244,6 +347,7 @@ impl Data {
             classes,
             targets,
             weights,
+            costs: None,
         })
     }
 
@@ -282,6 +386,7 @@ struct Split {
     gain: f64,
     ratio: f64,
     groups: Vec<(Predicate, Vec<usize>)>,
+    ordinal: bool,
 }
 
 fn candidate(
@@ -333,6 +438,14 @@ fn candidate(
                 if best.is_none_or(|(g, _, _)| gain > g + 1e-12) {
                     let midpoint = value / 2.0 + next / 2.0;
                     let cut = if midpoint >= *next { *value } else { midpoint };
+                    // `models/c50_default`: exported K cut is 0.0373315, not
+                    // 0.037331500000000004. Keep the training partition intact
+                    // when six significant digits cannot separate close values.
+                    let cut = format!("{cut:.5e}")
+                        .parse::<f64>()
+                        .ok()
+                        .filter(|rounded| *rounded >= *value && *rounded < *next)
+                        .unwrap_or(cut);
                     best = Some((gain, cut, n));
                 }
             }
@@ -349,6 +462,7 @@ fn candidate(
             Some(Split {
                 gain,
                 ratio: gain / split_info,
+                ordinal: false,
                 groups: vec![
                     (
                         Predicate::Simple {
@@ -374,6 +488,7 @@ fn candidate(
             values,
             labels,
             flag,
+            ordinal,
         } => {
             let mut groups: Vec<(Vec<usize>, Vec<usize>)> = labels
                 .iter()
@@ -433,6 +548,7 @@ fn candidate(
                 gain,
                 ratio,
                 groups,
+                ordinal: *ordinal,
             })
         }
     }
@@ -527,6 +643,34 @@ fn winner(counts: &[f64], parent: usize) -> usize {
     }
 }
 
+fn cost_winner(counts: &[f64], parent: usize, costs: Option<&[Vec<f64>]>) -> usize {
+    let Some(costs) = costs else {
+        return winner(counts, parent);
+    };
+    let losses: Vec<f64> = (0..counts.len())
+        .map(|predicted| {
+            counts
+                .iter()
+                .enumerate()
+                .map(|(actual, count)| {
+                    count
+                        * costs
+                            .get(actual)
+                            .and_then(|r| r.get(predicted))
+                            .copied()
+                            .unwrap_or(0.0)
+                })
+                .sum()
+        })
+        .collect();
+    let best = losses.iter().copied().fold(f64::INFINITY, f64::min);
+    if losses.get(parent) == Some(&best) {
+        parent
+    } else {
+        losses.iter().position(|c| *c == best).unwrap_or(0)
+    }
+}
+
 fn grow(
     data: &Data,
     rows: &[usize],
@@ -542,7 +686,7 @@ fn grow(
     }
     *budget = budget.saturating_add(1);
     let counts = data.counts(rows);
-    let class = winner(&counts, parent);
+    let class = cost_winner(&counts, parent, data.costs.as_deref());
     let total = data.weight(rows);
     let distribution = data
         .classes
@@ -573,8 +717,7 @@ fn grow(
     {
         return Ok(node);
     }
-    // Of equal gain ratios the field first in input order wins (`models/c50_default`:
-    // `Sex` over `Cholesterol`, mirror-image partitions).
+    // Input order breaks ties except identical nominal/ordinal partitions.
     let candidates: Vec<Split> = data
         .columns
         .iter()
@@ -591,11 +734,22 @@ fn grow(
     if candidates.is_empty() {
         return Ok(node);
     }
-    let average = candidates.iter().map(|c| c.gain).sum::<f64>() / candidates.len() as f64;
+    // Include zero-gain fields; otherwise cost-tree node 5 cannot grow its x split.
+    let average = candidates.iter().map(|c| c.gain).sum::<f64>() / data.columns.len() as f64;
     let mut best: Option<Split> = None;
     for split in candidates {
         if split.gain >= average - 1e-9
-            && best.as_ref().is_none_or(|s| split.ratio > s.ratio + 1e-12)
+            && best.as_ref().is_none_or(|s| {
+                split.ratio > s.ratio + 1e-12
+                    || ((split.ratio - s.ratio).abs() <= 1e-12
+                        && s.ordinal
+                        && !split.ordinal
+                        && split.groups.len() == s.groups.len()
+                        && split
+                            .groups
+                            .iter()
+                            .all(|(_, rows)| s.groups.iter().any(|(_, other)| rows == other)))
+            })
         {
             best = Some(split);
         }
@@ -611,6 +765,13 @@ fn grow(
 }
 
 fn validate_settings(dataset: &Dataset<'_>, settings: &C50Settings) -> Result<(), AlgoError> {
+    if settings.costs.is_some()
+        && (settings.rules || settings.boost_trials.is_some() || settings.weight_field.is_some())
+    {
+        return Err(AlgoError::Unsupported(
+            "C5.0 costs combined with rules, boosting, or case weights".into(),
+        ));
+    }
     if dataset.frequency.is_some() {
         return Err(AlgoError::Unsupported("C5.0 frequency weights".into()));
     }
@@ -635,7 +796,7 @@ pub(crate) fn rule_tree(dataset: &Dataset<'_>, settings: &C50Settings) -> Result
     let data = Data::read(dataset, settings.weight_field)?;
     let rows: Vec<usize> = (0..data.targets.len()).collect();
     let mut root = grow(&data, &rows, settings, 0, 0, &mut 0)?;
-    prune(&mut root, settings);
+    prune(&mut root, settings, None);
     Ok(root)
 }
 
@@ -679,22 +840,49 @@ fn normal_cdf(z: f64) -> f64 {
     if z >= 0.0 { 1.0 - tail } else { tail }
 }
 
-fn prune(node: &mut Node, settings: &C50Settings) -> f64 {
+fn prune(node: &mut Node, settings: &C50Settings, costs: Option<&[Vec<f64>]>) -> f64 {
     let total = node.record_count.unwrap_or(0.0);
     let correct = node
         .distribution
         .iter()
         .find(|d| Some(&d.value) == node.score.as_ref())
         .map_or(0.0, |d| d.record_count);
-    let leaf = error_bound(
+    let mut leaf = error_bound(
         total,
         total - correct,
         (100.0 - settings.pruning_severity) / 100.0,
     );
+    if let Some(costs) = costs {
+        let predicted = node
+            .distribution
+            .iter()
+            .position(|d| Some(&d.value) == node.score.as_ref())
+            .unwrap_or(0);
+        let loss: f64 = node
+            .distribution
+            .iter()
+            .enumerate()
+            .map(|(actual, d)| {
+                d.record_count
+                    * costs
+                        .get(actual)
+                        .and_then(|r| r.get(predicted))
+                        .copied()
+                        .unwrap_or(0.0)
+            })
+            .sum();
+        if total > correct {
+            leaf *= loss / (total - correct);
+        }
+    }
     if node.children.is_empty() {
         return leaf;
     }
-    let subtree: f64 = node.children.iter_mut().map(|c| prune(c, settings)).sum();
+    let subtree: f64 = node
+        .children
+        .iter_mut()
+        .map(|c| prune(c, settings, costs))
+        .sum();
     let slack = if settings.global_pruning { 0.5 } else { 0.1 };
     if leaf <= subtree + slack {
         node.children.clear();
@@ -718,6 +906,127 @@ fn number(node: &mut Node, next: &mut usize) {
     node.default_child = largest.map(|(_, id)| id);
 }
 
+fn merge_cost_leaves(node: &mut Node) {
+    for child in &mut node.children {
+        merge_cost_leaves(child);
+    }
+    let mut merged = false;
+    let mut i = 0;
+    while i < node.children.len() {
+        let mut j = i.saturating_add(1);
+        while j < node.children.len() {
+            let pair = node.children.get(i).zip(node.children.get(j));
+            let values = pair.and_then(|(a, b)| {
+                if !a.children.is_empty() || !b.children.is_empty() || a.score != b.score {
+                    return None;
+                }
+                let (af, mut av) = symbolic_branch(&a.predicate)?;
+                let (bf, bv) = symbolic_branch(&b.predicate)?;
+                if af != bf {
+                    return None;
+                }
+                av.extend(bv);
+                Some((af, av))
+            });
+            if let Some((field, values)) = values {
+                let b = node.children.remove(j);
+                if let Some(a) = node.children.get_mut(i) {
+                    a.predicate = Predicate::SimpleSet {
+                        field,
+                        is_in: true,
+                        values,
+                    };
+                    let total = a.record_count.unwrap_or(0.0) + b.record_count.unwrap_or(0.0);
+                    a.record_count = Some(total);
+                    for (ad, bd) in a.distribution.iter_mut().zip(&b.distribution) {
+                        ad.record_count += bd.record_count;
+                    }
+                    refresh_distribution(a);
+                }
+                merged = true;
+            } else {
+                j = j.saturating_add(1);
+            }
+        }
+        i = i.saturating_add(1);
+    }
+    if merged {
+        for child in &mut node.children {
+            if let Some((field, values)) = symbolic_branch(&child.predicate) {
+                child.predicate = Predicate::SimpleSet {
+                    field,
+                    is_in: true,
+                    values,
+                };
+            }
+        }
+    }
+}
+
+fn symbolic_branch(predicate: &Predicate) -> Option<(String, Vec<String>)> {
+    match predicate {
+        Predicate::Simple {
+            field,
+            operator: Operator::Equal,
+            value: Some(value),
+        } => Some((field.clone(), vec![value.clone()])),
+        Predicate::SimpleSet {
+            field,
+            is_in: true,
+            values,
+        } => Some((field.clone(), values.clone())),
+        _ => None,
+    }
+}
+
+fn refresh_distribution(node: &mut Node) {
+    let total = node.record_count.unwrap_or(0.0);
+    let classes = node.distribution.len() as f64;
+    for d in &mut node.distribution {
+        d.probability = Some(if total > 0.0 {
+            d.record_count / total
+        } else {
+            0.0
+        });
+        d.confidence = Some(if d.record_count > 0.0 {
+            (d.record_count + 1.0) / (total + classes)
+        } else {
+            0.0
+        });
+    }
+}
+
+/// `c50_weight`: leaf class counts have eight significant decimal digits;
+/// Totals are f64 sums of exported children. Summing internal distributions is
+/// only a diagnostic hypothesis: the oracle disagrees at nodes 3/4/8/9/13/14/33.
+/// This is NOT f32 rounding: 3.1093117408906883 exports as 3.1093117, whereas its
+/// nearest f32 is 3.109311819076538. GAP: zero distributions at nodes 23 and 24.
+fn finalize_weighted_counts(node: &mut Node) -> Result<(), AlgoError> {
+    if node.children.is_empty() {
+        for d in &mut node.distribution {
+            d.record_count = format!("{:.7e}", d.record_count)
+                .parse::<f64>()
+                .map_err(|e| AlgoError::Data(format!("C5.0 weighted count formatting: {e}")))?;
+        }
+        node.record_count = Some(node.distribution.iter().map(|d| d.record_count).sum());
+    } else {
+        for child in &mut node.children {
+            finalize_weighted_counts(child)?;
+        }
+        node.record_count = Some(node.children.iter().filter_map(|c| c.record_count).sum());
+        for (i, d) in node.distribution.iter_mut().enumerate() {
+            d.record_count = node
+                .children
+                .iter()
+                .filter_map(|c| c.distribution.get(i))
+                .map(|d| d.record_count)
+                .sum();
+        }
+    }
+    refresh_distribution(node);
+    Ok(())
+}
+
 pub fn train(dataset: &Dataset<'_>, settings: &C50Settings) -> Result<Pmml, AlgoError> {
     if let Some(trials) = settings.boost_trials {
         return crate::c50_boost::train(dataset, settings, trials);
@@ -728,13 +1037,25 @@ pub fn train(dataset: &Dataset<'_>, settings: &C50Settings) -> Result<Pmml, Algo
     train_tree(dataset, settings)
 }
 
-/// One decision tree (no boosting, no rule set).
+/// One decision tree (no boosting, no rule set). Weighted training is diagnostic:
+/// see the module GAPs; the exec node deliberately rejects `useWeight`.
 pub fn train_tree(dataset: &Dataset<'_>, settings: &C50Settings) -> Result<Pmml, AlgoError> {
     validate_settings(dataset, settings)?;
-    let data = Data::read(dataset, settings.weight_field)?;
+    let mut data = Data::read(dataset, settings.weight_field)?;
+    data.costs = settings
+        .costs
+        .as_ref()
+        .map(|c| c.matrix(&data.classes))
+        .transpose()?;
     let rows: Vec<usize> = (0..data.targets.len()).collect();
     let mut root = grow(&data, &rows, settings, 0, 0, &mut 0)?;
-    prune(&mut root, settings);
+    prune(&mut root, settings, data.costs.as_deref());
+    if data.costs.is_some() {
+        merge_cost_leaves(&mut root);
+    }
+    if settings.weight_field.is_some() {
+        finalize_weighted_counts(&mut root)?;
+    }
     number(&mut root, &mut 0);
     Ok(Pmml {
         version: "4.3".into(),
@@ -799,6 +1120,179 @@ mod tests {
             s.score(&[dms_pmml::Value::Number(9.6)]).unwrap().value,
             dms_pmml::Value::Text("b".into())
         );
+    }
+
+    #[test]
+    fn cost_direction_parent_ties_and_raw_counts() {
+        let classes = vec!["A".into(), "B".into(), "C".into()];
+        let costs = MisclassificationCosts {
+            default_cost: 1.0,
+            entries: vec![("B".into(), "C".into(), 8.0), ("C".into(), "B".into(), 2.0)],
+        }
+        .matrix(&classes)
+        .unwrap();
+        assert_eq!(
+            costs,
+            vec![
+                vec![0.0, 1.0, 1.0],
+                vec![1.0, 0.0, 8.0],
+                vec![1.0, 2.0, 0.0]
+            ]
+        );
+        assert_eq!(cost_winner(&[2.0, 2.0, 2.0], 1, Some(&costs)), 0);
+        assert_eq!(cost_winner(&[2.0, 0.0, 2.0], 2, Some(&costs)), 2);
+        assert_eq!(cost_winner(&[2.0, 0.0, 2.0], 1, Some(&costs)), 0);
+
+        // A cheaper prediction may differ from the majority without changing
+        // record counts or smoothed confidence.
+        let table = sample();
+        let pmml = train_tree(
+            &Dataset {
+                table: &table,
+                target: 1,
+                inputs: &[],
+                frequency: None,
+            },
+            &C50Settings {
+                costs: Some(MisclassificationCosts {
+                    default_cost: 1.0,
+                    entries: vec![("a".into(), "b".into(), 0.25)],
+                }),
+                ..C50Settings::default()
+            },
+        )
+        .unwrap();
+        let Model::Tree(tree) = pmml.model else {
+            panic!("tree");
+        };
+        assert_eq!(tree.root.score.as_deref(), Some("b"));
+        assert_eq!(tree.root.record_count, Some(20.0));
+        assert_eq!(
+            tree.root
+                .distribution
+                .iter()
+                .map(|d| d.record_count)
+                .collect::<Vec<_>>(),
+            [10.0, 10.0]
+        );
+        assert_eq!(tree.root.distribution[1].confidence, Some(0.5));
+    }
+
+    #[test]
+    fn malformed_costs_and_unverified_combinations_are_errors() {
+        let table = sample();
+        let dataset = Dataset {
+            table: &table,
+            target: 1,
+            inputs: &[0],
+            frequency: None,
+        };
+        for costs in [
+            MisclassificationCosts {
+                default_cost: f64::NAN,
+                entries: vec![],
+            },
+            MisclassificationCosts {
+                default_cost: 0.0,
+                entries: vec![],
+            },
+            MisclassificationCosts {
+                default_cost: 1.0,
+                entries: vec![("a".into(), "b".into(), f64::INFINITY)],
+            },
+            MisclassificationCosts {
+                default_cost: 1.0,
+                entries: vec![("a".into(), "b".into(), -1.0)],
+            },
+            MisclassificationCosts {
+                default_cost: 1.0,
+                entries: vec![("a".into(), "b".into(), f64::MAX)],
+            },
+            MisclassificationCosts {
+                default_cost: 1.0,
+                entries: vec![("absent".into(), "b".into(), 1.0)],
+            },
+            MisclassificationCosts {
+                default_cost: 1.0,
+                entries: vec![("a".into(), "a".into(), 1.0)],
+            },
+            MisclassificationCosts {
+                default_cost: 1.0,
+                entries: vec![("a".into(), "b".into(), 2.0); 2],
+            },
+            MisclassificationCosts {
+                default_cost: 1.0,
+                entries: vec![("a".into(), "b".into(), 2.0); MAX_NODES + 1],
+            },
+        ] {
+            assert!(
+                train_tree(
+                    &dataset,
+                    &C50Settings {
+                        costs: Some(costs),
+                        ..C50Settings::default()
+                    }
+                )
+                .is_err()
+            );
+        }
+        for mut settings in [
+            C50Settings {
+                rules: true,
+                ..C50Settings::default()
+            },
+            C50Settings {
+                boost_trials: Some(2),
+                ..C50Settings::default()
+            },
+            C50Settings {
+                weight_field: Some(0),
+                ..C50Settings::default()
+            },
+        ] {
+            settings.costs = Some(MisclassificationCosts {
+                default_cost: 1.0,
+                entries: vec![],
+            });
+            assert!(matches!(
+                train_tree(&dataset, &settings),
+                Err(AlgoError::Unsupported(_))
+            ));
+        }
+    }
+
+    #[test]
+    fn unrepresentable_case_weight_totals_return_errors() {
+        let original = sample();
+        let mut fields = original.model().fields().to_vec();
+        fields.push(Field::new("weight", Storage::Real));
+        for weight in [f64::MAX, f64::MIN_POSITIVE / 1000.0] {
+            let rows = original
+                .rows()
+                .iter()
+                .map(|r| {
+                    let mut row = r.clone();
+                    row.push(Value::Real(weight));
+                    row
+                })
+                .collect();
+            let table = Table::new(DataModel::new(fields.clone()).unwrap(), rows).unwrap();
+            assert!(
+                train_tree(
+                    &Dataset {
+                        table: &table,
+                        target: 1,
+                        inputs: &[0],
+                        frequency: None
+                    },
+                    &C50Settings {
+                        weight_field: Some(2),
+                        ..C50Settings::default()
+                    }
+                )
+                .is_err()
+            );
+        }
     }
     #[test]
     fn malformed_settings_and_indices_return_errors() {

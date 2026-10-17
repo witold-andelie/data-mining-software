@@ -128,7 +128,7 @@ fn compare_tree(a: &dms_pmml::Node, b: &dms_pmml::Node) {
                 av.as_ref().and_then(|s| s.parse::<f64>().ok()),
                 bv.as_ref().and_then(|s| s.parse::<f64>().ok()),
             ) {
-                assert!((av - bv).abs() < 1e-12, "node {:?} cut {av} vs {bv}", b.id);
+                assert_eq!(av, bv, "node {:?} cut", b.id);
             } else {
                 assert_eq!(av, bv);
             }
@@ -144,12 +144,6 @@ fn compare_tree(a: &dms_pmml::Node, b: &dms_pmml::Node) {
 
 #[test]
 fn c50_builders_match_every_split_count_and_distribution() {
-    use dms_exec::{ExecContext, FileResolver, NodeOutput, Plan};
-    use dms_stream::Stream;
-    use dms_strfmt::ArchiveLimits;
-    use std::collections::HashMap;
-    use std::sync::Arc;
-    let root = support::repo_root();
     for (label, case) in [
         "c50_default",
         "c50_expert",
@@ -157,11 +151,34 @@ fn c50_builders_match_every_split_count_and_distribution() {
         "c50_group_symbols",
         "c50_no_global_prune",
         "c50_prune90",
+        "c50_costs",
     ]
     .iter()
     .map(|c| ("models_ml", *c))
     .chain([("models", "c50_default")])
     {
+        Fixture::load(label, case).compare();
+    }
+}
+
+struct Fixture {
+    stream: dms_stream::Stream,
+    context: dms_exec::ExecContext,
+    uid: String,
+    label: String,
+    case: String,
+    dir: std::path::PathBuf,
+    manifest: Json,
+    oracle: Pmml,
+}
+
+impl Fixture {
+    fn load(label: &str, case: &str) -> Self {
+        use dms_exec::{ExecContext, FileResolver};
+        use dms_stream::Stream;
+        use dms_strfmt::ArchiveLimits;
+        use std::sync::Arc;
+        let root = support::repo_root();
         let bytes = std::fs::read(root.join(format!("corpus/{label}/{case}.str"))).unwrap();
         let archive =
             dms_strfmt::container::read_archive(&bytes, &ArchiveLimits::default()).unwrap();
@@ -173,12 +190,7 @@ fn c50_builders_match_every_split_count_and_distribution() {
             .find(|n| n.type_identifier() == "BuildC5RuleNode")
             .unwrap()
             .uid
-            .as_str();
-        let attachments: HashMap<String, Arc<[u8]>> = archive
-            .attachments
-            .into_iter()
-            .map(|a| (a.name, a.bytes.into()))
-            .collect();
+            .clone();
         let context = ExecContext {
             files: FileResolver {
                 data_dirs: vec![
@@ -186,30 +198,231 @@ fn c50_builders_match_every_split_count_and_distribution() {
                     root.join("corpus/ibm-demo-data"),
                 ],
             },
-            attachments: Arc::new(attachments),
+            attachments: Arc::new(
+                archive
+                    .attachments
+                    .into_iter()
+                    .map(|a| (a.name, Arc::<[u8]>::from(a.bytes)))
+                    .collect(),
+            ),
             stream_properties: stream.properties.clone().map(Arc::new),
             ..ExecContext::default()
-        };
-        let results = Plan::new(&stream).evaluate(&[uid], &context);
-        let ours = match results.get(uid).unwrap() {
-            Ok(NodeOutput::Model(m)) => m,
-            other => panic!("{label}/{case}: {other:?}"),
         };
         let dir = root.join(format!("oracle/{label}/{case}"));
         let manifest: Json =
             serde_json::from_str(&std::fs::read_to_string(dir.join("manifest.json")).unwrap())
                 .unwrap();
-        let model = &manifest["models"][0];
-        let path = dir.join("models").join(
-            Path::new(model["file"].as_str().unwrap())
-                .file_name()
-                .unwrap(),
-        );
-        let theirs = Pmml::parse(&std::fs::read_to_string(path).unwrap()).unwrap();
-        println!("TREE {label}/{case}");
-        match (&ours.model, &theirs.model) {
+        // Builder labels can be generated and absent from StreamNode::label. Resolve
+        // the UID through the oracle run manifest, then match the export by label.
+        let builder_label = manifest["runs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|r| r["node"]["id"] == uid)
+            .unwrap()["node"]["label"]
+            .as_str()
+            .unwrap();
+        let model = manifest["models"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|m| m["label"] == builder_label)
+            .unwrap();
+        let file = Path::new(model["file"].as_str().unwrap())
+            .file_name()
+            .unwrap();
+        let oracle =
+            Pmml::parse(&std::fs::read_to_string(dir.join("models").join(file)).unwrap()).unwrap();
+        Self {
+            stream,
+            context,
+            uid,
+            label: label.into(),
+            case: case.into(),
+            dir,
+            manifest,
+            oracle,
+        }
+    }
+
+    fn compare(&self) {
+        use dms_exec::{NodeOutput, Plan};
+        let results = Plan::new(&self.stream).evaluate(&[&self.uid], &self.context);
+        let ours = match results.get(&self.uid).unwrap() {
+            Ok(NodeOutput::Model(m)) => m,
+            other => panic!("{}/{}: {other:?}", self.label, self.case),
+        };
+        println!("TREE {}/{}", self.label, self.case);
+        match (&ours.model, &self.oracle.model) {
             (dms_pmml::Model::Tree(a), dms_pmml::Model::Tree(b)) => compare_tree(&a.root, &b.root),
             _ => panic!("expected trees"),
         }
+        let mut rows = 0;
+        for entry in self.manifest["data"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|e| e["type"] == "applyc50")
+        {
+            let file = Path::new(entry["file"].as_str().unwrap())
+                .file_name()
+                .unwrap();
+            let text = std::fs::read_to_string(self.dir.join("data").join(file)).unwrap();
+            let mut lines = text.lines();
+            let header = support::parse_csv_line(lines.next().unwrap());
+            let names: Vec<&str> = header.iter().map(String::as_str).collect();
+            let scorer = ours.bind(&names).unwrap();
+            let expected = self.oracle.bind(&names).unwrap();
+            for line in lines {
+                let record: Vec<Value> = support::parse_csv_line(line)
+                    .iter()
+                    .map(|c| {
+                        c.parse()
+                            .map_or_else(|_| Value::Text(c.clone()), Value::Number)
+                    })
+                    .collect();
+                assert_eq!(
+                    scorer.score(&record).unwrap(),
+                    expected.score(&record).unwrap(),
+                    "{}/{} score {rows}",
+                    self.label,
+                    self.case
+                );
+                rows += 1;
+            }
+        }
+        println!(
+            "TRAINED {}/{}: {rows}/{rows} exact PMML scores",
+            self.label, self.case
+        );
     }
+}
+
+#[test]
+#[ignore = "GAP: weighted pruning, zero distributions, internal count aggregation; useWeight stays rejected"]
+fn c50_weight_builder_matches_every_split_count_and_distribution() {
+    Fixture::load("models_ml", "c50_weight").compare();
+}
+
+#[test]
+fn c50_weight_remains_rejected() {
+    let fixture = Fixture::load("models_ml", "c50_weight");
+    let results = dms_exec::Plan::new(&fixture.stream).evaluate(&[&fixture.uid], &fixture.context);
+    let error = results.get(&fixture.uid).unwrap().as_ref().unwrap_err();
+    assert!(error.to_string().contains("case weights"), "{error}");
+    println!(
+        "GAP models_ml/c50_weight: builder rejects case weights; exact training contract remains ignored"
+    );
+}
+
+#[test]
+fn c50_weight_export_precision_and_unresolved_nodes() {
+    use dms_algo::c50::{C50Settings, train_tree};
+    use dms_exec::{NodeOutput, Plan};
+    use dms_types::Role;
+    let fixture = Fixture::load("models_ml", "c50_weight");
+    let source = fixture.manifest["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|e| e["type"] == "type" && e["terminal"]["id"] == fixture.uid)
+        .unwrap()["id"]
+        .as_str()
+        .unwrap();
+    let results = Plan::new(&fixture.stream).evaluate(&[source], &fixture.context);
+    let table = match results.get(source).unwrap() {
+        Ok(NodeOutput::Data(t)) => t,
+        other => panic!("weighted training input: {other:?}"),
+    };
+    let fields = table.model().fields();
+    let target = fields.iter().position(|f| f.role == Role::Target).unwrap();
+    let inputs: Vec<usize> = fields
+        .iter()
+        .enumerate()
+        .filter(|(_, f)| f.role == Role::Input)
+        .map(|(i, _)| i)
+        .collect();
+    let ours = train_tree(
+        &dms_algo::Dataset {
+            table,
+            target,
+            inputs: &inputs,
+            frequency: None,
+        },
+        &C50Settings {
+            weight_field: table.model().position("weight"),
+            ..C50Settings::default()
+        },
+    )
+    .unwrap();
+    let (dms_pmml::Model::Tree(ours), dms_pmml::Model::Tree(oracle)) =
+        (&ours.model, &fixture.oracle.model)
+    else {
+        panic!("expected trees");
+    };
+    let mut exact_nodes = 0;
+    let mut gaps = Vec::new();
+    let mut internal_counts = Vec::new();
+    compare_weighted_evidence(
+        &ours.root,
+        &oracle.root,
+        &mut exact_nodes,
+        &mut gaps,
+        &mut internal_counts,
+    );
+    assert_eq!(gaps, ["23", "24", "34"]);
+    assert_eq!(internal_counts, ["4", "3", "9", "8", "14", "13"]);
+    assert_eq!(exact_nodes, 20);
+    println!(
+        "WEIGHT evidence: {exact_nodes} nodes have exact exported counts/distributions; GAP nodes {gaps:?}, internal distributions {internal_counts:?}, and affected ancestors remain unmatched"
+    );
+}
+
+/// This is an evidence test, NOT the full weighted training contract above.
+/// Identify pruning, zero-distribution, and internal-count mismatches. Exact
+/// comparisons cover leaves and the internal nodes whose aggregation is settled.
+fn compare_weighted_evidence(
+    a: &dms_pmml::Node,
+    b: &dms_pmml::Node,
+    exact: &mut usize,
+    gaps: &mut Vec<String>,
+    internal_counts: &mut Vec<String>,
+) -> bool {
+    assert_eq!(a.predicate, b.predicate, "node {:?}", b.id);
+    assert_eq!(a.score, b.score, "node {:?}", b.id);
+    match b.id.as_deref() {
+        Some("23" | "24") => {
+            assert!(a.record_count.is_some_and(|c| c > 0.0));
+            assert!(b.record_count.is_some_and(|c| c > 0.0));
+            assert!(b.distribution.iter().all(|d| d.record_count == 0.0
+                && d.probability == Some(0.0)
+                && d.confidence == Some(0.0)));
+            assert!(a.distribution.iter().any(|d| d.record_count > 0.0));
+            assert!(a.children.is_empty() && b.children.is_empty());
+            gaps.push(b.id.clone().unwrap());
+            return true;
+        }
+        Some("34") => {
+            assert_eq!(a.children.len(), 2);
+            assert!(b.children.is_empty());
+            gaps.push("34".into());
+            return true;
+        }
+        _ => {}
+    }
+    assert_eq!(a.children.len(), b.children.len(), "node {:?}", b.id);
+    let mut affected = false;
+    for (a, b) in a.children.iter().zip(&b.children) {
+        affected |= compare_weighted_evidence(a, b, exact, gaps, internal_counts);
+    }
+    if !affected {
+        assert_eq!(a.record_count, b.record_count, "node {:?}", b.id);
+        if a.distribution != b.distribution {
+            assert!(!b.children.is_empty(), "leaf {:?} must match", b.id);
+            internal_counts.push(b.id.clone().unwrap());
+        } else {
+            *exact += 1;
+        }
+    }
+    affected
 }
