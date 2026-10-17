@@ -1,9 +1,9 @@
-//! IBM SPSS Statistics system files (`.sav`, `.zsav`) reader (L0, standalone).
+//! IBM SPSS Statistics system files (`.sav`, `.zsav`) reader and writer (L0, standalone).
 //!
 //! Implemented from the public GNU PSPP Developers Guide chapter "System File Format"
 //! (see the crate README). Strings are decoded with the file's declared encoding; numbers,
 //! dates and user-missing values are left raw (see [`Variable::missing`] and
-//! [`Format::is_date_time`]).
+//! [`Format::is_date_time`]). [`write_bytes`] writes the records this reader parses.
 
 mod assemble;
 mod bytes;
@@ -11,6 +11,7 @@ mod data;
 mod dict;
 mod error;
 mod model;
+mod write;
 
 pub use bytes::Endian;
 pub use error::{Error, ErrorKind};
@@ -18,6 +19,7 @@ pub use model::{
     Alignment, Compression, Format, Header, Limits, Measure, MissingValues, RawExtension, SavFile,
     Value, ValueLabel, ValueLabelSet, Variable,
 };
+pub use write::{OutVariable, write_bytes};
 
 /// Reads a whole system file. Never panics; malformed input yields an [`Error`].
 pub fn read(bytes: &[u8], limits: &Limits) -> Result<SavFile, Error> {
