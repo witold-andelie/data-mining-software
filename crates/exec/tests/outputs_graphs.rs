@@ -13,36 +13,50 @@ mod support;
 
 use dms_exec::{Document, DocumentTable};
 
-/// The first `embeddedSource` of a VIZML document as one table (`;`-separated names and rows).
+/// Every `embeddedSource` of a VIZML document as a table (`;`-separated names and rows).
 fn parse_vizml(text: &str) -> Document {
     let doc = roxmltree::Document::parse(text).unwrap();
-    let source = doc
+    let tables = doc
         .descendants()
-        .find(|n| n.has_tag_name("embeddedSource"))
-        .unwrap();
-    let child_text = |tag: &str| -> Vec<String> {
-        source
-            .children()
-            .filter(|n| n.has_tag_name(tag))
-            .map(|n| n.text().unwrap_or_default().to_string())
-            .collect()
-    };
-    let header = child_text("names")[0]
-        .split(';')
-        .map(str::to_string)
-        .collect();
-    let rows = child_text("row")
-        .iter()
-        .map(|r| r.split(';').map(str::to_string).collect())
+        .filter(|n| n.has_tag_name("embeddedSource"))
+        .map(|source| {
+            let child_text = |tag: &str| -> Vec<String> {
+                source
+                    .children()
+                    .filter(|n| n.has_tag_name(tag))
+                    .map(|n| n.text().unwrap_or_default().to_string())
+                    .collect()
+            };
+            DocumentTable {
+                title: None,
+                header: child_text("names")[0]
+                    .split(';')
+                    .map(str::to_string)
+                    .collect(),
+                rows: child_text("row")
+                    .iter()
+                    .map(|r| r.split(';').map(str::to_string).collect())
+                    .collect(),
+            }
+        })
         .collect();
     Document {
         title: String::new(),
-        tables: vec![DocumentTable {
-            title: None,
-            header,
-            rows,
-        }],
+        tables,
     }
+}
+
+/// Web links come in an order we do not reproduce (`nodes::web`): put Modeler's in ours, by
+/// the position of their FROM and TO nodes in the node table.
+fn web_links_in_node_order(mut doc: Document) -> Document {
+    if doc.tables.len() == 2 {
+        let nodes: Vec<String> = doc.tables[0].rows.iter().map(|r| r[0].clone()).collect();
+        let index = |name: &str| nodes.iter().position(|n| n == name).unwrap_or(usize::MAX);
+        doc.tables[1]
+            .rows
+            .sort_by_key(|r| (index(&r[0]), index(&r[1])));
+    }
+    doc
 }
 
 #[test]
@@ -55,7 +69,9 @@ fn graph_nodes_match_modelers_graph_data() {
             "multiplot",
             "timeplot",
             "collection",
+            "web",
+            "evaluation",
         ],
-        |_, text| parse_vizml(text),
+        |_, text| web_links_in_node_order(parse_vizml(text)),
     );
 }
