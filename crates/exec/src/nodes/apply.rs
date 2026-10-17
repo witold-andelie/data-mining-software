@@ -86,6 +86,10 @@ enum Kind {
     /// and `$O-FieldImpact-<k>` for the `numAnomalyFields` largest contributions
     /// (`models_next/anomaly_default`).
     Anomaly,
+    /// Kohonen: `$KX-<model name>`, `$KY-<model name>` (the winning unit's map position) and,
+    /// with `appendClusterLabel`, `$KXY-<model name>` (its cluster name, `X=0, Y=2`;
+    /// `models_next/kohonen_*`).
+    Kohonen,
 }
 
 pub fn build(node: &StreamNode) -> Result<Box<dyn Operator>, OperatorError> {
@@ -118,6 +122,7 @@ pub fn build(node: &StreamNode) -> Result<Box<dyn Operator>, OperatorError> {
         | "ApplyNeuralNetSplitModelNode" => Kind::Neural,
         "ApplyPCANode" => Kind::Factor,
         "ApplyAnomalyNode" => Kind::Anomaly,
+        "ApplyKohonenNode" => Kind::Kohonen,
         other => {
             return Err(OperatorError::Settings(format!(
                 "model nugget {other} is not supported yet"
@@ -191,6 +196,8 @@ pub fn build(node: &StreamNode) -> Result<Box<dyn Operator>, OperatorError> {
             && build_setting(s, "generateDistanceField").as_deref() == Some("true"),
         numeric_labels: kind == Kind::TwoStep
             && build_setting(s, "clusterLabelType").as_deref() == Some("NUMBER"),
+        cluster_label: kind == Kind::Kohonen
+            && settings::flag(s, "appendClusterLabel")?.unwrap_or(true),
         model_name,
         properties: node.properties_attachment.clone(),
         anomaly,
@@ -217,6 +224,8 @@ struct Apply {
     distance: bool,
     /// TwoStep: clusters are numbers (`$T-` is an integer field).
     numeric_labels: bool,
+    /// Kohonen: also the cluster name (`$KXY-`).
+    cluster_label: bool,
     model_name: String,
     /// Extension properties attachment (`scoring.isPrediction`, ...). Neural Net only.
     properties: Option<String>,
@@ -414,6 +423,55 @@ impl Apply {
             }
             return Ok(columns);
         }
+        if self.kind == Kind::Kohonen {
+            let position = |p: &Prediction| {
+                let dms_pmml::Model::Clustering(model) = &pmml.model else {
+                    return None;
+                };
+                let name = p.entity_id.as_deref()?;
+                model
+                    .clusters
+                    .iter()
+                    .find(|c| c.id.as_deref().or(c.name.as_deref()) == Some(name))
+                    .and_then(|c| c.map_position)
+            };
+            let coordinate = |p: &Prediction, y: bool| {
+                position(p).map_or(Value::Null, |(x1, x2)| {
+                    Value::Integer((if y { x2 } else { x1 }) as i64)
+                })
+            };
+            // Like PCA/Factor, the fields carry the model's own name (`kohonen_default`'s grid
+            // nugget, labelled "Grid scores", writes `$KX-models_next`).
+            let model_name = match &pmml.model {
+                dms_pmml::Model::Clustering(model) => model.header.name.clone(),
+                _ => None,
+            }
+            .filter(|name| !name.trim().is_empty())
+            .unwrap_or_else(|| self.model_name.clone());
+            let mut columns = vec![
+                column(
+                    &format!("$KX-{model_name}"),
+                    Storage::Integer,
+                    predictions.iter().map(|p| coordinate(p, false)).collect(),
+                ),
+                column(
+                    &format!("$KY-{model_name}"),
+                    Storage::Integer,
+                    predictions.iter().map(|p| coordinate(p, true)).collect(),
+                ),
+            ];
+            if self.cluster_label {
+                columns.push(column(
+                    &format!("$KXY-{model_name}"),
+                    Storage::String,
+                    predictions
+                        .iter()
+                        .map(|p| typed(&p.value, Storage::String))
+                        .collect(),
+                ));
+            }
+            return Ok(columns);
+        }
         if self.kind == Kind::TwoStep {
             let storage = if self.numeric_labels {
                 Storage::Integer
@@ -440,7 +498,7 @@ impl Apply {
                         .into(),
                 ));
             }
-            Kind::Rule | Kind::KMeans | Kind::TwoStep => ("$R", "$RC", "$RRP"),
+            Kind::Rule | Kind::KMeans | Kind::TwoStep | Kind::Kohonen => ("$R", "$RC", "$RRP"),
         };
         let continuous_only = matches!(self.kind, Kind::Linear | Kind::Regression);
         // The first index whose prediction field is free.

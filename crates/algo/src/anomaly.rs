@@ -428,6 +428,7 @@ fn model(
                 .collect(),
             category_counts: categorical_names.iter().cloned().zip(cf.counts).collect(),
             mean_distance: None,
+            map_position: None,
         })
         .collect();
     Pmml {

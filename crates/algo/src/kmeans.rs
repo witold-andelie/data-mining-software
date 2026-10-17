@@ -223,6 +223,7 @@ pub fn train(
             variances: Vec::new(),
             category_counts: Vec::new(),
             mean_distance: None,
+            map_position: None,
         })
         .collect();
     let header = ModelHeader {

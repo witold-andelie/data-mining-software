@@ -423,6 +423,8 @@ pub struct Cluster {
     /// Anomaly Detection: the mean group deviation index of the cluster's training records
     /// (`Extension name="meanClusterDistance"`).
     pub mean_distance: Option<f64>,
+    /// Kohonen: the cluster's map position (`KohonenMap@coord1`, `@coord2`).
+    pub map_position: Option<(f64, f64)>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
