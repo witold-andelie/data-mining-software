@@ -7,7 +7,7 @@
     reason = "test helpers fail loudly"
 )]
 
-use dms_exec::nodes::{derive, filler, statistics_file, r#type, var_file};
+use dms_exec::nodes::{derive, filler, fixed_file, json_import, statistics_file, r#type, var_file};
 use dms_exec::{ExecContext, Factory, FileResolver, OperatorError};
 use dms_stream::StreamNode;
 use dms_strfmt::fastinfoset::{Attribute, Element, Node, QualifiedName};
@@ -794,4 +794,119 @@ fn type_node_handles_empty_tables_range_blanks_and_rejects_check_modes() {
         )]));
         assert!(matches!(err, Err(OperatorError::Settings(_))));
     }
+}
+
+// ---------------------------------------------------------------- fixed_file
+
+fn fixed_spec(name: &str, start: &str, length: &str) -> Node {
+    g(
+        "entry",
+        vec![
+            p("columnName", name),
+            p("start", start),
+            p("length", length),
+        ],
+    )
+}
+
+#[test]
+fn fixed_file_cuts_fields_trims_both_ends_by_default_and_reads_overrides() {
+    let dir = tmp_dir("fixed_file_basic");
+    std::fs::write(dir.join("f.txt"), "01 ab  06.07.08\r\n2  c   23.59.59\r\n").unwrap();
+    let specs = |entries: Vec<Node>| g("fixedFileColumnSpecs", vec![g("entries", entries)]);
+    let settings = || {
+        vec![
+            p("inputFileName", "f.txt"),
+            p("recordLength", "15"),
+            specs(vec![
+                fixed_spec("n", "1", "2"),
+                fixed_spec("s", "3", "5"),
+                fixed_spec("t", "8", "8"),
+            ]),
+            g(
+                "textImportTable",
+                vec![g(
+                    "rows",
+                    vec![g(
+                        "row",
+                        vec![
+                            p("name", "t"),
+                            p("override", "true"),
+                            p("storage", "time"),
+                            p("timeFormat", "format10"),
+                        ],
+                    )],
+                )],
+            ),
+        ]
+    };
+    let ctx = ctx_with_dir(dir.clone());
+    let table = run_source(fixed_file::build, settings(), &ctx).unwrap();
+    assert_eq!(col(&table, "n"), [Value::Integer(1), Value::Integer(2)]);
+    assert_eq!(col(&table, "s"), [Value::string("ab"), Value::string("c")]);
+    assert_eq!(
+        col(&table, "t"),
+        [
+            Value::Time(calendar::micros_from_time(6, 7, 8, 0).unwrap()),
+            Value::Time(calendar::micros_from_time(23, 59, 59, 0).unwrap()),
+        ]
+    );
+
+    // Out of order or overlapping fields: Modeler's "Bad format specified for file".
+    let overlapping = vec![
+        p("inputFileName", "f.txt"),
+        specs(vec![fixed_spec("a", "3", "2"), fixed_spec("b", "1", "1")]),
+    ];
+    assert!(matches!(
+        run_source(fixed_file::build, overlapping, &ctx),
+        Err(OperatorError::Settings(_))
+    ));
+    let none = vec![p("inputFileName", "f.txt"), specs(vec![])];
+    assert!(run_source(fixed_file::build, none, &ctx).is_err());
+}
+
+// ---------------------------------------------------------------- json_import
+
+#[test]
+fn json_import_reads_parameters_from_the_attachment() {
+    let dir = tmp_dir("json_import_basic");
+    std::fs::write(dir.join("r.json"), r#"[[1,"a",null],[2,"b",2.5]]"#).unwrap();
+    let parameters = |format: &str, script: &str| {
+        format!(
+            r#"<Parameters xmlns="http://xml.spss.com/pasw/extension"><Parameter name="full_filename" value="r.json"/><Parameter name="stringFormat" value="{format}"/><Parameter name="pythonimport.import_syntax" value="{script}"/><Parameter name="pasw.annotation_label" value=""/></Parameters>"#
+        )
+    };
+    let run = |text: String| {
+        let mut ctx = ctx_with_dir(dir.clone());
+        let attachments: std::collections::HashMap<String, Arc<[u8]>> =
+            [("data/0001.dat".to_string(), Arc::from(text.into_bytes()))].into();
+        ctx.attachments = Arc::new(attachments);
+        let mut stream_node = node(Vec::new());
+        stream_node.properties_attachment = Some("data/0001.dat".into());
+        json_import::build(&stream_node)?.run(&[], &ctx)
+    };
+    let table = run(parameters(
+        "values",
+        "x.read_json(p, **{ 'orient' : 'values'})",
+    ))
+    .unwrap();
+    let names: Vec<&str> = table
+        .model()
+        .fields()
+        .iter()
+        .map(|f| f.name.as_str())
+        .collect();
+    assert_eq!(names, ["0", "1", "2"]);
+    assert_eq!(col(&table, "0"), [Value::Integer(1), Value::Integer(2)]);
+    assert_eq!(col(&table, "2"), [Value::Null, Value::Real(2.5)]);
+
+    // The script's orient must match stringFormat; a custom script is rejected.
+    assert!(
+        run(parameters(
+            "records",
+            "read_json(p, **{ 'orient' : 'values'})"
+        ))
+        .is_err()
+    );
+    assert!(run(parameters("values", "my_reader()")).is_err());
 }

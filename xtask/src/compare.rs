@@ -253,11 +253,111 @@ enum Dialect {
     Rfc4180,
     /// Modeler's Flat File export does not escape quotes inside quoted cells (oracle:
     /// `"a\"b"` is exported as `"a"b"`), so a quote closes a cell only before a separator, a
-    /// line end or the end of the file.
+    /// line end or the end of the file. A quote before a separator can still be inside the
+    /// cell (`"say "hi",x"`, `oracle/sources/fixed_default`), so each record is split into as
+    /// many cells as the header has.
     Modeler,
 }
 
+/// Lines a Modeler record may span (a quoted cell with line ends).
+const MAX_RECORD_LINES: usize = 64;
+
 fn parse_csv(text: &str, dialect: Dialect) -> Vec<Vec<Cell>> {
+    if dialect == Dialect::Rfc4180 {
+        return parse_csv_chars(text, dialect);
+    }
+    let lines: Vec<&str> = text.lines().collect();
+    let Some(header) = lines.first() else {
+        return Vec::new();
+    };
+    let header = split_record(header, None).unwrap_or_else(|| parse_line(header));
+    let width = header.len();
+    let mut rows = vec![header];
+    let mut index = 1;
+    while index < lines.len() {
+        let mut record = lines[index].to_string();
+        let mut used = 1;
+        let row = loop {
+            if let Some(row) = split_record(&record, Some(width)) {
+                break row;
+            }
+            match lines.get(index + used) {
+                Some(next) if used < MAX_RECORD_LINES && record.contains('"') => {
+                    record.push('\n');
+                    record.push_str(next);
+                    used += 1;
+                }
+                _ => {
+                    used = 1;
+                    break parse_line(lines[index]);
+                }
+            }
+        };
+        rows.push(row);
+        index += used;
+    }
+    rows
+}
+
+fn parse_line(line: &str) -> Vec<Cell> {
+    parse_csv_chars(line, Dialect::Modeler)
+        .into_iter()
+        .next()
+        .unwrap_or_else(|| {
+            vec![Cell {
+                text: String::new(),
+                quoted: false,
+            }]
+        })
+}
+
+/// The record split at separators into cells that are either without quotes or quoted at both
+/// ends, `width` of them when given, taking the shortest cells first.
+fn split_record(record: &str, width: Option<usize>) -> Option<Vec<Cell>> {
+    fn cell(text: &str) -> Option<Cell> {
+        if !text.contains('"') {
+            return Some(Cell {
+                text: text.to_string(),
+                quoted: false,
+            });
+        }
+        let inner = text.strip_prefix('"')?.strip_suffix('"')?;
+        Some(Cell {
+            text: inner.to_string(),
+            quoted: true,
+        })
+    }
+    fn search(
+        tokens: &[&str],
+        width: Option<usize>,
+        cells: &mut Vec<Cell>,
+        failed: &mut std::collections::HashSet<(usize, usize)>,
+        at: usize,
+    ) -> bool {
+        if at == tokens.len() {
+            return width.is_none_or(|w| cells.len() == w);
+        }
+        if width.is_some_and(|w| cells.len() >= w) || failed.contains(&(at, cells.len())) {
+            return false;
+        }
+        for end in at + 1..=tokens.len() {
+            if let Some(next) = cell(&tokens[at..end].join(",")) {
+                cells.push(next);
+                if search(tokens, width, cells, failed, end) {
+                    return true;
+                }
+                cells.pop();
+            }
+        }
+        failed.insert((at, cells.len()));
+        false
+    }
+    let tokens: Vec<&str> = record.split(',').collect();
+    let mut cells = Vec::new();
+    search(&tokens, width, &mut cells, &mut Default::default(), 0).then_some(cells)
+}
+
+fn parse_csv_chars(text: &str, dialect: Dialect) -> Vec<Vec<Cell>> {
     let mut rows = Vec::new();
     let mut row = Vec::new();
     let mut cell = String::new();
@@ -339,6 +439,31 @@ mod tests {
             Dialect::Modeler,
         );
         assert_eq!(rows[1], vec![c("a\"b", true), c("\"", true), c("3", false)]);
+        // A quote before a separator inside a cell (`oracle/sources/fixed_default`).
+        let rows = parse_csv(
+            "n,a,b
+7,\"say \"hi\",x\",8
+8,\"p
+q\",9
+",
+            Dialect::Modeler,
+        );
+        assert_eq!(rows.len(), 3);
+        assert_eq!(
+            rows[1],
+            vec![c("7", false), c("say \"hi\",x", true), c("8", false)]
+        );
+        assert_eq!(
+            rows[2],
+            vec![
+                c("8", false),
+                c(
+                    "p
+q", true
+                ),
+                c("9", false)
+            ]
+        );
     }
 
     #[test]

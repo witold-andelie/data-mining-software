@@ -4,7 +4,7 @@
 
 | Scope | Implemented | Total |
 |---|---|---|
-| MVP | 49 | 90 |
+| MVP | 51 | 90 |
 | later | 0 | 23 |
 | out of scope | 0 | 34 |
 
@@ -13,13 +13,13 @@
 | Node | Id | Scope | Status | Modeler identifiers |
 |---|---|---|---|---|
 | Var. File | `var_file` | MVP | done | `DelimitedFileImportNode` |
-| Fixed File | `fixed_file` | MVP | missing | `FixedFileImportNode` |
+| Fixed File | `fixed_file` | MVP | done | `FixedFileImportNode` |
 | Statistics File (.sav) | `statistics_file` | MVP | done | `SPSSInputNode` |
 | Excel | `excel_import` | MVP | missing | `ExcelInputNode` |
 | Database | `database_import` | MVP | missing | `ODBCImportNode`, `DBImportNode` |
 | User Input | `user_input` | MVP | missing | `UserInputNode` |
 | XML | `xml_import` | MVP | missing | `xml_import!spss.xml_data` |
-| JSON | `json_import` | MVP | missing | `json_import!pasw.json` |
+| JSON | `json_import` | MVP | done | `json_import!pasw.json` |
 | SAS File | `sas_import` | MVP | missing | `SASInputNode` |
 | Extension Import | `extension_import` | later | missing | `ExtensionImportNode`, `script_importer!spss.scripts` |
 | R Import | `r_import` | out of scope | missing | `rimporter!spss.rstats` |
