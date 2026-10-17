@@ -8,7 +8,7 @@ use crate::settings;
 use crate::{ExecContext, NodeOutput};
 use dms_algo::{
     Dataset,
-    c50::{self, C50Settings},
+    c50::{self, C50Settings, MisclassificationCosts},
 };
 use dms_pmml::{Model, Pmml, Prediction, Usage, Value as PValue};
 use dms_stream::StreamNode;
@@ -26,12 +26,8 @@ pub fn build(node: &StreamNode) -> Result<Box<dyn Operator>, OperatorError> {
     let expert = settings::flag(s, "expertMode")?.unwrap_or(false);
     for (key, description) in [
         (
-            "useMisclassificationCosts",
-            "misclassification-cost training",
-        ),
-        (
             "useWeight",
-            "case weights (c50_weight: every split matches, one pruning decision and the exported float32 counts do not)",
+            "case weights (c50_weight: unresolved pruning, zero distributions, and internal count aggregation)",
         ),
         ("useFrequency", "frequency weights"),
         ("useCrossValidation", "cross-validation"),
@@ -105,6 +101,42 @@ pub fn build(node: &StreamNode) -> Result<Box<dyn Operator>, OperatorError> {
             global_pruning: !expert || settings::flag(s, "useGlobalPruning")?.unwrap_or(true),
             group_symbolics: settings::flag(s, "groupSymbolicValues")?.unwrap_or(false),
             weight_field: None,
+            costs: if settings::flag(s, "useMisclassificationCosts")?.unwrap_or(false) {
+                let entries: Vec<_> = settings::element(s, "misclassificationCosts/entries")
+                    .into_iter()
+                    .flat_map(|e| e.child_elements())
+                    .filter(|e| &*e.name.local == "entry")
+                    .take(10_001)
+                    .collect();
+                if entries.len() > 10_000 {
+                    return Err(unsupported("more than 10000 cost entries"));
+                }
+                let entries = entries
+                    .into_iter()
+                    .map(|entry| {
+                        let actual = settings::text(Some(entry), "trueValue").ok_or_else(|| {
+                            OperatorError::Settings("C5.0 cost entry needs trueValue".into())
+                        })?;
+                        let predicted =
+                            settings::text(Some(entry), "predictedValue").ok_or_else(|| {
+                                OperatorError::Settings(
+                                    "C5.0 cost entry needs predictedValue".into(),
+                                )
+                            })?;
+                        let cost = settings::real(Some(entry), "cost")?.ok_or_else(|| {
+                            OperatorError::Settings("C5.0 cost entry needs cost".into())
+                        })?;
+                        Ok((actual, predicted, cost))
+                    })
+                    .collect::<Result<Vec<_>, OperatorError>>()?;
+                Some(MisclassificationCosts {
+                    default_cost: settings::real(s, "misclassificationCosts/defaultCost")?
+                        .unwrap_or(1.0),
+                    entries,
+                })
+            } else {
+                None
+            },
             rules,
             boost_trials,
         },
