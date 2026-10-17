@@ -20,44 +20,24 @@
 //!   the include/discard filter (`sample_one_in_n_max` caps included records at 3 -> ids 2, 4, 6;
 //!   `sample_one_in_n_discard_max` caps non-sampled records at 3 -> ids 1, 3, 5).
 //!
-//! GAP: random sampling does NOT match Modeler. Modeler's random number generator is unknown and
-//! not reproducible here, so we draw from a deterministic seeded generator (splitmix64; without a
-//! saved seed a fixed constant). The same input and seed always give the same sample, but not
-//! Modeler's sample.
+//! - `random` draws `java.util.Random(seed).nextDouble()` once per record and samples the record
+//!   when `draw * 100 < percent` (`crate::random`; `oracle/random/sample_rand50`,
+//!   `sample_rand20_seed1` keep the same records). GAP: without `sampleUseRandomSeed` Modeler
+//!   seeds from the clock; we use the saved (or default) seed.
+//!
 //! Not supported (`build` fails): `sampleProcedure=complex` (strata, clusters, weights).
 
 use crate::context::ExecContext;
 use crate::error::OperatorError;
 use crate::operator::{Arity, Operator};
+use crate::random::JavaRandom;
 use crate::settings;
 use dms_stream::StreamNode;
 use dms_types::Table;
 use std::sync::Arc;
 
-/// Seed used when the node does not ask for a fixed one (deterministic by design).
-const DEFAULT_SEED: u64 = 0x5EED_0000_D15C_0001;
-
-/// Deterministic generator (splitmix64) shared with Balance. Not Modeler's generator.
-pub(crate) struct SeededRng(u64);
-
-impl SeededRng {
-    pub(crate) fn new(seed: u64) -> SeededRng {
-        SeededRng(seed)
-    }
-
-    pub(crate) fn next_u64(&mut self) -> u64 {
-        self.0 = self.0.wrapping_add(0x9E37_79B9_7F4A_7C15);
-        let mut z = self.0;
-        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
-        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
-        z ^ (z >> 31)
-    }
-
-    /// Uniform in [0, 1).
-    pub(crate) fn next_f64(&mut self) -> f64 {
-        (self.next_u64() >> 11) as f64 / (1u64 << 53) as f64
-    }
-}
+/// `sampleRandomSeed`'s default.
+const DEFAULT_SEED: i64 = 1_217_380;
 
 enum Method {
     First(usize),
@@ -69,7 +49,7 @@ struct Sample {
     discard: bool,
     method: Method,
     max_size: Option<usize>,
-    seed: u64,
+    seed: i64,
 }
 
 pub fn build(node: &StreamNode) -> Result<Box<dyn Operator>, OperatorError> {
@@ -130,14 +110,7 @@ pub fn build(node: &StreamNode) -> Result<Box<dyn Operator>, OperatorError> {
     } else {
         None
     };
-    let seed = if settings::flag(s, "sampleUseRandomSeed")?.unwrap_or(false) {
-        let raw = settings::integer(s, "sampleRandomSeed")?.unwrap_or(0);
-        u64::try_from(raw).map_err(|_| {
-            OperatorError::Settings(format!("sampleRandomSeed: negative value {raw}"))
-        })?
-    } else {
-        DEFAULT_SEED
-    };
+    let seed = settings::integer(s, "sampleRandomSeed")?.unwrap_or(DEFAULT_SEED);
     Ok(Box::new(Sample {
         discard,
         method,
@@ -155,7 +128,7 @@ impl Operator for Sample {
         let input = inputs
             .first()
             .ok_or_else(|| OperatorError::Inputs("Sample needs one input".into()))?;
-        let mut rng = SeededRng::new(self.seed);
+        let mut rng = JavaRandom::new(self.seed);
         let mut kept = Vec::new();
         for (index, row) in input.rows().iter().enumerate() {
             if self.max_size.is_some_and(|max| kept.len() >= max) {
@@ -164,7 +137,7 @@ impl Operator for Sample {
             let selected = match self.method {
                 Method::First(n) => index < n,
                 Method::OneInN(n) => (index + 1).is_multiple_of(n),
-                Method::RandomPercent(percent) => rng.next_f64() * 100.0 < percent,
+                Method::RandomPercent(percent) => rng.next_double() * 100.0 < percent,
             };
             if selected != self.discard {
                 kept.push(row.clone());

@@ -9,6 +9,7 @@ pub mod nodes;
 pub mod operator;
 pub mod output;
 pub mod plan;
+mod random;
 pub mod registry;
 pub mod settings;
 

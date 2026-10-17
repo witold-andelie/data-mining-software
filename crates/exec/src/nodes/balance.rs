@@ -19,21 +19,22 @@
 //!   matching directives are ignored (`balance_multi_match` with `[2.0, grp = "A"]` then
 //!   `[3.0, iv >= 0]` gives 2 copies—not 6—to rows 4, 6, 10, 14 where both conditions hold).
 //!
-//! GAP: Modeler's random number generator is unknown, so non-integral factors use the deterministic
-//! seeded generator of `sample.rs` and cannot match Modeler's random output; integral factors
-//! (0.0, 1.0, 2.0, ...) are exact.
+//! GAP: Balance has no seed and Modeler's own runs keep different records for fractional factors
+//! (`oracle/random/balance_boost`, `balance_reduce` rerun), so those draws cannot be reproduced;
+//! we draw `java.util.Random(SEED).nextDouble()` (`crate::random`). Integral factors (0.0, 1.0,
+//! 2.0, ...) are exact.
 
-use super::sample::SeededRng;
 use super::select::Condition;
 use crate::context::ExecContext;
 use crate::error::OperatorError;
 use crate::operator::{Arity, Operator};
+use crate::random::JavaRandom;
 use crate::settings;
 use dms_stream::StreamNode;
 use dms_types::{Role, Table, ValueSpec};
 use std::sync::Arc;
 
-const SEED: u64 = 0xBA1A_17CE_0000_0001;
+const SEED: i64 = 1_234_567;
 
 struct Directive {
     condition: Condition,
@@ -114,7 +115,7 @@ impl Operator for Balance {
         } else {
             None
         };
-        let mut rng = SeededRng::new(SEED);
+        let mut rng = JavaRandom::new(SEED);
         let mut out = Vec::new();
         for (index, row) in input.rows().iter().enumerate() {
             let in_scope = match &training {
@@ -135,7 +136,7 @@ impl Operator for Balance {
             let whole = factor.floor();
             let mut copies = whole as usize;
             let frac = factor - whole;
-            if frac > 0.0 && rng.next_f64() < frac {
+            if frac > 0.0 && rng.next_double() < frac {
                 copies = copies.saturating_add(1);
             }
             for _ in 0..copies {
