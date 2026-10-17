@@ -73,7 +73,10 @@ const PENDING: &[&str] = &[];
 
 /// Model nodes whose nuggets score (`nodes::apply`) while their build nodes cannot train yet;
 /// they do not count as implemented.
-const SCORING_ONLY: &[&str] = &[];
+/// Neural Net nuggets score from saved PMML. Training stays unimplemented, so a failed builder
+/// leaves the nugget its saved model (`corpus/models_ml/nn_fixed_a.str`). Not counted as
+/// implemented.
+const SCORING_ONLY: &[&str] = &["neural_net"];
 
 pub fn factory(catalog_id: &str) -> Option<Factory> {
     BUILT_IN

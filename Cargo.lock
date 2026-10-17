@@ -215,6 +215,7 @@ dependencies = [
 name = "dms-strfmt"
 version = "0.1.0"
 dependencies = [
+ "flate2",
  "zip",
 ]
 

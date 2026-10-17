@@ -18,12 +18,14 @@
 
 mod clustering;
 mod expr;
+mod neural;
 mod parse;
 mod regression;
 mod rules;
 mod score;
 mod tree;
 
+pub use neural::{NeuralNetworkModel, NeuralOutputKind, NeuralTarget};
 pub use score::Scorer;
 
 use std::fmt;
@@ -55,6 +57,13 @@ pub struct DataField {
     pub data_type: DataType,
     /// Valid values (`Value@property` absent or `valid`), in document order.
     pub values: Vec<String>,
+    /// User-missing values (`Value@property="missing"`): `"MISSING"`, `"-99"`
+    /// (`nn_missing_listwise`, `nn_missing_impute`). Treated as missing before an invalid-value
+    /// check, so `returnInvalid` does not reject them.
+    pub missing_values: Vec<String>,
+    /// SPSS `Extension` `flagTypeTrueValue` (`nn_partition` binary true category `"1"`).
+    /// Raw propensity is the probability of this category.
+    pub flag_true_value: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -201,6 +210,8 @@ pub enum Model {
     Clustering(ClusteringModel),
     GeneralRegression(GeneralRegressionModel),
     Regression(RegressionModel),
+    /// PMML 4.3 `NeuralNetwork` (Modeler Neural Net nuggets).
+    Neural(NeuralNetworkModel),
     /// `MiningModel` with `Segmentation` (`selectFirst`): Linear split models
     /// (`team/linear_regression`, Type role Split).
     Mining(MiningModel),

@@ -1,14 +1,16 @@
 //! Model nuggets (`ApplyCartRuleNode`, `ApplyChaidRuleNode`, `ApplyLogisticNode`,
 //! `ApplyKMeansNode`, `ApplyTwoStepNode`, `ApplyRegressionNode`,
-//! `LinearRegressionModel!spss.alm-extension`): score every record with the model and append
+//! `LinearRegressionModel!spss.alm-extension`,
+//! `neuralnetmodel!spss.neuralnet-extension`): score every record with the model and append
 //! Modeler's score fields (`docs/models.md`).
 //!
 //! The model is the one the linked build node trained in this evaluation, else the PMML the
 //! nugget saved. Classic nuggets keep PMML at `properties/model@pmml`. Extension-framework
-//! nuggets (`LinearRegressionModel!spss.alm-extension`) keep a `PMML` container; team Linear
-//! streams store that member as `SCF\x01` (not XML), so those nuggets score from the model the
-//! linked build node trained (`builderNodeId`). Score fields, from the oracle exports of the
-//! team streams, `models/linear_enter`, `models/regression_enter`, and `crates/pmml/tests/oracle.rs`:
+//! nuggets keep a `PMML` container. Neural Net stores that member as `SCF\x01` zlib-wrapped
+//! PMML (`corpus/models_ml/nn_fixed_a.str`, `data/0002.dat`); [`dms_strfmt::read_model_xml`]
+//! unwraps it. Training is not implemented, so the nugget scores this saved model.
+//! Score fields, from the oracle exports of the team streams, `models/linear_enter`,
+//! `models/regression_enter`, `corpus/models_ml/nn_*`, and `crates/pmml/tests/oracle.rs`:
 //!
 //! | nugget | fields |
 //! |---|---|
@@ -18,6 +20,17 @@
 //! | Regression | `$E-<target>` prediction (`models/regression_enter`) |
 //! | K-Means | `$KM-<model name>`: `cluster-<cluster name>`; `$KMD-<model name>`: the Euclidean distance to that center, when the nugget's `buildSettings` set `generateDistanceField` |
 //! | TwoStep | `$T-<model name>`: the cluster name (`cluster-<n>`), by the log-likelihood distance; an integer with numeric labels (`buildSettings` `clusterLabelType` `NUMBER`) |
+//! | Neural Net | `$N-<target>` (`scoring.isPrediction`, default true). Categorical targets also `$NC-<target>` when `scoring.isConfidence` (default true): `onProbability` is the winning probability (`nn_default_a`), `onIncrease` is that minus the second (`nn_fixed_a` confidence-increase, row 10001 is 0.131866732354273). `$NP-<category>` in `DataField` order, the first `scoring.maxCategories` when `scoring.isProbabilityCategory` (`nn_fixed_a`: all three, or only `$NP-A` when the cap is 1; a missing cap emits all). Then `$RP-<target>` and `$AP-<target>` (`nn_partition`). Continuous targets emit none of those (`nn_regression`, `nn_rbf`). Targets follow `NeuralOutput` order (`nn_mixed_targets`: `$N-r,$N-y,$NC-y`). |
+//!
+//! Neural score fields come from the nugget properties attachment (`Parameter` names above),
+//! not from scripting names. With no attachment the defaults are prediction, confidence,
+//! `onProbability`, and no category probabilities or propensity. `confidenceBasedOn` other
+//! than `onProbability` or `onIncrease` is an error. `scoring.isPropensity` with no
+//! `adjustedPropensity` extension is an error. Raw propensity is `P(flagTypeTrueValue)`
+//! (`nn_partition` true value `"1"`).
+//! GAP: two categorical targets at once have no oracle; their category fields would be
+//! `$NP-<target>-<category>`. GAP: raw propensity with no flag extension uses the second
+//! category (no non-flag neural oracle).
 //!
 //! `$LP-<category>` is a real field, one per target category, in `Prediction::probabilities`
 //! order (the target `DataField` values). The value is that category's probability; a missing
@@ -36,13 +49,17 @@
 //! GAP: K-Means cluster distance (`showClusterProximity`) and TwoStep outlier handling
 //! (`excludeOutliers`, a noise cluster) are rejected until an oracle covers them.
 
+use super::extension_params::{self, flag};
 use super::field_util::{Column, with_columns};
 use crate::context::ExecContext;
 use crate::error::OperatorError;
 use crate::operator::{Arity, Operator};
 use crate::output::NodeOutput;
 use crate::settings;
-use dms_pmml::{DataType, Pmml, Prediction, Usage, Value as PmmlValue};
+use dms_pmml::{
+    DataType, NeuralNetworkModel, NeuralOutputKind, NeuralTarget, Pmml, Prediction, Usage,
+    Value as PmmlValue,
+};
 use dms_stream::StreamNode;
 use dms_types::{Measurement, Storage, Table, Value};
 use std::sync::Arc;
@@ -61,6 +78,8 @@ enum Kind {
     KMeans,
     /// TwoStep: `$T-<model name>`.
     TwoStep,
+    /// Neural Net: `$N-`, `$NC-`, `$NP-`, `$RP-`, `$AP-`.
+    Neural,
 }
 
 pub fn build(node: &StreamNode) -> Result<Box<dyn Operator>, OperatorError> {
@@ -88,6 +107,9 @@ pub fn build(node: &StreamNode) -> Result<Box<dyn Operator>, OperatorError> {
         "ApplyRegressionNode" => Kind::Regression,
         "ApplyKMeansNode" => Kind::KMeans,
         "ApplyTwoStepNode" => Kind::TwoStep,
+        "neuralnetmodel!spss.neuralnet-extension"
+        | "ApplyNetNode"
+        | "ApplyNeuralNetSplitModelNode" => Kind::Neural,
         other => {
             return Err(OperatorError::Settings(format!(
                 "model nugget {other} is not supported yet"
@@ -135,6 +157,7 @@ pub fn build(node: &StreamNode) -> Result<Box<dyn Operator>, OperatorError> {
         numeric_labels: kind == Kind::TwoStep
             && build_setting(s, "clusterLabelType").as_deref() == Some("NUMBER"),
         model_name,
+        properties: node.properties_attachment.clone(),
     }))
 }
 
@@ -151,6 +174,8 @@ struct Apply {
     /// TwoStep: clusters are numbers (`$T-` is an integer field).
     numeric_labels: bool,
     model_name: String,
+    /// Extension properties attachment (`scoring.isPrediction`, ...). Neural Net only.
+    properties: Option<String>,
 }
 
 /// A value of the nugget's `buildSettings/propertySetting` list (the build node's settings).
@@ -192,12 +217,22 @@ impl Apply {
         let bytes = context.attachments.get(member).ok_or_else(|| {
             OperatorError::Io(format!("the stream file has no attachment {member}"))
         })?;
-        let text = std::str::from_utf8(bytes).map_err(|_| {
-            OperatorError::Data(format!(
-                "the model in {member} is not PMML (a format we cannot read)"
-            ))
-        })?;
-        Pmml::parse(text).map_err(|error| OperatorError::Data(format!("{member}: {error}")))
+        let text = if bytes.starts_with(b"SCF\x01") {
+            dms_strfmt::read_model_xml(bytes).map_err(|error| {
+                OperatorError::Data(format!(
+                    "the model in {member} is not readable PMML: {error}"
+                ))
+            })?
+        } else {
+            std::str::from_utf8(bytes)
+                .map_err(|_| {
+                    OperatorError::Data(format!(
+                        "the model in {member} is not PMML (a format we cannot read)"
+                    ))
+                })?
+                .to_string()
+        };
+        Pmml::parse(&text).map_err(|error| OperatorError::Data(format!("{member}: {error}")))
     }
 
     fn score(
@@ -222,6 +257,21 @@ impl Apply {
         let scorer = pmml
             .bind(&names)
             .map_err(|error| OperatorError::Data(format!("model: {error}")))?;
+        if self.kind == Kind::Neural {
+            let options = neural_options(self.properties.as_deref(), context)?;
+            let predictions = input
+                .rows()
+                .iter()
+                .map(|row| {
+                    let record: Vec<PmmlValue> = row.iter().map(to_pmml).collect();
+                    scorer
+                        .score_neural(&record)
+                        .map_err(|error| OperatorError::Data(format!("model: {error}")))
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            let columns = neural_columns(input, &pmml, &predictions, &options)?;
+            return with_columns(input, columns);
+        }
         let predictions = input
             .rows()
             .iter()
@@ -282,7 +332,12 @@ impl Apply {
         let (value_prefix, confidence_prefix, propensity_prefix) = match self.kind {
             Kind::Logistic | Kind::Linear => ("$L", "$LP", "$LRP"),
             Kind::Regression => ("$E", "$EC", "$ERP"),
-            _ => ("$R", "$RC", "$RRP"),
+            Kind::Neural => {
+                return Err(OperatorError::Data(
+                    "neural network score fields are not built on this path".into(),
+                ));
+            }
+            Kind::Rule | Kind::KMeans | Kind::TwoStep => ("$R", "$RC", "$RRP"),
         };
         let continuous_only = matches!(self.kind, Kind::Linear | Kind::Regression);
         // The first index whose prediction field is free.
@@ -355,6 +410,7 @@ fn target_name(pmml: &Pmml) -> Result<String, OperatorError> {
         dms_pmml::Model::RuleSet(model) => &model.header,
         dms_pmml::Model::GeneralRegression(model) => &model.header,
         dms_pmml::Model::Regression(model) => &model.header,
+        dms_pmml::Model::Neural(model) => &model.header,
         dms_pmml::Model::Clustering(model) => &model.header,
         dms_pmml::Model::Mining(model) => &model.header,
         dms_pmml::Model::Unsupported(element) => {
@@ -449,4 +505,318 @@ fn category_probability(prediction: &Prediction, category: &str) -> Option<f64> 
         .iter()
         .find(|(name, _)| name == category)
         .map(|(_, probability)| *probability)
+}
+
+/// Which neural score fields the nugget writes. Defaults match a nugget with no properties
+/// attachment: prediction and confidence on, `onProbability`, no category probabilities, no
+/// propensity. The `nn_*` streams all have the attachment.
+struct NeuralFields {
+    prediction: bool,
+    confidence: bool,
+    on_increase: bool,
+    category_probabilities: bool,
+    /// `None` emits every category. `Some(1)` is `$NP-` of the first `DataField` value only
+    /// (`nn_fixed_a` "One category probability").
+    max_categories: Option<usize>,
+    raw_propensity: bool,
+    adjusted_propensity: bool,
+    /// `CalculatePropensity = Calculate`: raw and adjusted propensity for flag targets
+    /// (`nn_partition`; `scoring.isRawPropensity`/`isPropensity` stay false there).
+    calculate_propensity: bool,
+}
+
+fn neural_options(
+    attachment: Option<&str>,
+    context: &ExecContext,
+) -> Result<NeuralFields, OperatorError> {
+    let Some(attachment) = attachment else {
+        return Ok(NeuralFields {
+            prediction: true,
+            confidence: true,
+            on_increase: false,
+            category_probabilities: false,
+            max_categories: None,
+            raw_propensity: false,
+            adjusted_propensity: false,
+            calculate_propensity: false,
+        });
+    };
+    let params = extension_params::load_parameters(Some(attachment), context, "neural network")?;
+    let max_categories = match extension_params::text(&params, "scoring.maxCategories")
+        .as_deref()
+        .map(str::trim)
+    {
+        None | Some("") => None,
+        Some(value) => {
+            let count = value.parse::<usize>().map_err(|_| {
+                OperatorError::Settings(format!(
+                    "scoring.maxCategories: expected an integer, found {value:?}"
+                ))
+            })?;
+            if count > MAX_CATEGORY_FIELDS {
+                return Err(OperatorError::Settings(format!(
+                    "scoring.maxCategories {count} exceeds {MAX_CATEGORY_FIELDS}"
+                )));
+            }
+            Some(count)
+        }
+    };
+    let on_increase = match extension_params::text(&params, "scoring.confidenceBasedOn")
+        .as_deref()
+        .map(str::trim)
+    {
+        None | Some("") | Some("onProbability") => false,
+        Some("onIncrease") => true,
+        Some(other) => {
+            return Err(OperatorError::Settings(format!(
+                "scoring.confidenceBasedOn {other:?} is not onProbability or onIncrease"
+            )));
+        }
+    };
+    Ok(NeuralFields {
+        prediction: flag(&params, "scoring.isPrediction")?.unwrap_or(true),
+        confidence: flag(&params, "scoring.isConfidence")?.unwrap_or(true),
+        on_increase,
+        category_probabilities: flag(&params, "scoring.isProbabilityCategory")?.unwrap_or(false),
+        max_categories,
+        raw_propensity: flag(&params, "scoring.isRawPropensity")?.unwrap_or(false),
+        adjusted_propensity: flag(&params, "scoring.isPropensity")?.unwrap_or(false),
+        calculate_propensity: extension_params::text(&params, "CalculatePropensity").as_deref()
+            == Some("Calculate"),
+    })
+}
+
+fn neural_columns(
+    input: &Table,
+    pmml: &Pmml,
+    predictions: &[Vec<NeuralTarget>],
+    options: &NeuralFields,
+) -> Result<Vec<Column>, OperatorError> {
+    let network = match &pmml.model {
+        dms_pmml::Model::Neural(model) => model,
+        _ => {
+            return Err(OperatorError::Data(
+                "the nugget's saved model is not a neural network".into(),
+            ));
+        }
+    };
+    let targets = neural_target_order(network);
+    let first = targets
+        .first()
+        .ok_or_else(|| OperatorError::Data("the neural network names no target field".into()))?;
+    let taken = |name: &str| input.model().position(name).is_some();
+    let index = (0..MAX_CATEGORY_FIELDS)
+        .map(|n| if n == 0 { String::new() } else { n.to_string() })
+        .find(|suffix| !taken(&format!("$N{suffix}-{}", first.0)))
+        .ok_or_else(|| OperatorError::Data("no free $N- score field index".into()))?;
+    let categorical_targets = targets
+        .iter()
+        .filter(|(_, categorical)| *categorical)
+        .count();
+    if (options.raw_propensity || options.adjusted_propensity) && categorical_targets == 0 {
+        return Err(OperatorError::Settings(
+            "neural propensity is not defined for a continuous target".into(),
+        ));
+    }
+    if options.adjusted_propensity
+        && categorical_targets > 0
+        && network.adjusted_propensity.is_none()
+    {
+        return Err(OperatorError::Data(
+            "scoring.isPropensity is set but the PMML has no adjustedPropensity extension".into(),
+        ));
+    }
+
+    let mut columns = Vec::new();
+    for (name, categorical) in &targets {
+        let storage = target_storage(pmml, name);
+        if options.prediction {
+            let mut values = Vec::with_capacity(predictions.len());
+            for row in predictions {
+                values.push(typed(&row_target(row, name)?.value, storage));
+            }
+            columns.push(column(&format!("$N{index}-{name}"), storage, values));
+        }
+        if *categorical && options.confidence {
+            let mut values = Vec::with_capacity(predictions.len());
+            for row in predictions {
+                values.push(real(neural_confidence(
+                    row_target(row, name)?,
+                    options.on_increase,
+                )));
+            }
+            columns.push(column(&format!("$NC{index}-{name}"), Storage::Real, values));
+        }
+        if *categorical && options.category_probabilities {
+            let categories = neural_categories(pmml, network, name);
+            let limit = options.max_categories.unwrap_or(categories.len());
+            for category in categories.iter().take(limit) {
+                let field = if categorical_targets > 1 {
+                    format!("$NP{index}-{name}-{category}")
+                } else {
+                    format!("$NP{index}-{category}")
+                };
+                let mut values = Vec::with_capacity(predictions.len());
+                for row in predictions {
+                    values.push(real(category_probability_of(
+                        row_target(row, name)?,
+                        category,
+                    )?));
+                }
+                columns.push(column(&field, Storage::Real, values));
+            }
+        }
+        let flag_target = pmml
+            .data_dictionary
+            .iter()
+            .any(|field| field.name == *name && field.flag_true_value.is_some());
+        let calculated = options.calculate_propensity && flag_target;
+        if *categorical && (options.raw_propensity || calculated) {
+            let mut values = Vec::with_capacity(predictions.len());
+            for row in predictions {
+                values.push(real(raw_propensity(pmml, name, row_target(row, name)?)?));
+            }
+            columns.push(column(&format!("$RP{index}-{name}"), Storage::Real, values));
+        }
+        if *categorical
+            && (options.adjusted_propensity
+                || (calculated && network.adjusted_propensity.is_some()))
+        {
+            let mut values = Vec::with_capacity(predictions.len());
+            for row in predictions {
+                let raw = raw_propensity(pmml, name, row_target(row, name)?)?;
+                let adjusted = match raw {
+                    None => None,
+                    Some(raw) => Some(
+                        network
+                            .adjusted_propensity(raw)
+                            .map_err(|error| OperatorError::Data(format!("model: {error}")))?,
+                    ),
+                };
+                values.push(real(adjusted));
+            }
+            columns.push(column(&format!("$AP{index}-{name}"), Storage::Real, values));
+        }
+    }
+    Ok(columns)
+}
+
+/// `(name, categorical)` in first-seen `NeuralOutput` order (`nn_mixed_targets` emits `r` then `y`).
+fn neural_target_order(model: &NeuralNetworkModel) -> Vec<(String, bool)> {
+    let mut targets: Vec<(String, bool)> = Vec::new();
+    for output in &model.outputs {
+        let categorical = matches!(output.kind, NeuralOutputKind::Category(_));
+        if let Some(existing) = targets.iter_mut().find(|target| target.0 == output.target) {
+            if categorical {
+                existing.1 = true;
+            }
+        } else {
+            targets.push((output.target.clone(), categorical));
+        }
+    }
+    targets
+}
+
+fn neural_categories(pmml: &Pmml, model: &NeuralNetworkModel, target: &str) -> Vec<String> {
+    if let Some(field) = pmml
+        .data_dictionary
+        .iter()
+        .find(|field| field.name == target)
+        && !field.values.is_empty()
+    {
+        return field.values.clone();
+    }
+    model
+        .outputs
+        .iter()
+        .filter_map(|output| match &output.kind {
+            NeuralOutputKind::Category(category) if output.target == target => {
+                Some(category.clone())
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+fn row_target<'a>(row: &'a [NeuralTarget], name: &str) -> Result<&'a NeuralTarget, OperatorError> {
+    row.iter()
+        .find(|target| target.name == name)
+        .ok_or_else(|| {
+            OperatorError::Data(format!("neural network score is missing target {name:?}"))
+        })
+}
+
+fn neural_confidence(target: &NeuralTarget, on_increase: bool) -> Option<f64> {
+    if target.probabilities.is_empty() {
+        return None;
+    }
+    let mut best = f64::NEG_INFINITY;
+    let mut second = f64::NEG_INFINITY;
+    for (_, probability) in &target.probabilities {
+        if *probability > best {
+            second = best;
+            best = *probability;
+        } else if *probability > second {
+            second = *probability;
+        }
+    }
+    if !best.is_finite() {
+        return None;
+    }
+    if on_increase {
+        let second = if second.is_finite() { second } else { 0.0 };
+        Some(best - second)
+    } else {
+        Some(best)
+    }
+}
+
+fn category_probability_of(
+    target: &NeuralTarget,
+    category: &str,
+) -> Result<Option<f64>, OperatorError> {
+    if target.probabilities.is_empty() && target.value == PmmlValue::Missing {
+        return Ok(None);
+    }
+    target
+        .probabilities
+        .iter()
+        .find(|(name, _)| name == category)
+        .map(|(_, probability)| Some(*probability))
+        .ok_or_else(|| {
+            OperatorError::Data(format!(
+                "neural network has no probability for category {category:?}"
+            ))
+        })
+}
+
+/// `P(flagTypeTrueValue)` when the target declares one (`nn_partition` `"1"`).
+/// GAP: with no flag extension, the second category. No non-flag neural oracle covers that.
+fn raw_propensity(
+    pmml: &Pmml,
+    target_name: &str,
+    target: &NeuralTarget,
+) -> Result<Option<f64>, OperatorError> {
+    if target.probabilities.is_empty() {
+        return Ok(None);
+    }
+    let flag = pmml
+        .data_dictionary
+        .iter()
+        .find(|field| field.name == target_name)
+        .and_then(|field| field.flag_true_value.as_deref());
+    let category = if let Some(flag) = flag {
+        flag.to_string()
+    } else {
+        target
+            .probabilities
+            .get(1)
+            .map(|(name, _)| name.clone())
+            .ok_or_else(|| {
+                OperatorError::Data(format!(
+                    "raw propensity for {target_name:?} needs a flag true value or a second category"
+                ))
+            })?
+    };
+    category_probability_of(target, &category)
 }

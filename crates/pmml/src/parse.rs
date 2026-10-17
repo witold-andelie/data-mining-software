@@ -83,7 +83,7 @@ pub(crate) fn parse(xml: &str) -> Result<Pmml, PmmlError> {
             }
             tag if MODEL_ELEMENTS.contains(&tag) => {
                 models.push((
-                    parse_model(child)?,
+                    parse_model(child, &transformations)?,
                     child.children().any(|n| {
                         n.has_tag_name("Extension") && n.attribute("name") == Some("boost")
                     }),
@@ -170,7 +170,7 @@ pub(crate) fn req_attr<'a, 'input>(
     })
 }
 
-fn parse_f64(text: &str, what: &str) -> Result<f64, PmmlError> {
+pub(crate) fn parse_f64(text: &str, what: &str) -> Result<f64, PmmlError> {
     let val = text
         .trim()
         .parse::<f64>()
@@ -233,12 +233,26 @@ fn parse_data_dictionary(node: roxmltree::Node<'_, '_>) -> Result<Vec<DataField>
         let optype = parse_optype(req_attr(child, "optype")?)?;
         let data_type = parse_data_type(req_attr(child, "dataType")?);
         let mut values = Vec::new();
+        let mut missing_values = Vec::new();
+        let mut flag_true_value = None;
         for val_node in child.children().filter(roxmltree::Node::is_element) {
             if val_node.tag_name().name() == "Value" {
                 let prop = val_node.attribute("property").unwrap_or("valid");
-                if prop == "valid" {
-                    values.push(req_attr(val_node, "value")?.to_string());
+                let value = req_attr(val_node, "value")?.to_string();
+                match prop {
+                    "valid" => values.push(value),
+                    "missing" => missing_values.push(value),
+                    _ => {}
                 }
+            } else if val_node.tag_name().name() == "Extension"
+                && val_node.attribute("name") == Some("flagTypeTrueValue")
+            {
+                if flag_true_value.is_some() {
+                    return Err(PmmlError::Parse(format!(
+                        "DataField {name:?} has two flagTypeTrueValue extensions"
+                    )));
+                }
+                flag_true_value = Some(req_attr(val_node, "value")?.to_string());
             }
         }
         fields.push(DataField {
@@ -246,6 +260,8 @@ fn parse_data_dictionary(node: roxmltree::Node<'_, '_>) -> Result<Vec<DataField>
             optype,
             data_type,
             values,
+            missing_values,
+            flag_true_value,
         });
     }
     Ok(fields)
@@ -352,7 +368,7 @@ fn parse_outliers(text: &str) -> Result<Outliers, PmmlError> {
     }
 }
 
-fn parse_expr(node: roxmltree::Node<'_, '_>, depth: usize) -> Result<Expr, PmmlError> {
+pub(crate) fn parse_expr(node: roxmltree::Node<'_, '_>, depth: usize) -> Result<Expr, PmmlError> {
     if depth > MAX_DEPTH {
         return Err(PmmlError::Parse(
             "expression nesting depth limit exceeded".into(),
@@ -496,7 +512,10 @@ fn parse_expr(node: roxmltree::Node<'_, '_>, depth: usize) -> Result<Expr, PmmlE
     }
 }
 
-fn parse_model(node: roxmltree::Node<'_, '_>) -> Result<Model, PmmlError> {
+fn parse_model(
+    node: roxmltree::Node<'_, '_>,
+    dictionary: &[crate::DerivedField],
+) -> Result<Model, PmmlError> {
     if node
         .ancestors()
         .filter(|n| MODEL_ELEMENTS.contains(&n.tag_name().name()))
@@ -515,7 +534,8 @@ fn parse_model(node: roxmltree::Node<'_, '_>) -> Result<Model, PmmlError> {
             node,
         )?)),
         "RegressionModel" => Ok(Model::Regression(parse_regression_model(node)?)),
-        "MiningModel" => Ok(Model::Mining(parse_mining_model(node)?)),
+        "NeuralNetwork" => Ok(Model::Neural(crate::neural::parse(node, dictionary)?)),
+        "MiningModel" => Ok(Model::Mining(parse_mining_model(node, dictionary)?)),
         other => Ok(Model::Unsupported(other.to_string())),
     }
 }
@@ -1289,7 +1309,10 @@ fn parse_general_regression_model(
     })
 }
 
-fn parse_mining_model(node: roxmltree::Node<'_, '_>) -> Result<MiningModel, PmmlError> {
+fn parse_mining_model(
+    node: roxmltree::Node<'_, '_>,
+    dictionary: &[crate::DerivedField],
+) -> Result<MiningModel, PmmlError> {
     let header = parse_model_header(node)?;
     let mut method = String::new();
     let mut segments = Vec::new();
@@ -1322,7 +1345,7 @@ fn parse_mining_model(node: roxmltree::Node<'_, '_>) -> Result<MiningModel, Pmml
                     segment.tag_name().name()
                 )));
             }
-            segments.push(parse_segment(segment)?);
+            segments.push(parse_segment(segment, dictionary)?);
         }
     }
     if segments.is_empty() {
@@ -1338,7 +1361,10 @@ fn parse_mining_model(node: roxmltree::Node<'_, '_>) -> Result<MiningModel, Pmml
     })
 }
 
-fn parse_segment(node: roxmltree::Node<'_, '_>) -> Result<MiningSegment, PmmlError> {
+fn parse_segment(
+    node: roxmltree::Node<'_, '_>,
+    dictionary: &[crate::DerivedField],
+) -> Result<MiningSegment, PmmlError> {
     let mut predicate = None;
     let mut model = None;
     for child in node.children().filter(roxmltree::Node::is_element) {
@@ -1357,7 +1383,7 @@ fn parse_segment(node: roxmltree::Node<'_, '_>) -> Result<MiningSegment, PmmlErr
                 if model.is_some() {
                     return Err(PmmlError::Parse("Segment has two models".into()));
                 }
-                model = Some(parse_model(child)?);
+                model = Some(parse_model(child, dictionary)?);
             }
             other => {
                 return Err(PmmlError::Parse(format!(
