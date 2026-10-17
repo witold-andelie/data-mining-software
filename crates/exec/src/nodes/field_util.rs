@@ -4,7 +4,7 @@
 
 use crate::error::OperatorError;
 use crate::settings;
-use dms_clem::{Bindings, Compiled, Datum, Expr, compile, compile_condition, parse};
+use dms_clem::{Bindings, Compiled, Datum, Expr, GlobalValues, compile_with_globals, parse};
 use dms_strfmt::fastinfoset::Element;
 use dms_types::{DataModel, Field, Measurement, Storage, Table, Value};
 use std::cmp::Ordering;
@@ -28,36 +28,24 @@ pub(crate) fn parse_required(setting: &str, text: Option<String>) -> Result<Expr
         .ok_or_else(|| OperatorError::Settings(format!("{setting}: expression is empty")))
 }
 
-/// Binds an expression to the input's data model.
-pub(crate) fn bind(
+/// Binds an expression against the current stream globals. In condition position a flag
+/// field stands for its truth value.
+pub(crate) fn bind_with_globals(
     setting: &str,
     expr: &Expr,
     model: &DataModel,
     current_field: Option<usize>,
+    globals: &GlobalValues,
+    as_condition: bool,
 ) -> Result<Compiled, OperatorError> {
-    compile(
+    compile_with_globals(
         expr,
         &Bindings {
             model,
             current_field,
         },
-    )
-    .map_err(|error| OperatorError::Data(format!("{setting}: {error}")))
-}
-
-/// Binds an expression used as a condition: a flag field stands for its truth value.
-pub(crate) fn bind_condition(
-    setting: &str,
-    expr: &Expr,
-    model: &DataModel,
-    current_field: Option<usize>,
-) -> Result<Compiled, OperatorError> {
-    compile_condition(
-        expr,
-        &Bindings {
-            model,
-            current_field,
-        },
+        globals,
+        as_condition,
     )
     .map_err(|error| OperatorError::Data(format!("{setting}: {error}")))
 }

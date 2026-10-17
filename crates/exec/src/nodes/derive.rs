@@ -21,9 +21,8 @@
 //! `deriveFormulaGeoMeasure`) beyond the measurement level.
 
 use super::field_util::{
-    Column, bind, bind_condition, conditions, extended_name, field_list, field_values,
-    literal_values, measurement, parse_optional, parse_required, position, record_number,
-    with_columns,
+    Column, bind_with_globals, conditions, extended_name, field_list, field_values, literal_values,
+    measurement, parse_optional, parse_required, position, record_number, with_columns,
 };
 use crate::context::ExecContext;
 use crate::error::OperatorError;
@@ -268,13 +267,34 @@ impl Operator for Derive {
     }
 
     fn run(&self, inputs: &[Arc<Table>], _context: &ExecContext) -> Result<Table, OperatorError> {
+        self.run_globals(inputs, &dms_clem::GlobalValues::default())
+    }
+
+    fn produce_with_globals(
+        &self,
+        inputs: &[Arc<Table>],
+        _model: Option<Arc<dms_pmml::Pmml>>,
+        _context: &ExecContext,
+        globals: &mut dms_clem::GlobalValues,
+    ) -> Result<crate::output::NodeOutput, OperatorError> {
+        self.run_globals(inputs, globals)
+            .map(|table| crate::output::NodeOutput::Data(Arc::new(table)))
+    }
+}
+
+impl Derive {
+    fn run_globals(
+        &self,
+        inputs: &[Arc<Table>],
+        globals: &dms_clem::GlobalValues,
+    ) -> Result<Table, OperatorError> {
         let input = inputs
             .first()
             .ok_or_else(|| OperatorError::Inputs("Derive needs one input".into()))?;
         let model = input.model();
         let mut columns = Vec::new();
         match &self.targets {
-            Targets::Single(name) => columns.push(self.column(input, name, None)?),
+            Targets::Single(name) => columns.push(self.column(input, name, None, globals)?),
             Targets::Multiple {
                 fields,
                 extension,
@@ -283,7 +303,7 @@ impl Operator for Derive {
                 for field in fields {
                     let current = position(model, field)?;
                     let name = extended_name(field, extension, *prefix);
-                    columns.push(self.column(input, &name, Some(current))?);
+                    columns.push(self.column(input, &name, Some(current), globals)?);
                 }
             }
         }
@@ -297,12 +317,28 @@ impl Derive {
         input: &Table,
         name: &str,
         current: Option<usize>,
+        globals: &dms_clem::GlobalValues,
     ) -> Result<Column, OperatorError> {
         let model = input.model();
-        let bound =
-            |setting: &str, expr: &Expr| bind(&format!("{name}: {setting}"), expr, model, current);
+        let bound = |setting: &str, expr: &Expr| {
+            bind_with_globals(
+                &format!("{name}: {setting}"),
+                expr,
+                model,
+                current,
+                globals,
+                false,
+            )
+        };
         let condition = |setting: &str, expr: &Expr| {
-            bind_condition(&format!("{name}: {setting}"), expr, model, current)
+            bind_with_globals(
+                &format!("{name}: {setting}"),
+                expr,
+                model,
+                current,
+                globals,
+                true,
+            )
         };
         let rows = input.rows();
         // Every expression runs over all records first: sequence functions need them.
@@ -322,11 +358,13 @@ impl Derive {
                 true_value,
                 false_value,
             } => {
-                let compiled = bind_condition(
+                let compiled = bind_with_globals(
                     &format!("{name}: flag condition"),
                     condition,
                     model,
                     current,
+                    globals,
+                    true,
                 )?;
                 let values = tests_of("flag condition", &compiled)?
                     .into_iter()

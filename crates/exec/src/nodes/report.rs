@@ -34,7 +34,7 @@
 //! `YYYY-MM-DD` / `HH:MM:SS` (no probe); one paged probe has 24 lines at 20 per page in pages of
 //! 21 and 3, so pages hold `outputLinesPerPage + 1` lines here; the title is not HTML-escaped.
 
-use super::field_util::{bind, bind_condition, eval_all, truths};
+use super::field_util::{eval_all, truths};
 use crate::context::ExecContext;
 use crate::error::OperatorError;
 use crate::operator::{Arity, Operator};
@@ -199,7 +199,12 @@ fn segments(line: &str) -> Result<Vec<Segment>, OperatorError> {
 }
 
 impl Report {
-    fn render(&self, input: &Table, decimals: usize) -> Result<Vec<String>, OperatorError> {
+    fn render(
+        &self,
+        input: &Table,
+        decimals: usize,
+        globals: &dms_clem::GlobalValues,
+    ) -> Result<Vec<String>, OperatorError> {
         let rows = input.rows();
         if rows.is_empty() {
             return Ok(Vec::new());
@@ -217,7 +222,9 @@ impl Report {
             let selected: Vec<bool> = match condition {
                 None => vec![true; rows.len()],
                 Some(expr) => {
-                    let compiled = bind_condition(SETTING, expr, model, None)?;
+                    let compiled = super::field_util::bind_with_globals(
+                        SETTING, expr, model, None, globals, true,
+                    )?;
                     truths(SETTING, &compiled, rows)?
                         .into_iter()
                         .map(|t| t == Some(true))
@@ -230,7 +237,9 @@ impl Report {
                 let mut line_texts = Vec::new();
                 for segment in line {
                     if let Segment::Insert(expr) = segment {
-                        let compiled = bind(SETTING, expr, model, None)?;
+                        let compiled = super::field_util::bind_with_globals(
+                            SETTING, expr, model, None, globals, false,
+                        )?;
                         let values = eval_all(SETTING, &compiled, rows)?
                             .iter()
                             .map(|datum| self.inserted(datum, decimals))
@@ -376,10 +385,25 @@ impl Operator for Report {
         _model: Option<Arc<dms_pmml::Pmml>>,
         context: &ExecContext,
     ) -> Result<NodeOutput, OperatorError> {
+        self.produce_with_globals(
+            inputs,
+            None,
+            context,
+            &mut dms_clem::GlobalValues::default(),
+        )
+    }
+
+    fn produce_with_globals(
+        &self,
+        inputs: &[Arc<Table>],
+        _model: Option<Arc<dms_pmml::Pmml>>,
+        context: &ExecContext,
+        globals: &mut dms_clem::GlobalValues,
+    ) -> Result<NodeOutput, OperatorError> {
         let input = inputs
             .first()
             .ok_or_else(|| OperatorError::Inputs("Report needs one input".into()))?;
-        let lines = self.render(input, context.decimal_places())?;
+        let lines = self.render(input, context.decimal_places(), globals)?;
         if let Some((path, file_type)) = &self.file {
             self.write(&context.export_path(path), *file_type, &lines)?;
         }

@@ -36,6 +36,31 @@ pub struct Plan {
     nodes: Vec<PlannedNode>,
     /// Real nodes and the aliases (supernodes, connectors) that resolve to them.
     by_uid: HashMap<String, usize>,
+    initial_globals: Result<dms_clem::GlobalValues, crate::error::OperatorError>,
+    terminal_order: Vec<String>,
+}
+
+/// One execution of a stream. Saved globals seed this state once; subsequent terminal runs
+/// and exports share it. Each evaluate call recomputes data, so a cached CLEM reader cannot
+/// hide a later Set Globals update. A new execution never inherits another one's mutations.
+pub struct Execution<'a> {
+    plan: &'a Plan,
+    globals: dms_clem::GlobalValues,
+}
+
+impl Execution<'_> {
+    pub fn globals(&self) -> &dms_clem::GlobalValues {
+        &self.globals
+    }
+
+    pub fn evaluate(
+        &mut self,
+        targets: &[&str],
+        context: &ExecContext,
+    ) -> HashMap<String, NodeResult> {
+        self.plan
+            .evaluate_with_globals(targets, context, &mut self.globals)
+    }
 }
 
 /// Supernodes nested deeper than this, or alias chains longer than this, are rejected.
@@ -131,11 +156,31 @@ impl Plan {
                 }
             })
             .collect();
-        Plan { nodes, by_uid }
+        Plan {
+            nodes,
+            by_uid,
+            initial_globals: crate::nodes::set_globals::saved_globals(stream.properties.as_ref()),
+            terminal_order: stream
+                .diagram
+                .terminal_order
+                .iter()
+                .filter_map(|node| match node {
+                    NodeRef::Uid(uid) => Some(uid.clone()),
+                    NodeRef::Unresolved(_) => None,
+                })
+                .collect(),
+        }
     }
 
     pub fn nodes(&self) -> &[PlannedNode] {
         &self.nodes
+    }
+
+    pub fn execution(&self) -> Result<Execution<'_>, crate::error::OperatorError> {
+        Ok(Execution {
+            plan: self,
+            globals: self.initial_globals.clone()?,
+        })
     }
 
     /// The uids `uid` is linked to, as saved: a supernode input stays the supernode, so its
@@ -166,14 +211,49 @@ impl Plan {
             .collect()
     }
 
+    /// Saved terminalNodeOrder, followed by any terminals absent from that list. Modeler's
+    /// public stream.iterator order is a separate order; callers can explicitly run targets
+    /// one at a time in their recorded iterator order using one Execution.
+    pub fn terminals_in_run_order(&self) -> Vec<&str> {
+        let terminals = self.terminals();
+        let mut ordered = Vec::new();
+        for uid in &self.terminal_order {
+            if terminals.contains(&uid.as_str()) && !ordered.contains(&uid.as_str()) {
+                ordered.push(uid.as_str());
+            }
+        }
+        for uid in terminals {
+            if !ordered.contains(&uid) {
+                ordered.push(uid);
+            }
+        }
+        ordered
+    }
+
     /// Evaluates the outputs of `targets` and everything they need, each node at most once.
     /// Failures stay attached to the node that failed; downstream nodes report `Upstream`. A
     /// target that is a supernode or connector gets the result of the node it resolves to.
     pub fn evaluate(&self, targets: &[&str], context: &ExecContext) -> HashMap<String, NodeResult> {
+        match self.execution() {
+            Ok(mut execution) => execution.evaluate(targets, context),
+            Err(error) => targets
+                .iter()
+                .map(|uid| ((*uid).to_string(), Err(error.clone().at(uid))))
+                .collect(),
+        }
+    }
+
+    fn evaluate_with_globals(
+        &self,
+        targets: &[&str],
+        context: &ExecContext,
+        globals: &mut dms_clem::GlobalValues,
+    ) -> HashMap<String, NodeResult> {
         let mut state = vec![Visit::Pending; self.nodes.len()];
         let mut results: Vec<Option<NodeResult>> = vec![None; self.nodes.len()];
         let mut stack: Vec<(usize, bool)> = targets
             .iter()
+            .rev()
             .filter_map(|uid| self.by_uid.get(*uid).map(|&index| (index, false)))
             .collect();
         while let Some((index, expanded)) = stack.pop() {
@@ -201,7 +281,7 @@ impl Plan {
                     }
                 }
                 (Some(Visit::Expanded), true) => {
-                    let result = self.run_node(node, &results, context);
+                    let result = self.run_node(node, &results, context, globals);
                     set(&mut results, index, result);
                     set_state(&mut state, index, Visit::Done);
                 }
@@ -232,6 +312,7 @@ impl Plan {
         node: &PlannedNode,
         results: &[Option<NodeResult>],
         context: &ExecContext,
+        globals: &mut dms_clem::GlobalValues,
     ) -> NodeResult {
         let operator = node.operator.as_ref().map_err(Clone::clone)?;
         let mut inputs = Vec::with_capacity(node.inputs.len());
@@ -268,7 +349,7 @@ impl Plan {
             .and_then(NodeOutput::model)
             .cloned();
         operator
-            .produce(&inputs, model, context)
+            .produce_with_globals(&inputs, model, context, globals)
             .map_err(|error| error.at(&node.uid))
     }
 }

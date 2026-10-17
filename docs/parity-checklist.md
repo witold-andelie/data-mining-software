@@ -4,7 +4,7 @@
 
 | Scope | Implemented | Total |
 |---|---|---|
-| MVP | 57 | 90 |
+| MVP | 58 | 90 |
 | later | 0 | 23 |
 | out of scope | 0 | 34 |
 
@@ -164,7 +164,7 @@
 | Statistics | `statistics` | MVP | done | `StatisticsNode` |
 | Means | `means` | MVP | done | `MeansNode` |
 | Report | `report` | MVP | done | `ReportNode` |
-| Set Globals | `set_globals` | MVP | missing | `SetGlobalsNode` |
+| Set Globals | `set_globals` | MVP | done | `SetGlobalsNode` |
 | KDE Simulation (Python) | `kde_simulation` | later | missing | `kde_export!pasw.kde` |
 | Extension Output | `extension_output` | later | missing | (unmapped) |
 | Statistics Output | `statistics_output` | out of scope | missing | `SPSSProcedureNode`, `SPSSSyntaxNode`, `SPSSCustomTableNode` |

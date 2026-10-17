@@ -5,6 +5,7 @@
 
 mod eval;
 mod functions;
+mod globals;
 mod lexer;
 mod parser;
 mod sequence;
@@ -13,8 +14,9 @@ mod types;
 use dms_types::Value;
 use std::fmt;
 
-pub use eval::{Bindings, Compiled, compile, compile_condition};
+pub use eval::{Bindings, Compiled, compile, compile_condition, compile_with_globals};
 pub use functions::names as function_names;
+pub use globals::{GlobalStatistic, GlobalValues};
 pub use parser::{BinaryOp, Expr, parse};
 
 /// A CLEM result: a value (possibly `$null$`) or a truth value.
@@ -73,6 +75,10 @@ pub enum ClemError {
     },
     UnknownField(String),
     UnknownFunction(String),
+    UndefinedGlobal {
+        function: String,
+        field: String,
+    },
     Arity {
         function: String,
         /// The accepted argument counts, e.g. `1 or 3`.
@@ -98,6 +104,9 @@ impl fmt::Display for ClemError {
             }
             ClemError::UnknownField(name) => write!(f, "unknown field {name:?}"),
             ClemError::UnknownFunction(name) => write!(f, "unknown function {name}"),
+            ClemError::UndefinedGlobal { function, field } => {
+                write!(f, "the global value '{function}({field})' is undefined")
+            }
             ClemError::Arity {
                 function,
                 expected,

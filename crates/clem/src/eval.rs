@@ -4,7 +4,7 @@ use crate::functions::{self, Args, Function, Returns};
 use crate::parser::{BinaryOp, Expr};
 use crate::sequence::{self, Statistic};
 use crate::types::{Ty, unify};
-use crate::{ClemError, Datum};
+use crate::{ClemError, Datum, GlobalStatistic, GlobalValues};
 use dms_types::{DataModel, MissingSpec, Role, Value, ValueSpec};
 use std::cell::RefCell;
 use std::cmp::Ordering;
@@ -49,6 +49,7 @@ enum Sequence {
 /// Bound to the data model while binding, with the sequence functions found so far.
 struct Binder<'a> {
     model: &'a DataModel,
+    globals: Option<&'a GlobalValues>,
     current_field: Option<usize>,
     accumulators: RefCell<Vec<Accumulator>>,
 }
@@ -57,6 +58,7 @@ impl<'a> Binder<'a> {
     fn new(bindings: &Bindings<'a>) -> Binder<'a> {
         Binder {
             model: bindings.model,
+            globals: None,
             current_field: bindings.current_field,
             accumulators: RefCell::new(Vec::new()),
         }
@@ -112,6 +114,25 @@ enum Node {
 pub fn compile(expr: &Expr, bindings: &Bindings<'_>) -> Result<Compiled, ClemError> {
     let binder = Binder::new(bindings);
     let root = bind(expr, &binder)?;
+    Ok(binder.finish(root))
+}
+
+/// Binds globals from the current execution's snapshot. Global arguments name fields,
+/// rather than reading their per-record values. Resolution happens even on zero records.
+/// `as_condition` applies the same flag-field rules as `compile_condition`.
+pub fn compile_with_globals(
+    expr: &Expr,
+    bindings: &Bindings<'_>,
+    globals: &GlobalValues,
+    as_condition: bool,
+) -> Result<Compiled, ClemError> {
+    let mut binder = Binder::new(bindings);
+    binder.globals = Some(globals);
+    let root = if as_condition {
+        condition(expr, &binder)?
+    } else {
+        bind(expr, &binder)?
+    };
     Ok(binder.finish(root))
 }
 
@@ -274,6 +295,28 @@ fn call(name: &str, args: &[Expr], b: &Binder<'_>) -> Result<Node, ClemError> {
         }
     };
     match name {
+        name if GlobalStatistic::from_function(name).is_some() => {
+            arity(&[1])?;
+            let field = match args.first() {
+                Some(Expr::Field(field) | Expr::Quoted(field)) => field.as_str(),
+                Some(Expr::Special(special)) if special == "@FIELD" => b
+                    .current_field
+                    .and_then(|position| b.model.fields().get(position))
+                    .map(|field| field.name.as_str())
+                    .ok_or_else(|| ClemError::Type(format!("{name} needs a field name")))?,
+                _ => return Err(ClemError::Type(format!("{name} needs a field name"))),
+            };
+            let statistic = GlobalStatistic::from_function(name)
+                .ok_or_else(|| ClemError::UnknownFunction(name.into()))?;
+            let value = b
+                .globals
+                .ok_or_else(|| ClemError::UndefinedGlobal {
+                    function: name.into(),
+                    field: field.into(),
+                })?
+                .get(field, statistic)?;
+            Ok(Node::Const(Datum::Value(value.clone())))
+        }
         "@NULL" => {
             arity(&[1])?;
             let inner = args

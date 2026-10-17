@@ -78,6 +78,27 @@ impl Operator for Balance {
     }
 
     fn run(&self, inputs: &[Arc<Table>], _context: &ExecContext) -> Result<Table, OperatorError> {
+        self.run_globals(inputs, &dms_clem::GlobalValues::default())
+    }
+
+    fn produce_with_globals(
+        &self,
+        inputs: &[Arc<Table>],
+        _model: Option<Arc<dms_pmml::Pmml>>,
+        _context: &ExecContext,
+        globals: &mut dms_clem::GlobalValues,
+    ) -> Result<crate::output::NodeOutput, OperatorError> {
+        self.run_globals(inputs, globals)
+            .map(|table| crate::output::NodeOutput::Data(Arc::new(table)))
+    }
+}
+
+impl Balance {
+    fn run_globals(
+        &self,
+        inputs: &[Arc<Table>],
+        globals: &dms_clem::GlobalValues,
+    ) -> Result<Table, OperatorError> {
         let input = inputs
             .first()
             .ok_or_else(|| OperatorError::Inputs("Balance needs one input".into()))?;
@@ -86,7 +107,7 @@ impl Operator for Balance {
             .directives
             .iter()
             .map(|d| {
-                let truths = d.condition.bind(model)?.truths(input.rows())?;
+                let truths = d.condition.bind(model, globals)?.truths(input.rows())?;
                 Ok((truths, d.factor))
             })
             .collect::<Result<Vec<_>, OperatorError>>()?;

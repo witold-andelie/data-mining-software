@@ -262,6 +262,27 @@ impl Operator for Merge {
     }
 
     fn run(&self, inputs: &[Arc<Table>], _context: &ExecContext) -> Result<Table, OperatorError> {
+        self.run_globals(inputs, &dms_clem::GlobalValues::default())
+    }
+
+    fn produce_with_globals(
+        &self,
+        inputs: &[Arc<Table>],
+        _model: Option<Arc<dms_pmml::Pmml>>,
+        _context: &ExecContext,
+        globals: &mut dms_clem::GlobalValues,
+    ) -> Result<crate::output::NodeOutput, OperatorError> {
+        self.run_globals(inputs, globals)
+            .map(|table| crate::output::NodeOutput::Data(Arc::new(table)))
+    }
+}
+
+impl Merge {
+    fn run_globals(
+        &self,
+        inputs: &[Arc<Table>],
+        globals: &dms_clem::GlobalValues,
+    ) -> Result<Table, OperatorError> {
         let key_names: &[String] = match &self.mode {
             Mode::Order | Mode::Condition { .. } => &[],
             Mode::Key { keys, .. } => keys,
@@ -395,7 +416,7 @@ impl Operator for Merge {
             }
             Mode::Key { join, .. } => self.key_combos(inputs, &key_positions, *join),
             Mode::Condition { condition } => {
-                self.condition_combos(inputs, &name_counts, condition)?
+                self.condition_combos(inputs, &name_counts, condition, globals)?
             }
         };
 
@@ -432,6 +453,7 @@ impl Merge {
         inputs: &[Arc<Table>],
         name_counts: &HashMap<&str, usize>,
         condition: &Condition,
+        globals: &dms_clem::GlobalValues,
     ) -> Result<Vec<Vec<Option<usize>>>, OperatorError> {
         // Build an evaluation model containing every input field: unique fields keep their name;
         // fields present in multiple inputs are exposed both under `<tag>_<name>` on every input
@@ -461,7 +483,7 @@ impl Merge {
         }
         let eval_model =
             DataModel::new(eval_fields).map_err(|error| OperatorError::Data(error.to_string()))?;
-        let bound = condition.bind(&eval_model)?;
+        let bound = condition.bind(&eval_model, globals)?;
 
         // Every combination of records, the last input varying fastest, visited one at a time.
         let total = inputs
