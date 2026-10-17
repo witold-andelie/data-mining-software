@@ -423,7 +423,8 @@ fn convert(text: &str, storage: Storage, options: &TextOptions) -> Value {
     }
 }
 
-fn parse(text: &str, storage: Storage, options: &TextOptions) -> Option<Value> {
+/// The value of one trimmed cell text in the given storage, `None` when it does not parse.
+pub fn parse(text: &str, storage: Storage, options: &TextOptions) -> Option<Value> {
     match storage {
         Storage::Integer => parse_integer(text).map(Value::Integer),
         Storage::Real => parse_real(text, options.decimal).map(Value::real),

@@ -17,6 +17,7 @@ const BUILT_IN: &[(&str, Factory)] = &[
     ("var_file", nodes::var_file::build),
     ("fixed_file", nodes::fixed_file::build),
     ("json_import", nodes::json_import::build),
+    ("user_input", nodes::user_input::build),
     ("statistics_file", nodes::statistics_file::build),
     ("type", nodes::r#type::build),
     ("select", nodes::select::build),

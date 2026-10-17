@@ -7,7 +7,9 @@
     reason = "test helpers fail loudly"
 )]
 
-use dms_exec::nodes::{derive, filler, fixed_file, json_import, statistics_file, r#type, var_file};
+use dms_exec::nodes::{
+    derive, filler, fixed_file, json_import, statistics_file, r#type, user_input, var_file,
+};
 use dms_exec::{ExecContext, Factory, FileResolver, OperatorError};
 use dms_stream::StreamNode;
 use dms_strfmt::fastinfoset::{Attribute, Element, Node, QualifiedName};
@@ -909,4 +911,72 @@ fn json_import_reads_parameters_from_the_attachment() {
         .is_err()
     );
     assert!(run(parameters("values", "my_reader()")).is_err());
+}
+
+// ---------------------------------------------------------------- user_input
+
+fn user_field(name: &str, storage: &str, values: &str) -> Node {
+    g(
+        "field",
+        vec![p("name", name), p("storage", storage), p("values", values)],
+    )
+}
+
+#[test]
+fn user_input_combines_orders_ranges_and_refuses_bad_values() {
+    let run = |mode: &str, fields: Vec<Node>| {
+        run_source(
+            user_input::build,
+            vec![
+                p("dataMode", mode),
+                g("userFieldTable", vec![g("fields", fields)]),
+            ],
+            &ExecContext::default(),
+        )
+    };
+    let table = run(
+        "combine",
+        vec![
+            user_field("n", "integer", "2 1"),
+            user_field("blank", "string", ""),
+            user_field("s", "string", r#"x "y z""#),
+        ],
+    )
+    .unwrap();
+    assert_eq!(col(&table, "n"), [2, 2, 1, 1].map(Value::Integer).to_vec());
+    assert_eq!(col(&table, "blank"), vec![Value::Null; 4]);
+    assert_eq!(col(&table, "s")[1], Value::string("y z"));
+
+    let table = run(
+        "order",
+        vec![
+            user_field("r", "integer", "1 10,14,2"),
+            user_field("x", "real", "0,0.3,0.1"),
+            user_field("u", "unknown", "1 2.5"),
+        ],
+    )
+    .unwrap();
+    assert_eq!(
+        col(&table, "r"),
+        [1, 10, 12, 14].map(Value::Integer).to_vec()
+    );
+    assert_eq!(
+        col(&table, "x"),
+        [
+            Value::Real(0.0),
+            Value::Real(0.1),
+            Value::Real(0.2),
+            Value::Null
+        ]
+    );
+    assert_eq!(table.model().field("u").unwrap().storage, Storage::Real);
+
+    for bad in [
+        user_field("x", "integer", "5,1,-2"),
+        user_field("x", "integer", "abc"),
+        user_field("x", "unknown", "1 text"),
+        user_field("x", "date", "31/12/1999"),
+    ] {
+        assert!(run("order", vec![bad]).is_err());
+    }
 }

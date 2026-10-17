@@ -44,6 +44,7 @@ mod text_source;
 pub mod time_plot;
 pub mod transpose;
 pub mod r#type;
+pub mod user_input;
 pub mod var_file;
 pub mod web;
 pub mod xml_export;
