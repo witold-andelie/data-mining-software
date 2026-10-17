@@ -58,7 +58,8 @@ pub struct StreamNode {
     pub position: Option<(i64, i64)>,
     /// `node@properties`: attachment holding an extension node's settings.
     pub properties_attachment: Option<String>,
-    /// `container` children: attachments with their container names.
+    /// `container` children: attachments with their container names; also `*_XML` node
+    /// attributes, named by the attribute.
     pub containers: Vec<Container>,
     /// The node's settings element (`properties`), as saved.
     pub settings: Option<Element>,
@@ -295,6 +296,18 @@ fn read_node(element: &Element, depth: usize) -> Result<StreamNode, StreamError>
                     .filter(|name| !name.is_empty()),
             })
         })
+        .chain(
+            // Some nuggets name their model attachment in a node attribute instead
+            // (`ApplyAnomalyNode ANOMALY_XML="data/0002.dat"`, `models_next/anomaly_default`).
+            element
+                .attributes
+                .iter()
+                .filter(|attribute| attribute.name.local.ends_with("_XML"))
+                .map(|attribute| Container {
+                    member: attribute.value.to_string(),
+                    name: Some(attribute.name.local.to_string()),
+                }),
+        )
         .collect();
     let subdiagram = match element.child("diagram") {
         Some(diagram) => Some(read_diagram(diagram, depth + 1)?),

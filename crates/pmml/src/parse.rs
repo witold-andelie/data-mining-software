@@ -1065,8 +1065,12 @@ fn parse_clustering_model(node: roxmltree::Node<'_, '_>) -> Result<ClusteringMod
                 let mut center = None;
                 let mut variances = Vec::new();
                 let mut category_counts = Vec::new();
+                let mut mean_distance = None;
                 for sub in child.children().filter(roxmltree::Node::is_element) {
                     match sub.tag_name().name() {
+                        "Extension" if sub.attribute("name") == Some("meanClusterDistance") => {
+                            mean_distance = opt_f64_attr(sub, "value")?;
+                        }
                         "Array" if center.is_none() => center = Some(parse_array_f64(sub)?),
                         "Partition" => category_counts = parse_partition_counts(sub)?,
                         "Covariances" => variances = parse_diagonal(sub)?,
@@ -1080,6 +1084,7 @@ fn parse_clustering_model(node: roxmltree::Node<'_, '_>) -> Result<ClusteringMod
                     center: center.unwrap_or_default(),
                     variances,
                     category_counts,
+                    mean_distance,
                 });
             }
             "MissingValueWeights" => {
@@ -1108,6 +1113,7 @@ fn parse_clustering_model(node: roxmltree::Node<'_, '_>) -> Result<ClusteringMod
         fields,
         clusters,
         missing_weights,
+        anomaly_cutoff: None,
     })
 }
 

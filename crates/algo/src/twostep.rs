@@ -126,15 +126,15 @@ enum Input {
 
 /// The sufficient statistics of a set of records.
 #[derive(Debug, Clone)]
-struct Cf {
-    n: f64,
-    sum: Vec<f64>,
-    sum_sq: Vec<f64>,
-    counts: Vec<Vec<f64>>,
+pub(crate) struct Cf {
+    pub(crate) n: f64,
+    pub(crate) sum: Vec<f64>,
+    pub(crate) sum_sq: Vec<f64>,
+    pub(crate) counts: Vec<Vec<f64>>,
 }
 
 impl Cf {
-    fn add(&self, other: &Cf) -> Cf {
+    pub(crate) fn add(&self, other: &Cf) -> Cf {
         let zip = |a: &[f64], b: &[f64]| a.iter().zip(b).map(|(x, y)| x + y).collect();
         Cf {
             n: self.n + other.n,
@@ -150,7 +150,7 @@ impl Cf {
     }
 
     /// xi = -n (sum_k 1/2 ln(D_k + var_k) + sum_k entropy_k).
-    fn log_likelihood(&self, deltas: &[f64]) -> f64 {
+    pub(crate) fn log_likelihood(&self, deltas: &[f64]) -> f64 {
         let mut total = 0.0;
         for ((delta, sum), sum_sq) in deltas.iter().zip(&self.sum).zip(&self.sum_sq) {
             let mean = sum / self.n;
@@ -495,7 +495,52 @@ pub fn train(
         }
         deltas.push(var);
     }
-    let measure = Measure { deltas: &deltas };
+    let parameters = (2 * k_a(&columns) + levels_sum(&columns, &rows)) as f64;
+    let clusters = cluster(records, &deltas, parameters, settings)?;
+    Ok(pmml(table, &columns, &deltas, clusters, settings))
+}
+
+fn k_a(columns: &[Input]) -> usize {
+    columns
+        .iter()
+        .filter(|c| matches!(c, Input::Continuous { .. }))
+        .count()
+}
+
+fn levels_sum(columns: &[Input], rows: &[&Vec<Value>]) -> usize {
+    columns
+        .iter()
+        .map(|c| match c {
+            Input::Categorical {
+                categories,
+                position,
+            } => rows
+                .iter()
+                .filter_map(|row| row.get(*position).map(Value::to_string))
+                .fold(Vec::<String>::new(), |mut seen, v| {
+                    if !seen.contains(&v) && categories.contains(&v) {
+                        seen.push(v);
+                    }
+                    seen
+                })
+                .len()
+                .saturating_sub(1),
+            Input::Continuous { .. } => 0,
+        })
+        .sum()
+}
+
+/// Steps 1 and 2 on records given as one-record CFs: the CF tree, the agglomerative merge and
+/// the number of clusters. `parameters` is the criterion's parameter count per cluster,
+/// 2 K_A + sum_k (L_k - 1).
+pub(crate) fn cluster(
+    records: Vec<Cf>,
+    deltas: &[f64],
+    parameters: f64,
+    settings: &TwoStepSettings,
+) -> Result<Vec<Cf>, AlgoError> {
+    let n = records.len() as f64;
+    let measure = Measure { deltas };
 
     // Step 1: the CF tree.
     let mut root = Node::Leaf(Vec::new());
@@ -524,34 +569,9 @@ pub fn train(
         settings.clusters.max(1)
     };
     let (solutions, distances) = agglomerate(leaves, &measure, keep);
-    let k_a = columns
-        .iter()
-        .filter(|c| matches!(c, Input::Continuous { .. }))
-        .count();
-    let levels_sum: usize = columns
-        .iter()
-        .map(|c| match c {
-            Input::Categorical {
-                categories,
-                position,
-            } => rows
-                .iter()
-                .filter_map(|row| row.get(*position).map(Value::to_string))
-                .fold(Vec::<String>::new(), |mut seen, v| {
-                    if !seen.contains(&v) && categories.contains(&v) {
-                        seen.push(v);
-                    }
-                    seen
-                })
-                .len()
-                .saturating_sub(1),
-            Input::Continuous { .. } => 0,
-        })
-        .sum();
-    let parameters = (2 * k_a + levels_sum) as f64;
     let criterion = |j: usize| -> Option<f64> {
         let clusters = solutions.get(&j)?;
-        let fit: f64 = clusters.iter().map(|c| c.log_likelihood(&deltas)).sum();
+        let fit: f64 = clusters.iter().map(|c| c.log_likelihood(deltas)).sum();
         let penalty = match settings.criterion {
             Criterion::Bic => j as f64 * parameters * n.ln(),
             Criterion::Aic => 2.0 * j as f64 * parameters,
@@ -563,13 +583,12 @@ pub fn train(
     } else {
         settings.clusters
     };
-    let clusters = solutions.get(&count).cloned().ok_or_else(|| {
+    solutions.get(&count).cloned().ok_or_else(|| {
         AlgoError::Data(format!(
             "cannot build {count} clusters from {} distinct records",
             distances.len()
         ))
-    })?;
-    Ok(pmml(table, &columns, &deltas, clusters, settings))
+    })
 }
 
 /// Merges the leaf entries down to one cluster. Returns the solutions with at most `keep`
@@ -750,6 +769,7 @@ fn pmml(
                 center,
                 variances,
                 category_counts: categorical_names.iter().cloned().zip(cf.counts).collect(),
+                mean_distance: None,
             }
         })
         .collect();
@@ -785,6 +805,7 @@ fn pmml(
             fields: clustering_fields,
             clusters,
             missing_weights: Vec::new(),
+            anomaly_cutoff: None,
         }),
     }
 }

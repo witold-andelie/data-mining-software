@@ -25,6 +25,7 @@ mod rules;
 mod score;
 mod tree;
 
+pub use clustering::AnomalyScore;
 pub use neural::{NeuralNetworkModel, NeuralOutputKind, NeuralTarget};
 pub use score::Scorer;
 
@@ -352,6 +353,9 @@ pub struct ClusteringModel {
     pub clusters: Vec<Cluster>,
     /// `MissingValueWeights`, one per clustering field.
     pub missing_weights: Vec<f64>,
+    /// Anomaly Detection: the anomaly index above which a record is an anomaly. Modeler keeps it
+    /// outside the PMML (the nugget's `model/cutoffValue`), so parsing leaves it `None`.
+    pub anomaly_cutoff: Option<f64>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -416,6 +420,9 @@ pub struct Cluster {
     /// `Partition/PartitionFieldStats`: per non-center field, its category counts in the order
     /// of the field's `DataField` values (distribution-based models).
     pub category_counts: Vec<(String, Vec<f64>)>,
+    /// Anomaly Detection: the mean group deviation index of the cluster's training records
+    /// (`Extension name="meanClusterDistance"`).
+    pub mean_distance: Option<f64>,
 }
 
 #[derive(Debug, Clone, PartialEq)]

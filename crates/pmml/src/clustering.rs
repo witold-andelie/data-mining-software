@@ -357,3 +357,181 @@ fn score_log_likelihood(
         affinity: Some(distance),
     })
 }
+
+/// The Anomaly Detection indices of one record (Algorithms Guide: "Anomaly Detection
+/// Algorithm", scoring and reasoning stages; `models_next/anomaly_default`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct AnomalyScore {
+    /// The index of the nearest cluster (the peer group).
+    pub cluster: usize,
+    /// The group deviation index: the log-likelihood distance to the peer group.
+    pub deviation: f64,
+    /// The anomaly index: the deviation over the peer group's mean deviation.
+    pub index: f64,
+    /// Each input's variable contribution measure (its share of the deviation), in
+    /// `ClusteringField` order.
+    pub contributions: Vec<(String, f64)>,
+}
+
+/// Anomaly Detection scores with the TwoStep log-likelihood distance, except that a cluster's
+/// saved sample variance is turned back into the maximum-likelihood one first (all 104 scored
+/// records of `anomaly_default` to 1e-14; the TwoStep nugget scores with the sample variance).
+/// A variable's deviation index is its own term of the distance: for a continuous field
+/// -n/2 ln(D + s2) - 1/2 ln D + (n + 1)/2 ln(D + s2'), for a categorical one
+/// -n E + (n + 1) E', where ' marks the cluster with the record added and D is the
+/// `fieldWeight` (the field's population variance over 6, the adjustment coefficient).
+/// Missing continuous values take the `MiningField` replacement (the grand mean); a missing
+/// categorical value is the empty category.
+pub(crate) fn score_anomaly(
+    pmml: &Pmml,
+    model: &ClusteringModel,
+    env: &Env<'_>,
+) -> Result<Option<AnomalyScore>, PmmlError> {
+    enum Input {
+        Continuous { x: f64, delta: f64, slot: usize },
+        Categorical { category: usize },
+    }
+    let mut inputs = Vec::with_capacity(model.fields.len());
+    let mut continuous = 0;
+    for field in &model.fields {
+        let value = env
+            .get(&field.field)
+            .ok_or_else(|| PmmlError::UnknownField(field.field.clone()))?;
+        let data_field = pmml.data_dictionary.iter().find(|f| f.name == field.field);
+        if data_field.is_some_and(|f| f.optype == crate::OpType::Continuous) {
+            if *value == Value::Missing {
+                return Ok(None);
+            }
+            inputs.push(Input::Continuous {
+                x: as_f64(value, &field.field)?,
+                delta: field.weight,
+                slot: continuous,
+            });
+            continuous += 1;
+        } else {
+            let values = data_field.map(|f| f.values.as_slice()).unwrap_or_default();
+            let position = if *value == Value::Missing {
+                values.iter().position(String::is_empty)
+            } else {
+                values.iter().position(|v| value_matches_str(value, v))
+            };
+            let Some(category) = position else {
+                return Ok(None);
+            };
+            inputs.push(Input::Categorical { category });
+        }
+    }
+
+    let entropy = |counts: &[f64], n: f64| -> f64 {
+        counts
+            .iter()
+            .filter(|&&c| c > 0.0)
+            .map(|&c| -(c / n) * (c / n).ln())
+            .sum()
+    };
+    let mut best: Option<(usize, f64, Vec<f64>)> = None;
+    for (idx, cluster) in model.clusters.iter().enumerate() {
+        let n = cluster.size.unwrap_or(0.0);
+        let mut terms = Vec::with_capacity(inputs.len());
+        for (input, field) in inputs.iter().zip(&model.fields) {
+            match *input {
+                Input::Continuous { x, delta, slot } => {
+                    let (Some(&mean), Some(&sample)) =
+                        (cluster.center.get(slot), cluster.variances.get(slot))
+                    else {
+                        return Err(PmmlError::Score(format!(
+                            "cluster {} has no statistics for {}",
+                            idx + 1,
+                            field.field
+                        )));
+                    };
+                    let var = if n > 1.0 { sample * (n - 1.0) / n } else { 0.0 };
+                    let d = x - mean;
+                    let merged = (n * var + n * d * d / (n + 1.0)) / (n + 1.0);
+                    terms.push(
+                        -n * 0.5 * (delta + var).ln() - 0.5 * delta.ln()
+                            + (n + 1.0) * 0.5 * (delta + merged).ln(),
+                    );
+                }
+                Input::Categorical { category } => {
+                    let counts = cluster
+                        .category_counts
+                        .iter()
+                        .find(|(name, _)| *name == field.field)
+                        .map(|(_, counts)| counts.clone())
+                        .ok_or_else(|| {
+                            PmmlError::Score(format!(
+                                "cluster {} has no counts for {}",
+                                idx + 1,
+                                field.field
+                            ))
+                        })?;
+                    let mut added = counts.clone();
+                    if added.len() <= category {
+                        added.resize(category + 1, 0.0);
+                    }
+                    added[category] += 1.0;
+                    terms.push(-n * entropy(&counts, n) + (n + 1.0) * entropy(&added, n + 1.0));
+                }
+            }
+        }
+        let distance: f64 = terms.iter().sum();
+        if best.as_ref().is_none_or(|(_, d, _)| distance < *d) {
+            best = Some((idx, distance, terms));
+        }
+    }
+    let Some((cluster, deviation, terms)) = best else {
+        return Ok(None);
+    };
+
+    // The guide's zero-denominator rules ("Odd Situations").
+    let sizes: Vec<f64> = model
+        .clusters
+        .iter()
+        .map(|c| c.size.unwrap_or(0.0))
+        .collect();
+    let size = sizes[cluster];
+    let size_ratio = || {
+        let mean_size = sizes.iter().sum::<f64>() / sizes.len() as f64;
+        if size > 0.0 { mean_size / size } else { 0.0 }
+    };
+    let mean = model.clusters[cluster].mean_distance.unwrap_or(0.0);
+    let index = if mean != 0.0 {
+        deviation / mean
+    } else if deviation == 0.0 {
+        size_ratio()
+    } else {
+        let (weighted, others) = model
+            .clusters
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| *i != cluster)
+            .fold((0.0, 0.0), |(w, s), (_, c)| {
+                let n = c.size.unwrap_or(0.0);
+                (w + n * c.mean_distance.unwrap_or(0.0), s + n)
+            });
+        if weighted != 0.0 && others > 0.0 {
+            deviation / (weighted / others)
+        } else {
+            size_ratio()
+        }
+    };
+    let share = |term: f64| {
+        if deviation != 0.0 {
+            term / deviation
+        } else {
+            1.0 / terms.len() as f64
+        }
+    };
+    Ok(Some(AnomalyScore {
+        cluster,
+        deviation,
+        index,
+        contributions: model
+            .fields
+            .iter()
+            .zip(&terms)
+            .map(|(field, &term)| (field.field.clone(), share(term)))
+            .collect(),
+    }))
+}

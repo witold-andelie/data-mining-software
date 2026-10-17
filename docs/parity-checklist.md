@@ -4,7 +4,7 @@
 
 | Scope | Implemented | Total |
 |---|---|---|
-| MVP | 61 | 85 |
+| MVP | 62 | 85 |
 | later | 0 | 23 |
 | license blocked | 0 | 5 |
 | out of scope | 0 | 34 |
@@ -121,7 +121,7 @@
 | Discriminant | `discriminant` | license blocked | missing | `spss.discriminant_id!builddiscriminant` |
 | PCA/Factor | `pca_factor` | MVP | done | `BuildPCANode`, `ApplyPCANode` |
 | Feature Selection | `feature_selection` | MVP | done | `BuildFeatureSelectionNode`, `ApplyFeatureSelectionNode`, `FeatureSelectionModelNode` |
-| Anomaly | `anomaly` | MVP | missing | `BuildAnomalyNode`, `ApplyAnomalyNode` |
+| Anomaly | `anomaly` | MVP | done | `BuildAnomalyNode`, `ApplyAnomalyNode` |
 | Time Series | `time_series` | MVP | missing | `BuildTimeSeriesNode`, `ApplyTimeSeriesNode`, `spss.ts!ts_builder` |
 | Imported PMML model | `pmml_model` | MVP | missing | `ApplyImportedNode` |
 | GLMM | `glmm` | later | missing | `GLMM!spss.glmm-extension` |
