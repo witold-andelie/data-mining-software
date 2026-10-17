@@ -576,7 +576,6 @@ fn rejects_unknown_and_unsettled_settings_explicitly() {
         ),
         ("MONTHS", create(vec![])),
         ("DAYS_PER_WEEK", create(vec![])),
-        ("SECONDS_PER_DAY", vec![p("timeFormat", "format10")]),
         ("DAYS_NON_PERIODIC", vec![p("dateFormat", "format6")]),
         (
             "PERIODS",

@@ -58,11 +58,10 @@
 //! - Estimation start/end exclusions do not filter terminal records (`hours`).
 //! - The exact eight-slot result with cap=8 is refused (`padding_limit`, manifest errors).
 //!   A stale CSV exists there but is not a successful oracle export.
-//!
 //! - Month labels carry `DisplayFormat::MonthYear`, so exports print `Dec 2019` (`months`).
-//!
 //! - `timeFormat` format10 on timestamp labels prints `HH.MM.SS` (`workseconds`: 08.05.47).
 //!   On other time intervals it stays rejected (no oracle).
+//!
 //! GAP: Create for calendar/work intervals, literal NONE, an independent weeks enum, future
 //! value functions/custom values, Label future rows, nondefault estimation offsets, inactive
 //! business starts, overnight working days, and off-grid working starts lack oracle evidence
