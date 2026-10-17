@@ -15,6 +15,7 @@ pub mod distribution;
 pub mod evaluation;
 pub mod excel_export;
 mod extension_params;
+mod feature_selection;
 pub mod field_reorder;
 pub mod field_util;
 pub mod filler;

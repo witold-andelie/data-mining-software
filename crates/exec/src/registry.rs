@@ -54,6 +54,7 @@ const BUILT_IN: &[(&str, Factory)] = &[
     ("logistic", model_node),
     ("linear", model_node),
     ("regression", model_node),
+    ("feature_selection", model_node),
     ("binning", nodes::binning::build),
     ("set_to_flag", nodes::set_to_flag::build),
     ("transpose", nodes::transpose::build),
@@ -121,5 +122,7 @@ pub fn implemented() -> impl Iterator<Item = &'static str> {
 /// A model nugget: classic `Apply*` nodes and extension-framework nuggets (`CFApplyModelNode`,
 /// whose type is the model's, such as `LinearRegressionModel!spss.alm-extension`).
 fn is_nugget(node: &StreamNode) -> bool {
-    node.type_identifier().starts_with("Apply") || node.class.ends_with(".CFApplyModelNode")
+    node.type_identifier().starts_with("Apply")
+        || node.class.ends_with(".CFApplyModelNode")
+        || node.type_identifier() == "FeatureSelectionModelNode"
 }

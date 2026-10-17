@@ -64,6 +64,9 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 pub fn build(node: &StreamNode) -> Result<Box<dyn Operator>, OperatorError> {
+    if node.type_identifier() == "BuildFeatureSelectionNode" {
+        return super::feature_selection::build(node);
+    }
     let s = node.settings.as_ref();
     let algorithm = match node.type_identifier().as_str() {
         "Cart!spss.tree-extension" => Algorithm::Cart,
@@ -637,6 +640,15 @@ fn supervised_fields(
             .collect()
     };
     Ok((target, inputs))
+}
+
+/// Feature Selection shares the classic supervised field resolution.
+pub(super) fn feature_selection_fields(
+    table: &Table,
+    target: Option<&str>,
+    inputs: Option<&[String]>,
+) -> Result<(usize, Vec<usize>), OperatorError> {
+    supervised_fields(table, target, inputs)
 }
 
 /// The fields a clustering model uses: the custom list, else the Type's inputs.

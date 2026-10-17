@@ -11,6 +11,7 @@ pub mod adp;
 pub mod cart;
 pub mod chaid;
 mod common;
+pub mod feature_selection;
 pub mod kmeans;
 pub mod linear;
 pub mod logistic;
