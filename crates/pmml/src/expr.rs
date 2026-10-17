@@ -221,6 +221,41 @@ fn eval_norm_continuous(
     Ok(Value::Number(last_y))
 }
 
+/// Inverse of [`eval_norm_continuous`]: network output to the original field
+/// (`nn_regression`, `nn_rbf`, `nn_mixed_targets`). `asIs` extrapolates the end segment.
+pub(crate) fn denormalize(
+    y: f64,
+    points: &[(f64, f64)],
+    outliers: Outliers,
+    map_missing_to: Option<f64>,
+) -> Result<Value, PmmlError> {
+    if !y.is_finite() {
+        return Err(PmmlError::Score(
+            "cannot denormalize a non-finite network output".into(),
+        ));
+    }
+    let mut swapped = Vec::with_capacity(points.len());
+    for (orig, norm) in points {
+        if !orig.is_finite() || !norm.is_finite() {
+            return Err(PmmlError::Score(
+                "NormContinuous point is not finite".into(),
+            ));
+        }
+        swapped.push((*norm, *orig));
+    }
+    swapped.sort_by(|left, right| left.0.total_cmp(&right.0));
+    for window in swapped.windows(2) {
+        if let [left, right] = window
+            && left.0 == right.0
+        {
+            return Err(PmmlError::Score(
+                "NormContinuous cannot be inverted (repeated norm)".into(),
+            ));
+        }
+    }
+    eval_norm_continuous(y, &swapped, outliers, map_missing_to)
+}
+
 fn interpolate(x: f64, x0: f64, y0: f64, x1: f64, y1: f64) -> f64 {
     let dx = x1 - x0;
     if dx.abs() == 0.0 {

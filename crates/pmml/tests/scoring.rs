@@ -596,19 +596,31 @@ fn rejects_malformed_and_deeply_nested_input() {
         PmmlError::UnknownField("x".into())
     );
 
-    // Unsupported model element is preserved as Model::Unsupported and returns Unsupported when scored.
+    // A neural network without MiningSchema is rejected. Models we still do not score stay
+    // Unsupported (`neural_network.rs` covers NeuralNetwork scoring).
+    let neural_shell = r#"
+<PMML version="4.3" xmlns="http://www.dmg.org/PMML-4_3">
+  <DataDictionary/>
+  <NeuralNetwork functionName="regression" activationFunction="tanh"/>
+</PMML>
+"#;
+    assert!(matches!(
+        Pmml::parse(neural_shell),
+        Err(PmmlError::Parse(_))
+    ));
+
     let unsupported_xml = r#"
 <PMML version="4.3" xmlns="http://www.dmg.org/PMML-4_3">
   <DataDictionary/>
-  <NeuralNetwork functionName="regression"/>
+  <NaiveBayesModel functionName="classification"/>
 </PMML>
 "#;
     let pmml = Pmml::parse(unsupported_xml).unwrap();
-    assert_eq!(pmml.model, Model::Unsupported("NeuralNetwork".into()));
+    assert_eq!(pmml.model, Model::Unsupported("NaiveBayesModel".into()));
     let scorer = pmml.bind(&[]).unwrap();
     assert_eq!(
         scorer.score(&[]),
-        Err(PmmlError::Unsupported("NeuralNetwork".into()))
+        Err(PmmlError::Unsupported("NaiveBayesModel".into()))
     );
 
     // Excessive recursion depth in Apply is rejected with PmmlError::Parse without panicking.

@@ -118,17 +118,39 @@ pub(crate) fn bind<'a>(pmml: &'a Pmml, inputs: &[&str]) -> Result<Scorer<'a>, Pm
     })
 }
 
-impl Scorer<'_> {
+impl<'p> Scorer<'p> {
     /// Scores one record whose values are ordered according to the `inputs` passed to [`Pmml::bind`].
     pub fn score(&self, record: &[Value]) -> Result<Prediction, PmmlError> {
-        let mut env = Env::default();
+        let env = self.prepare(record)?;
+        match &self.pmml.model {
+            Model::Tree(tree) => crate::tree::score(self.pmml, tree, &env),
+            Model::RuleSet(rules) => crate::rules::score(self.pmml, rules, &env),
+            Model::Clustering(clustering) => crate::clustering::score(self.pmml, clustering, &env),
+            Model::GeneralRegression(reg) => crate::regression::score_general(self.pmml, reg, &env),
+            Model::Regression(reg) => crate::regression::score_regression(self.pmml, reg, &env),
+            Model::Neural(network) => neural_prediction(self.pmml, network, &env),
+            Model::Mining(mining) => score_mining(self.pmml, mining, &env),
+            Model::Unsupported(name) => Err(PmmlError::Unsupported(name.clone())),
+        }
+    }
 
+    /// Every target of a neural network, in `NeuralOutput` order. A missing input is a
+    /// missing value on each target, not an error (`nn_missing_listwise`).
+    pub fn score_neural(&self, record: &[Value]) -> Result<Vec<crate::NeuralTarget>, PmmlError> {
+        let env = self.prepare(record)?;
+        match &self.pmml.model {
+            Model::Neural(network) => crate::neural::score(self.pmml, network, &env),
+            _ => Err(PmmlError::Score("the model is not a neural network".into())),
+        }
+    }
+
+    fn prepare(&self, record: &[Value]) -> Result<Env<'p>, PmmlError> {
+        let mut env = Env::default();
         for bi in &self.bound_inputs {
             let raw = record.get(bi.slot).cloned().unwrap_or(Value::Missing);
             let treated = apply_treatments(raw, bi.name, bi.data_field, bi.mining_field)?;
             env.insert(bi.name, treated);
         }
-
         let header = model_header(&self.pmml.model);
         for df in &self.derived_fields {
             let val = expr::eval(&df.expr, &env, &self.pmml.functions, &[], 0)?;
@@ -137,17 +159,40 @@ impl Scorer<'_> {
             let treated = apply_treatments(coerced, &df.name, None, mf)?;
             env.insert(df.name.as_str(), treated);
         }
-
-        match &self.pmml.model {
-            Model::Tree(tree) => crate::tree::score(self.pmml, tree, &env),
-            Model::RuleSet(rules) => crate::rules::score(self.pmml, rules, &env),
-            Model::Clustering(clustering) => crate::clustering::score(self.pmml, clustering, &env),
-            Model::GeneralRegression(reg) => crate::regression::score_general(self.pmml, reg, &env),
-            Model::Regression(reg) => crate::regression::score_regression(self.pmml, reg, &env),
-            Model::Mining(mining) => score_mining(self.pmml, mining, &env),
-            Model::Unsupported(name) => Err(PmmlError::Unsupported(name.clone())),
-        }
+        Ok(env)
     }
+}
+
+fn neural_prediction(
+    pmml: &Pmml,
+    network: &crate::NeuralNetworkModel,
+    env: &Env<'_>,
+) -> Result<Prediction, PmmlError> {
+    let targets = crate::neural::score(pmml, network, env)?;
+    let Some(first) = targets.first() else {
+        return Err(PmmlError::Score("neural network has no outputs".into()));
+    };
+    let confidence = if first.probabilities.is_empty() {
+        None
+    } else {
+        let mut best = None;
+        for (_, probability) in &first.probabilities {
+            best = Some(best.map_or(*probability, |current: f64| {
+                if *probability > current {
+                    *probability
+                } else {
+                    current
+                }
+            }));
+        }
+        best
+    };
+    Ok(Prediction {
+        value: first.value.clone(),
+        confidence,
+        probabilities: first.probabilities.clone(),
+        ..empty_prediction()
+    })
 }
 
 fn coerce_derived_value(val: Value, df: &DerivedField) -> Value {
@@ -176,6 +221,19 @@ fn apply_treatments(
 ) -> Result<Value, PmmlError> {
     let invalid_treatment =
         mining_field.map_or(InvalidTreatment::ReturnInvalid, |mf| mf.invalid_treatment);
+
+    // User-missing (`Value@property="missing"`) is missing before the invalid-value
+    // check. Otherwise `returnInvalid` rejects `"MISSING"` and `-99`
+    // (`nn_missing_listwise`, `nn_missing_impute`).
+    if let Some(df) = data_field
+        && val != Value::Missing
+        && df
+            .missing_values
+            .iter()
+            .any(|missing| value_matches_str(&val, missing))
+    {
+        val = Value::Missing;
+    }
 
     // Check validity for non-missing values.
     if val != Value::Missing {
@@ -347,9 +405,9 @@ fn score_mining(pmml: &Pmml, mining: &MiningModel, env: &Env<'_>) -> Result<Pred
             Model::Unsupported(name) => Err(PmmlError::Unsupported(name.clone())),
             Model::Tree(tree) => crate::tree::score(pmml, tree, &inner_env),
             Model::RuleSet(rules) => crate::rules::score(pmml, rules, &inner_env),
-            Model::Mining(_) | Model::Clustering(_) => Err(PmmlError::Unsupported(
-                "nested MiningModel segment type".into(),
-            )),
+            Model::Neural(_) | Model::Mining(_) | Model::Clustering(_) => Err(
+                PmmlError::Unsupported("nested MiningModel segment type".into()),
+            ),
         }?;
         if mining.method != "c50ConfidenceVote" {
             return Ok(prediction);
@@ -422,6 +480,7 @@ pub(crate) fn model_header(model: &Model) -> Option<&ModelHeader> {
         Model::Clustering(m) => Some(&m.header),
         Model::GeneralRegression(m) => Some(&m.header),
         Model::Regression(m) => Some(&m.header),
+        Model::Neural(m) => Some(&m.header),
         Model::Mining(m) => Some(&m.header),
         Model::Unsupported(_) => None,
     }
@@ -495,6 +554,13 @@ fn collect_model_fields<'a>(
                 for (field, _, _) in &table.categorical {
                     out.insert(field.as_str());
                 }
+            }
+        }
+        Model::Neural(network) => {
+            // Output `NormDiscrete` / `NormContinuous` name the targets. They are not inputs
+            // (`nn_mixed_targets` scores without feeding `y` or `r` back in).
+            for expr in crate::neural::input_exprs(network) {
+                collect_expr_fields(expr, functions, &[], out, 0)?;
             }
         }
         Model::Mining(mining) => {

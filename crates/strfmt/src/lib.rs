@@ -11,7 +11,9 @@
 
 pub mod container;
 pub mod fastinfoset;
+pub mod scf;
 
 pub use container::{
     ArchiveError, ArchiveLimits, Attachment, AttachmentKind, StreamArchive, read_archive,
 };
+pub use scf::{ScfError, read_model_xml};

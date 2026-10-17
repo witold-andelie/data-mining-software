@@ -83,6 +83,8 @@ pub fn data_field(table: &Table, position: usize) -> Option<DataField> {
         } else {
             field_categories(table, position)
         },
+        missing_values: Vec::new(),
+        flag_true_value: None,
     })
 }
 
