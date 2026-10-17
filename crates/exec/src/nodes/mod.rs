@@ -24,6 +24,7 @@ pub mod matrix;
 pub mod means;
 pub mod merge;
 pub mod partition;
+pub mod plot;
 pub mod reclassify;
 pub mod restructure;
 pub mod sample;
