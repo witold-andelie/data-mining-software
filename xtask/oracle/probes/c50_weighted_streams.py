@@ -490,6 +490,18 @@ def declare_inputs():
     write_csv("tw2.csv", TREE_SCHEMA, w2, "tree_train.csv with weight = boosting trial-2 weights")
     write_csv("tw2_x4.csv", TREE_SCHEMA, [r for r in w2 if r[1] == 4.0], "tw2.csv rows with x = 4")
     write_csv("tw2_x8t.csv", TREE_SCHEMA, [r for r in w2 if r[1] == 8.0 and r[3] == "T"], "tw2.csv rows with x = 8, flag T")
+    # c50_weight's zero-distribution subtree lives in red, code = 1 (weights 6 and 1).
+    rc1 = [list(r) for r in tree if r[2] == "red" and r[5] == 1]
+    write_csv("rc1.csv", TREE_SCHEMA, rc1, "tree_train.csv rows with cat red, code 1")
+    write_csv("rc1_unit.csv", TREE_SCHEMA, [r[:11] + [1.0] for r in rc1], "rc1.csv with every weight 1")
+    write_csv("rc1_w2.csv", TREE_SCHEMA, [r[:11] + [2.0 if r[11] > 1 else 1.0] for r in rc1], "rc1.csv with weight 2 instead of 6")
+    write_csv("rc1_x6.csv", TREE_SCHEMA, [r for r in rc1 if r[1] >= 6.0], "rc1.csv rows with x >= 6")
+    write_csv("rc1_x6_10.csv", TREE_SCHEMA, [r for r in rc1 if 6.0 <= r[1] <= 10.0], "rc1.csv rows with 6 <= x <= 10")
+    write_csv("red.csv", TREE_SCHEMA, [list(r) for r in tree if r[2] == "red"], "tree_train.csv rows with cat red")
+    write_csv("code1.csv", TREE_SCHEMA, [list(r) for r in tree if r[5] == 1], "tree_train.csv rows with code 1")
+    write_csv("rc12.csv", TREE_SCHEMA, [list(r) for r in tree if r[2] == "red" and r[5] in (1, 2)], "cat red, code 1 or 2")
+    write_csv("rc13.csv", TREE_SCHEMA, [list(r) for r in tree if r[2] == "red" and r[5] in (1, 3)], "cat red, code 1 or 3")
+    write_csv("rc1g.csv", TREE_SCHEMA, [list(r) for r in tree if r[5] == 1 and r[2] in ("red", "green")], "code 1, cat red or green")
     tree_missing = [list(row) for row in tree]
     for index, row in enumerate(tree_missing):
         if index % 19 == 0:
@@ -675,6 +687,11 @@ def declare_cases():
     tree("cw_loose", weight + loose, "c50_weight, severity 1, no global pruning", data="tree_train.csv")
     tree("cw_sev50", weight + [("mode", "Expert"), ("pruning_severity", 50)], "c50_weight, severity 50 with global pruning", data="tree_train.csv")
     tree("w2_sev50", weight + [("mode", "Expert"), ("pruning_severity", 50)], "w2, severity 50 with global pruning")
+    for data in ["red", "code1", "rc12", "rc13", "rc1g"]:
+        tree(data + "_loose", weight + loose, "Zero distributions, little pruning: " + data, data=data + ".csv")
+    for data in ["rc1", "rc1_unit", "rc1_w2", "rc1_x6", "rc1_x6_10"]:
+        tree(data, weight, "Zero distributions: " + data, data=data + ".csv")
+        tree(data + "_loose", weight + loose, "Zero distributions, little pruning: " + data, data=data + ".csv")
 
 try:
     ensure_clean_dir(DIR)
