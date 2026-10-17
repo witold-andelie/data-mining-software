@@ -30,6 +30,11 @@
 //! `modelInputFieldSelection` when `autoModelFieldSelection` is false. Stepwise methods, custom
 //! terms, full factorial models, a non-zero cell `delta`, and scaling are rejected.
 //!
+//! Linear (`LinearRegression!spss.alm-extension`) is an extension node like C&R Tree: fields from
+//! `linreg.TargetField`/`linreg.InputFieldList` with `role_use`, `linreg.Intercept`. Only
+//! `linreg.VarSelectionMethod` `none` without `linreg.AutoDataPreparation` and weights trains;
+//! the rest is rejected (`dms_algo::linear`).
+//!
 //! Rejected until implemented: frequency and analysis weights, split models, boosting and
 //! bagging, the interactive builder, misclassification costs; for C&R Tree the overfit
 //! prevention set (Modeler draws it with its own random generator; CHAID ignores the setting,
@@ -45,6 +50,7 @@ use dms_algo::Dataset;
 use dms_algo::cart::{self, CartSettings, Impurity, MinSize};
 use dms_algo::chaid::{self, ChaidSettings, ChiSquare, Method};
 use dms_algo::kmeans::{self, KMeansSettings};
+use dms_algo::linear::{self, LinearSettings};
 use dms_algo::logistic::{self, LogisticSettings, Procedure};
 use dms_algo::twostep::{self, Criterion, TwoStepSettings};
 use dms_pmml::Pmml;
@@ -61,6 +67,7 @@ pub fn build(node: &StreamNode) -> Result<Box<dyn Operator>, OperatorError> {
         "BuildKMeansNode" => Algorithm::KMeans(kmeans_settings(node)?),
         "BuildTwoStepNode" => Algorithm::TwoStep(twostep_settings(node)?),
         "BuildLogisticNode" => Algorithm::Logistic(logistic_settings(node)?),
+        "LinearRegression!spss.alm-extension" => Algorithm::Linear,
         other => {
             return Err(OperatorError::Settings(format!(
                 "training {other} is not implemented yet"
@@ -90,6 +97,8 @@ enum Algorithm {
     TwoStep((TwoStepSettings, Option<Vec<String>>)),
     /// The settings, an optional custom target, and optional custom inputs.
     Logistic(LogisticSpec),
+    /// Extension parameters, read when training.
+    Linear,
 }
 
 type LogisticSpec = (LogisticSettings, Option<String>, Option<Vec<String>>);
@@ -148,7 +157,11 @@ impl Operator for Build {
         }
         let parameters = self.parameters(context)?;
         tree_checks(&parameters)?;
-        let (target, fields) = roles(&table, &parameters, "tree.")?;
+        let prefix = match self.algorithm {
+            Algorithm::Linear => "linreg.",
+            _ => "tree.",
+        };
+        let (target, fields) = roles(&table, &parameters, prefix)?;
         let dataset = Dataset {
             table: &table,
             target,
@@ -160,6 +173,8 @@ impl Operator for Build {
                 .map_err(|error| OperatorError::Data(format!("C&R Tree: {error}")))?,
             Algorithm::Chaid => chaid::train(&dataset, &chaid_settings(&parameters)?)
                 .map_err(|error| OperatorError::Data(format!("CHAID: {error}")))?,
+            Algorithm::Linear => linear::train(&dataset, &linear_settings(&parameters)?)
+                .map_err(|error| OperatorError::Data(format!("Linear: {error}")))?,
             Algorithm::KMeans(_) | Algorithm::TwoStep(_) | Algorithm::Logistic(_) => {
                 return Err(OperatorError::Settings("clustering has no target".into()));
             }
@@ -511,6 +526,40 @@ fn roles(
         .filter(|&i| matches!(fields[i].role, Role::Input | Role::Both))
         .collect();
     Ok((target, inputs))
+}
+
+/// Linear settings from the extension parameters; selection, data preparation and weights are
+/// not supported yet.
+fn linear_settings(p: &Parameters) -> Result<LinearSettings, OperatorError> {
+    let method = p.text("linreg.VarSelectionMethod").unwrap_or_default();
+    if !(method.is_empty() || method == "none") {
+        return Err(OperatorError::Settings(format!(
+            "Linear model selection {method:?} is not supported yet"
+        )));
+    }
+    if p.flag("linreg.AutoDataPreparation")? {
+        return Err(OperatorError::Settings(
+            "Linear automatic data preparation is not supported yet".into(),
+        ));
+    }
+    for weight in [
+        "linreg.RegressionWeightField",
+        "linreg.FrequencyWeightField",
+    ] {
+        if p.text(weight).is_some_and(|w| !w.is_empty()) {
+            return Err(OperatorError::Settings(format!(
+                "Linear {weight} is not supported yet"
+            )));
+        }
+    }
+    let intercept = match p.text("linreg.Intercept").as_deref() {
+        None | Some("") => true,
+        Some(_) => p.flag("linreg.Intercept")?,
+    };
+    Ok(LinearSettings {
+        intercept,
+        name: None,
+    })
 }
 
 /// Choices the tree algorithms share that are not supported yet.

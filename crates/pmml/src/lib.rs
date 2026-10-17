@@ -14,7 +14,7 @@
 //!
 //! Sources: PMML 4.3 specification (dmg.org): General Structure, Data Dictionary, Mining Schema,
 //! Output, Transformations and Built-in Functions, TreeModel, ClusteringModel,
-//! GeneralRegressionModel, RegressionModel.
+//! GeneralRegressionModel, RegressionModel, MiningModel.
 
 mod clustering;
 mod expr;
@@ -199,8 +199,26 @@ pub enum Model {
     Clustering(ClusteringModel),
     GeneralRegression(GeneralRegressionModel),
     Regression(RegressionModel),
+    /// `MiningModel` with `Segmentation` (`selectFirst`): Linear split models
+    /// (`team/linear_regression`, Type role Split).
+    Mining(MiningModel),
     /// A model element we read but cannot score: its element name.
     Unsupported(String),
+}
+
+/// PMML `MiningModel`: one nested model per `Segment`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MiningModel {
+    pub header: ModelHeader,
+    /// `Segmentation@multipleModelMethod` (`selectFirst` for split Linear).
+    pub method: String,
+    pub segments: Vec<MiningSegment>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct MiningSegment {
+    pub predicate: Predicate,
+    pub model: Box<Model>,
 }
 
 #[derive(Debug, Clone, PartialEq)]

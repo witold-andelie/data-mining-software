@@ -3,8 +3,9 @@
 
 use crate::expr::{self, value_matches_str};
 use crate::{
-    DataField, DataType, DefineFunction, DerivedField, Expr, InvalidTreatment, MiningField, Model,
-    ModelHeader, Node, OpType, Outliers, Pmml, PmmlError, Predicate, Prediction, Usage, Value,
+    DataField, DataType, DefineFunction, DerivedField, Expr, InvalidTreatment, MiningField,
+    MiningModel, Model, ModelHeader, Node, OpType, Outliers, Pmml, PmmlError, Predicate,
+    Prediction, Usage, Value,
 };
 use std::collections::{HashMap, HashSet};
 
@@ -27,7 +28,7 @@ struct BoundInput<'a> {
 }
 
 /// Field environment during the scoring of a single record.
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub(crate) struct Env<'a> {
     values: HashMap<&'a str, Value>,
 }
@@ -142,6 +143,7 @@ impl Scorer<'_> {
             Model::Clustering(clustering) => crate::clustering::score(self.pmml, clustering, &env),
             Model::GeneralRegression(reg) => crate::regression::score_general(self.pmml, reg, &env),
             Model::Regression(reg) => crate::regression::score_regression(self.pmml, reg, &env),
+            Model::Mining(mining) => score_mining(self.pmml, mining, &env),
             Model::Unsupported(name) => Err(PmmlError::Unsupported(name.clone())),
         }
     }
@@ -295,12 +297,87 @@ fn parse_replacement(rep: &str, data_field: Option<&DataField>) -> Value {
     }
 }
 
+fn score_mining(pmml: &Pmml, mining: &MiningModel, env: &Env<'_>) -> Result<Prediction, PmmlError> {
+    match mining.method.as_str() {
+        "" | "selectFirst" => {}
+        other => {
+            return Err(PmmlError::Unsupported(format!(
+                "MiningModel multipleModelMethod {other:?}"
+            )));
+        }
+    }
+    for segment in &mining.segments {
+        if !segment_matches(&segment.predicate, env)? {
+            continue;
+        }
+        let mut inner_env = env.clone();
+        if let Some(header) = model_header(&segment.model) {
+            for mf in &header.mining_schema {
+                if mf.usage != Usage::Active {
+                    continue;
+                }
+                let Some(current) = inner_env.get(mf.name.as_str()).cloned() else {
+                    continue;
+                };
+                let df = pmml.data_dictionary.iter().find(|d| d.name == mf.name);
+                let treated = apply_treatments(current, &mf.name, df, Some(mf))?;
+                inner_env.insert(mf.name.as_str(), treated);
+            }
+        }
+        return match segment.model.as_ref() {
+            Model::GeneralRegression(reg) => {
+                crate::regression::score_general(pmml, reg, &inner_env)
+            }
+            Model::Regression(reg) => crate::regression::score_regression(pmml, reg, &inner_env),
+            Model::Unsupported(name) => Err(PmmlError::Unsupported(name.clone())),
+            Model::Tree(_) | Model::Clustering(_) | Model::Mining(_) => Err(
+                PmmlError::Unsupported("nested MiningModel segment type".into()),
+            ),
+        };
+    }
+    Ok(empty_prediction())
+}
+
+fn segment_matches(pred: &Predicate, env: &Env<'_>) -> Result<bool, PmmlError> {
+    match pred {
+        Predicate::True => Ok(true),
+        Predicate::False => Ok(false),
+        Predicate::Simple {
+            field,
+            operator,
+            value,
+        } => {
+            let Some(val) = env.get(field) else {
+                return Err(PmmlError::UnknownField(field.clone()));
+            };
+            if *val == Value::Missing {
+                return Ok(false);
+            }
+            match operator {
+                crate::Operator::Equal => Ok(value
+                    .as_deref()
+                    .is_some_and(|rhs| value_matches_str(val, rhs))),
+                crate::Operator::NotEqual => Ok(!value
+                    .as_deref()
+                    .is_some_and(|rhs| value_matches_str(val, rhs))),
+                _ => Err(PmmlError::Unsupported(
+                    "MiningModel segment predicate".into(),
+                )),
+            }
+        }
+        _ => Err(PmmlError::Unsupported(
+            "MiningModel segment predicate".into(),
+        )),
+    }
+}
+
 pub(crate) fn model_header(model: &Model) -> Option<&ModelHeader> {
     match model {
         Model::Tree(m) => Some(&m.header),
         Model::Clustering(m) => Some(&m.header),
         Model::GeneralRegression(m) => Some(&m.header),
         Model::Regression(m) => Some(&m.header),
+        Model::Mining(m) => Some(&m.header),
         Model::Unsupported(_) => None,
     }
 }
@@ -358,6 +435,12 @@ fn collect_model_fields<'a>(model: &'a Model, out: &mut HashSet<&'a str>) {
                 for (field, _, _) in &table.categorical {
                     out.insert(field.as_str());
                 }
+            }
+        }
+        Model::Mining(mining) => {
+            for segment in &mining.segments {
+                collect_predicate_fields(&segment.predicate, out);
+                collect_model_fields(&segment.model, out);
             }
         }
         Model::Unsupported(_) => {}
