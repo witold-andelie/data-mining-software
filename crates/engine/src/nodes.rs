@@ -16,7 +16,7 @@ mod tests {
     use super::*;
 
     /// Implemented MVP nodes; raise it when nodes land, never lower it.
-    const MVP_FLOOR: usize = 40;
+    const MVP_FLOOR: usize = 41;
 
     #[test]
     fn implemented_ids_exist_in_catalog() {

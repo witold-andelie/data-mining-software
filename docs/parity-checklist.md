@@ -4,7 +4,7 @@
 
 | Scope | Implemented | Total |
 |---|---|---|
-| MVP | 40 | 90 |
+| MVP | 41 | 90 |
 | later | 0 | 23 |
 | out of scope | 0 | 34 |
 
@@ -150,7 +150,7 @@
 | Sequence | `sequence` | MVP | missing | `BuildSequenceNode`, `ApplySequenceNode` |
 | K-Means | `kmeans` | MVP | done | `BuildKMeansNode`, `ApplyKMeansNode` |
 | Kohonen | `kohonen` | MVP | missing | `TrainKohonenNode`, `ApplyKohonenNode` |
-| TwoStep | `twostep` | MVP | missing | `BuildTwoStepNode`, `ApplyTwoStepNode` |
+| TwoStep | `twostep` | MVP | done | `BuildTwoStepNode`, `ApplyTwoStepNode` |
 
 ## Output
 
