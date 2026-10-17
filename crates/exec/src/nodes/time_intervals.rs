@@ -61,8 +61,8 @@
 //!
 //! - Month labels carry `DisplayFormat::MonthYear`, so exports print `Dec 2019` (`months`).
 //!
-//! GAP: timestamp display format10 (`workseconds`: 08.05.47) has no `DisplayFormat` yet and
-//! stays rejected.
+//! - `timeFormat` format10 on timestamp labels prints `HH.MM.SS` (`workseconds`: 08.05.47).
+//!   On other time intervals it stays rejected (no oracle).
 //! GAP: Create for calendar/work intervals, literal NONE, an independent weeks enum, future
 //! value functions/custom values, Label future rows, nondefault estimation offsets, inactive
 //! business starts, overnight working days, and off-grid working starts lack oracle evidence
@@ -344,6 +344,8 @@ struct TimeIntervals {
     work_begin: i64,
     increment: i64,
     extension: String,
+    /// `timeFormat` format10 on a timestamp label (`workseconds`).
+    dotted: bool,
     prefix: bool,
     specify: bool,
     functions: Vec<Functions>,
@@ -549,7 +551,8 @@ pub fn build(node: &StreamNode) -> Result<Box<dyn Operator>, OperatorError> {
         return Err(unsupported(format!("dateFormat {date_format:?}")));
     }
     let time_format = text(s, "timeFormat", "format4");
-    if time_format != "format4" && (time_format != "format10" || interval.has_time()) {
+    let dotted = time_format == "format10" && interval.label_storage() == Storage::Timestamp;
+    if time_format != "format4" && !dotted && (time_format != "format10" || interval.has_time()) {
         return Err(unsupported(format!(
             "timeFormat {time_format:?}: temporal display metadata is unavailable"
         )));
@@ -577,6 +580,7 @@ pub fn build(node: &StreamNode) -> Result<Box<dyn Operator>, OperatorError> {
         work_begin: integer(s, "timeDayBeginsAt", 0, 0, 86_399)?,
         increment,
         extension: text(s, "timeFieldNameExtension", "$TI_"),
+        dotted,
         prefix: settings::flag(s, "timeFieldNameExtensionAsPrefix")?.unwrap_or(true),
         specify,
         functions,
@@ -692,6 +696,8 @@ impl TimeIntervals {
                 // Modeler prints month labels as `MON YYYY` (`misc_ti_months`: `Dec 2019`).
                 if self.interval == Interval::Months {
                     label.display = Some(dms_types::DisplayFormat::MonthYear);
+                } else if self.dotted {
+                    label.display = Some(dms_types::DisplayFormat::DottedTimestamp);
                 }
                 label
             },

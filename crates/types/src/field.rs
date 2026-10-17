@@ -151,6 +151,9 @@ pub struct Field {
 pub enum DisplayFormat {
     /// `MON YYYY` dates (`Dec 2019`): Time Intervals month labels (`misc_ti_months`).
     MonthYear,
+    /// Timestamps with a dotted time, `YYYY-MM-DD HH.MM.SS` (Modeler `format10`;
+    /// `misc_ti_workseconds`: `2020-02-28 08.05.47`).
+    DottedTimestamp,
 }
 
 impl DisplayFormat {
@@ -164,6 +167,17 @@ impl DisplayFormat {
                 let (year, month, _) = crate::calendar::civil_from_days(*days)?;
                 let name = MONTHS.get(usize::try_from(month).ok()?.checked_sub(1)?)?;
                 Some(format!("{name} {year}"))
+            }
+            (DisplayFormat::DottedTimestamp, Value::Timestamp(micros)) => {
+                let (days, time) = crate::calendar::split_timestamp(*micros);
+                let (year, month, day) = crate::calendar::civil_from_days(days)?;
+                let (h, m, s, us) = crate::calendar::time_from_micros(time)?;
+                if us != 0 {
+                    return None;
+                }
+                Some(format!(
+                    "{year:04}-{month:02}-{day:02} {h:02}.{m:02}.{s:02}"
+                ))
             }
             _ => None,
         }
