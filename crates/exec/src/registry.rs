@@ -31,6 +31,8 @@ const BUILT_IN: &[(&str, Factory)] = &[
     ("matrix", nodes::matrix::build),
     ("distribution", nodes::distribution::build),
     ("histogram", nodes::histogram::build),
+    ("plot", nodes::plot::build),
+    ("multiplot", nodes::plot::build_multiplot),
     ("analysis", nodes::analysis::build),
     ("cart", model_node),
     ("chaid", model_node),
