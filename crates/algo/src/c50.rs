@@ -35,12 +35,22 @@
 //! - Case weights (`C50Settings::weight_field`; the node still rejects `useWeight`):
 //!   each weight keeps six significant digits, then all are scaled to sum to the
 //!   record count. Probe `c50_weighted_streams` (weights of boosting trial 2, subsets,
-//!   pruning settings) reproduces every tree exactly. GAP `c50_weight` (weights 1 and
-//!   6): global pruning removes `red, code = 3, flag = T`'s `x <= 9` split (margin
-//!   2.21) yet keeps `code = 1, x > 11`'s flag split (margin 2.14), so global pruning
-//!   is no fixed margin; and Modeler exports the subtree `red, code = 1, x <= 11,
-//!   x > 5` with all-zero distributions, even with severity 1 and local pruning only,
-//!   and scores its leaves with confidence 0.
+//!   pruning settings) reproduces those trees exactly.
+//! - GAP global pruning (`c50_weight`, `c50_cw_sev50`): it removes `red, code = 3,
+//!   flag = T`'s `x <= 9` split (bound margin 2.21, resubstitution +3.11 for one leaf)
+//!   yet keeps `code = 1, x > 11`'s flag split (margin 2.14, also +3.11), so it is no
+//!   fixed margin, no margin per record, and no weakest-link (cost-complexity) pruning
+//!   within one standard error, by bounds or by resubstitution, on our tree or on
+//!   Modeler's own local-only tree (`c50_cw_noglobal`). Unweighted trees fit the 0.5
+//!   slack.
+//! - GAP zero distributions: with case weights Modeler exports some leaves with all
+//!   class counts 0 but their record count kept, sums them into their ancestors, and
+//!   scores them with confidence 0. Smallest case `c50_weighted/c50_rc1_x6_10` (12
+//!   rows, x in 6..10, two weight-6 rows): `x > 9` is zero, `x <= 9` is not. It does not
+//!   depend on record order or pruning settings, and it is not a rule of the subtree
+//!   alone: `x <= 9` under `x > 5` is zero in `c50_weight` but not in `c50_rc1` (its
+//!   red, code 1 rows), and adding the code 2 or 3 rows (`c50_rc12`, `c50_rc13`)
+//!   removes every zero while `c50_red` zeroes all of `code = 1, x <= 11`.
 //! - `c50_group_symbols`: greedy gain-ratio grouping of symbolic categories.
 //! - `c50_prune90`: pruning confidence is (100 - severity)/100.
 //! - `c50_no_global_prune`: local pruning alone. GAP: pruning slack (.5 global,
