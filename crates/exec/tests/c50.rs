@@ -213,6 +213,104 @@ fn c50_weighted_trees_match_every_split_count_and_distribution() {
     }
 }
 
+fn recorded_weighted_cases() -> Vec<(&'static str, String)> {
+    let mut cases: Vec<_> = std::fs::read_dir(support::repo_root().join("corpus/c50_weighted"))
+        .unwrap()
+        .filter_map(|entry| {
+            let name = entry.unwrap().file_name().into_string().unwrap();
+            name.strip_suffix(".str")
+                .filter(|name| !name.contains("_unit"))
+                .map(|name| ("c50_weighted", name.to_owned()))
+        })
+        .collect();
+    cases.sort();
+    assert_eq!(cases.len(), 22, "update the weighted evidence inventory");
+    cases.push(("models_ml", "c50_weight".into()));
+    cases
+}
+
+fn weighted_settings(case: &str) -> dms_algo::c50::C50Settings {
+    dms_algo::c50::C50Settings {
+        pruning_severity: if case.ends_with("_loose") {
+            1.0
+        } else if case.ends_with("_sev50") {
+            50.0
+        } else {
+            75.0
+        },
+        global_pruning: !case.ends_with("_loose") && !case.ends_with("_noglobal"),
+        ..dms_algo::c50::C50Settings::default()
+    }
+}
+
+/// Recorded evidence, not a zeroing heuristic or a successful training contract.
+#[test]
+fn c50_weighted_zero_distribution_inventory() {
+    fn collect(node: &dms_pmml::Node, leaves: &mut usize, zeros: &mut Vec<String>) {
+        if node.children.is_empty() && node.record_count.is_some_and(|n| n > 0.0) {
+            *leaves += 1;
+            if node.distribution.iter().all(|d| d.record_count == 0.0) {
+                assert!(!node.distribution.is_empty());
+                assert!(
+                    node.distribution
+                        .iter()
+                        .all(|d| { d.probability == Some(0.0) && d.confidence == Some(0.0) })
+                );
+                zeros.push(node.id.clone().unwrap());
+            }
+        }
+        for child in &node.children {
+            collect(child, leaves, zeros);
+        }
+    }
+
+    let (mut leaves, mut zero_count) = (0, 0);
+    for (label, case) in recorded_weighted_cases() {
+        let fixture = Fixture::load(label, &case);
+        let dms_pmml::Model::Tree(tree) = &fixture.oracle.model else {
+            panic!("expected tree: {label}/{case}");
+        };
+        let mut zeros = Vec::new();
+        collect(&tree.root, &mut leaves, &mut zeros);
+        let expected: &[&str] = match case.as_str() {
+            "c50_code1_loose" => &["5", "10", "23"],
+            "c50_cw_loose" | "c50_cw_noglobal" | "c50_cw_sev50" | "c50_weight" => &["23", "24"],
+            "c50_rc1" | "c50_rc1_loose" => &["7"],
+            "c50_rc1_x6_10" | "c50_rc1_x6_10_loose" => &["2"],
+            "c50_red_loose" => &["5", "7", "8"],
+            _ => &[],
+        };
+        assert_eq!(zeros, expected, "{label}/{case}");
+        zero_count += zeros.len();
+    }
+    assert_eq!((leaves, zero_count), (240, 18));
+}
+
+/// Exercise every weighted fixture, including ones with no zero distributions.
+/// The three unweighted controls are covered by the enabled builders test above.
+#[test]
+#[ignore = "GAP: zero distributions, aggregation, ordinal domains and global pruning; useWeight stays rejected"]
+fn c50_all_weighted_trees_match_exactly() {
+    let mut mismatches = Vec::new();
+    let mut exact = 0;
+    for (label, case) in recorded_weighted_cases() {
+        let fixture = Fixture::load(label, &case);
+        let ours = fixture.train_weighted(weighted_settings(&case));
+        let (dms_pmml::Model::Tree(a), dms_pmml::Model::Tree(b)) =
+            (&ours.model, &fixture.oracle.model)
+        else {
+            panic!("expected trees: {label}/{case}");
+        };
+        if a.root == b.root {
+            exact += 1;
+        } else {
+            mismatches.push(format!("{label}/{case}"));
+        }
+    }
+    println!("WEIGHTED exact={exact}, mismatches={mismatches:?}");
+    assert!(mismatches.is_empty(), "weighted training is not exact");
+}
+
 struct Fixture {
     stream: dms_stream::Stream,
     context: dms_exec::ExecContext,
