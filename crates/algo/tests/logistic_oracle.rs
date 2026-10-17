@@ -205,7 +205,9 @@ fn logistic_matches_modeler() {
         }
         let coeffs_ok = match (&coeff, case.procedure) {
             (Ok(worst), Procedure::Binomial) => *worst <= 1e-6,
-            (Ok(_), Procedure::Multinomial) => matched == total,
+            // Separated data: the 19th iterate; weakly identified parameters differ by
+            // floating-point order (dms_algo::logistic).
+            (Ok(worst), Procedure::Multinomial) => *worst <= 2e-3,
             (Err(_), _) => false,
         };
         if !coeffs_ok || matched != total {

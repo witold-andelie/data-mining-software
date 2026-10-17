@@ -22,7 +22,12 @@
 //!   `1, 1/2, …, 1/2^V` (`maximumStepHalving` default 5). Convergence: largest |Δβ| or |score|
 //!   below `parameterConvergence` (1e-6), or |Δℓ| below `logLikelihoodConvergence` when that is
 //!   positive (0 disables it). Records with a missing target or input are dropped.
-//! - GAP (`logreg_multinomial`): DRUG1n is completely separated, so the MLE is at infinity.
+//! - Newton steps are solved with the SWEEP operator, and from the 20th iteration a completely
+//!   separated fit stops (`logreg_multinomial`: DRUG1n is completely separated; Modeler's model is
+//!   the 19th iterate of this path, log-likelihood -1.33358e-5, coefficients within 1.2e-3
+//!   relative, the rest only on weakly identified drugC parameters, where floating-point order
+//!   matters).
+//! - Former GAP, kept for context (`logreg_multinomial`): the MLE is at infinity.
 //!   Twenty Newton steps reach ℓ ≈ 0 and the same predicted class as Modeler on every record;
 //!   some coefficients (weakly identified, e.g. K for drugC) differ because they live in the
 //!   null space of the information matrix. The binomial HEART case has a unique MLE and
@@ -509,7 +514,13 @@ fn newton(data: &Data, settings: &LogisticSettings) -> Result<Vec<f64>, AlgoErro
             "logistic starting values do not match the parameters".into(),
         ));
     }
-    for _ in 0..settings.max_iterations {
+    for iteration in 0..settings.max_iterations {
+        // From the 20th iteration on, complete separation (every record predicted in its own
+        // category) stops at the current estimates (`models/logreg_multinomial`: Modeler's
+        // coefficients are the 19th iterate's, log-likelihood -1.33358e-5).
+        if iteration + 1 >= SEPARATION_CHECK && completely_separated(data, &beta) {
+            break;
+        }
         let Some((loglik, score, info)) = derivatives(data, &beta) else {
             break;
         };
@@ -551,6 +562,29 @@ fn newton(data: &Data, settings: &LogisticSettings) -> Result<Vec<f64>, AlgoErro
         }
     }
     Ok(beta)
+}
+
+/// The iteration from which the estimation checks for complete separation.
+const SEPARATION_CHECK: usize = 20;
+
+/// Every record's most probable category is its own.
+fn completely_separated(data: &Data, beta: &[f64]) -> bool {
+    let m = data.non_ref.len();
+    let p = data.p_est;
+    data.records.iter().all(|record| {
+        let Some(pi) = softmax_non_ref(&record.x, beta, m, p) else {
+            return false;
+        };
+        let reference = 1.0 - pi.iter().sum::<f64>();
+        let (mut best, mut best_class) = (reference, data.est_ref);
+        for (j, &class) in data.non_ref.iter().enumerate() {
+            if pi[j] > best {
+                best = pi[j];
+                best_class = class;
+            }
+        }
+        best_class == record.class
+    })
 }
 
 fn starting_beta(data: &Data) -> Vec<f64> {
@@ -734,90 +768,44 @@ fn max_abs(values: &[f64]) -> f64 {
     values.iter().fold(0.0, |m, v| m.max(v.abs()))
 }
 
-/// Gaussian elimination with partial pivoting. A column whose pivot is below `tol` is treated
-/// as aliased and its unknown is left at 0 (SPSS `SINGULAR`).
+/// Solves `matrix * x = rhs` for the symmetric information matrix with the SWEEP operator in
+/// parameter order (the Algorithms Guide's estimation; Gaussian elimination with pivoting follows
+/// another path on separated data). A parameter whose pivot falls to `tol` times its original
+/// diagonal or below is aliased: its component of `x` is 0.
 fn solve_system(matrix: &[f64], rhs: &[f64], n: usize, tol: f64) -> Option<Vec<f64>> {
-    if n == 0 {
-        return Some(Vec::new());
-    }
     let len = n.checked_mul(n)?;
     if matrix.len() < len || rhs.len() < n {
         return None;
     }
     let mut a = matrix[..len].to_vec();
-    let mut b = rhs[..n].to_vec();
+    let original: Vec<f64> = (0..n).map(|k| a[k * n + k]).collect();
+    let mut swept = vec![false; n];
     for k in 0..n {
-        let mut pivot_row = k;
-        let mut pivot_abs = a.get(k * n + k).copied().unwrap_or(0.0).abs();
-        for i in k + 1..n {
-            let v = a.get(i * n + k).copied().unwrap_or(0.0).abs();
-            if v > pivot_abs {
-                pivot_abs = v;
-                pivot_row = i;
-            }
-        }
-        if pivot_abs < tol {
+        let pivot = a[k * n + k];
+        if !pivot.is_finite() || pivot <= tol * original[k].abs() || pivot <= 0.0 {
             continue;
         }
-        if pivot_row != k {
-            for j in 0..n {
-                let i0 = k * n + j;
-                let i1 = pivot_row * n + j;
-                if let (Some(&u), Some(&v)) = (a.get(i0), a.get(i1)) {
-                    if let Some(slot) = a.get_mut(i0) {
-                        *slot = v;
-                    }
-                    if let Some(slot) = a.get_mut(i1) {
-                        *slot = u;
-                    }
-                }
-            }
-            if let (Some(&u), Some(&v)) = (b.get(k), b.get(pivot_row)) {
-                if let Some(slot) = b.get_mut(k) {
-                    *slot = v;
-                }
-                if let Some(slot) = b.get_mut(pivot_row) {
-                    *slot = u;
-                }
+        swept[k] = true;
+        let row: Vec<f64> = (0..n).map(|j| a[k * n + j]).collect();
+        for i in (0..n).filter(|&i| i != k) {
+            let factor = a[i * n + k] / pivot;
+            for j in (0..n).filter(|&j| j != k) {
+                a[i * n + j] -= factor * row[j];
             }
         }
-        let akk = a.get(k * n + k).copied().unwrap_or(0.0);
-        if akk.abs() < tol {
-            continue;
+        for j in (0..n).filter(|&j| j != k) {
+            a[k * n + j] = row[j] / pivot;
+            a[j * n + k] /= pivot;
         }
-        for i in k + 1..n {
-            let aik = a.get(i * n + k).copied().unwrap_or(0.0);
-            let f = aik / akk;
-            if let Some(slot) = a.get_mut(i * n + k) {
-                *slot = 0.0;
-            }
-            for j in k + 1..n {
-                let akj = a.get(k * n + j).copied().unwrap_or(0.0);
-                if let Some(slot) = a.get_mut(i * n + j) {
-                    *slot -= f * akj;
-                }
-            }
-            let bk = b.get(k).copied().unwrap_or(0.0);
-            if let Some(slot) = b.get_mut(i) {
-                *slot -= f * bk;
-            }
-        }
+        a[k * n + k] = -1.0 / pivot;
     }
+    // The swept block of `a` now holds minus the inverse of that block of `matrix`.
     let mut x = vec![0.0; n];
-    for k in (0..n).rev() {
-        let akk = a.get(k * n + k).copied().unwrap_or(0.0);
-        if akk.abs() < tol {
-            continue;
-        }
-        let mut s = b.get(k).copied().unwrap_or(0.0);
-        for j in k + 1..n {
-            let akj = a.get(k * n + j).copied().unwrap_or(0.0);
-            let xj = x.get(j).copied().unwrap_or(0.0);
-            s -= akj * xj;
-        }
-        if let Some(slot) = x.get_mut(k) {
-            *slot = s / akk;
-        }
+    for i in (0..n).filter(|&i| swept[i]) {
+        x[i] = (0..n)
+            .filter(|&j| swept[j])
+            .map(|j| -a[i * n + j] * rhs[j])
+            .sum();
     }
     if x.iter().all(|v| v.is_finite()) {
         Some(x)
