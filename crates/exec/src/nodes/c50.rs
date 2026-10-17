@@ -25,7 +25,6 @@ pub fn build(node: &StreamNode) -> Result<Box<dyn Operator>, OperatorError> {
     let s = node.settings.as_ref();
     let expert = settings::flag(s, "expertMode")?.unwrap_or(false);
     for (key, description) in [
-        ("useBoosting", "boosting reweighting/stopping"),
         (
             "useMisclassificationCosts",
             "misclassification-cost training",
@@ -48,11 +47,24 @@ pub fn build(node: &StreamNode) -> Result<Box<dyn Operator>, OperatorError> {
     if expert && settings::flag(s, "use_winnowing")?.unwrap_or(false) {
         return Err(unsupported("winnowing"));
     }
-    match settings::text(s, "modelFormat").as_deref() {
-        None | Some("decisionTree") => {}
-        Some("ruleSet") => return Err(unsupported("direct-rule simplification/selection")),
+    let rules = match settings::text(s, "modelFormat").as_deref() {
+        None | Some("decisionTree") => false,
+        Some("ruleSet") => true,
         Some(other) => return Err(unsupported(&format!("modelFormat {other:?}"))),
-    }
+    };
+    let boost_trials = if settings::flag(s, "useBoosting")?.unwrap_or(false) {
+        let trials = settings::integer(s, "boostingTrials")?.unwrap_or(10);
+        Some(
+            usize::try_from(trials)
+                .ok()
+                .filter(|t| (1..=1000).contains(t))
+                .ok_or_else(|| {
+                    OperatorError::Settings("C5.0 boostingTrials must be 1..1000".into())
+                })?,
+        )
+    } else {
+        None
+    };
     if !expert {
         if settings::integer(s, "expectedNoise")?.unwrap_or(0) != 0 {
             return Err(unsupported("Simple expected-noise preset"));
@@ -93,6 +105,8 @@ pub fn build(node: &StreamNode) -> Result<Box<dyn Operator>, OperatorError> {
             global_pruning: !expert || settings::flag(s, "useGlobalPruning")?.unwrap_or(true),
             group_symbolics: settings::flag(s, "groupSymbolicValues")?.unwrap_or(false),
             weight_field: None,
+            rules,
+            boost_trials,
         },
         target,
         inputs,
