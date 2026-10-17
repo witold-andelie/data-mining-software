@@ -708,3 +708,12 @@ fn sequence_functions_over_records() {
     let alone = compile(&parse("@OFFSET(a, 1)").unwrap(), &bindings).unwrap();
     assert_eq!(alone.eval(&[Value::Integer(1)], 5).unwrap(), Datum::NULL);
 }
+
+/// `ibm-demos/condlearn`: a product of 0.0 and a negative number is -0.0, which is not below 0.
+#[test]
+fn negative_zero_compares_equal_to_zero() {
+    assert_eq!(eval("-3.0 * 0.0 < 0"), Datum::Bool(false));
+    assert_eq!(eval("-3.0 * 0.0 = 0"), Datum::Bool(true));
+    assert_eq!(eval("-3.0 * 0.0 >= 0.0"), Datum::Bool(true));
+    assert_eq!(eval("max(-3.0 * 0.0, 0.0) = 0"), Datum::Bool(true));
+}

@@ -920,7 +920,7 @@ fn compare(left: &Datum, right: &Datum) -> Result<Ordering, ClemError> {
                     | (Value::Timestamp(_), Value::Timestamp(_))
             );
             if comparable {
-                Ok(a.total_cmp(b))
+                Ok(crate::functions::value_order(a, b))
             } else {
                 Err(ClemError::Type(format!("cannot compare {a:?} with {b:?}")))
             }
