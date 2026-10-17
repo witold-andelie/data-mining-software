@@ -53,6 +53,10 @@ pub enum Scope {
     Mvp,
     /// Planned after the MVP (user-script Extension nodes, niche statistical nodes).
     Later,
+    /// Standard nodes the oracle Modeler is not licensed for (user decision 2026-10-18: the
+    /// school's Modeler Professional 19 license leaves them greyed out), so they cannot be
+    /// verified; not counted in the MVP.
+    LicenseBlocked,
     /// Not planned: IBM ecosystem, big data, in-database mining, Statistics integration.
     OutOfScope,
 }
@@ -62,6 +66,7 @@ impl Scope {
         match self {
             Scope::Mvp => "MVP",
             Scope::Later => "later",
+            Scope::LicenseBlocked => "license blocked",
             Scope::OutOfScope => "out of scope",
         }
     }
@@ -97,7 +102,7 @@ const fn n(
 }
 
 use Palette::{Export, FieldOps, Graphs, Modeling, Output, RecordOps, Source, Structure};
-use Scope::{Later, Mvp, OutOfScope};
+use Scope::{Later, LicenseBlocked, Mvp, OutOfScope};
 
 /// Every Modeler 19 node we track.
 #[rustfmt::skip]
@@ -188,12 +193,12 @@ pub const NODES: &[NodeSpec] = &[
     n("linear", "Linear", Modeling, Mvp, &["LinearRegression!spss.alm-extension", "ApplyLinearRegressionSplitModelNode"]),
     n("regression", "Regression", Modeling, Mvp, &["BuildRegressionNode", "ApplyRegressionNode"]),
     n("logistic", "Logistic", Modeling, Mvp, &["BuildLogisticNode", "ApplyLogisticNode", "ApplyLogisticSplitModelNode"]),
-    n("genlin", "GenLin", Modeling, Mvp, &["spss.generalizedlinear_id!buildgeneralizedlinear"]),
+    n("genlin", "GenLin", Modeling, LicenseBlocked, &["spss.generalizedlinear_id!buildgeneralizedlinear"]),
     n("neural_net", "Neural Net", Modeling, Mvp, &["TrainNetNode", "ApplyNetNode", "ApplyNeuralNetSplitModelNode", "neuralnet!spss.neuralnet-extension"]),
-    n("svm", "SVM", Modeling, Mvp, &["spss.svm_id!buildSVM"]),
-    n("knn", "KNN", Modeling, Mvp, &["spss.KNN_id!KNNbuilder"]),
-    n("bayes_net", "Bayes Net", Modeling, Mvp, &["spss.bayesian_id!buildBN"]),
-    n("discriminant", "Discriminant", Modeling, Mvp, &["spss.discriminant_id!builddiscriminant"]),
+    n("svm", "SVM", Modeling, LicenseBlocked, &["spss.svm_id!buildSVM"]),
+    n("knn", "KNN", Modeling, LicenseBlocked, &["spss.KNN_id!KNNbuilder"]),
+    n("bayes_net", "Bayes Net", Modeling, LicenseBlocked, &["spss.bayesian_id!buildBN"]),
+    n("discriminant", "Discriminant", Modeling, LicenseBlocked, &["spss.discriminant_id!builddiscriminant"]),
     n("pca_factor", "PCA/Factor", Modeling, Mvp, &["BuildPCANode", "ApplyPCANode"]),
     n("feature_selection", "Feature Selection", Modeling, Mvp, &["BuildFeatureSelectionNode", "ApplyFeatureSelectionNode", "FeatureSelectionModelNode"]),
     n("anomaly", "Anomaly", Modeling, Mvp, &["BuildAnomalyNode", "ApplyAnomalyNode"]),
