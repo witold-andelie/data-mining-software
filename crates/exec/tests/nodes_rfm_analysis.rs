@@ -31,7 +31,15 @@ fn p(name: &str, value: &str) -> Node {
     element(name, vec![Node::Text(Arc::from(value))])
 }
 
+/// A `BinningOutput` among `settings` becomes the node's sibling element, as streams save it.
 fn node(settings: Vec<Node>) -> StreamNode {
+    let (cache, settings): (Vec<Node>, Vec<Node>) = settings
+        .into_iter()
+        .partition(|n| matches!(n, Node::Element(e) if &*e.name.local == "BinningOutput"));
+    let binning_output = cache.into_iter().find_map(|n| match n {
+        Node::Element(e) => Some(e),
+        _ => None,
+    });
     let Node::Element(settings) = element("properties", settings) else {
         panic!("element")
     };
@@ -46,6 +54,7 @@ fn node(settings: Vec<Node>) -> StreamNode {
         properties_attachment: None,
         containers: vec![],
         settings: Some(settings),
+        binning_output,
         subdiagram: None,
     }
 }

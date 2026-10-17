@@ -62,6 +62,9 @@ pub struct StreamNode {
     pub containers: Vec<Container>,
     /// The node's settings element (`properties`), as saved.
     pub settings: Option<Element>,
+    /// `BinningOutput`, a sibling of `properties`: bins a node cached on its last run (RFM
+    /// Analysis `IfNecessary`, `misc_rf_ifnecessary`).
+    pub binning_output: Option<Element>,
     /// A supernode's inner diagram.
     pub subdiagram: Option<Diagram>,
 }
@@ -310,6 +313,7 @@ fn read_node(element: &Element, depth: usize) -> Result<StreamNode, StreamError>
         properties_attachment: element.attribute("properties").map(str::to_string),
         containers,
         settings: settings.cloned(),
+        binning_output: element.child("BinningOutput").cloned(),
         subdiagram,
         class,
     })

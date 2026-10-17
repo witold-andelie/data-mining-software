@@ -49,6 +49,7 @@ fn run(fields: Vec<Node>, input: Table) -> Result<Table, OperatorError> {
         properties_attachment: None,
         containers: Vec::new(),
         settings: Some(settings),
+        binning_output: None,
         subdiagram: None,
     };
     anonymize::build(&node)?.run(&[Arc::new(input)], &ExecContext::default())

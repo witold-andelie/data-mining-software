@@ -444,6 +444,7 @@ mod tests {
             properties_attachment: None,
             containers: Vec::new(),
             settings: Some(element("properties", properties)),
+            binning_output: None,
             subdiagram: None,
         }
     }
