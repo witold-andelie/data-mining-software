@@ -43,6 +43,35 @@ impl ExecContext {
             })
             .unwrap_or(3)
     }
+
+    /// The calendar day (days since 1970-01-01) of an instant saved as epoch milliseconds, in
+    /// the stream's `timeZone`: `server` (the default) is this machine's zone, as Modeler uses
+    /// its server's; `UTC`/`GMT` and IANA names are themselves. Date settings saved from
+    /// Modeler's date pickers are such instants (`oracle/misc/misc_ra_*`: 1585605600000 is
+    /// 2020-03-31 in the oracle machine's UTC+2).
+    pub fn day_of_instant(&self, millis: i64) -> Result<i64, crate::OperatorError> {
+        use jiff::tz::TimeZone;
+        let bad = crate::OperatorError::Settings;
+        let zone = match crate::settings::text(self.stream_properties.as_deref(), "timeZone")
+            .as_deref()
+            .map(str::trim)
+        {
+            None | Some("") | Some("server") => TimeZone::system(),
+            Some("UTC" | "GMT") => TimeZone::UTC,
+            Some(name) => {
+                TimeZone::get(name).map_err(|e| bad(format!("stream timeZone {name:?}: {e}")))?
+            }
+        };
+        let instant = jiff::Timestamp::from_millisecond(millis)
+            .map_err(|e| bad(format!("saved instant {millis}: {e}")))?;
+        let date = instant.to_zoned(zone).date();
+        dms_types::calendar::days_from_civil(
+            i64::from(date.year()),
+            u32::try_from(date.month()).unwrap_or(0),
+            u32::try_from(date.day()).unwrap_or(0),
+        )
+        .ok_or_else(|| bad(format!("saved instant {millis} is out of range")))
+    }
 }
 
 /// Finds data files a stream references. A path is used as-is when it exists; otherwise (for

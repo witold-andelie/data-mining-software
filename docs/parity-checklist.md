@@ -4,7 +4,7 @@
 
 | Scope | Implemented | Total |
 |---|---|---|
-| MVP | 56 | 90 |
+| MVP | 57 | 90 |
 | later | 0 | 23 |
 | out of scope | 0 | 34 |
 
@@ -43,7 +43,7 @@
 | Sample | `sample` | MVP | done | `SampleNode` |
 | Balance | `balance` | MVP | done | `BalanceNode` |
 | Aggregate | `aggregate` | MVP | done | `AggregateNode` |
-| RFM Aggregate | `rfm_aggregate` | MVP | missing | `RFMAggregateNode` |
+| RFM Aggregate | `rfm_aggregate` | MVP | done | `RFMAggregateNode` |
 | Sort | `sort` | MVP | done | `SortNode` |
 | Merge | `merge` | MVP | done | `MergeNode` |
 | Append | `append` | MVP | done | `AppendNode` |
