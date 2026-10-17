@@ -34,6 +34,8 @@ pub mod plot;
 pub mod reclassify;
 pub mod report;
 pub mod restructure;
+pub mod rfm_analysis;
+mod rfm_settings;
 pub mod sample;
 pub mod select;
 pub mod set_to_flag;
