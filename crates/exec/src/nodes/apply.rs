@@ -1,15 +1,21 @@
 //! Model nuggets (`ApplyCartRuleNode`, `ApplyChaidRuleNode`, `ApplyLogisticNode`,
-//! `ApplyKMeansNode`, `ApplyTwoStepNode`): score every record with the model and append Modeler's score fields
-//! (`docs/models.md`).
+//! `ApplyKMeansNode`, `ApplyTwoStepNode`, `ApplyRegressionNode`,
+//! `LinearRegressionModel!spss.alm-extension`): score every record with the model and append
+//! Modeler's score fields (`docs/models.md`).
 //!
 //! The model is the one the linked build node trained in this evaluation, else the PMML the
-//! nugget saved (`properties/model@pmml`, an attachment of the stream file). Score fields, from
-//! the oracle exports of the team streams and `crates/pmml/tests/oracle.rs`:
+//! nugget saved. Classic nuggets keep PMML at `properties/model@pmml`. Extension-framework
+//! nuggets (`LinearRegressionModel!spss.alm-extension`) keep a `PMML` container; team Linear
+//! streams store that member as `SCF\x01` (not XML), so those nuggets score from the model the
+//! linked build node trained (`builderNodeId`). Score fields, from the oracle exports of the
+//! team streams, `models/linear_enter`, `models/regression_enter`, and `crates/pmml/tests/oracle.rs`:
 //!
 //! | nugget | fields |
 //! |---|---|
 //! | C&R Tree, CHAID | `$R-<target>` prediction; `$RC-<target>` confidence (`calculateConfidences`); `$RRP-<target>` raw propensity, the probability of the second (true) category (`calculateRawPropensities`) |
 //! | Logistic | `$L-<target>` prediction; `$LP-<target>` confidence (`calculateConfidences`); `$LRP-<target>` raw propensity (`calculateRawPropensities`); `$LP-<category>` for every target category when enabled (below) |
+//! | Linear | `$L-<target>` prediction (`models/linear_enter`, `team/linear_regression`) |
+//! | Regression | `$E-<target>` prediction (`models/regression_enter`) |
 //! | K-Means | `$KM-<model name>`: `cluster-<cluster name>`; `$KMD-<model name>`: the Euclidean distance to that center, when the nugget's `buildSettings` set `generateDistanceField` |
 //! | TwoStep | `$T-<model name>`: the cluster name (`cluster-<n>`), by the log-likelihood distance; an integer with numeric labels (`buildSettings` `clusterLabelType` `NUMBER`) |
 //!
@@ -47,6 +53,10 @@ enum Kind {
     Rule,
     /// Logistic regression: `$L-`, `$LP-`, `$LRP-`, and `$LP-<category>` when enabled.
     Logistic,
+    /// Linear (ALM) nugget: `$L-<target>` only.
+    Linear,
+    /// Classic Regression nugget: `$E-<target>` only.
+    Regression,
     /// K-Means: `$KM-<model name>`.
     KMeans,
     /// TwoStep: `$T-<model name>`.
@@ -60,6 +70,10 @@ pub fn build(node: &StreamNode) -> Result<Box<dyn Operator>, OperatorError> {
             Kind::Rule
         }
         "ApplyLogisticNode" => Kind::Logistic,
+        "LinearRegressionModel!spss.alm-extension" | "ApplyLinearRegressionSplitModelNode" => {
+            Kind::Linear
+        }
+        "ApplyRegressionNode" => Kind::Regression,
         "ApplyKMeansNode" => Kind::KMeans,
         "ApplyTwoStepNode" => Kind::TwoStep,
         other => {
@@ -89,7 +103,13 @@ pub fn build(node: &StreamNode) -> Result<Box<dyn Operator>, OperatorError> {
         kind,
         pmml_member: settings::element(s, "model")
             .and_then(|model| model.attribute("pmml"))
-            .map(str::to_string),
+            .map(str::to_string)
+            .or_else(|| {
+                node.containers
+                    .iter()
+                    .find(|container| container.name.as_deref() == Some("PMML"))
+                    .map(|container| container.member.clone())
+            }),
         confidences: settings::flag(s, "calculateConfidences")?.unwrap_or(true),
         raw_propensities: settings::flag(s, "calculateRawPropensities")?.unwrap_or(false),
         // `$LP-<category>`: the flag, or always for the binomial procedure
@@ -248,9 +268,11 @@ impl Apply {
         }
         let target = target_name(pmml)?;
         let (value_prefix, confidence_prefix, propensity_prefix) = match self.kind {
-            Kind::Logistic => ("$L", "$LP", "$LRP"),
+            Kind::Logistic | Kind::Linear => ("$L", "$LP", "$LRP"),
+            Kind::Regression => ("$E", "$EC", "$ERP"),
             _ => ("$R", "$RC", "$RRP"),
         };
+        let continuous_only = matches!(self.kind, Kind::Linear | Kind::Regression);
         // The first index whose prediction field is free.
         let index = (0..)
             .map(|n: usize| if n == 0 { String::new() } else { n.to_string() })
@@ -265,14 +287,14 @@ impl Apply {
                 .map(|p| typed(&p.value, storage))
                 .collect(),
         )];
-        if self.confidences {
+        if self.confidences && !continuous_only {
             columns.push(column(
                 &format!("{confidence_prefix}{index}-{target}"),
                 Storage::Real,
                 predictions.iter().map(|p| real(p.confidence)).collect(),
             ));
         }
-        if self.all_probabilities {
+        if self.all_probabilities && !continuous_only {
             let categories = category_names(pmml, &target, predictions);
             if categories.len() > MAX_CATEGORY_FIELDS {
                 return Err(OperatorError::Data(format!(
@@ -292,7 +314,7 @@ impl Apply {
                 ));
             }
         }
-        if self.raw_propensities {
+        if self.raw_propensities && !continuous_only {
             columns.push(column(
                 &format!("{propensity_prefix}{index}-{target}"),
                 Storage::Real,
@@ -321,6 +343,7 @@ fn target_name(pmml: &Pmml) -> Result<String, OperatorError> {
         dms_pmml::Model::GeneralRegression(model) => &model.header,
         dms_pmml::Model::Regression(model) => &model.header,
         dms_pmml::Model::Clustering(model) => &model.header,
+        dms_pmml::Model::Mining(model) => &model.header,
         dms_pmml::Model::Unsupported(element) => {
             return Err(OperatorError::Data(format!(
                 "model {element} cannot be scored yet"

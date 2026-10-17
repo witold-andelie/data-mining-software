@@ -35,6 +35,7 @@ const BUILT_IN: &[(&str, Factory)] = &[
     ("kmeans", model_node),
     ("twostep", model_node),
     ("logistic", model_node),
+    ("linear", model_node),
     ("binning", nodes::binning::build),
     ("set_to_flag", nodes::set_to_flag::build),
     ("transpose", nodes::transpose::build),
@@ -50,12 +51,13 @@ const BUILT_IN: &[(&str, Factory)] = &[
 /// Registered while their implementation is under way; not counted as implemented.
 /// TwoStep numbers clusters differently on larger data, and multinomial Logistic coefficients
 /// on separated data differ from Modeler's (the GAPs in
-/// `dms_algo::twostep` and `dms_algo::logistic`).
-const PENDING: &[&str] = &["twostep", "logistic"];
+/// `dms_algo::twostep` and `dms_algo::logistic`); Linear trains only without data preparation
+/// and model selection, which a new Linear node enables (`dms_algo::linear`).
+const PENDING: &[&str] = &["twostep", "logistic", "linear"];
 
 /// Model nodes whose nuggets score (`nodes::apply`) while their build nodes cannot train yet;
 /// they do not count as implemented.
-const SCORING_ONLY: &[&str] = &[];
+const SCORING_ONLY: &[&str] = &["regression"];
 
 pub fn factory(catalog_id: &str) -> Option<Factory> {
     BUILT_IN
@@ -71,7 +73,7 @@ pub fn factory(catalog_id: &str) -> Option<Factory> {
 
 /// A model node that trains (`nodes::build`) and scores (`nodes::apply`).
 fn model_node(node: &StreamNode) -> Result<Box<dyn Operator>, OperatorError> {
-    if node.type_identifier().starts_with("Apply") {
+    if is_nugget(node) {
         nodes::apply::build(node)
     } else {
         nodes::build::build(node)
@@ -80,7 +82,7 @@ fn model_node(node: &StreamNode) -> Result<Box<dyn Operator>, OperatorError> {
 
 /// A nugget scores; its build node is not implemented yet.
 fn nugget_or_builder(node: &StreamNode) -> Result<Box<dyn Operator>, OperatorError> {
-    if node.type_identifier().starts_with("Apply") {
+    if is_nugget(node) {
         nodes::apply::build(node)
     } else {
         Err(OperatorError::Settings(format!(
@@ -100,4 +102,10 @@ pub fn is_implemented(catalog_id: &str) -> bool {
 
 pub fn implemented() -> impl Iterator<Item = &'static str> {
     BUILT_IN.iter().map(|(id, _)| *id)
+}
+
+/// A model nugget: classic `Apply*` nodes and extension-framework nuggets (`CFApplyModelNode`,
+/// whose type is the model's, such as `LinearRegressionModel!spss.alm-extension`).
+fn is_nugget(node: &StreamNode) -> bool {
+    node.type_identifier().starts_with("Apply") || node.class.ends_with(".CFApplyModelNode")
 }

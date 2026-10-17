@@ -4,9 +4,10 @@ use crate::{
     BooleanOperator, Cluster, ClusteringField, ClusteringModel, CompareFunction, ComparisonMeasure,
     DataField, DataType, DefineFunction, DerivedField, Expr, GeneralModelType,
     GeneralRegressionModel, InvalidTreatment, MeasureKind, Metric, MiningField, MiningFunction,
-    MissingValueStrategy, Model, ModelClass, ModelHeader, NoTrueChildStrategy, Node, OpType,
-    Operator, Outliers, OutputField, PCell, PPCell, Pmml, PmmlError, Predicate, RegressionModel,
-    RegressionTable, ScoreDistribution, TreeModel, Usage, Value,
+    MiningModel, MiningSegment, MissingValueStrategy, Model, ModelClass, ModelHeader,
+    NoTrueChildStrategy, Node, OpType, Operator, Outliers, OutputField, PCell, PPCell, Pmml,
+    PmmlError, Predicate, RegressionModel, RegressionTable, ScoreDistribution, TreeModel, Usage,
+    Value,
 };
 use roxmltree::Document;
 
@@ -459,6 +460,7 @@ fn parse_model(node: roxmltree::Node<'_, '_>) -> Result<Model, PmmlError> {
             node,
         )?)),
         "RegressionModel" => Ok(Model::Regression(parse_regression_model(node)?)),
+        "MiningModel" => Ok(Model::Mining(parse_mining_model(node)?)),
         other => Ok(Model::Unsupported(other.to_string())),
     }
 }
@@ -1226,6 +1228,89 @@ fn parse_general_regression_model(
         covariates,
         pp_matrix,
         param_matrix,
+    })
+}
+
+fn parse_mining_model(node: roxmltree::Node<'_, '_>) -> Result<MiningModel, PmmlError> {
+    let header = parse_model_header(node)?;
+    let mut method = String::new();
+    let mut segments = Vec::new();
+    for child in node.children().filter(roxmltree::Node::is_element) {
+        let tag = child.tag_name().name();
+        if is_skipped_element(tag)
+            || matches!(
+                tag,
+                "MiningSchema" | "Output" | "LocalTransformations" | "Targets"
+            )
+        {
+            continue;
+        }
+        if tag != "Segmentation" {
+            return Err(PmmlError::Parse(format!(
+                "unexpected element {tag:?} in MiningModel"
+            )));
+        }
+        method = child
+            .attribute("multipleModelMethod")
+            .unwrap_or("selectFirst")
+            .to_string();
+        for segment in child.children().filter(roxmltree::Node::is_element) {
+            if is_skipped_element(segment.tag_name().name()) {
+                continue;
+            }
+            if segment.tag_name().name() != "Segment" {
+                return Err(PmmlError::Parse(format!(
+                    "unexpected element {:?} in Segmentation",
+                    segment.tag_name().name()
+                )));
+            }
+            segments.push(parse_segment(segment)?);
+        }
+    }
+    if segments.is_empty() {
+        return Err(PmmlError::Parse("MiningModel has no Segment".into()));
+    }
+    if method.is_empty() {
+        method = "selectFirst".into();
+    }
+    Ok(MiningModel {
+        header,
+        method,
+        segments,
+    })
+}
+
+fn parse_segment(node: roxmltree::Node<'_, '_>) -> Result<MiningSegment, PmmlError> {
+    let mut predicate = None;
+    let mut model = None;
+    for child in node.children().filter(roxmltree::Node::is_element) {
+        let tag = child.tag_name().name();
+        if is_skipped_element(tag) {
+            continue;
+        }
+        match tag {
+            "True" | "False" | "SimplePredicate" | "SimpleSetPredicate" | "CompoundPredicate" => {
+                if predicate.is_some() {
+                    return Err(PmmlError::Parse("Segment has two predicates".into()));
+                }
+                predicate = Some(parse_predicate(child, 0)?);
+            }
+            tag if MODEL_ELEMENTS.contains(&tag) => {
+                if model.is_some() {
+                    return Err(PmmlError::Parse("Segment has two models".into()));
+                }
+                model = Some(parse_model(child)?);
+            }
+            other => {
+                return Err(PmmlError::Parse(format!(
+                    "unexpected element {other:?} in Segment"
+                )));
+            }
+        }
+    }
+    Ok(MiningSegment {
+        predicate: predicate.unwrap_or(Predicate::True),
+        model: Box::new(model.ok_or_else(|| PmmlError::Parse("Segment has no model".into()))?),
     })
 }
 
