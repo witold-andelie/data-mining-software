@@ -3,7 +3,8 @@
 //! needed, string values are always quoted (spaces kept), numbers, dates and times are not, and
 //! `$null$` is an empty field. Inner quotes are doubled (RFC 4180); Modeler leaves them as they
 //! are, which `xtask compare` reads as Modeler's dialect.
-//! Reals use the shortest text that reads back to the same value.
+//! Reals use the shortest text that reads back to the same value. A field's
+//! [`dms_types::DisplayFormat`] overrides the plain rendering (`Dec 2019`).
 
 use dms_types::{Table, Value};
 use std::io::{self, Write};
@@ -16,8 +17,18 @@ pub fn write_table(table: &Table, out: &mut impl Write) -> io::Result<()> {
         .map(|field| header_name(&field.name))
         .collect();
     writeln!(out, "{}", header.join(","))?;
+    let formats: Vec<_> = table.model().fields().iter().map(|f| f.display).collect();
     for row in table.rows() {
-        let cells: Vec<String> = row.iter().map(cell).collect();
+        let cells: Vec<String> = row
+            .iter()
+            .zip(&formats)
+            .map(
+                |(value, format)| match format.and_then(|f| f.render(value)) {
+                    Some(text) => text,
+                    None => cell(value),
+                },
+            )
+            .collect();
         writeln!(out, "{}", cells.join(","))?;
     }
     Ok(())

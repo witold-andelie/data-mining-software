@@ -59,10 +59,10 @@
 //! - The exact eight-slot result with cap=8 is refused (`padding_limit`, manifest errors).
 //!   A stale CSV exists there but is not a successful oracle export.
 //!
-//! GAP: temporal display metadata is absent from Field and the shared CSV writer always
-//! writes ISO dates/timestamps. Months are correctly typed first-of-month Date values, but
-//! `months` compares ISO dates against Modeler's unquoted `Dec 2019` etc. Timestamp format10
-//! (`workseconds`: 08.05.47) is explicitly rejected until that metadata/writer is extended.
+//! - Month labels carry `DisplayFormat::MonthYear`, so exports print `Dec 2019` (`months`).
+//!
+//! GAP: timestamp display format10 (`workseconds`: 08.05.47) has no `DisplayFormat` yet and
+//! stays rejected.
 //! GAP: Create for calendar/work intervals, literal NONE, an independent weeks enum, future
 //! value functions/custom values, Label future rows, nondefault estimation offsets, inactive
 //! business starts, overnight working days, and off-grid working starts lack oracle evidence
@@ -686,7 +686,15 @@ impl TimeIntervals {
     fn generated(&self) -> Vec<Field> {
         let mut fields = vec![
             Field::new(self.field_name("TimeIndex"), Storage::Integer),
-            Field::new(self.field_name("TimeLabel"), self.interval.label_storage()),
+            {
+                let mut label =
+                    Field::new(self.field_name("TimeLabel"), self.interval.label_storage());
+                // Modeler prints month labels as `MON YYYY` (`misc_ti_months`: `Dec 2019`).
+                if self.interval == Interval::Months {
+                    label.display = Some(dms_types::DisplayFormat::MonthYear);
+                }
+                label
+            },
         ];
         fields.extend(
             self.interval
