@@ -131,6 +131,32 @@ pub(crate) fn parse(xml: &str) -> Result<Pmml, PmmlError> {
             method: "c50ConfidenceVote".into(),
             segments,
         })
+    } else if models.len() > 1
+        && models
+            .iter()
+            .all(|(m, boost)| !*boost && matches!(m, Model::GeneralRegression(_)))
+    {
+        // Modeler PCA/Factor (`oracle/models_next/factor_*`): one regression per factor.
+        let header = crate::score::model_header(
+            &models
+                .first()
+                .ok_or_else(|| PmmlError::Parse("missing model".into()))?
+                .0,
+        )
+        .ok_or_else(|| PmmlError::Parse("missing model header".into()))?
+        .clone();
+        let segments = models
+            .into_iter()
+            .map(|(m, _)| MiningSegment {
+                predicate: Predicate::True,
+                model: Box::new(m),
+            })
+            .collect();
+        Model::Mining(MiningModel {
+            header,
+            method: crate::FACTOR_SCORES.into(),
+            segments,
+        })
     } else {
         return Err(PmmlError::Parse(
             "missing model or ambiguous multiple model elements in PMML".into(),

@@ -134,6 +134,27 @@ impl<'p> Scorer<'p> {
         }
     }
 
+    /// Every factor score of a PCA/Factor model ([`crate::FACTOR_SCORES`]), in factor order.
+    pub fn score_factors(&self, record: &[Value]) -> Result<Vec<Value>, PmmlError> {
+        let Model::Mining(mining) = &self.pmml.model else {
+            return Err(PmmlError::Unsupported("not a PCA/Factor model".into()));
+        };
+        if mining.method != crate::FACTOR_SCORES {
+            return Err(PmmlError::Unsupported("not a PCA/Factor model".into()));
+        }
+        let env = self.prepare(record)?;
+        mining
+            .segments
+            .iter()
+            .map(|segment| match segment.model.as_ref() {
+                Model::GeneralRegression(reg) => {
+                    crate::regression::score_general(self.pmml, reg, &env).map(|p| p.value)
+                }
+                _ => Err(PmmlError::Unsupported("PCA/Factor segment".into())),
+            })
+            .collect()
+    }
+
     /// Every target of a neural network, in `NeuralOutput` order. A missing input is a
     /// missing value on each target, not an error (`nn_missing_listwise`).
     pub fn score_neural(&self, record: &[Value]) -> Result<Vec<crate::NeuralTarget>, PmmlError> {

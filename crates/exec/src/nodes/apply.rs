@@ -80,6 +80,8 @@ enum Kind {
     TwoStep,
     /// Neural Net: `$N-`, `$NC-`, `$NP-`, `$RP-`, `$AP-`.
     Neural,
+    /// PCA/Factor: `$F-<model name>-<k>`, one real per factor (`models_next/factor_*`).
+    Factor,
 }
 
 pub fn build(node: &StreamNode) -> Result<Box<dyn Operator>, OperatorError> {
@@ -110,6 +112,7 @@ pub fn build(node: &StreamNode) -> Result<Box<dyn Operator>, OperatorError> {
         "neuralnetmodel!spss.neuralnet-extension"
         | "ApplyNetNode"
         | "ApplyNeuralNetSplitModelNode" => Kind::Neural,
+        "ApplyPCANode" => Kind::Factor,
         other => {
             return Err(OperatorError::Settings(format!(
                 "model nugget {other} is not supported yet"
@@ -257,6 +260,44 @@ impl Apply {
         let scorer = pmml
             .bind(&names)
             .map_err(|error| OperatorError::Data(format!("model: {error}")))?;
+        if self.kind == Kind::Factor {
+            let scores = input
+                .rows()
+                .iter()
+                .map(|row| {
+                    let record: Vec<PmmlValue> = row.iter().map(to_pmml).collect();
+                    scorer
+                        .score_factors(&record)
+                        .map_err(|error| OperatorError::Data(format!("model: {error}")))
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            let count = scores.first().map_or(0, Vec::len);
+            // Score fields carry the model's own name (`factor_varimax`'s grid nugget, labelled
+            // "Grid scores", still writes `$F-models_next-1`).
+            let model_name = match &pmml.model {
+                dms_pmml::Model::Mining(mining) => mining.header.name.clone(),
+                _ => None,
+            }
+            .filter(|name| !name.trim().is_empty())
+            .unwrap_or_else(|| self.model_name.clone());
+            let columns = (0..count)
+                .map(|k| {
+                    let values = scores
+                        .iter()
+                        .map(|row| match row.get(k) {
+                            Some(PmmlValue::Number(x)) => Value::Real(*x),
+                            _ => Value::Null,
+                        })
+                        .collect();
+                    column(
+                        &format!("$F-{}-{}", model_name, k + 1),
+                        Storage::Real,
+                        values,
+                    )
+                })
+                .collect();
+            return with_columns(input, columns);
+        }
         if self.kind == Kind::Neural {
             let options = neural_options(self.properties.as_deref(), context)?;
             let predictions = input
@@ -332,9 +373,9 @@ impl Apply {
         let (value_prefix, confidence_prefix, propensity_prefix) = match self.kind {
             Kind::Logistic | Kind::Linear => ("$L", "$LP", "$LRP"),
             Kind::Regression => ("$E", "$EC", "$ERP"),
-            Kind::Neural => {
+            Kind::Neural | Kind::Factor => {
                 return Err(OperatorError::Data(
-                    "neural network score fields are not built on this path".into(),
+                    "neural network and factor score fields are not built on this path".into(),
                 ));
             }
             Kind::Rule | Kind::KMeans | Kind::TwoStep => ("$R", "$RC", "$RRP"),
