@@ -4,7 +4,7 @@
 
 | Scope | Implemented | Total |
 |---|---|---|
-| MVP | 58 | 90 |
+| MVP | 59 | 90 |
 | later | 0 | 23 |
 | out of scope | 0 | 34 |
 
@@ -119,7 +119,7 @@
 | Bayes Net | `bayes_net` | MVP | missing | `spss.bayesian_id!buildBN` |
 | Discriminant | `discriminant` | MVP | missing | `spss.discriminant_id!builddiscriminant` |
 | PCA/Factor | `pca_factor` | MVP | missing | `BuildPCANode`, `ApplyPCANode` |
-| Feature Selection | `feature_selection` | MVP | missing | `BuildFeatureSelectionNode`, `ApplyFeatureSelectionNode`, `FeatureSelectionModelNode` |
+| Feature Selection | `feature_selection` | MVP | done | `BuildFeatureSelectionNode`, `ApplyFeatureSelectionNode`, `FeatureSelectionModelNode` |
 | Anomaly | `anomaly` | MVP | missing | `BuildAnomalyNode`, `ApplyAnomalyNode` |
 | Time Series | `time_series` | MVP | missing | `BuildTimeSeriesNode`, `ApplyTimeSeriesNode`, `spss.ts!ts_builder` |
 | Imported PMML model | `pmml_model` | MVP | missing | `ApplyImportedNode` |

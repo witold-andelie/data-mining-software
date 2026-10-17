@@ -64,6 +64,12 @@ enum Kind {
 }
 
 pub fn build(node: &StreamNode) -> Result<Box<dyn Operator>, OperatorError> {
+    if matches!(
+        node.type_identifier().as_str(),
+        "ApplyFeatureSelectionNode" | "FeatureSelectionModelNode"
+    ) {
+        return super::feature_selection::apply(node);
+    }
     let s = node.settings.as_ref();
     let kind = match node.type_identifier().as_str() {
         "ApplyCartRuleNode" | "ApplyChaidRuleNode" | "ApplyQuestRuleNode" | "ApplyC5RuleNode" => {
