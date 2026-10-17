@@ -1,5 +1,6 @@
-//! Linear against Modeler: train on the records `models/linear_enter` fed its build node and
-//! compare every coefficient with the PMML Modeler exported, and the nugget's `$L-` scores.
+//! Linear and Regression against Modeler: train on the records `models/linear_enter` and
+//! `regression_enter` fed their build nodes and compare every coefficient with the PMML Modeler
+//! exported, and the nuggets' `$L-` / `$E-` scores.
 
 #![cfg(feature = "corpus")]
 #![allow(
@@ -12,7 +13,7 @@
 mod support;
 
 use dms_algo::Dataset;
-use dms_algo::linear::{self, LinearSettings};
+use dms_algo::linear::{self, LinearSettings, Style};
 use dms_pmml::{Model, Pmml};
 use support::*;
 
@@ -29,7 +30,16 @@ fn betas(pmml: &Pmml) -> Vec<(String, f64)> {
 
 #[test]
 fn linear_matches_modeler() {
-    let case = "linear_enter";
+    check("linear_enter", Style::Linear, "_applylinear_", "$L-Na");
+    check(
+        "regression_enter",
+        Style::Regression,
+        "_applyregression_",
+        "$E-Na",
+    );
+}
+
+fn check(case: &str, style: Style, apply: &str, score: &str) {
     let oracle = oracle_model(case);
     let table = training_table(
         &oracle,
@@ -43,7 +53,11 @@ fn linear_matches_modeler() {
         inputs: &inputs,
         frequency: None,
     };
-    let ours = linear::train(&dataset, &LinearSettings::default()).unwrap();
+    let settings = LinearSettings {
+        style,
+        ..LinearSettings::default()
+    };
+    let ours = linear::train(&dataset, &settings).unwrap();
     let (a, b) = (betas(&ours), betas(&oracle));
     assert_eq!(a.len(), b.len());
     let worst = a
@@ -54,7 +68,7 @@ fn linear_matches_modeler() {
             (x - y).abs() / y.abs().max(1e-300)
         })
         .fold(0.0, f64::max);
-    let csv = std::fs::read_to_string(data_file(&case_dir(case), "_applylinear_")).unwrap();
+    let csv = std::fs::read_to_string(data_file(&case_dir(case), apply)).unwrap();
     let rows = parse_modeler_csv(&csv);
     let header: Vec<&str> = rows[0].iter().map(|c| c.text.as_str()).collect();
     let column = |name: &str| header.iter().position(|h| *h == name).unwrap();
@@ -66,7 +80,7 @@ fn linear_matches_modeler() {
             .map(|n| dms_pmml::Value::Number(row[column(n)].text.parse().unwrap()))
             .collect();
         let ours = scorer.score(&record).unwrap();
-        let theirs: f64 = row[column("$L-Na")].text.parse().unwrap();
+        let theirs: f64 = row[column(score)].text.parse().unwrap();
         total += 1;
         if matches!(ours.value, dms_pmml::Value::Number(x) if close(x, theirs)) {
             matched += 1;

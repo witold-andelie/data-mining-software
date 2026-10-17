@@ -15,6 +15,10 @@
 //!   matrix (records with a missing target or input are left out, `linreg.ListwiseDeletion`);
 //!   an aliased column gets beta 0.
 //!
+//! The classic Regression node (`BuildRegressionNode`, method `enter`) fits the same least
+//! squares and writes `modelType` `regression` (`oracle/models/regression_enter`): parameters
+//! named `(Constant)` and the covariate names, PMML 4.2. It takes continuous inputs only.
+//!
 //! Not implemented (`AlgoError::Unsupported` in the build node): automatic data preparation,
 //! forward stepwise and best-subsets selection (the defaults of a new Linear node, which
 //! `team/linear_regression` uses), weights.
@@ -27,10 +31,20 @@ use dms_pmml::{
 };
 use dms_types::{Measurement, Value};
 
-/// Settings of a Linear build node.
+/// Which node's model to write.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Style {
+    /// The Linear node: `generalLinear`, parameters `P0000001`, ...
+    Linear,
+    /// The classic Regression node: `regression`, parameters named after their fields.
+    Regression,
+}
+
+/// Settings of a Linear or Regression build node.
 #[derive(Debug, Clone, PartialEq)]
 pub struct LinearSettings {
-    /// `linreg.Intercept` (default true).
+    pub style: Style,
+    /// `linreg.Intercept` / `includeConstant` (default true).
     pub intercept: bool,
     /// The model name.
     pub name: Option<String>,
@@ -39,6 +53,7 @@ pub struct LinearSettings {
 impl Default for LinearSettings {
     fn default() -> Self {
         LinearSettings {
+            style: Style::Linear,
             intercept: true,
             name: None,
         }
@@ -130,6 +145,12 @@ pub fn train(dataset: &Dataset<'_>, settings: &LinearSettings) -> Result<Pmml, A
             parameters.push(Parameter::Covariate { position });
             continue;
         }
+        if settings.style == Style::Regression {
+            return Err(AlgoError::Unsupported(format!(
+                "Regression input {} that is not continuous",
+                fields[position].name
+            )));
+        }
         let categories = field_categories(table, position);
         let last = categories.len().saturating_sub(1);
         for (k, category) in categories.into_iter().enumerate() {
@@ -159,7 +180,19 @@ pub fn train(dataset: &Dataset<'_>, settings: &LinearSettings) -> Result<Pmml, A
     let mut pp_matrix = Vec::new();
     let mut param_matrix = Vec::new();
     for (index, parameter) in parameters.iter().enumerate() {
-        let name = format!("P{:07}", index + 1);
+        let name = match (settings.style, parameter) {
+            (Style::Linear, _) => format!("P{:07}", index + 1),
+            (Style::Regression, Parameter::Intercept) => "(Constant)".to_string(),
+            (Style::Regression, Parameter::Covariate { position }) => {
+                fields[*position].name.clone()
+            }
+            (
+                Style::Regression,
+                Parameter::Indicator {
+                    position, category, ..
+                },
+            ) => format!("[{}={category}]", fields[*position].name),
+        };
         match parameter {
             Parameter::Intercept => {}
             Parameter::Covariate { position } => pp_matrix.push(PPCell {
@@ -203,8 +236,16 @@ pub fn train(dataset: &Dataset<'_>, settings: &LinearSettings) -> Result<Pmml, A
         .filter_map(|&p| mining_field(table, p, Usage::Active))
         .collect();
     mining_schema.extend(mining_field(table, dataset.target, Usage::Target));
+    let (version, algorithm, model_type) = match settings.style {
+        Style::Linear => (
+            "4.3",
+            Some("ALM".to_string()),
+            GeneralModelType::GeneralLinear,
+        ),
+        Style::Regression => ("4.2", None, GeneralModelType::Regression),
+    };
     Ok(Pmml {
-        version: "4.3".into(),
+        version: version.into(),
         data_dictionary: std::iter::once(dataset.target)
             .chain(dataset.inputs.iter().copied())
             .filter_map(|p| data_field(table, p))
@@ -215,12 +256,12 @@ pub fn train(dataset: &Dataset<'_>, settings: &LinearSettings) -> Result<Pmml, A
             header: ModelHeader {
                 name: settings.name.clone(),
                 function: MiningFunction::Regression,
-                algorithm: Some("ALM".into()),
+                algorithm,
                 mining_schema,
                 output: Vec::new(),
                 local_transformations: Vec::new(),
             },
-            model_type: GeneralModelType::GeneralLinear,
+            model_type,
             target_reference_category: None,
             link_function: None,
             link_parameter: None,
