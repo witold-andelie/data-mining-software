@@ -9,7 +9,7 @@
 //! Conditions treat flag fields as truth values (rule 33). A condition that evaluates to `$null$`
 //! drops the record in both `include` and `discard` modes (verified by Modeler 19 oracle, rule 39).
 
-use super::field_util::{bind_condition, parse_required, truths};
+use super::field_util::{bind_with_globals, parse_required, truths};
 use crate::context::ExecContext;
 use crate::error::OperatorError;
 use crate::operator::{Arity, Operator};
@@ -70,8 +70,12 @@ impl Condition {
         Ok(Condition { expr, setting })
     }
 
-    pub(crate) fn bind(&self, model: &DataModel) -> Result<BoundCondition, OperatorError> {
-        let compiled = bind_condition(self.setting, &self.expr, model, None)?;
+    pub(crate) fn bind(
+        &self,
+        model: &DataModel,
+        globals: &dms_clem::GlobalValues,
+    ) -> Result<BoundCondition, OperatorError> {
+        let compiled = bind_with_globals(self.setting, &self.expr, model, None, globals, true)?;
         Ok(BoundCondition {
             compiled,
             setting: self.setting,
@@ -112,10 +116,34 @@ impl Operator for Select {
     }
 
     fn run(&self, inputs: &[Arc<Table>], _context: &ExecContext) -> Result<Table, OperatorError> {
+        self.run_globals(inputs, &dms_clem::GlobalValues::default())
+    }
+
+    fn produce_with_globals(
+        &self,
+        inputs: &[Arc<Table>],
+        _model: Option<Arc<dms_pmml::Pmml>>,
+        _context: &ExecContext,
+        globals: &mut dms_clem::GlobalValues,
+    ) -> Result<crate::output::NodeOutput, OperatorError> {
+        self.run_globals(inputs, globals)
+            .map(|table| crate::output::NodeOutput::Data(Arc::new(table)))
+    }
+}
+
+impl Select {
+    fn run_globals(
+        &self,
+        inputs: &[Arc<Table>],
+        globals: &dms_clem::GlobalValues,
+    ) -> Result<Table, OperatorError> {
         let input = inputs
             .first()
             .ok_or_else(|| OperatorError::Inputs("Select needs one input".into()))?;
-        let truths = self.condition.bind(input.model())?.truths(input.rows())?;
+        let truths = self
+            .condition
+            .bind(input.model(), globals)?
+            .truths(input.rows())?;
         let kept = input
             .rows()
             .iter()

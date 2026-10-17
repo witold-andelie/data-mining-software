@@ -17,7 +17,8 @@ commands:
                                   nodes they use
   run <file.str> --out <dir> [--data-dir <dir>]...
                                   run the stream and write the data reaching each terminal node
-                                  to <dir>/<uid>.csv, with a report in <dir>/run.json";
+                                  to <dir>/<uid>.csv, with a report in <dir>/run.json
+                                  [--terminal-order <uid,...>] overrides saved terminal run order";
 
 /// Directory recursion bound for `coverage`.
 const MAX_DIRECTORY_DEPTH: usize = 32;
@@ -298,6 +299,7 @@ fn collect_streams(path: &Path, depth: usize, out: &mut Vec<PathBuf>) -> Result<
 /// what `cargo xtask oracle` exports from Modeler (`data/NN_<type>_<uid>.csv`).
 fn run(path: &Path, args: &[String]) -> Result<(), String> {
     let mut out = None;
+    let mut terminal_order = None;
     let mut data_dirs = Vec::new();
     let mut rest = args.iter();
     while let Some(flag) = rest.next() {
@@ -305,12 +307,30 @@ fn run(path: &Path, args: &[String]) -> Result<(), String> {
         match flag.as_str() {
             "--out" => out = Some(PathBuf::from(value)),
             "--data-dir" => data_dirs.push(PathBuf::from(value)),
+            "--terminal-order" => {
+                terminal_order = Some(value.split(',').map(str::to_string).collect::<Vec<_>>())
+            }
             other => return Err(format!("unknown option {other}")),
         }
     }
     let out = out.ok_or("run needs --out <dir>")?;
     let (archive, stream) = open(path)?;
     let plan = dms_exec::Plan::new(&stream);
+    let terminals = plan.terminals();
+    let run_order = match &terminal_order {
+        Some(order) => {
+            let uids: Vec<&str> = order.iter().map(String::as_str).collect();
+            let unique: std::collections::HashSet<&str> = uids.iter().copied().collect();
+            if unique.len() != terminals.len()
+                || unique.len() != uids.len()
+                || terminals.iter().any(|uid| !unique.contains(uid))
+            {
+                return Err("--terminal-order must list every terminal uid exactly once, separated by commas".into());
+            }
+            uids
+        }
+        None => plan.terminals_in_run_order(),
+    };
     let mut exported: Vec<&str> = Vec::new();
     for terminal in plan.terminals() {
         for input in plan.inputs_of(terminal) {
@@ -333,7 +353,29 @@ fn run(path: &Path, args: &[String]) -> Result<(), String> {
         // Export nodes write under the output directory, never over the stream's own paths.
         export_dir: Some(out.join("exports")),
     };
-    let results = plan.evaluate(&exported, &context);
+    let mut execution = plan
+        .execution()
+        .map_err(|e| format!("cannot initialize stream globals: {e:?}"))?;
+    let mut runs = Vec::new();
+    // Terminals run one by one only when one of them can change the globals later runs and
+    // the exports read; otherwise one evaluation computes each node once.
+    let sequential = terminal_order.is_some()
+        || plan
+            .nodes()
+            .iter()
+            .any(|node| node.catalog_id == Some("set_globals"));
+    let run_order = if sequential { run_order } else { Vec::new() };
+    for terminal in run_order {
+        let result = execution.evaluate(&[terminal], &context);
+        runs.push(match result.get(terminal) {
+            Some(Ok(_)) => json!({ "uid": terminal, "ok": true }),
+            Some(Err(error)) => json!({ "uid": terminal, "ok": false, "error": error.to_string() }),
+            None => json!({ "uid": terminal, "ok": false, "error": "not evaluated" }),
+        });
+    }
+    // The oracle exports terminal inputs only after all terminals have run. Re-evaluate
+    // readers here, with the final globals, including branches that failed in an earlier run.
+    let results = execution.evaluate(&exported, &context);
     std::fs::create_dir_all(&out).map_err(|e| format!("cannot create {}: {e}", out.display()))?;
     let mut report_ok = Vec::new();
     let mut report_failed = Vec::new();
@@ -374,6 +416,7 @@ fn run(path: &Path, args: &[String]) -> Result<(), String> {
         "exported": report_ok,
         "failed": report_failed,
         "root_causes": root_causes,
+        "runs": runs,
     });
     let text = serde_json::to_string_pretty(&report).map_err(|e| e.to_string())?;
     std::fs::write(out.join("run.json"), text + "\n")

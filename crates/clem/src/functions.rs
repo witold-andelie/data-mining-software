@@ -125,6 +125,11 @@ pub fn names() -> impl Iterator<Item = &'static str> {
     GROUPS
         .iter()
         .flat_map(|group| group.iter().map(|function| function.name))
+        .chain(
+            crate::GlobalStatistic::ALL
+                .into_iter()
+                .map(crate::GlobalStatistic::function),
+        )
 }
 
 fn first(args: &[Datum]) -> Result<Datum, ClemError> {

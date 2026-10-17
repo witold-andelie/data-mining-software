@@ -16,8 +16,7 @@
 //! values (`ValueSpec`) are reset since they may no longer hold.
 
 use super::field_util::{
-    bind, bind_condition, coerce_column, conditions, field_list, field_values, infer_storage,
-    parse_required, position,
+    coerce_column, conditions, field_list, field_values, infer_storage, parse_required, position,
 };
 use crate::context::ExecContext;
 use crate::error::OperatorError;
@@ -84,6 +83,27 @@ impl Operator for Filler {
     }
 
     fn run(&self, inputs: &[Arc<Table>], _context: &ExecContext) -> Result<Table, OperatorError> {
+        self.run_globals(inputs, &dms_clem::GlobalValues::default())
+    }
+
+    fn produce_with_globals(
+        &self,
+        inputs: &[Arc<Table>],
+        _model: Option<Arc<dms_pmml::Pmml>>,
+        _context: &ExecContext,
+        globals: &mut dms_clem::GlobalValues,
+    ) -> Result<crate::output::NodeOutput, OperatorError> {
+        self.run_globals(inputs, globals)
+            .map(|table| crate::output::NodeOutput::Data(Arc::new(table)))
+    }
+}
+
+impl Filler {
+    fn run_globals(
+        &self,
+        inputs: &[Arc<Table>],
+        globals: &dms_clem::GlobalValues,
+    ) -> Result<Table, OperatorError> {
         let input = inputs
             .first()
             .ok_or_else(|| OperatorError::Inputs("Filler needs one input".into()))?;
@@ -92,18 +112,22 @@ impl Operator for Filler {
         let mut replaced: Vec<(usize, Vec<Value>)> = Vec::new();
         for name in &self.fields {
             let current = position(model, name)?;
-            let replacement = bind(
+            let replacement = super::field_util::bind_with_globals(
                 "fillerReplaceExpression",
                 &self.replacement,
                 model,
                 Some(current),
+                globals,
+                false,
             )?;
             let condition = match &self.mode {
-                Mode::Conditional(expr) => Some(bind_condition(
+                Mode::Conditional(expr) => Some(super::field_util::bind_with_globals(
                     "fillerCondition",
                     expr,
                     model,
                     Some(current),
+                    globals,
+                    true,
                 )?),
                 _ => None,
             };

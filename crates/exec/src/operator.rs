@@ -31,6 +31,19 @@ pub trait Operator: Send + Sync {
     /// Produces the node's output data from its inputs (in link order).
     fn run(&self, inputs: &[Arc<Table>], context: &ExecContext) -> Result<Table, OperatorError>;
 
+    /// Produces output in a stream execution. The execution owns globals and passes them to
+    /// each terminal run; ordinary nodes keep their existing produce implementation.
+    fn produce_with_globals(
+        &self,
+        inputs: &[Arc<Table>],
+        model: Option<Arc<Pmml>>,
+        context: &ExecContext,
+        globals: &mut dms_clem::GlobalValues,
+    ) -> Result<NodeOutput, OperatorError> {
+        let _ = globals;
+        self.produce(inputs, model, context)
+    }
+
     /// Produces whatever the node produces. Data nodes keep the default; build nodes return a
     /// model and output nodes a document. `model` is the model of the build node linked to a
     /// model nugget, when that build node ran in this evaluation.
