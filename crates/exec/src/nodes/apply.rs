@@ -82,6 +82,10 @@ enum Kind {
     Neural,
     /// PCA/Factor: `$F-<model name>-<k>`, one real per factor (`models_next/factor_*`).
     Factor,
+    /// Anomaly Detection: `$O-Anomaly`, `$O-AnomalyIndex`, `$O-PeerGroup`, then `$O-Field-<k>`
+    /// and `$O-FieldImpact-<k>` for the `numAnomalyFields` largest contributions
+    /// (`models_next/anomaly_default`).
+    Anomaly,
 }
 
 pub fn build(node: &StreamNode) -> Result<Box<dyn Operator>, OperatorError> {
@@ -113,6 +117,7 @@ pub fn build(node: &StreamNode) -> Result<Box<dyn Operator>, OperatorError> {
         | "ApplyNetNode"
         | "ApplyNeuralNetSplitModelNode" => Kind::Neural,
         "ApplyPCANode" => Kind::Factor,
+        "ApplyAnomalyNode" => Kind::Anomaly,
         other => {
             return Err(OperatorError::Settings(format!(
                 "model nugget {other} is not supported yet"
@@ -129,6 +134,31 @@ pub fn build(node: &StreamNode) -> Result<Box<dyn Operator>, OperatorError> {
             "TwoStep outlier handling (excludeOutliers) is not supported yet".into(),
         ));
     }
+    let anomaly = if kind == Kind::Anomaly {
+        match settings::text(s, "anomalyScoreMethod")
+            .as_deref()
+            .map(str::trim)
+        {
+            None | Some("flagAndScore") => {}
+            Some(other) => {
+                return Err(OperatorError::Settings(format!(
+                    "anomaly scoring method {other} is not supported yet"
+                )));
+            }
+        }
+        if settings::flag(s, "discardRecords")?.unwrap_or(false) {
+            return Err(OperatorError::Settings(
+                "discarding records (discardRecords) is not supported yet".into(),
+            ));
+        }
+        Some(AnomalyOptions {
+            cutoff: settings::real(s, "model/cutoffValue")?,
+            fields: usize::try_from(settings::integer(s, "numAnomalyFields")?.unwrap_or(3))
+                .map_err(|_| OperatorError::Settings("numAnomalyFields is negative".into()))?,
+        })
+    } else {
+        None
+    };
     let model_name = settings::text(s, "modelName")
         .filter(|name| !name.trim().is_empty())
         .or_else(|| node.name.clone())
@@ -144,7 +174,9 @@ pub fn build(node: &StreamNode) -> Result<Box<dyn Operator>, OperatorError> {
             .or_else(|| {
                 node.containers
                     .iter()
-                    .find(|container| container.name.as_deref() == Some("PMML"))
+                    .find(|container| {
+                        matches!(container.name.as_deref(), Some("PMML" | "ANOMALY_XML"))
+                    })
                     .map(|container| container.member.clone())
             }),
         confidences: settings::flag(s, "calculateConfidences")?.unwrap_or(true),
@@ -161,7 +193,16 @@ pub fn build(node: &StreamNode) -> Result<Box<dyn Operator>, OperatorError> {
             && build_setting(s, "clusterLabelType").as_deref() == Some("NUMBER"),
         model_name,
         properties: node.properties_attachment.clone(),
+        anomaly,
     }))
+}
+
+/// The nugget's own Anomaly Detection settings.
+struct AnomalyOptions {
+    /// `model/cutoffValue`: the saved model's anomaly cutoff.
+    cutoff: Option<f64>,
+    /// `numAnomalyFields`: how many contributing fields each record reports.
+    fields: usize,
 }
 
 struct Apply {
@@ -179,6 +220,7 @@ struct Apply {
     model_name: String,
     /// Extension properties attachment (`scoring.isPrediction`, ...). Neural Net only.
     properties: Option<String>,
+    anomaly: Option<AnomalyOptions>,
 }
 
 /// A value of the nugget's `buildSettings/propertySetting` list (the build node's settings).
@@ -298,6 +340,25 @@ impl Apply {
                 .collect();
             return with_columns(input, columns);
         }
+        if let Some(options) = &self.anomaly {
+            let scores = input
+                .rows()
+                .iter()
+                .map(|row| {
+                    let record: Vec<PmmlValue> = row.iter().map(to_pmml).collect();
+                    scorer
+                        .score_anomaly(&record)
+                        .map_err(|error| OperatorError::Data(format!("model: {error}")))
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            let cutoff = match &pmml.model {
+                dms_pmml::Model::Clustering(model) => model.anomaly_cutoff,
+                _ => None,
+            }
+            .or(options.cutoff)
+            .ok_or_else(|| OperatorError::Data("the anomaly model has no cutoff".into()))?;
+            return with_columns(input, anomaly_columns(&scores, cutoff, options.fields));
+        }
         if self.kind == Kind::Neural {
             let options = neural_options(self.properties.as_deref(), context)?;
             let predictions = input
@@ -373,9 +434,10 @@ impl Apply {
         let (value_prefix, confidence_prefix, propensity_prefix) = match self.kind {
             Kind::Logistic | Kind::Linear => ("$L", "$LP", "$LRP"),
             Kind::Regression => ("$E", "$EC", "$ERP"),
-            Kind::Neural | Kind::Factor => {
+            Kind::Neural | Kind::Factor | Kind::Anomaly => {
                 return Err(OperatorError::Data(
-                    "neural network and factor score fields are not built on this path".into(),
+                    "neural network, factor and anomaly score fields are not built on this path"
+                        .into(),
                 ));
             }
             Kind::Rule | Kind::KMeans | Kind::TwoStep => ("$R", "$RC", "$RRP"),
@@ -434,6 +496,85 @@ impl Apply {
         }
         Ok(columns)
     }
+}
+
+/// A record is an anomaly when its index exceeds the cutoff (`anomaly_default`: the cutoff
+/// 1.37201 is the top training index 1.372014362108979 to six digits, and that record is `T`).
+/// Its fields are reported by decreasing contribution, the first input on a tie. A record the
+/// model screens out (an unseen category) gets nulls.
+fn anomaly_columns(
+    scores: &[Option<dms_pmml::AnomalyScore>],
+    cutoff: f64,
+    fields: usize,
+) -> Vec<Column> {
+    let flag = scores
+        .iter()
+        .map(|score| match score {
+            Some(score) => Value::string(if score.index > cutoff { "T" } else { "F" }),
+            None => Value::Null,
+        })
+        .collect();
+    let mut flag = column("$O-Anomaly", Storage::String, flag);
+    flag.field.measurement = Measurement::Flag;
+    let mut columns = vec![
+        flag,
+        column(
+            "$O-AnomalyIndex",
+            Storage::Real,
+            scores
+                .iter()
+                .map(|score| score.as_ref().map_or(Value::Null, |s| Value::Real(s.index)))
+                .collect(),
+        ),
+        column(
+            "$O-PeerGroup",
+            Storage::Integer,
+            scores
+                .iter()
+                .map(|score| {
+                    score.as_ref().map_or(Value::Null, |s| {
+                        i64::try_from(s.cluster + 1).map_or(Value::Null, Value::Integer)
+                    })
+                })
+                .collect(),
+        ),
+    ];
+    let ranked: Vec<Vec<(String, f64)>> = scores
+        .iter()
+        .map(|score| {
+            let mut ranked = score
+                .as_ref()
+                .map(|s| s.contributions.clone())
+                .unwrap_or_default();
+            ranked.sort_by(|a, b| b.1.total_cmp(&a.1));
+            ranked
+        })
+        .collect();
+    for k in 0..fields {
+        columns.push(column(
+            &format!("$O-Field-{}", k + 1),
+            Storage::String,
+            ranked
+                .iter()
+                .map(|r| {
+                    r.get(k)
+                        .map_or(Value::Null, |(name, _)| Value::string(name.as_str()))
+                })
+                .collect(),
+        ));
+        columns.push(column(
+            &format!("$O-FieldImpact-{}", k + 1),
+            Storage::Real,
+            ranked
+                .iter()
+                .map(|r| {
+                    r.get(k)
+                        .map_or(Value::Null, |(_, share)| Value::Real(*share))
+                })
+                .collect(),
+        ));
+    }
+    columns
 }
 
 fn column(name: &str, storage: Storage, values: Vec<Value>) -> Column {

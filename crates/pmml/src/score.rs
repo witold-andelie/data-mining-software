@@ -155,6 +155,19 @@ impl<'p> Scorer<'p> {
             .collect()
     }
 
+    /// The Anomaly Detection indices of a record ([`crate::clustering::AnomalyScore`]); `None`
+    /// when a categorical input has a category the training data did not have.
+    pub fn score_anomaly(
+        &self,
+        record: &[Value],
+    ) -> Result<Option<crate::AnomalyScore>, PmmlError> {
+        let env = self.prepare(record)?;
+        match &self.pmml.model {
+            Model::Clustering(model) => crate::clustering::score_anomaly(self.pmml, model, &env),
+            _ => Err(PmmlError::Score("the model is not an anomaly model".into())),
+        }
+    }
+
     /// Every target of a neural network, in `NeuralOutput` order. A missing input is a
     /// missing value on each target, not an error (`nn_missing_listwise`).
     pub fn score_neural(&self, record: &[Value]) -> Result<Vec<crate::NeuralTarget>, PmmlError> {

@@ -222,6 +222,7 @@ pub fn train(
             center: center.into_iter().map(six_digits).collect(),
             variances: Vec::new(),
             category_counts: Vec::new(),
+            mean_distance: None,
         })
         .collect();
     let header = ModelHeader {
@@ -256,6 +257,7 @@ pub fn train(
             fields: clustering_fields,
             clusters,
             missing_weights,
+            anomaly_cutoff: None,
         }),
     })
 }

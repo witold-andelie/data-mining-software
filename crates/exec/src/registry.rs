@@ -56,6 +56,7 @@ const BUILT_IN: &[(&str, Factory)] = &[
     ("linear", model_node),
     ("regression", model_node),
     ("pca_factor", model_node),
+    ("anomaly", model_node),
     ("feature_selection", model_node),
     ("binning", nodes::binning::build),
     ("set_to_flag", nodes::set_to_flag::build),

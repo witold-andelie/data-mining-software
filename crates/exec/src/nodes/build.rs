@@ -51,6 +51,7 @@ use crate::operator::{Arity, Operator};
 use crate::output::NodeOutput;
 use crate::settings;
 use dms_algo::Dataset;
+use dms_algo::anomaly::{self, AnomalyCutoff, AnomalySettings};
 use dms_algo::cart::{self, CartSettings, Impurity, MinSize};
 use dms_algo::chaid::{self, ChaidSettings, ChiSquare, Method};
 use dms_algo::factor::{self, FactorCount, FactorSettings};
@@ -81,6 +82,7 @@ pub fn build(node: &StreamNode) -> Result<Box<dyn Operator>, OperatorError> {
         "LinearRegression!spss.alm-extension" => Algorithm::Linear,
         "BuildRegressionNode" => Algorithm::Regression(regression_settings(node)?),
         "BuildPCANode" => Algorithm::Factor(factor_settings(node)?),
+        "BuildAnomalyNode" => Algorithm::Anomaly(anomaly_settings(node)?),
         other => {
             return Err(OperatorError::Settings(format!(
                 "training {other} is not implemented yet"
@@ -116,6 +118,8 @@ enum Algorithm {
     Regression(RegressionSpec),
     /// PCA/Factor settings and the custom input fields (`None`: the Type roles).
     Factor((FactorSettings, Option<Vec<String>>)),
+    /// Anomaly Detection settings and the custom input fields (`None`: the Type roles).
+    Anomaly((AnomalySettings, Option<Vec<String>>)),
 }
 
 type RegressionSpec = (LinearSettings, Option<String>, Option<Vec<String>>);
@@ -160,6 +164,12 @@ impl Operator for Build {
             let fields = cluster_inputs(&table, custom.as_deref())?;
             let pmml = factor::train(&table, &fields, settings)
                 .map_err(|error| OperatorError::Data(format!("PCA/Factor: {error}")))?;
+            return Ok(NodeOutput::Model(Arc::new(pmml)));
+        }
+        if let Algorithm::Anomaly((settings, custom)) = &self.algorithm {
+            let fields = cluster_inputs(&table, custom.as_deref())?;
+            let pmml = anomaly::train(&table, &fields, settings)
+                .map_err(|error| OperatorError::Data(format!("Anomaly: {error}")))?;
             return Ok(NodeOutput::Model(Arc::new(pmml)));
         }
         if let Algorithm::TwoStep((settings, custom)) = &self.algorithm {
@@ -216,7 +226,8 @@ impl Operator for Build {
             | Algorithm::TwoStep(_)
             | Algorithm::Logistic(_)
             | Algorithm::Regression(_)
-            | Algorithm::Factor(_) => {
+            | Algorithm::Factor(_)
+            | Algorithm::Anomaly(_) => {
                 return Err(OperatorError::Settings("clustering has no target".into()));
             }
         };
@@ -477,6 +488,74 @@ fn factor_settings(
         },
         custom,
     ))
+}
+
+/// Anomaly Detection (`BuildAnomalyNode`, `oracle/models_next/anomaly_default`): the cutoff
+/// method from the main settings, the expert settings only in expert mode (Modeler's defaults
+/// otherwise). Noise handling, no imputation and weights are rejected
+/// (`crates/algo/src/anomaly.rs`).
+fn anomaly_settings(
+    node: &StreamNode,
+) -> Result<(AnomalySettings, Option<Vec<String>>), OperatorError> {
+    let s = node.settings.as_ref();
+    let unsupported = |what: &str| {
+        OperatorError::Settings(format!("Anomaly Detection {what} is not supported yet"))
+    };
+    let count = |name: &str, default: i64| -> Result<usize, OperatorError> {
+        usize::try_from(settings::integer(s, name)?.unwrap_or(default))
+            .map_err(|_| unsupported(name))
+    };
+    let cutoff = match settings::text(s, "anomalyMethod").as_deref().map(str::trim) {
+        Some("perRecords") | None => {
+            AnomalyCutoff::Percent(settings::real(s, "perRecords")?.unwrap_or(1.0))
+        }
+        Some("numRecords") => AnomalyCutoff::Records(count("numRecords", 10)?),
+        Some("indexLevel") => AnomalyCutoff::Index(settings::real(s, "indexLevel")?.unwrap_or(2.0)),
+        Some(other) => return Err(unsupported(&format!("cutoff method {other}"))),
+    };
+    if settings::flag(s, "useWeight")?.unwrap_or(false)
+        || settings::flag(s, "useFrequency")?.unwrap_or(false)
+    {
+        return Err(unsupported("weights or frequencies"));
+    }
+    let expert = settings::flag(s, "expertMode")?.unwrap_or(false);
+    let mut anomaly_settings = AnomalySettings {
+        cutoff,
+        auto_groups: true,
+        min_groups: 1,
+        max_groups: 15,
+        groups: 10,
+        adjustment: 6.0,
+        name: (!settings::flag(s, "autoModelName")?.unwrap_or(true))
+            .then(|| settings::text(s, "modelName"))
+            .flatten()
+            .filter(|n| !n.trim().is_empty()),
+    };
+    if expert {
+        if settings::real(s, "noiseLevel")?.unwrap_or(0.0) != 0.0 {
+            return Err(unsupported("noise handling (noiseLevel)"));
+        }
+        if !settings::flag(s, "imputeMissValues")?.unwrap_or(true) {
+            return Err(unsupported("without imputation (imputeMissValues)"));
+        }
+        anomaly_settings.auto_groups = settings::flag(s, "autoPeerGroup")?.unwrap_or(true);
+        anomaly_settings.min_groups = count("minPeerGroups", 1)?;
+        anomaly_settings.max_groups = count("maxPeerGroups", 15)?;
+        anomaly_settings.groups = count("numPeerGroups", 10)?;
+        anomaly_settings.adjustment = settings::real(s, "adjustmentCoeff")?.unwrap_or(6.0);
+    }
+    let custom = if settings::flag(s, "autoModelFieldSelection")?.unwrap_or(true) {
+        None
+    } else {
+        Some(
+            settings::children(s, "modelInputFieldSelection", "field")
+                .into_iter()
+                .map(|f| f.text().trim().to_string())
+                .filter(|name| !name.is_empty())
+                .collect(),
+        )
+    };
+    Ok((anomaly_settings, custom))
 }
 
 fn kmeans_settings(
