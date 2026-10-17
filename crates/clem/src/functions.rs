@@ -183,6 +183,22 @@ fn char_arg(datum: &Datum) -> Result<char, ClemError> {
     }
 }
 
+/// CLEM's order of two comparable values: like `Value::total_cmp`, except that numbers compare
+/// by IEEE value, so `-0.0 = 0.0` (`ibm-demos/condlearn`: `PowerInc * @OFFSET(PowerInc, 1) < 0`
+/// is false when one factor is 0 and the product is -0.0).
+pub(crate) fn value_order(left: &Value, right: &Value) -> Ordering {
+    match (left, right) {
+        (Value::Integer(_) | Value::Real(_), Value::Integer(_) | Value::Real(_))
+            if !matches!((left, right), (Value::Integer(_), Value::Integer(_))) =>
+        {
+            let a = left.as_f64().unwrap_or(0.0);
+            let b = right.as_f64().unwrap_or(0.0);
+            a.partial_cmp(&b).unwrap_or_else(|| a.total_cmp(&b))
+        }
+        _ => left.total_cmp(right),
+    }
+}
+
 /// Total ordering across comparable CLEM values (numbers, strings, dates, times, timestamps).
 fn compare_values(left: &Value, right: &Value) -> Result<Ordering, ClemError> {
     let comparable = matches!(
@@ -196,7 +212,7 @@ fn compare_values(left: &Value, right: &Value) -> Result<Ordering, ClemError> {
             | (Value::Timestamp(_), Value::Timestamp(_))
     );
     if comparable {
-        Ok(left.total_cmp(right))
+        Ok(value_order(left, right))
     } else {
         Err(ClemError::Type(format!(
             "cannot compare {left:?} with {right:?}"
