@@ -17,19 +17,21 @@
 //!   Record order does not matter (`c50_boost_reverse` equals `c50_boost_tree`).
 //! - Hence a tree depends on the trial count: trees 1-3 of a 3-trial run differ from
 //!   those of a 4-trial run. `boostingTrials` 2 builds three trees.
-//! - Ordinal fields split as ordered binary cuts over their values in sorted order
-//!   (`ord` high < low < middle: `ord in {high, low}` versus `{middle}`).
+//! - Ordinal fields split as for single trees (`c50`).
 //!
-//! GAP (blocks training): the trial trees are grown on non-integer weights, the same
-//! unresolved weighted-tree learner as `c50_weight` (see `c50`). With the exact
-//! trial-2 weights our learner still splits two nodes Modeler leaves whole (`x <= 5`,
-//! and `x = 8` under `flag = T`), although neither the gains nor any error bound
-//! (weighted or by case count) explains it. Weighted trees also export leaves whose
-//! class distribution is all zero while their record count is kept, and from trial 3
-//! on the tree that reweights the cases is not always the exported one: in
-//! `c50_boost_tree` trial 3 the exported `blue, x <= 7 -> C` leaf reweights as `B`, and
-//! in `c50_boost_t10` trial 4 the exported leaf `flag = F, x > 7 -> B` reweights one
-//! value of `x` as `C`. Boosted rule sets stay rejected too.
+//! Trial trees are not case-weighted trees: `c50_weighted/c50_w2_default` grows a tree on
+//! trial 2's weights as case weights and splits `x <= 5` and `x = 8, flag = T`, which
+//! trial 2 leaves whole, and it merges same-class sibling leaves, which trials do not.
+//! With merging off and a minimum branch weight from 10 to 12 (instead of 2) our learner
+//! reproduces trial 2 of `c50_boost_tree` exactly; the oracles bound it only to
+//! (9.24, 12.475], so the rule behind it is a GAP.
+//!
+//! GAP (blocks training): from trial 3 on the exported trees prune more than that and
+//! carry all-zero class distributions on some leaves while keeping their record counts
+//! (also seen in `c50_weight`), and the tree that reweights the cases is not always the
+//! exported one: in `c50_boost_tree` trial 3 the exported `blue, x <= 7 -> C` leaf
+//! reweights as `B`, and in `c50_boost_t10` trial 4 the exported leaf `flag = F, x > 7
+//! -> B` reweights one value of `x` as `C`. Boosted rule sets stay rejected too.
 
 use crate::c50::C50Settings;
 use crate::{AlgoError, Dataset};
