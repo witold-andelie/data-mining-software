@@ -13,6 +13,13 @@
 //!   `Sex` over `Cholesterol`, mirror-image partitions; `c50_weight`: `flag` over
 //!   `noise`). GAP: `c50_weight` also picks `code` over the earlier `ord` on identical
 //!   partitions, likely last-bit rounding of Modeler's single-precision counts.
+//! - GAP costs (`c50_costs`, B->C 8, C->B 2): every node's score is the class of least
+//!   expected cost (ties to the parent's class) and the exported counts stay raw. The
+//!   kept `x <= 9` subtree under `amber, flag = T` is explained if a node's error bound
+//!   is computed on the number of errors and then scaled by their mean cost. Growth
+//!   changes too: at that node `x` passes the average-gain test only when classes are
+//!   weighted by cost, but neither row-sum nor column-sum class factors reproduce the
+//!   tree, so cost training stays rejected.
 //! - Case weights scaled to sum to the record count are implemented in the algorithm
 //!   (`C50Settings::weight_field`) but the node rejects `useWeight`. GAP (`c50_weight`):
 //!   besides the tie above, Modeler prunes the `x <= 9` split under `code = 3, flag = T`
