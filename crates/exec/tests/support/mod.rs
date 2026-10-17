@@ -309,6 +309,7 @@ pub fn collect_oracle_cases(types: &[&str]) -> Vec<OracleCase> {
         ("outputs", true),
         ("graphs", true),
         ("misc", true),
+        ("misc_next", true),
         ("team", false),
     ] {
         let dir = repo_root().join("oracle").join(label);
