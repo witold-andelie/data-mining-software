@@ -31,14 +31,15 @@
 //! terms, full factorial models, a non-zero cell `delta`, and scaling are rejected.
 //!
 //! Linear (`LinearRegression!spss.alm-extension`) is an extension node like C&R Tree: fields from
-//! `linreg.TargetField`/`linreg.InputFieldList` with `role_use`, `linreg.Intercept`. Only
-//! `linreg.VarSelectionMethod` `none` without `linreg.AutoDataPreparation` and weights trains;
-//! the rest is rejected (`dms_algo::linear`).
+//! `linreg.TargetField`/`linreg.InputFieldList` with `role_use`, `linreg.Intercept`; None or
+//! forward-stepwise selection by AICC, AdjustedRSquare or Fstatistics, Pin/Pout, custom step
+//! and effect limits, and Linear ADP. The default is ADP plus forward AICC (`dms_algo::linear`).
+//! A single Type Split field trains independent models after the Partition filter.
 //!
 //! Regression (`BuildRegressionNode`) reads the node XML: `method` (`enter` only),
 //! `includeConstant`, the field selections.
 //!
-//! Rejected until implemented: frequency and analysis weights, split models, boosting and
+//! Rejected until implemented: frequency and analysis weights, multiple split fields, boosting and
 //! bagging, the interactive builder, misclassification costs; for C&R Tree the overfit
 //! prevention set (Modeler draws it with its own random generator; CHAID ignores the setting,
 //! `models/chaid_default` trains on all records with 30% set), custom priors and ordered
@@ -53,7 +54,7 @@ use dms_algo::Dataset;
 use dms_algo::cart::{self, CartSettings, Impurity, MinSize};
 use dms_algo::chaid::{self, ChaidSettings, ChiSquare, Method};
 use dms_algo::kmeans::{self, KMeansSettings};
-use dms_algo::linear::{self, LinearSettings, Style};
+use dms_algo::linear::{self, LinearSettings, Selection, Style};
 use dms_algo::logistic::{self, LogisticSettings, Method as LogisticMethod, Procedure};
 use dms_algo::twostep::{self, Criterion, TwoStepSettings};
 use dms_pmml::Pmml;
@@ -193,7 +194,7 @@ impl Operator for Build {
                 .map_err(|error| OperatorError::Data(format!("C&R Tree: {error}")))?,
             Algorithm::Chaid => chaid::train(&dataset, &chaid_settings(&parameters)?)
                 .map_err(|error| OperatorError::Data(format!("CHAID: {error}")))?,
-            Algorithm::Linear => linear::train(&dataset, &linear_settings(&parameters)?)
+            Algorithm::Linear => train_linear(&dataset, &linear_settings(&parameters)?)
                 .map_err(|error| OperatorError::Data(format!("Linear: {error}")))?,
             Algorithm::KMeans(_)
             | Algorithm::TwoStep(_)
@@ -204,6 +205,126 @@ impl Operator for Build {
         };
         Ok(NodeOutput::Model(Arc::new(pmml)))
     }
+}
+
+/// Train independently within one Type Split field, after the partition filter. The team
+/// linear_regression stream has Class as Split; its terminal scores exercise all four groups.
+/// GAP: team row 161 (Meat, Cost=104.68) has a missing oracle prediction, despite finite
+/// inputs; our fitted model predicts 2.695437257275511. All 199 numeric oracle scores match.
+/// Cost exceeds Meat's training maximum 100.15, but unused Confection Before also exceeds
+/// its training range without a missing score. The split PMML export is empty. Need a probe
+/// exporting individual split models and scoring just-inside/outside selected and unused
+/// predictor bounds; do not invent a range restriction from one missing score.
+/// GAP: multiple split fields and empty/invalid split groups need oracle cases.
+fn train_linear(
+    dataset: &Dataset<'_>,
+    settings: &LinearSettings,
+) -> Result<Pmml, dms_algo::AlgoError> {
+    use dms_algo::AlgoError;
+    use dms_pmml::{
+        MiningFunction, MiningModel, MiningSegment, Model, ModelHeader, Predicate, Usage,
+    };
+    let splits: Vec<_> = dataset
+        .table
+        .model()
+        .fields()
+        .iter()
+        .enumerate()
+        .filter(|(_, f)| f.role == Role::Split)
+        .collect();
+    let (position, field) = match splits.as_slice() {
+        [] => return linear::train(dataset, settings),
+        [(position, field)] => (*position, *field),
+        _ => {
+            return Err(AlgoError::Unsupported(
+                "Linear with multiple split fields".into(),
+            ));
+        }
+    };
+    if dataset.inputs.contains(&position) || dataset.target == position {
+        return Err(AlgoError::Settings(
+            "Linear split field cannot also be an input or target".into(),
+        ));
+    }
+    if dataset.inputs.len() > 256
+        || dataset.table.row_count() > 1_000_000
+        || dataset
+            .table
+            .row_count()
+            .saturating_mul(dataset.table.model().len())
+            > 16_000_000
+    {
+        return Err(AlgoError::Data(
+            "Linear split limit: 256 inputs / 1000000 rows / 16000000 cells".into(),
+        ));
+    }
+    let mut groups = std::collections::BTreeMap::<String, Vec<Vec<dms_types::Value>>>::new();
+    for row in dataset.table.rows() {
+        let value = row
+            .get(position)
+            .filter(|v| !field.is_missing(v))
+            .ok_or_else(|| AlgoError::Unsupported("Linear missing split value".into()))?;
+        if groups.len() >= 128 && !groups.contains_key(&value.to_string()) {
+            return Err(AlgoError::Data("Linear limit: 128 split groups".into()));
+        }
+        groups
+            .entry(value.to_string())
+            .or_default()
+            .push(row.clone());
+    }
+    let mut segments = Vec::new();
+    for (value, rows) in groups {
+        let table = Table::new(dataset.table.model().clone(), rows)
+            .map_err(|e| AlgoError::Data(e.to_string()))?;
+        let mut pmml = linear::train(
+            &Dataset {
+                table: &table,
+                ..*dataset
+            },
+            settings,
+        )
+        .map_err(|e| AlgoError::Data(format!("split {}={value}: {e}", field.name)))?;
+        if let Model::GeneralRegression(m) = &mut pmml.model {
+            m.header.local_transformations = pmml.transformations;
+        }
+        segments.push(MiningSegment {
+            predicate: Predicate::Simple {
+                field: field.name.clone(),
+                operator: dms_pmml::Operator::Equal,
+                value: Some(value),
+            },
+            model: Box::new(pmml.model),
+        });
+    }
+    if segments.is_empty() {
+        return Err(AlgoError::Data("Linear has no split groups".into()));
+    }
+    let mut dictionary = dms_algo::data_dictionary(dataset);
+    dictionary.extend(dms_algo::data_field(dataset.table, position));
+    let mut schema = dms_algo::mining_schema(dataset);
+    schema.extend(dms_algo::mining_field(
+        dataset.table,
+        position,
+        Usage::Active,
+    ));
+    Ok(Pmml {
+        version: "4.3".into(),
+        data_dictionary: dictionary,
+        transformations: Vec::new(),
+        functions: Vec::new(),
+        model: Model::Mining(MiningModel {
+            header: ModelHeader {
+                name: settings.name.clone(),
+                function: MiningFunction::Regression,
+                algorithm: Some("ALM".into()),
+                mining_schema: schema,
+                output: Vec::new(),
+                local_transformations: Vec::new(),
+            },
+            method: "selectFirst".into(),
+            segments,
+        }),
+    })
 }
 
 impl Build {
@@ -576,20 +697,77 @@ fn roles(
     Ok((target, inputs))
 }
 
-/// Linear settings from the extension parameters; selection, data preparation and weights are
-/// not supported yet.
+/// Linear settings from the extension parameters; unsupported settings fail explicitly.
 fn linear_settings(p: &Parameters) -> Result<LinearSettings, OperatorError> {
-    let method = p.text("linreg.VarSelectionMethod").unwrap_or_default();
-    if !(method.is_empty() || method == "none") {
-        return Err(OperatorError::Settings(format!(
-            "Linear model selection {method:?} is not supported yet"
-        )));
+    for (key, expected) in [
+        ("linreg.MaxCategoryNumber", "1000"),
+        ("linreg.IsOutRegModel", "false"),
+    ] {
+        if p.text(key).is_some_and(|v| v != expected) {
+            return Err(OperatorError::Settings(format!(
+                "Linear custom {key} is not supported yet"
+            )));
+        }
     }
-    if p.flag("linreg.AutoDataPreparation")? {
+    let selection = match p.text("linreg.VarSelectionMethod").as_deref() {
+        Some("none") => Selection::None,
+        None | Some("") | Some("forwardStepwise") => {
+            match p.text("linreg.CriteriaForForwardStepwise").as_deref() {
+                None | Some("") | Some("AICC") => Selection::Aicc,
+                Some("Fstatistics") => Selection::FStatistics,
+                Some("AdjustedRSquare") => Selection::AdjustedRSquare,
+                Some(other) => {
+                    return Err(OperatorError::Settings(format!(
+                        "Linear forward criterion {other:?} is not supported yet (ASE needs an overfit prevention set)"
+                    )));
+                }
+            }
+        }
+        Some(other) => {
+            return Err(OperatorError::Settings(format!(
+                "Linear model selection {other:?} is not supported yet"
+            )));
+        }
+    };
+    let auto = match p.text("linreg.AutoDataPreparation").as_deref() {
+        None => true,
+        _ => p.flag("linreg.AutoDataPreparation")?,
+    };
+    let preparation = if auto {
+        Some(linear_adp_settings(p)?)
+    } else {
+        None
+    };
+    for (key, required) in [
+        ("linreg.ListwiseDeletion", "true"),
+        ("linreg.ExcludeUserMissing", "true"),
+    ] {
+        if p.text(key).is_some_and(|v| v != required) {
+            return Err(OperatorError::Settings(format!(
+                "Linear {key} other than {required} is not supported yet"
+            )));
+        }
+    }
+    if !p.list("linreg.EffectList").is_empty()
+        || p.text("linreg.EffectList").is_some_and(|v| !v.is_empty())
+    {
         return Err(OperatorError::Settings(
-            "Linear automatic data preparation is not supported yet".into(),
+            "Linear custom/interaction effects are not supported yet".into(),
         ));
     }
+    let limit = |flag: &str, key: &str, max: usize| -> Result<Option<usize>, OperatorError> {
+        if !p.flag(flag)? {
+            return Ok(None);
+        }
+        let value = p
+            .text(key)
+            .and_then(|v| v.parse::<usize>().ok())
+            .filter(|n| *n > 0 && *n <= max)
+            .ok_or_else(|| {
+                OperatorError::Settings(format!("Linear {key} must be an integer in 1..={max}"))
+            })?;
+        Ok(Some(value))
+    };
     for weight in [
         "linreg.RegressionWeightField",
         "linreg.FrequencyWeightField",
@@ -607,7 +785,120 @@ fn linear_settings(p: &Parameters) -> Result<LinearSettings, OperatorError> {
     Ok(LinearSettings {
         style: Style::Linear,
         intercept,
+        selection,
+        preparation,
+        pin: p.real("linreg.PIn")?.unwrap_or(0.05),
+        pout: p.real("linreg.POut")?.unwrap_or(0.1),
+        entry_tolerance: p.real("linreg.EffectEntryTolerance")?.unwrap_or(1e-4),
+        max_steps: limit("linreg.UseCustomMaxSteps", "linreg.MaxSteps", 10000)?,
+        max_effects: limit("linreg.UseCustomMaxEffects", "linreg.MaxEffects", 256)?,
         name: None,
+    })
+}
+
+/// ALM uses only the preparation subset observed in the Linear probes. Standalone ADP's
+/// saved rescaling/target/selection defaults do not activate those operations in ALM.
+fn linear_adp_settings(p: &Parameters) -> Result<dms_algo::adp::AdpSettings, OperatorError> {
+    for (key, value) in [
+        ("adp.outliersOperation", "coerceToCutoffVal"),
+        ("adp.scaleFeatureRescalingMethod", "zScore"),
+    ] {
+        if p.text(key).is_some_and(|v| v != value) {
+            return Err(OperatorError::Settings(format!(
+                "Linear {key} other than {value} is not supported yet"
+            )));
+        }
+    }
+    for key in [
+        "adp.analysisWeight",
+        "adp.FrequencyWeightField",
+        "adp.targetfield",
+    ] {
+        if p.text(key).is_some_and(|v| !v.is_empty()) {
+            return Err(OperatorError::Settings(format!(
+                "Linear {key} is not supported yet"
+            )));
+        }
+    }
+    if !p.list("adp.inputfields").is_empty() {
+        return Err(OperatorError::Settings(
+            "Linear custom ADP inputs are not supported yet".into(),
+        ));
+    }
+    // Reject custom settings for operations whose defaults ALM overrides, or which the
+    // current preparation subset cannot apply. Dates/missing/recasting fail on affected data.
+    for (key, expected) in [
+        ("adp.trimBlanks", true),
+        ("adp.checkFeatureMeasureLevel", true),
+        ("adp.checkTargetMeasureLevel", true),
+        ("adp.featureSelection", true),
+        ("adp.featureConstruction", true),
+        ("adp.supervisedBinning", true),
+        ("adp.rescaleScaleTargetUsingBoxCox", true),
+        ("adp.detectTargetOutliers", true),
+        ("adp.reorderNominalCatsPriorToMerging", true),
+        ("adp.reorderNominalTargetCategories", true),
+        ("adp.excludeAlmostConstantCatFeature", false),
+        ("adp.excludeFeatureIfHasManyUniqueCatogories", true),
+        (
+            "adp.excludeFeatureIfHasHigherPercentageOfMissingValue",
+            true,
+        ),
+        ("adp.replaceScaleFeaturesMissingValue", true),
+        ("adp.replaceNominalFeaturesMissingValue", true),
+        ("adp.replaceOrdinalFeaturesMissingValue", true),
+        ("adp.replaceScaleTargetMissingValue", true),
+        ("adp.replaceNominalTargetMissingValue", true),
+        ("adp.replaceOrdinalTargetMissingValue", true),
+        ("adp.unsupervisedMergeNominal", true),
+        ("adp.unsupervisedMergeOrdinal", true),
+    ] {
+        if p.text(key).is_some() && p.flag(key)? != expected {
+            return Err(OperatorError::Settings(format!(
+                "Linear custom {key} is not supported yet"
+            )));
+        }
+    }
+    for (key, expected) in [
+        ("adp.maxPercentageOfMissingvalue", 50.0),
+        ("adp.maxNOfUniqueCategories", 100.0),
+        ("adp.scaleToOrdinalValuesNumThreshold", 5.0),
+        ("adp.ordinalToScaleCategoriesNumThreshold", 10.0),
+        ("adp.catFeatureScreenThreshold", 95.0),
+        ("adp.zScore_mean", 0.0),
+        ("adp.zScore_SD", 1.0),
+        ("adp.minMax_min", 0.0),
+        ("adp.minMax_max", 100.0),
+        ("adp.targetMean", 0.0),
+        ("adp.targetSD", 1.0),
+        ("adp.featureSelectionPValue", 0.05),
+        ("adp.homogeneousSubsetsPValue", 0.05),
+        ("adp.supervisedMergingPValue", 0.05),
+        ("adp.unsupervisedMergingMinPercentageOfCases", 10.0),
+        ("adp.adjustThreshold", 0.0),
+    ] {
+        if p.real(key)?.is_some_and(|v| v != expected) {
+            return Err(OperatorError::Settings(format!(
+                "Linear custom {key} is not supported yet"
+            )));
+        }
+    }
+    let defaults = dms_algo::adp::AdpSettings::default();
+    Ok(dms_algo::adp::AdpSettings {
+        outliers: if p.text("adp.detectFeatureOutliers").is_some() {
+            p.flag("adp.detectFeatureOutliers")?
+        } else {
+            defaults.outliers
+        },
+        cutoff: p.real("adp.outlierIdentCutoff")?.unwrap_or(defaults.cutoff),
+        merge: if p.text("adp.supervisedMerging").is_some() {
+            p.flag("adp.supervisedMerging")?
+        } else {
+            defaults.merge
+        },
+        // ALM's threshold is .1, despite the standalone ADP default .05 in its attachment.
+        merge_alpha: defaults.merge_alpha,
+        suffix: p.text("adp.nameExtForInputs").unwrap_or(defaults.suffix),
     })
 }
 
@@ -645,6 +936,7 @@ fn regression_settings(node: &StreamNode) -> Result<RegressionSpec, OperatorErro
             style: Style::Regression,
             intercept: settings::flag(s, "includeConstant")?.unwrap_or(true),
             name,
+            ..LinearSettings::default()
         },
         target,
         inputs,
@@ -842,5 +1134,73 @@ impl Parameters {
                 })
             })
             .transpose()
+    }
+}
+
+#[cfg(test)]
+mod linear_tests {
+    use super::*;
+
+    fn parameters(entries: &[(&str, &str)]) -> Parameters {
+        Parameters {
+            values: entries
+                .iter()
+                .map(|(k, v)| (k.to_string(), Parameter::Value(v.to_string())))
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn linear_defaults_and_custom_selection_limits() {
+        let s = linear_settings(&parameters(&[])).unwrap();
+        assert_eq!(s.selection, Selection::Aicc);
+        assert_eq!(s.preparation.unwrap().merge_alpha, 0.1);
+        let s = linear_settings(&parameters(&[
+            ("linreg.AutoDataPreparation", "false"),
+            ("linreg.CriteriaForForwardStepwise", "Fstatistics"),
+            ("linreg.PIn", "0.02"),
+            ("linreg.POut", "0.2"),
+            ("linreg.UseCustomMaxSteps", "true"),
+            ("linreg.MaxSteps", "4"),
+            ("linreg.UseCustomMaxEffects", "true"),
+            ("linreg.MaxEffects", "2"),
+        ]))
+        .unwrap();
+        assert_eq!(s.selection, Selection::FStatistics);
+        assert_eq!((s.pin, s.pout), (0.02, 0.2));
+        assert_eq!((s.max_steps, s.max_effects), (Some(4), Some(2)));
+        assert!(s.preparation.is_none());
+        assert_eq!(
+            linear_settings(&parameters(&[(
+                "linreg.CriteriaForForwardStepwise",
+                "AdjustedRSquare"
+            )]))
+            .unwrap()
+            .selection,
+            Selection::AdjustedRSquare
+        );
+    }
+
+    #[test]
+    fn unimplemented_and_malformed_linear_settings_fail() {
+        for entries in [
+            vec![("linreg.VarSelectionMethod", "bestSubsets")],
+            vec![("linreg.CriteriaForForwardStepwise", "ASE")],
+            vec![("linreg.AutoDataPreparation", "yes")],
+            vec![("adp.supervisedMergingPValue", "0.2")],
+            vec![
+                ("linreg.UseCustomMaxSteps", "true"),
+                ("linreg.MaxSteps", "18446744073709551616"),
+            ],
+            vec![
+                ("linreg.UseCustomMaxEffects", "true"),
+                ("linreg.MaxEffects", "-1"),
+            ],
+        ] {
+            assert!(
+                linear_settings(&parameters(&entries)).is_err(),
+                "{entries:?}"
+            );
+        }
     }
 }

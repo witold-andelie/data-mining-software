@@ -4,7 +4,7 @@
 
 | Scope | Implemented | Total |
 |---|---|---|
-| MVP | 39 | 90 |
+| MVP | 40 | 90 |
 | later | 0 | 23 |
 | out of scope | 0 | 34 |
 
@@ -109,7 +109,7 @@
 | QUEST | `quest` | MVP | missing | `BuildQuestNode`, `ApplyQuestRuleNode`, `ApplyQuestSplitModelNode`, `Quest!spss.tree-extension` |
 | Random Trees | `random_trees` | MVP | missing | (unmapped) |
 | Decision List | `decision_list` | MVP | missing | `BuildDecisionListNode`, `ApplyDecisionListNode`, `ApplyDecisionListSplitModelNode` |
-| Linear | `linear` | MVP | missing | `LinearRegression!spss.alm-extension`, `ApplyLinearRegressionSplitModelNode` |
+| Linear | `linear` | MVP | done | `LinearRegression!spss.alm-extension`, `ApplyLinearRegressionSplitModelNode` |
 | Regression | `regression` | MVP | done | `BuildRegressionNode`, `ApplyRegressionNode` |
 | Logistic | `logistic` | MVP | done | `BuildLogisticNode`, `ApplyLogisticNode`, `ApplyLogisticSplitModelNode` |
 | GenLin | `genlin` | MVP | missing | `spss.generalizedlinear_id!buildgeneralizedlinear` |
