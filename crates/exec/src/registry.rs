@@ -15,6 +15,7 @@ const BUILT_IN: &[(&str, Factory)] = &[
     ("anonymize", nodes::anonymize::build),
     ("partition", nodes::partition::build),
     ("restructure", nodes::restructure::build),
+    ("rfm_aggregate", nodes::rfm_aggregate::build),
     ("rfm_analysis", nodes::rfm_analysis::build),
     ("var_file", nodes::var_file::build),
     ("fixed_file", nodes::fixed_file::build),
