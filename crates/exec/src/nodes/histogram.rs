@@ -27,7 +27,7 @@
 //!
 //! GAP: null values (no probe has them) are left out.
 
-use super::graph_data::{category_text, java_double};
+use super::graph_data::{BinSettings, category_text, java_double};
 use crate::context::ExecContext;
 use crate::error::OperatorError;
 use crate::operator::{Arity, Operator};
@@ -37,16 +37,11 @@ use dms_stream::StreamNode;
 use dms_types::{Table, Value};
 use std::sync::Arc;
 
-/// Bins drawn at most (`graphNumBins` and the bins a width yields).
-const MAX_BINS: usize = 10_000;
-
 struct Histogram {
     field: String,
     overlay: Option<String>,
     normalize: bool,
-    bins: usize,
-    width: Option<f64>,
-    range: Option<(f64, f64)>,
+    binning: BinSettings,
 }
 
 pub fn build(node: &StreamNode) -> Result<Box<dyn Operator>, OperatorError> {
@@ -59,40 +54,12 @@ pub fn build(node: &StreamNode) -> Result<Box<dyn Operator>, OperatorError> {
     let field = settings::text(s, "graphXField")
         .filter(|f| !f.trim().is_empty())
         .ok_or_else(|| OperatorError::Settings("Histogram: no field (graphXField)".into()))?;
-    let bins = settings::integer(s, "graphNumBins")?
-        .and_then(|n| usize::try_from(n).ok())
-        .filter(|&n| (1..=MAX_BINS).contains(&n))
-        .unwrap_or(25);
-    let width = if settings::flag(s, "graphBinByWidth")?.unwrap_or(false) {
-        let width = settings::real(s, "graphBinWidth")?.unwrap_or(1.0);
-        if !(width.is_finite() && width > 0.0) {
-            return Err(OperatorError::Settings(format!(
-                "Histogram bin width {width} must be positive"
-            )));
-        }
-        Some(width)
-    } else {
-        None
-    };
-    let range = if settings::flag(s, "automaticRangeX")?.unwrap_or(true) {
-        None
-    } else {
-        let low = settings::real(s, "userDefinedRangeXMin")?.unwrap_or(0.0);
-        let high = settings::real(s, "userDefinedRangeXMax")?.unwrap_or(0.0);
-        if !(low.is_finite() && high.is_finite() && low < high) {
-            return Err(OperatorError::Settings(format!(
-                "Histogram range {low}..{high} is empty"
-            )));
-        }
-        Some((low, high))
-    };
+    let binning = BinSettings::read(s, "Histogram")?;
     Ok(Box::new(Histogram {
         field,
         overlay: settings::text(s, "graphColorField").filter(|f| !f.trim().is_empty()),
         normalize: settings::flag(s, "graphNormalizeData")?.unwrap_or(false),
-        bins,
-        width,
-        range,
+        binning,
     }))
 }
 
@@ -145,7 +112,7 @@ impl Operator for Histogram {
             };
             points.push((value, colour));
         }
-        let (low, high) = match self.range {
+        let (low, high) = match self.binning.range {
             Some(range) => range,
             None => points
                 .iter()
@@ -163,34 +130,16 @@ impl Operator for Histogram {
                 colours.push(c.clone());
             }
         }
-        let (start, width, bins) = if points.is_empty() || !low.is_finite() {
-            (0.0, 0.0, 0)
+        let bins = if points.is_empty() || !low.is_finite() {
+            None
         } else {
-            match self.width {
-                Some(width) => {
-                    let start = (low / width).floor() * width;
-                    let bins = ((high - start) / width).floor() + 1.0;
-                    if !(bins.is_finite() && bins <= MAX_BINS as f64) {
-                        return Err(OperatorError::Data(format!(
-                            "Histogram bin width {width} gives too many bins"
-                        )));
-                    }
-                    (start, width, bins as usize)
-                }
-                None => {
-                    let width = (low + (high - low) / self.bins as f64) - low;
-                    (low, width, self.bins)
-                }
-            }
+            Some(self.binning.bins(low, high)?)
         };
+        let count = bins.map_or(0, |b| b.count);
         let slots = colours.len().max(1);
-        let mut counts = vec![0.0; bins * slots];
+        let mut counts = vec![0.0; count * slots];
         for (value, colour) in &points {
-            let bin = if width > 0.0 {
-                (((value - start) / width).floor().max(0.0) as usize).min(bins.saturating_sub(1))
-            } else {
-                0
-            };
+            let bin = bins.map_or(0, |b| b.index(*value));
             let slot = colour
                 .as_ref()
                 .and_then(|c| colours.iter().position(|k| k == c))
@@ -212,14 +161,9 @@ impl Operator for Histogram {
         let mut rows = Vec::with_capacity(counts.len());
         // Edges accumulate (`edge += width`); a bin's centre is the midpoint of its edges, and
         // with a number of bins the last edge is the maximum itself.
-        let mut edge = start;
-        for bin in 0..bins {
-            let mut next = edge + width;
-            if self.width.is_none() && bin + 1 == bins {
-                next = high;
-            }
-            let centre = java_double((edge + next) / 2.0);
-            edge = next;
+        let centres = bins.map(|b| b.centres()).unwrap_or_default();
+        for (bin, centre) in centres.into_iter().enumerate() {
+            let centre = java_double(centre);
             let cells = &counts[bin * slots..(bin + 1) * slots];
             let total: f64 = cells.iter().sum();
             if overlay.is_none() {

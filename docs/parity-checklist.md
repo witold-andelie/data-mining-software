@@ -4,7 +4,7 @@
 
 | Scope | Implemented | Total |
 |---|---|---|
-| MVP | 45 | 90 |
+| MVP | 47 | 90 |
 | later | 0 | 23 |
 | out of scope | 0 | 34 |
 
@@ -86,10 +86,10 @@
 | Graphboard | `graphboard` | MVP | missing | `GraphBoardNode` |
 | Plot | `plot` | MVP | done | `ScatterPlotNode` |
 | Multiplot | `multiplot` | MVP | done | `MultiPlotNode` |
-| Time Plot | `time_plot` | MVP | missing | `TimePlotNode` |
+| Time Plot | `time_plot` | MVP | done | `TimePlotNode` |
 | Distribution | `distribution` | MVP | done | `DistributionNode` |
 | Histogram | `histogram` | MVP | done | `HistogramNode` |
-| Collection | `collection` | MVP | missing | `CollectionNode` |
+| Collection | `collection` | MVP | done | `CollectionNode` |
 | Web | `web` | MVP | missing | `WebNode` |
 | Evaluation | `evaluation` | MVP | missing | `EvaluationNode` |
 | E-Plot | `eplot` | later | missing | `EPlotNode` |

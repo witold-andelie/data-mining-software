@@ -48,7 +48,14 @@ fn parse_vizml(text: &str) -> Document {
 #[test]
 fn graph_nodes_match_modelers_graph_data() {
     support::check_oracle_cases(
-        &["distribution", "histogram", "plot", "multiplot"],
+        &[
+            "distribution",
+            "histogram",
+            "plot",
+            "multiplot",
+            "timeplot",
+            "collection",
+        ],
         |_, text| parse_vizml(text),
     );
 }
