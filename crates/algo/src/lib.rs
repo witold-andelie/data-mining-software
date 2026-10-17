@@ -7,6 +7,7 @@
 //! `D:\spss-modeler\rea-work\ibm-docs\AlgorithmsGuide.txt` locally). Where the guide leaves a
 //! choice open, the decision is marked `GAP:` and settled against the oracle.
 
+pub mod adp;
 pub mod cart;
 pub mod chaid;
 mod common;

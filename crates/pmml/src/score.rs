@@ -63,7 +63,7 @@ pub(crate) fn bind<'a>(pmml: &'a Pmml, inputs: &[&str]) -> Result<Scorer<'a>, Pm
             }
         }
     }
-    collect_model_fields(&pmml.model, &mut needed);
+    collect_model_fields(&pmml.model, &mut needed, &pmml.functions, 0)?;
 
     // Propagate dependencies backward through derived fields so chains `d2 -> d1 -> input` resolve.
     for df in all_derived.iter().rev() {
@@ -323,6 +323,16 @@ fn score_mining(pmml: &Pmml, mining: &MiningModel, env: &Env<'_>) -> Result<Pred
                 let treated = apply_treatments(current, &mf.name, df, Some(mf))?;
                 inner_env.insert(mf.name.as_str(), treated);
             }
+            // Each split model owns its preparation statistics and derived-field scope.
+            for df in &header.local_transformations {
+                let value = coerce_derived_value(
+                    expr::eval(&df.expr, &inner_env, &pmml.functions, &[], 0)?,
+                    df,
+                );
+                let mf = header.mining_schema.iter().find(|m| m.name == df.name);
+                let treated = apply_treatments(value, &df.name, None, mf)?;
+                inner_env.insert(df.name.as_str(), treated);
+            }
         }
         return match segment.model.as_ref() {
             Model::GeneralRegression(reg) => {
@@ -408,7 +418,17 @@ pub(crate) fn empty_prediction() -> Prediction {
     }
 }
 
-fn collect_model_fields<'a>(model: &'a Model, out: &mut HashSet<&'a str>) {
+fn collect_model_fields<'a>(
+    model: &'a Model,
+    out: &mut HashSet<&'a str>,
+    functions: &'a [DefineFunction],
+    depth: usize,
+) -> Result<(), PmmlError> {
+    if depth > 64 {
+        return Err(PmmlError::Parse(
+            "model nesting depth limit exceeded".into(),
+        ));
+    }
     match model {
         Model::Tree(tree) => collect_node_fields(&tree.root, out),
         Model::Clustering(clustering) => {
@@ -440,11 +460,27 @@ fn collect_model_fields<'a>(model: &'a Model, out: &mut HashSet<&'a str>) {
         Model::Mining(mining) => {
             for segment in &mining.segments {
                 collect_predicate_fields(&segment.predicate, out);
-                collect_model_fields(&segment.model, out);
+                let mut local = HashSet::new();
+                collect_model_fields(&segment.model, &mut local, functions, depth + 1)?;
+                if let Some(h) = model_header(&segment.model) {
+                    for mf in &h.mining_schema {
+                        if mf.usage == Usage::Active {
+                            local.insert(mf.name.as_str());
+                        }
+                    }
+                    for df in &h.local_transformations {
+                        collect_expr_fields(&df.expr, functions, &[], &mut local, 0)?;
+                    }
+                    for df in &h.local_transformations {
+                        local.remove(df.name.as_str());
+                    }
+                }
+                out.extend(local);
             }
         }
         Model::Unsupported(_) => {}
     }
+    Ok(())
 }
 
 fn collect_node_fields<'a>(node: &'a Node, out: &mut HashSet<&'a str>) {
@@ -507,4 +543,62 @@ fn collect_expr_fields<'a>(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::{Pmml, Value};
+
+    #[test]
+    fn split_local_transformations_have_independent_scopes() {
+        let segment = |group, multiplier| {
+            format!(
+                r#"
+          <Segment><SimplePredicate field="group" operator="equal" value="{group}"/>
+            <RegressionModel functionName="regression">
+              <MiningSchema><MiningField name="x"/><MiningField name="y" usageType="target"/></MiningSchema>
+              <LocalTransformations>
+                <DerivedField name="x_transformed" dataType="double" optype="continuous">
+                  <Apply function="*"><FieldRef field="x"/><Constant>{multiplier}</Constant></Apply>
+                </DerivedField>
+                <DerivedField name="chained" dataType="double" optype="continuous">
+                  <Apply function="+"><FieldRef field="x_transformed"/><Constant>1</Constant></Apply>
+                </DerivedField>
+              </LocalTransformations>
+              <RegressionTable intercept="0"><NumericPredictor name="chained" coefficient="1"/></RegressionTable>
+            </RegressionModel>
+          </Segment>"#
+            )
+        };
+        let xml = format!(
+            r#"<PMML version="4.3"><DataDictionary>
+          <DataField name="group" dataType="string" optype="categorical"/>
+          <DataField name="x" dataType="double" optype="continuous"/>
+          <DataField name="y" dataType="double" optype="continuous"/>
+          </DataDictionary><MiningModel functionName="regression">
+          <MiningSchema><MiningField name="group"/><MiningField name="x"/></MiningSchema>
+          <Segmentation multipleModelMethod="selectFirst">{}{}</Segmentation>
+          </MiningModel></PMML>"#,
+            segment("A", 2),
+            segment("B", 3)
+        );
+        let pmml = Pmml::parse(&xml).unwrap();
+        let scorer = pmml.bind(&["group", "x"]).unwrap();
+        for (group, expected) in [("A", 9.0), ("B", 13.0), ("A", 9.0)] {
+            assert_eq!(
+                scorer
+                    .score(&[Value::Text(group.into()), Value::Number(4.0)])
+                    .unwrap()
+                    .value,
+                Value::Number(expected)
+            );
+        }
+        assert_eq!(
+            scorer
+                .score(&[Value::Text("unknown".into()), Value::Number(4.0)])
+                .unwrap()
+                .value,
+            Value::Missing
+        );
+    }
 }
