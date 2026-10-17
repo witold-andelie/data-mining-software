@@ -4,7 +4,7 @@
 
 | Scope | Implemented | Total |
 |---|---|---|
-| MVP | 55 | 90 |
+| MVP | 56 | 90 |
 | later | 0 | 23 |
 | out of scope | 0 | 34 |
 
@@ -68,7 +68,7 @@
 | Anonymize | `anonymize` | MVP | done | `AnonymizeNode` |
 | Reclassify | `reclassify` | MVP | done | `ReclassifyNode` |
 | Binning | `binning` | MVP | done | `BinningNode` |
-| RFM Analysis | `rfm_analysis` | MVP | missing | `RFMAnalysisNode` |
+| RFM Analysis | `rfm_analysis` | MVP | done | `RFMAnalysisNode` |
 | Partition | `partition` | MVP | done | `PartitionNode` |
 | Set to Flag | `set_to_flag` | MVP | done | `SetToFlagNode` |
 | Restructure | `restructure` | MVP | done | `RestructureNode` |
