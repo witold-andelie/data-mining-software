@@ -36,13 +36,14 @@
 //!   each weight keeps six significant digits, then all are scaled to sum to the
 //!   record count. Probe `c50_weighted_streams` (weights of boosting trial 2, subsets,
 //!   pruning settings) reproduces those trees exactly.
-//! - GAP global pruning (`c50_weight`, `c50_cw_sev50`): it removes `red, code = 3,
-//!   flag = T`'s `x <= 9` split (bound margin 2.21, resubstitution +3.11 for one leaf)
-//!   yet keeps `code = 1, x > 11`'s flag split (margin 2.14, also +3.11), so it is no
-//!   fixed margin, no margin per record, and no weakest-link (cost-complexity) pruning
-//!   within one standard error, by bounds or by resubstitution, on our tree or on
-//!   Modeler's own local-only tree (`c50_cw_noglobal`). Unweighted trees fit the 0.5
-//!   slack.
+//! - Pruning (probe `c50_globalprune_streams`, 110 trees exact): local pruning collapses a
+//!   subtree whose error bound is not lower than its leaf's by more than 0.1; global
+//!   pruning is weakest-link pruning on training errors counted in records (costs under
+//!   misclassification costs), see [`global_prune`]. Plain multiway splits have a branch
+//!   for every declared value, and a nominal field with too many values is never used
+//!   (see [`MANY_VALUES`]). GAP `c50_weight`, `c50_cw_sev50`: global pruning there
+//!   removes `red, code = 3, flag = T`'s `x <= 9` split but keeps `code = 1, x > 11`'s
+//!   flag split, which have equal weakest links; likely tied to the zero distributions.
 //! - GAP zero distributions: with case weights Modeler exports some leaves with all
 //!   class counts 0 but their record count kept, sums them into their ancestors, and
 //!   scores them with confidence 0. Smallest case `c50_weighted/c50_rc1_x6_10` (12
@@ -53,9 +54,7 @@
 //!   removes every zero while `c50_red` zeroes all of `code = 1, x <= 11`.
 //! - `c50_group_symbols`: greedy gain-ratio grouping of symbolic categories.
 //! - `c50_prune90`: pruning confidence is (100 - severity)/100.
-//! - `c50_no_global_prune`: local pruning alone. GAP: pruning slack (.5 global,
-//!   .1 local) is inferred from the unweighted trees; `c50_weight` shows the global
-//!   stage is not a fixed slack. Subtree raising is not established.
+//! - `c50_no_global_prune`: local pruning alone. Subtree raising is not established.
 //! - Tree confidence is (class_count+1)/(node_count+target_categories), with zero
 //!   for absent classes in the exported distribution; raw binary propensity uses
 //!   confidence and its complement, including absent classes (`c50_partition`).
@@ -370,7 +369,10 @@ impl Data {
 
     /// The weighted number of records in `rows`.
     fn weight(&self, rows: &[usize]) -> f64 {
-        rows.iter().filter_map(|&r| self.weights.get(r)).sum()
+        // Not `sum()`: an empty branch must weigh 0, not -0.
+        rows.iter()
+            .filter_map(|&r| self.weights.get(r))
+            .fold(0.0, |a, b| a + b)
     }
 
     fn counts(&self, rows: &[usize]) -> Vec<f64> {
@@ -517,8 +519,15 @@ fn candidate(
                             .collect(),
                     )
                 })
-                .filter(|(_, rs): &(Vec<usize>, Vec<usize>)| !rs.is_empty())
                 .collect();
+            // A plain multiway split has a branch for every declared value, an empty one
+            // predicting the parent's class (`c50_globalprune/c50_gp_copies1_small`:
+            // `g in {g02, g21}` with no records).
+            if *ordinal || *flag || grouping {
+                groups.retain(|(_, rs)| !rs.is_empty());
+            } else if labels.len() as f64 > MANY_VALUES * (data.targets.len() as f64 - 4.0) {
+                return None;
+            }
             if *ordinal && !flag {
                 return ordinal_cut(data, name, labels, groups, base, total, min_child);
             }
@@ -778,7 +787,7 @@ fn grow(
         .map(|(value, &count)| ScoreDistribution {
             value: value.clone(),
             record_count: count,
-            probability: Some(count / total),
+            probability: Some(if total > 0.0 { count / total } else { 0.0 }),
             confidence: Some(if count > 0.0 {
                 (count + 1.0) / (total + data.classes.len() as f64)
             } else {
@@ -964,12 +973,172 @@ fn prune(node: &mut Node, settings: &C50Settings, costs: Option<&[Vec<f64>]>) ->
         .iter_mut()
         .map(|c| prune(c, settings, costs))
         .sum();
-    let slack = if settings.global_pruning { 0.5 } else { 0.1 };
-    if leaf <= subtree + slack {
+    if leaf <= subtree + LOCAL_SLACK {
         node.children.clear();
         leaf
     } else {
         subtree
+    }
+}
+
+/// A plain nominal field with more declared values than 0.3 x (training records - 4) is
+/// never considered (`c50_globalprune/c50_gf*`: g with 8, 16, 32, 64 values first splits
+/// at 31, 58, 112, 224 records, not at 30, 56, 108, 208, whatever the gain; `c50_gsub16_*`:
+/// the training total counts, not the node's; `c50_gmin5_16_*`: minimum child 5 does not
+/// move it). GAP: other linear fits of those four bounds remain possible.
+const MANY_VALUES: f64 = 0.3;
+
+/// Local pruning collapses a subtree whose error bound is not lower than its leaf's by
+/// more than this (`c50_no_global_prune`, `c50_globalprune/*_noglobal`).
+const LOCAL_SLACK: f64 = 0.1;
+
+/// Whether `row` satisfies a split predicate the learner grew.
+fn row_matches(data: &Data, predicate: &Predicate, row: usize) -> bool {
+    let column = |field: &str| {
+        data.columns.iter().find(|c| match c {
+            Column::Numeric { name, .. } | Column::Symbolic { name, .. } => name == field,
+        })
+    };
+    let label = |field: &str| match column(field) {
+        Some(Column::Symbolic { values, labels, .. }) => {
+            values.get(row).and_then(|&code| labels.get(code))
+        }
+        _ => None,
+    };
+    match predicate {
+        Predicate::True => true,
+        Predicate::Simple {
+            field,
+            operator,
+            value,
+        } => match operator {
+            Operator::LessOrEqual | Operator::GreaterThan => {
+                let cut = value.as_deref().and_then(|v| v.parse::<f64>().ok());
+                let x = match column(field) {
+                    Some(Column::Numeric { values, .. }) => values.get(row).copied(),
+                    _ => None,
+                };
+                match (x, cut) {
+                    (Some(x), Some(cut)) if *operator == Operator::LessOrEqual => x <= cut,
+                    (Some(x), Some(cut)) => x > cut,
+                    _ => false,
+                }
+            }
+            Operator::Equal => label(field).is_some_and(|l| Some(l) == value.as_ref()),
+            _ => false,
+        },
+        Predicate::SimpleSet {
+            field,
+            is_in,
+            values,
+        } => label(field).is_some_and(|l| values.contains(l)) == *is_in,
+        _ => false,
+    }
+}
+
+/// Records of `rows` misclassified by `node` as a leaf, by count (not weight); under
+/// misclassification costs each counts its cost (`c50_costs` keeps node 5's subtree).
+fn record_errors(data: &Data, node: &Node, rows: &[usize]) -> f64 {
+    let class = data
+        .classes
+        .iter()
+        .position(|c| node.score.as_ref() == Some(c));
+    rows.iter()
+        .filter_map(|&r| data.targets.get(r))
+        .map(|&actual| match (class, data.costs.as_deref()) {
+            (Some(p), _) if p == actual => 0.0,
+            (Some(p), Some(costs)) => costs
+                .get(actual)
+                .and_then(|row| row.get(p))
+                .copied()
+                .unwrap_or(1.0),
+            _ => 1.0,
+        })
+        .sum()
+}
+
+/// (errors as a leaf, errors of its leaves, leaf count), by record count.
+fn subtree_errors(data: &Data, node: &Node, rows: &[usize]) -> (f64, f64, usize) {
+    let leaf = record_errors(data, node, rows);
+    if node.children.is_empty() {
+        return (leaf, leaf, 1);
+    }
+    let (mut errors, mut leaves) = (0.0, 0);
+    for child in &node.children {
+        let sub: Vec<usize> = rows
+            .iter()
+            .copied()
+            .filter(|&r| row_matches(data, &child.predicate, r))
+            .collect();
+        let (_, e, l) = subtree_errors(data, child, &sub);
+        errors += e;
+        leaves += l;
+    }
+    (leaf, errors, leaves)
+}
+
+/// The smallest error increase per removed leaf over the internal nodes.
+fn weakest_link(data: &Data, node: &Node, rows: &[usize]) -> Option<f64> {
+    if node.children.is_empty() {
+        return None;
+    }
+    let (leaf, sub, leaves) = subtree_errors(data, node, rows);
+    let mut best = Some((leaf - sub) / leaves.saturating_sub(1).max(1) as f64);
+    for child in &node.children {
+        let sub: Vec<usize> = rows
+            .iter()
+            .copied()
+            .filter(|&r| row_matches(data, &child.predicate, r))
+            .collect();
+        if let Some(a) = weakest_link(data, child, &sub) {
+            best = best.map(|b: f64| b.min(a));
+        }
+    }
+    best
+}
+
+/// Collapse every internal node whose link strength is `alpha`, outermost first.
+fn collapse_links(data: &Data, node: &mut Node, rows: &[usize], alpha: f64) {
+    if node.children.is_empty() {
+        return;
+    }
+    let (leaf, sub, leaves) = subtree_errors(data, node, rows);
+    if ((leaf - sub) / leaves.saturating_sub(1).max(1) as f64 - alpha).abs() <= 1e-9 {
+        node.children.clear();
+        return;
+    }
+    for child in &mut node.children {
+        let sub: Vec<usize> = rows
+            .iter()
+            .copied()
+            .filter(|&r| row_matches(data, &child.predicate, r))
+            .collect();
+        collapse_links(data, child, &sub, alpha);
+    }
+}
+
+/// Global pruning: weakest-link (cost-complexity) pruning on training errors counted in
+/// records, nodes of equal link strength together, keeping the smallest tree whose errors
+/// stay within one standard error of the locally pruned tree's (`c50_globalprune`:
+/// exception blocks correcting one record go, two stay, at every severity and with case
+/// weights; `models/c50_default`: `BP = HIGH` goes; `c50_min_child`: the equal links
+/// `green`, `red` would reach 87 > 79 + 7.92 together and stay).
+fn global_prune(data: &Data, root: &mut Node) {
+    let rows: Vec<usize> = (0..data.targets.len()).collect();
+    let n = rows.len() as f64;
+    let start = subtree_errors(data, root, &rows).1;
+    let limit = start + (start * (n - start) / n).max(0.0).sqrt();
+    let mut trial = root.clone();
+    let mut steps = Vec::new();
+    while let Some(alpha) = weakest_link(data, &trial, &rows) {
+        collapse_links(data, &mut trial, &rows, alpha);
+        if subtree_errors(data, &trial, &rows).1 > limit + 1e-9 {
+            break;
+        }
+        steps.push(alpha);
+    }
+    for alpha in steps {
+        collapse_links(data, root, &rows, alpha);
     }
 }
 
@@ -998,7 +1167,14 @@ fn merge_leaves(node: &mut Node) {
         while j < node.children.len() {
             let pair = node.children.get(i).zip(node.children.get(j));
             let values = pair.and_then(|(a, b)| {
-                if !a.children.is_empty() || !b.children.is_empty() || a.score != b.score {
+                // Empty branches merge only with each other (`c50_gp_copies1_small`: the
+                // empty `g02`, `g21` stay apart from `g20`, which predicts the same).
+                let empty = |n: &Node| n.record_count.unwrap_or(0.0) <= 0.0;
+                if !a.children.is_empty()
+                    || !b.children.is_empty()
+                    || a.score != b.score
+                    || empty(a) != empty(b)
+                {
                     return None;
                 }
                 let (af, mut av) = symbolic_branch(&a.predicate)?;
@@ -1125,6 +1301,9 @@ pub fn train_tree(dataset: &Dataset<'_>, settings: &C50Settings) -> Result<Pmml,
     let rows: Vec<usize> = (0..data.targets.len()).collect();
     let mut root = grow(&data, &rows, settings, 0, 0, &mut 0)?;
     prune(&mut root, settings, data.costs.as_deref());
+    if settings.global_pruning {
+        global_prune(&data, &mut root);
+    }
     merge_leaves(&mut root);
     if settings.weight_field.is_some() {
         finalize_weighted_counts(&mut root)?;
