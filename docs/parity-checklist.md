@@ -4,7 +4,7 @@
 
 | Scope | Implemented | Total |
 |---|---|---|
-| MVP | 54 | 90 |
+| MVP | 55 | 90 |
 | later | 0 | 23 |
 | out of scope | 0 | 34 |
 
@@ -74,7 +74,7 @@
 | Restructure | `restructure` | MVP | done | `RestructureNode` |
 | Transpose | `transpose` | MVP | done | `TransposeNode` |
 | Field Reorder | `field_reorder` | MVP | done | `FieldReorderNode` |
-| Time Intervals | `time_intervals` | MVP | missing | `TimeIntervalsNode` |
+| Time Intervals | `time_intervals` | MVP | done | `TimeIntervalsNode` |
 | History | `history` | MVP | done | `HistoryNode` |
 | Reproject | `reproject` | out of scope | missing | (unmapped) |
 | Statistics Transform | `statistics_transform` | out of scope | missing | `SPSSTransformNode` |

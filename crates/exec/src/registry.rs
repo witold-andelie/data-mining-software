@@ -37,6 +37,7 @@ const BUILT_IN: &[(&str, Factory)] = &[
     ("histogram", nodes::histogram::build),
     ("plot", nodes::plot::build),
     ("multiplot", nodes::plot::build_multiplot),
+    ("time_intervals", nodes::time_intervals::build),
     ("time_plot", nodes::time_plot::build),
     ("collection", nodes::collection::build),
     ("web", nodes::web::build),
