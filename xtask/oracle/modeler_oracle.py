@@ -26,11 +26,13 @@ ERRORS = (modeler.api.ModelerException, java.lang.Exception, Exception)
 #   1. COMMA_DELIMITED (.csv): Data Audit, Matrix, Means, Table, Transform
 #   2. JSON (.json): Analysis, Statistics
 #   3. PLAIN_TEXT (.txt): Report
-#   4. HTML (.html): fallback for graphical or HTML-only outputs
+#   4. VIZML (.vizml): graphs; the XML embeds the data behind the graph (`embeddedSource`)
+#   5. HTML (.html): fallback for other HTML-only outputs
 DOCUMENT_FORMATS = [
     ("csv", "csv", modeler.api.FileFormat.COMMA_DELIMITED),
     ("json", "json", modeler.api.FileFormat.JSON),
     ("text", "txt", modeler.api.FileFormat.PLAIN_TEXT),
+    ("vizml", "vizml", modeler.api.FileFormat.VIZML),
     ("html", "html", modeler.api.FileFormat.HTML),
 ]
 
