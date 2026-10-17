@@ -4,7 +4,7 @@
 
 | Scope | Implemented | Total |
 |---|---|---|
-| MVP | 52 | 90 |
+| MVP | 53 | 90 |
 | later | 0 | 23 |
 | out of scope | 0 | 34 |
 
@@ -163,7 +163,7 @@
 | Transform | `transform` | MVP | missing | `TransformNode` |
 | Statistics | `statistics` | MVP | done | `StatisticsNode` |
 | Means | `means` | MVP | done | `MeansNode` |
-| Report | `report` | MVP | missing | `ReportNode` |
+| Report | `report` | MVP | done | `ReportNode` |
 | Set Globals | `set_globals` | MVP | missing | `SetGlobalsNode` |
 | KDE Simulation (Python) | `kde_simulation` | later | missing | `kde_export!pasw.kde` |
 | Extension Output | `extension_output` | later | missing | (unmapped) |

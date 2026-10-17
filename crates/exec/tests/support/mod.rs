@@ -45,6 +45,16 @@ pub fn evaluate_stream_output(
     stream_path: &Path,
     node_uid: &str,
 ) -> Result<Arc<Document>, String> {
+    evaluate_stream_output_to(label, stream_path, node_uid, None)
+}
+
+/// [`evaluate_stream_output`], writing the files the node writes into `export_dir`.
+pub fn evaluate_stream_output_to(
+    label: &str,
+    stream_path: &Path,
+    node_uid: &str,
+    export_dir: Option<PathBuf>,
+) -> Result<Arc<Document>, String> {
     let root = repo_root();
     let bytes = std::fs::read(stream_path).unwrap();
     let archive = dms_strfmt::container::read_archive(&bytes, &ArchiveLimits::default()).unwrap();
@@ -67,7 +77,7 @@ pub fn evaluate_stream_output(
         stream_properties: stream.properties.clone().map(Arc::new),
         attachments: Arc::new(attachments),
         decimal_places: Some(15),
-        export_dir: None,
+        export_dir,
     };
 
     let plan = Plan::new(&stream);
@@ -295,7 +305,12 @@ pub struct OracleCase {
 /// Every oracle output of the given node types (`manifest.json` `"outputs"` entries).
 pub fn collect_oracle_cases(types: &[&str]) -> Vec<OracleCase> {
     let mut cases = Vec::new();
-    for (label, is_probe) in [("outputs", true), ("graphs", true), ("team", false)] {
+    for (label, is_probe) in [
+        ("outputs", true),
+        ("graphs", true),
+        ("misc", true),
+        ("team", false),
+    ] {
         let dir = repo_root().join("oracle").join(label);
         let Ok(entries) = std::fs::read_dir(&dir) else {
             continue;
