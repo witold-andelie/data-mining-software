@@ -35,7 +35,7 @@
 //! - Case weights (`C50Settings::weight_field`; the node still rejects `useWeight`):
 //!   each weight keeps six significant digits, then all are scaled to sum to the
 //!   record count. Probe `c50_weighted_streams` (weights of boosting trial 2, subsets,
-//!   pruning settings) reproduces those trees exactly.
+//!   pruning settings): five weighted fixtures compare exactly; remaining GAPs below.
 //! - Pruning (probe `c50_globalprune_streams`, 110 trees exact): local pruning collapses a
 //!   subtree whose error bound is not lower than its leaf's by more than 0.1; global
 //!   pruning is weakest-link pruning on training errors counted in records (costs under
@@ -52,6 +52,47 @@
 //!   alone: `x <= 9` under `x > 5` is zero in `c50_weight` but not in `c50_rc1` (its
 //!   red, code 1 rows), and adding the code 2 or 3 rows (`c50_rc12`, `c50_rc13`)
 //!   removes every zero while `c50_red` zeroes all of `code = 1, x <= 11`.
+//!
+//! Zero-distribution investigation (recorded oracles only, 2026-10-17):
+//! - No general rule established; do not zero counts heuristically or enable weights.
+//!   The 22 weighted `c50_weighted` fixtures plus `models_ml/c50_weight` contain
+//!   240 nonempty leaves, 18 with zero distributions (repeated settings included).
+//!   Only the five fixtures in the exact weighted test currently match completely.
+//! - Direct positive-weight class sums cannot explain the zeros. In the smallest
+//!   case the right leaf's true A/B/C counts are 6/11, 72/11, 6/11. Sequentially
+//!   summing its class counts and its case weights gives the same total in both
+//!   f64 and f32; subtracting the left branch from its parent leaves three positive
+//!   counts. Wholesale f32 weights/counts also lose correct exports: the nonzero
+//!   `c50_rc1_x6` leaf `x > 9, x <= 11` has A=0.66666667 (one case of weight 2/3),
+//!   whereas f32 would round it to 0.66666669 at eight significant digits.
+//! - A negative class residual on the path is not sufficient or necessary. With
+//!   f64 weights/sums and each child obtained by subtracting all excluded records
+//!   from its inherited parent counts, it flags 4/18 zero leaves and 142/222
+//!   nonzero leaves. With f32 weights/sums: 5/18 and 115/222. Assigning only the
+//!   last child the residual flags 0/18 and 65/222 (f64), 0/18 and 45/222 (f32).
+//!   A full x sweep flagging negative residuals at any ancestor gives 13/18 and
+//!   193/222 (f64), 11/18 and 161/222 (f32). These are simulated arithmetic orders,
+//!   not claims about Modeler's implementation.
+//! - Collapsing a grown subtree is only a partial correlate: 15/18 zero leaves
+//!   were internal nodes in our grown trees. Exceptions: `c50_code1_loose` nodes
+//!   5 and 10, `c50_red_loose` node 5. Conversely the nonzero `x <= 9` leaf in
+//!   `c50_rc1_x6_10` was also split. Its zero right leaf's child-total excess is
+//!   8.881784197001252e-16; the nonzero `x > 9, x <= 11` leaf in `c50_rc1_x6`
+//!   has a larger excess, 1.7763568394002505e-15. Neither sign nor a discrepancy
+//!   threshold establishes a zero rule. The categorical-only weighted global-prune
+//!   grids add four zero leaves each, none internal in our grown trees; a numeric
+//!   threshold sweep or collapse cannot be required.
+//! - Additional exact-comparison GAPs, independent of zero distributions:
+//!   `c50_rc1_w2` has no zeros but Modeler globally collapses `x > 3, flag = T,
+//!   x <= 11` and we retain its x=9 split. (Ordinal cuts now keep values absent from
+//!   the node in their sorted range, matching `c50_rc12_loose` and `c50_rc13_loose`
+//!   up to last-digit totals.) `c50_rc1_x6` root A exports
+//!   4.6666666 (children summed), ours 4.6666667 (own count rounded). `c50_rc1g_loose`
+//!   exports leaf total 6.0952381 versus our 6.0952380999999995. Zeroing the right
+//!   leaves alone cannot make every weighted fixture exact or settle global pruning.
+//!   The ignored `c50_all_weighted_trees_match_exactly` contract checks all fixtures;
+//!   the enabled inventory test records the zeros without treating them as a rule.
+//!
 //! - `c50_group_symbols`: greedy gain-ratio grouping of symbolic categories.
 //! - `c50_prune90`: pruning confidence is (100 - severity)/100.
 //! - `c50_no_global_prune`: local pruning alone. Subtree raising is not established.
@@ -523,7 +564,7 @@ fn candidate(
             // A plain multiway split has a branch for every declared value, an empty one
             // predicting the parent's class (`c50_globalprune/c50_gp_copies1_small`:
             // `g in {g02, g21}` with no records).
-            if *ordinal || *flag || grouping {
+            if *flag || grouping {
                 groups.retain(|(_, rs)| !rs.is_empty());
             } else if labels.len() as f64 > MANY_VALUES * (data.targets.len() as f64 - 4.0) {
                 return None;
@@ -604,6 +645,12 @@ fn ordinal_cut(
     let mut best: Option<(f64, f64, usize)> = None;
     let mut cuts = 0usize;
     for cut in 1..groups.len() {
+        // Values absent from the node stay in the cut's sorted range, a cut following
+        // a present value (`c50_weighted/c50_rc12_loose`: `{high, low}` with no `high`;
+        // `c50_rc13_loose`: `{low, middle}` with no `middle`).
+        if groups.get(cut - 1).is_none_or(|(_, rs)| rs.is_empty()) {
+            continue;
+        }
         let (low, high) = groups.split_at(cut);
         let two = [side(low), side(high)];
         if two.iter().any(|(_, rs)| data.weight(rs) < min_child) {
