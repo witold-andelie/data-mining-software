@@ -35,10 +35,10 @@
 //! - Tree confidence is (class_count+1)/(node_count+target_categories), with zero
 //!   for absent classes in the exported distribution; raw binary propensity uses
 //!   confidence and its complement, including absent classes (`c50_partition`).
+//! - Rule sets (`modelFormat` `ruleSet`): [`crate::c50_rules`].
 //!
-//! Rejected settings (never silently substituted): RuleSet training
-//! (`c50_rules_voting`, `c50_rules_firsthit`: GAP rule simplification/selection),
-//! boosting/trials (`c50_boost_tree`, `c50_boost_rules`: GAP reweighting/stopping),
+//! Rejected settings (never silently substituted): boosting/trials
+//! (`c50_boost_tree`, `c50_boost_rules`: GAP reweighting/stopping),
 //! costs (`c50_costs`: GAP cost-dependent training weights), case/frequency
 //! weights (`c50_weight`: GAP normalized effective counts), winnowing
 //! (`c50_winnow`: GAP elimination criterion), Simple Generality/expected noise
@@ -610,9 +610,39 @@ fn grow(
     Ok(node)
 }
 
+fn validate_settings(dataset: &Dataset<'_>, settings: &C50Settings) -> Result<(), AlgoError> {
+    if dataset.frequency.is_some() {
+        return Err(AlgoError::Unsupported("C5.0 frequency weights".into()));
+    }
+    if settings.min_child_records == 0
+        || settings.min_child_records > MAX_ROWS
+        || !settings.pruning_severity.is_finite()
+        || !(1.0..100.0).contains(&settings.pruning_severity)
+    {
+        return Err(AlgoError::Settings(
+            "C5.0 minimum child records or pruning severity out of range".into(),
+        ));
+    }
+    Ok(())
+}
+
+/// Pruned tree whose leaves become C5.0 rules. Growth and pruning match
+/// [`train_tree`] (`c50_rules_voting`: 13 leaves, the same as `c50_default`).
+/// GAP: C4.5 extracts from the unpruned tree; extra unpruned splits on this
+/// fixture are not in the exported rules.
+pub(crate) fn rule_tree(dataset: &Dataset<'_>, settings: &C50Settings) -> Result<Node, AlgoError> {
+    validate_settings(dataset, settings)?;
+    let data = Data::read(dataset, settings.weight_field)?;
+    let rows: Vec<usize> = (0..data.targets.len()).collect();
+    let mut root = grow(&data, &rows, settings, 0, 0, &mut 0)?;
+    prune(&mut root, settings);
+    Ok(root)
+}
+
 /// One-sided Wilson upper bound with continuity correction; zero-error bound is
 /// the exact binomial bound. Numerical inversion avoids an inverse-normal dependency.
-fn error_bound(total: f64, errors: f64, confidence: f64) -> f64 {
+/// Tree pruning and rule-condition dropping share this estimate (`c50_rules_voting`).
+pub(crate) fn error_bound(total: f64, errors: f64, confidence: f64) -> f64 {
     if total <= 0.0 {
         return 0.0;
     }
@@ -700,18 +730,7 @@ pub fn train(dataset: &Dataset<'_>, settings: &C50Settings) -> Result<Pmml, Algo
 
 /// One decision tree (no boosting, no rule set).
 pub fn train_tree(dataset: &Dataset<'_>, settings: &C50Settings) -> Result<Pmml, AlgoError> {
-    if dataset.frequency.is_some() {
-        return Err(AlgoError::Unsupported("C5.0 frequency weights".into()));
-    }
-    if settings.min_child_records == 0
-        || settings.min_child_records > MAX_ROWS
-        || !settings.pruning_severity.is_finite()
-        || !(1.0..100.0).contains(&settings.pruning_severity)
-    {
-        return Err(AlgoError::Settings(
-            "C5.0 minimum child records or pruning severity out of range".into(),
-        ));
-    }
+    validate_settings(dataset, settings)?;
     let data = Data::read(dataset, settings.weight_field)?;
     let rows: Vec<usize> = (0..data.targets.len()).collect();
     let mut root = grow(&data, &rows, settings, 0, 0, &mut 0)?;
