@@ -1024,6 +1024,8 @@ fn parse_clustering_model(node: roxmltree::Node<'_, '_>) -> Result<ClusteringMod
     let mut fields = Vec::new();
     let mut clusters = Vec::new();
     let mut missing_weights = Vec::new();
+    // Fields whose `isCenterField` is left to its default.
+    let mut implicit = Vec::new();
 
     for child in node.children().filter(roxmltree::Node::is_element) {
         let tag = child.tag_name().name();
@@ -1051,6 +1053,7 @@ fn parse_clustering_model(node: roxmltree::Node<'_, '_>) -> Result<ClusteringMod
                         return Err(PmmlError::Parse(format!("invalid isCenterField {other:?}")));
                     }
                 };
+                implicit.push(child.attribute("isCenterField").is_none());
                 fields.push(ClusteringField {
                     field,
                     weight,
@@ -1066,10 +1069,17 @@ fn parse_clustering_model(node: roxmltree::Node<'_, '_>) -> Result<ClusteringMod
                 let mut variances = Vec::new();
                 let mut category_counts = Vec::new();
                 let mut mean_distance = None;
+                let mut map_position = None;
                 for sub in child.children().filter(roxmltree::Node::is_element) {
                     match sub.tag_name().name() {
                         "Extension" if sub.attribute("name") == Some("meanClusterDistance") => {
                             mean_distance = opt_f64_attr(sub, "value")?;
+                        }
+                        "KohonenMap" => {
+                            map_position = Some((
+                                opt_f64_attr(sub, "coord1")?.unwrap_or(0.0),
+                                opt_f64_attr(sub, "coord2")?.unwrap_or(0.0),
+                            ));
                         }
                         "Array" if center.is_none() => center = Some(parse_array_f64(sub)?),
                         "Partition" => category_counts = parse_partition_counts(sub)?,
@@ -1085,6 +1095,7 @@ fn parse_clustering_model(node: roxmltree::Node<'_, '_>) -> Result<ClusteringMod
                     variances,
                     category_counts,
                     mean_distance,
+                    map_position,
                 });
             }
             "MissingValueWeights" => {
@@ -1105,6 +1116,17 @@ fn parse_clustering_model(node: roxmltree::Node<'_, '_>) -> Result<ClusteringMod
 
     let measure = measure
         .ok_or_else(|| PmmlError::Parse("ClusteringModel is missing ComparisonMeasure".into()))?;
+    // Modeler's Kohonen models list the raw inputs without `isCenterField`, then the normalized
+    // derived fields with `isCenterField="true"`, and the cluster centers have one coordinate
+    // per derived field (`models_next/kohonen_*`). In a center-based model that marks some
+    // fields, the unmarked ones are not center fields.
+    if model_class == ModelClass::CenterBased && implicit.iter().any(|&i| !i) {
+        for (field, implicit) in fields.iter_mut().zip(&implicit) {
+            if *implicit {
+                field.is_center_field = false;
+            }
+        }
+    }
 
     Ok(ClusteringModel {
         header,

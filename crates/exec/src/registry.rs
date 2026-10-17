@@ -78,7 +78,9 @@ const PENDING: &[&str] = &[];
 /// Neural Net nuggets score from saved PMML. Training stays unimplemented, so a failed builder
 /// leaves the nugget its saved model (`corpus/models_ml/nn_fixed_a.str`). Not counted as
 /// implemented.
-const SCORING_ONLY: &[&str] = &["neural_net"];
+/// Kohonen likewise (`corpus/models_next/kohonen_*.str`): training starts from random weights
+/// drawn with an unknown generator (`randomSeed`), so it is a GAP.
+const SCORING_ONLY: &[&str] = &["neural_net", "kohonen"];
 
 pub fn factory(catalog_id: &str) -> Option<Factory> {
     BUILT_IN
