@@ -4,7 +4,7 @@
 
 | Scope | Implemented | Total |
 |---|---|---|
-| MVP | 47 | 90 |
+| MVP | 49 | 90 |
 | later | 0 | 23 |
 | out of scope | 0 | 34 |
 
@@ -90,8 +90,8 @@
 | Distribution | `distribution` | MVP | done | `DistributionNode` |
 | Histogram | `histogram` | MVP | done | `HistogramNode` |
 | Collection | `collection` | MVP | done | `CollectionNode` |
-| Web | `web` | MVP | missing | `WebNode` |
-| Evaluation | `evaluation` | MVP | missing | `EvaluationNode` |
+| Web | `web` | MVP | done | `WebNode` |
+| Evaluation | `evaluation` | MVP | done | `EvaluationNode` |
 | E-Plot | `eplot` | later | missing | `EPlotNode` |
 | t-SNE (Python) | `tsne` | later | missing | `tsne!spss.tsne` |
 | Map Visualization | `map_visualization` | out of scope | missing | `MapVisualizationNode` |
