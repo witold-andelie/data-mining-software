@@ -68,6 +68,10 @@ pub struct C50Settings {
     pub group_symbolics: bool,
     /// Position of the case-weight field (`useWeight` with `weightField`), if any.
     pub weight_field: Option<usize>,
+    /// A rule set instead of a tree (`modelFormat` `ruleSet`): [`crate::c50_rules`].
+    pub rules: bool,
+    /// Boosting trials (`useBoosting` with `boostingTrials`): [`crate::c50_boost`].
+    pub boost_trials: Option<usize>,
 }
 
 impl Default for C50Settings {
@@ -78,6 +82,8 @@ impl Default for C50Settings {
             global_pruning: true,
             group_symbolics: false,
             weight_field: None,
+            rules: false,
+            boost_trials: None,
         }
     }
 }
@@ -683,6 +689,17 @@ fn number(node: &mut Node, next: &mut usize) {
 }
 
 pub fn train(dataset: &Dataset<'_>, settings: &C50Settings) -> Result<Pmml, AlgoError> {
+    if let Some(trials) = settings.boost_trials {
+        return crate::c50_boost::train(dataset, settings, trials);
+    }
+    if settings.rules {
+        return crate::c50_rules::train(dataset, settings);
+    }
+    train_tree(dataset, settings)
+}
+
+/// One decision tree (no boosting, no rule set).
+pub fn train_tree(dataset: &Dataset<'_>, settings: &C50Settings) -> Result<Pmml, AlgoError> {
     if dataset.frequency.is_some() {
         return Err(AlgoError::Unsupported("C5.0 frequency weights".into()));
     }

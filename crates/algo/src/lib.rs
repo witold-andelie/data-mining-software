@@ -9,6 +9,8 @@
 
 pub mod adp;
 pub mod c50;
+pub mod c50_boost;
+pub mod c50_rules;
 pub mod cart;
 pub mod chaid;
 mod common;
