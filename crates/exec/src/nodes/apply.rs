@@ -70,6 +70,12 @@ pub fn build(node: &StreamNode) -> Result<Box<dyn Operator>, OperatorError> {
     ) {
         return super::feature_selection::apply(node);
     }
+    if matches!(
+        node.type_identifier().as_str(),
+        "ApplyC5RuleNode" | "ApplyC5SplitModelNode"
+    ) {
+        return super::c50::apply(node);
+    }
     let s = node.settings.as_ref();
     let kind = match node.type_identifier().as_str() {
         "ApplyCartRuleNode" | "ApplyChaidRuleNode" | "ApplyQuestRuleNode" | "ApplyC5RuleNode" => {
@@ -346,6 +352,7 @@ fn column(name: &str, storage: Storage, values: Vec<Value>) -> Column {
 fn target_name(pmml: &Pmml) -> Result<String, OperatorError> {
     let header = match &pmml.model {
         dms_pmml::Model::Tree(model) => &model.header,
+        dms_pmml::Model::RuleSet(model) => &model.header,
         dms_pmml::Model::GeneralRegression(model) => &model.header,
         dms_pmml::Model::Regression(model) => &model.header,
         dms_pmml::Model::Clustering(model) => &model.header,

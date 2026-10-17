@@ -8,6 +8,7 @@
 //! choice open, the decision is marked `GAP:` and settled against the oracle.
 
 pub mod adp;
+pub mod c50;
 pub mod cart;
 pub mod chaid;
 mod common;

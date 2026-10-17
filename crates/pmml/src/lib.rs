@@ -20,6 +20,7 @@ mod clustering;
 mod expr;
 mod parse;
 mod regression;
+mod rules;
 mod score;
 mod tree;
 
@@ -196,6 +197,7 @@ pub enum Expr {
 #[derive(Debug, Clone, PartialEq)]
 pub enum Model {
     Tree(TreeModel),
+    RuleSet(RuleSetModel),
     Clustering(ClusteringModel),
     GeneralRegression(GeneralRegressionModel),
     Regression(RegressionModel),
@@ -204,6 +206,27 @@ pub enum Model {
     Mining(MiningModel),
     /// A model element we read but cannot score: its element name.
     Unsupported(String),
+}
+
+/// PMML 4.3 RuleSet, flattened in document order (including CompoundRule ancestors).
+#[derive(Debug, Clone, PartialEq)]
+pub struct RuleSetModel {
+    pub header: ModelHeader,
+    pub selection: String,
+    pub default_score: Option<String>,
+    pub default_confidence: Option<f64>,
+    pub rules: Vec<SimpleRule>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct SimpleRule {
+    pub id: Option<String>,
+    pub predicate: Predicate,
+    pub score: String,
+    pub confidence: f64,
+    pub weight: f64,
+    pub record_count: Option<f64>,
+    pub correct: Option<f64>,
 }
 
 /// PMML `MiningModel`: one nested model per `Segment`.

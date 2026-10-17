@@ -67,6 +67,9 @@ pub fn build(node: &StreamNode) -> Result<Box<dyn Operator>, OperatorError> {
     if node.type_identifier() == "BuildFeatureSelectionNode" {
         return super::feature_selection::build(node);
     }
+    if node.type_identifier() == "BuildC5RuleNode" {
+        return super::c50::build(node);
+    }
     let s = node.settings.as_ref();
     let algorithm = match node.type_identifier().as_str() {
         "Cart!spss.tree-extension" => Algorithm::Cart,

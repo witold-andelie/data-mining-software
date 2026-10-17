@@ -38,6 +38,9 @@ const MODEL_ELEMENTS: &[&str] = &[
 ];
 
 pub(crate) fn parse(xml: &str) -> Result<Pmml, PmmlError> {
+    if xml.len() > 64 * 1024 * 1024 {
+        return Err(PmmlError::Parse("PMML document size limit exceeded".into()));
+    }
     let doc = Document::parse(xml).map_err(|e| PmmlError::Parse(e.to_string()))?;
     let root = doc.root_element();
     if root.tag_name().name() != "PMML" {
@@ -61,7 +64,7 @@ pub(crate) fn parse(xml: &str) -> Result<Pmml, PmmlError> {
     let mut data_dictionary: Option<Vec<DataField>> = None;
     let mut transformations = Vec::new();
     let mut functions = Vec::new();
-    let mut model: Option<Model> = None;
+    let mut models = Vec::new();
 
     for child in root.children().filter(roxmltree::Node::is_element) {
         let name = child.tag_name().name();
@@ -79,10 +82,12 @@ pub(crate) fn parse(xml: &str) -> Result<Pmml, PmmlError> {
                 parse_transformation_dictionary(child, &mut transformations, &mut functions)?;
             }
             tag if MODEL_ELEMENTS.contains(&tag) => {
-                if model.is_some() {
-                    return Err(PmmlError::Parse("multiple model elements in PMML".into()));
-                }
-                model = Some(parse_model(child)?);
+                models.push((
+                    parse_model(child)?,
+                    child.children().any(|n| {
+                        n.has_tag_name("Extension") && n.attribute("name") == Some("boost")
+                    }),
+                ));
             }
             other => {
                 return Err(PmmlError::Parse(format!(
@@ -94,7 +99,43 @@ pub(crate) fn parse(xml: &str) -> Result<Pmml, PmmlError> {
 
     let data_dictionary =
         data_dictionary.ok_or_else(|| PmmlError::Parse("missing DataDictionary".into()))?;
-    let model = model.ok_or_else(|| PmmlError::Parse("missing model element".into()))?;
+    let model = if models.len() == 1 {
+        models.remove(0).0
+    } else if models.len() > 1
+        && models
+            .iter()
+            .all(|(m, boost)| *boost && matches!(m, Model::Tree(_) | Model::RuleSet(_)))
+    {
+        // Modeler C5.0 exports adjacent models, each carrying the spss boost extension.
+        // Algorithms Guide p.51: confidence voting, NOT the extension's rounded value.
+        let mut header = crate::score::model_header(
+            &models
+                .first()
+                .ok_or_else(|| PmmlError::Parse("missing model".into()))?
+                .0,
+        )
+        .ok_or_else(|| PmmlError::Parse("missing model header".into()))?
+        .clone();
+        header.algorithm = Some("C5".into());
+        header.local_transformations.clear();
+        header.mining_schema.retain(|f| f.usage != Usage::Active);
+        let segments = models
+            .into_iter()
+            .map(|(m, _)| MiningSegment {
+                predicate: Predicate::True,
+                model: Box::new(m),
+            })
+            .collect();
+        Model::Mining(MiningModel {
+            header,
+            method: "c50ConfidenceVote".into(),
+            segments,
+        })
+    } else {
+        return Err(PmmlError::Parse(
+            "missing model or ambiguous multiple model elements in PMML".into(),
+        ));
+    };
 
     Ok(Pmml {
         version,
@@ -117,7 +158,7 @@ fn is_skipped_element(name: &str) -> bool {
     ) || name.starts_with("X-")
 }
 
-fn req_attr<'a, 'input>(
+pub(crate) fn req_attr<'a, 'input>(
     node: roxmltree::Node<'a, 'input>,
     attr: &str,
 ) -> Result<&'a str, PmmlError> {
@@ -142,7 +183,10 @@ fn parse_f64(text: &str, what: &str) -> Result<f64, PmmlError> {
     Ok(val)
 }
 
-fn opt_f64_attr(node: roxmltree::Node<'_, '_>, attr: &str) -> Result<Option<f64>, PmmlError> {
+pub(crate) fn opt_f64_attr(
+    node: roxmltree::Node<'_, '_>,
+    attr: &str,
+) -> Result<Option<f64>, PmmlError> {
     node.attribute(attr).map(|s| parse_f64(s, attr)).transpose()
 }
 
@@ -453,8 +497,19 @@ fn parse_expr(node: roxmltree::Node<'_, '_>, depth: usize) -> Result<Expr, PmmlE
 }
 
 fn parse_model(node: roxmltree::Node<'_, '_>) -> Result<Model, PmmlError> {
+    if node
+        .ancestors()
+        .filter(|n| MODEL_ELEMENTS.contains(&n.tag_name().name()))
+        .count()
+        > MAX_DEPTH
+    {
+        return Err(PmmlError::Parse(
+            "model nesting depth limit exceeded".into(),
+        ));
+    }
     match node.tag_name().name() {
         "TreeModel" => Ok(Model::Tree(parse_tree_model(node)?)),
+        "RuleSetModel" => Ok(Model::RuleSet(crate::rules::parse(node)?)),
         "ClusteringModel" => Ok(Model::Clustering(parse_clustering_model(node)?)),
         "GeneralRegressionModel" => Ok(Model::GeneralRegression(parse_general_regression_model(
             node,
@@ -465,7 +520,7 @@ fn parse_model(node: roxmltree::Node<'_, '_>) -> Result<Model, PmmlError> {
     }
 }
 
-fn parse_model_header(node: roxmltree::Node<'_, '_>) -> Result<ModelHeader, PmmlError> {
+pub(crate) fn parse_model_header(node: roxmltree::Node<'_, '_>) -> Result<ModelHeader, PmmlError> {
     let name = node.attribute("modelName").map(str::to_string);
     let function = match req_attr(node, "functionName")? {
         "classification" => MiningFunction::Classification,
@@ -712,7 +767,10 @@ fn parse_tree_node(node: roxmltree::Node<'_, '_>, depth: usize) -> Result<Node, 
     })
 }
 
-fn parse_predicate(node: roxmltree::Node<'_, '_>, depth: usize) -> Result<Predicate, PmmlError> {
+pub(crate) fn parse_predicate(
+    node: roxmltree::Node<'_, '_>,
+    depth: usize,
+) -> Result<Predicate, PmmlError> {
     if depth > MAX_DEPTH {
         return Err(PmmlError::Parse(
             "predicate nesting depth limit exceeded".into(),

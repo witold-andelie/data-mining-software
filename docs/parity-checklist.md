@@ -4,7 +4,7 @@
 
 | Scope | Implemented | Total |
 |---|---|---|
-| MVP | 59 | 90 |
+| MVP | 60 | 90 |
 | later | 0 | 23 |
 | out of scope | 0 | 34 |
 
@@ -103,7 +103,7 @@
 | Auto Classifier | `auto_classifier` | MVP | missing | `BuildBinaryClassifierNode`, `ApplyBinaryClassifierNode`, `ApplyAutoClassifierNode` |
 | Auto Numeric | `auto_numeric` | MVP | missing | `BuildNumericClassifierNode`, `ApplyNumericPredictorNode` |
 | Auto Cluster | `auto_cluster` | MVP | missing | `BuildAutoClusteringModelNode`, `ApplyAutoClusterNode` |
-| C5.0 | `c50` | MVP | missing | `BuildC5RuleNode`, `ApplyC5RuleNode`, `ApplyC5SplitModelNode` |
+| C5.0 | `c50` | MVP | done | `BuildC5RuleNode`, `ApplyC5RuleNode`, `ApplyC5SplitModelNode` |
 | C&R Tree | `cart` | MVP | done | `BuildCartRuleNode`, `ApplyCartRuleNode`, `ApplyCartSplitModelNode`, `Cart!spss.tree-extension` |
 | CHAID | `chaid` | MVP | done | `BuildChaidRuleNode`, `ApplyChaidRuleNode`, `ApplyChaidSplitModelNode`, `Chaid!spss.tree-extension` |
 | QUEST | `quest` | MVP | missing | `BuildQuestNode`, `ApplyQuestRuleNode`, `ApplyQuestSplitModelNode`, `Quest!spss.tree-extension` |

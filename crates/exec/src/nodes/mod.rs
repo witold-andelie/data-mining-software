@@ -7,6 +7,7 @@ pub mod apply;
 pub mod balance;
 pub mod binning;
 pub mod build;
+pub mod c50;
 pub mod collection;
 pub mod data_audit;
 pub mod derive;

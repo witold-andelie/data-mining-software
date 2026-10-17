@@ -48,6 +48,7 @@ const BUILT_IN: &[(&str, Factory)] = &[
     ("analysis", nodes::analysis::build),
     ("report", nodes::report::build),
     ("cart", model_node),
+    ("c50", model_node),
     ("chaid", model_node),
     ("kmeans", model_node),
     ("twostep", model_node),

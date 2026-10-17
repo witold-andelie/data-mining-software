@@ -11,7 +11,7 @@ use crate::{
 const MAX_DEPTH: usize = 64;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Truth {
+pub(crate) enum Truth {
     True,
     False,
     Unknown,
@@ -384,7 +384,11 @@ fn convert_score_value(score: &str, function: &MiningFunction) -> Result<Value, 
     }
 }
 
-fn eval_predicate(pred: &Predicate, env: &Env<'_>, depth: usize) -> Result<Truth, PmmlError> {
+pub(crate) fn eval_predicate(
+    pred: &Predicate,
+    env: &Env<'_>,
+    depth: usize,
+) -> Result<Truth, PmmlError> {
     if depth > MAX_DEPTH {
         return Err(PmmlError::Score(
             "predicate evaluation depth exceeded".into(),

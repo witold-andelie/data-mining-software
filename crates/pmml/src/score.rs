@@ -140,6 +140,7 @@ impl Scorer<'_> {
 
         match &self.pmml.model {
             Model::Tree(tree) => crate::tree::score(self.pmml, tree, &env),
+            Model::RuleSet(rules) => crate::rules::score(self.pmml, rules, &env),
             Model::Clustering(clustering) => crate::clustering::score(self.pmml, clustering, &env),
             Model::GeneralRegression(reg) => crate::regression::score_general(self.pmml, reg, &env),
             Model::Regression(reg) => crate::regression::score_regression(self.pmml, reg, &env),
@@ -299,13 +300,17 @@ fn parse_replacement(rep: &str, data_field: Option<&DataField>) -> Value {
 
 fn score_mining(pmml: &Pmml, mining: &MiningModel, env: &Env<'_>) -> Result<Prediction, PmmlError> {
     match mining.method.as_str() {
-        "" | "selectFirst" => {}
+        "" | "selectFirst" | "c50ConfidenceVote" => {}
         other => {
             return Err(PmmlError::Unsupported(format!(
                 "MiningModel multipleModelMethod {other:?}"
             )));
         }
     }
+    let mut votes: Vec<(String, f64)> = target_categories(pmml, &mining.header)
+        .into_iter()
+        .map(|c| (c.to_string(), 0.0))
+        .collect();
     for segment in &mining.segments {
         if !segment_matches(&segment.predicate, env)? {
             continue;
@@ -334,16 +339,45 @@ fn score_mining(pmml: &Pmml, mining: &MiningModel, env: &Env<'_>) -> Result<Pred
                 inner_env.insert(df.name.as_str(), treated);
             }
         }
-        return match segment.model.as_ref() {
+        let prediction = match segment.model.as_ref() {
             Model::GeneralRegression(reg) => {
                 crate::regression::score_general(pmml, reg, &inner_env)
             }
             Model::Regression(reg) => crate::regression::score_regression(pmml, reg, &inner_env),
             Model::Unsupported(name) => Err(PmmlError::Unsupported(name.clone())),
-            Model::Tree(_) | Model::Clustering(_) | Model::Mining(_) => Err(
-                PmmlError::Unsupported("nested MiningModel segment type".into()),
-            ),
-        };
+            Model::Tree(tree) => crate::tree::score(pmml, tree, &inner_env),
+            Model::RuleSet(rules) => crate::rules::score(pmml, rules, &inner_env),
+            Model::Mining(_) | Model::Clustering(_) => Err(PmmlError::Unsupported(
+                "nested MiningModel segment type".into(),
+            )),
+        }?;
+        if mining.method != "c50ConfidenceVote" {
+            return Ok(prediction);
+        }
+        if let (Value::Text(class), Some(confidence)) = (prediction.value, prediction.confidence) {
+            if let Some((_, vote)) = votes.iter_mut().find(|(c, _)| c == &class) {
+                *vote += confidence;
+            } else {
+                votes.push((class, confidence));
+            }
+        }
+    }
+    let total: f64 = votes.iter().map(|(_, v)| v).sum();
+    if total > 0.0 && total.is_finite() {
+        let mut best: Option<(&str, f64)> = None;
+        for (class, vote) in &votes {
+            if best.is_none_or(|(_, v)| *vote > v) {
+                best = Some((class, *vote));
+            }
+        }
+        if let Some((class, vote)) = best {
+            return Ok(Prediction {
+                value: Value::Text(class.into()),
+                confidence: Some(vote / total),
+                probabilities: votes.iter().map(|(c, v)| (c.clone(), v / total)).collect(),
+                ..empty_prediction()
+            });
+        }
     }
     Ok(empty_prediction())
 }
@@ -384,6 +418,7 @@ fn segment_matches(pred: &Predicate, env: &Env<'_>) -> Result<bool, PmmlError> {
 pub(crate) fn model_header(model: &Model) -> Option<&ModelHeader> {
     match model {
         Model::Tree(m) => Some(&m.header),
+        Model::RuleSet(m) => Some(&m.header),
         Model::Clustering(m) => Some(&m.header),
         Model::GeneralRegression(m) => Some(&m.header),
         Model::Regression(m) => Some(&m.header),
@@ -431,6 +466,11 @@ fn collect_model_fields<'a>(
     }
     match model {
         Model::Tree(tree) => collect_node_fields(&tree.root, out),
+        Model::RuleSet(model) => {
+            for rule in &model.rules {
+                collect_predicate_fields(&rule.predicate, out);
+            }
+        }
         Model::Clustering(clustering) => {
             for f in &clustering.fields {
                 out.insert(f.field.as_str());
