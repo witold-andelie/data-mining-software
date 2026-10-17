@@ -4,7 +4,7 @@
 
 | Scope | Implemented | Total |
 |---|---|---|
-| MVP | 35 | 90 |
+| MVP | 36 | 90 |
 | later | 0 | 23 |
 | out of scope | 0 | 34 |
 
@@ -176,7 +176,7 @@
 | Node | Id | Scope | Status | Modeler identifiers |
 |---|---|---|---|---|
 | Flat File | `flat_file_export` | MVP | done | `TextFileExportNode` |
-| Excel | `excel_export` | MVP | missing | `ExcelNode` |
+| Excel | `excel_export` | MVP | done | `ExcelNode` |
 | Statistics Export (.sav) | `statistics_export` | MVP | missing | `SPSSExportNode` |
 | Database | `database_export` | MVP | missing | `ODBCExportNode`, `DBExportNode` |
 | XML | `xml_export` | MVP | done | `xml_export!spss.xml_data` |

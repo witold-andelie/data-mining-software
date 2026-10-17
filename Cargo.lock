@@ -137,6 +137,7 @@ dependencies = [
  "dms-types",
  "roxmltree",
  "serde_json",
+ "zip",
 ]
 
 [[package]]

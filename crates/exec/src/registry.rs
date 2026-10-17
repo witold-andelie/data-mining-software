@@ -51,7 +51,7 @@ const BUILT_IN: &[(&str, Factory)] = &[
 /// TwoStep numbers clusters differently on larger data, and multinomial Logistic coefficients
 /// on separated data differ from Modeler's (the GAPs in
 /// `dms_algo::twostep` and `dms_algo::logistic`).
-const PENDING: &[&str] = &["twostep", "logistic", "excel_export", "statistics_export"];
+const PENDING: &[&str] = &["twostep", "logistic", "statistics_export"];
 
 /// Model nodes whose nuggets score (`nodes::apply`) while their build nodes cannot train yet;
 /// they do not count as implemented.
