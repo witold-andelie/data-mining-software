@@ -142,6 +142,32 @@ pub struct Field {
     pub label: Option<String>,
     /// Value labels, in declaration order.
     pub value_labels: Vec<(Value, String)>,
+    /// A field-level display format overriding the plain rendering of its values.
+    pub display: Option<DisplayFormat>,
+}
+
+/// How Modeler prints a field's values in data exports when a node sets the field's format.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DisplayFormat {
+    /// `MON YYYY` dates (`Dec 2019`): Time Intervals month labels (`misc_ti_months`).
+    MonthYear,
+}
+
+impl DisplayFormat {
+    /// The value as Modeler prints it, or `None` to fall back to the plain rendering.
+    pub fn render(self, value: &Value) -> Option<String> {
+        const MONTHS: [&str; 12] = [
+            "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+        ];
+        match (self, value) {
+            (DisplayFormat::MonthYear, Value::Date(days)) => {
+                let (year, month, _) = crate::calendar::civil_from_days(*days)?;
+                let name = MONTHS.get(usize::try_from(month).ok()?.checked_sub(1)?)?;
+                Some(format!("{name} {year}"))
+            }
+            _ => None,
+        }
+    }
 }
 
 impl Field {
@@ -157,6 +183,7 @@ impl Field {
             check: CheckMode::None,
             label: None,
             value_labels: Vec::new(),
+            display: None,
         }
     }
 

@@ -10,7 +10,8 @@ pub mod table;
 pub mod value;
 
 pub use field::{
-    CheckMode, DataModel, Field, Measurement, MissingSpec, ModelError, Role, Storage, ValueSpec,
+    CheckMode, DataModel, DisplayFormat, Field, Measurement, MissingSpec, ModelError, Role,
+    Storage, ValueSpec,
 };
 pub use table::Table;
 pub use value::Value;
