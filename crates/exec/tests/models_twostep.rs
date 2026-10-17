@@ -1,7 +1,7 @@
 //! TwoStep end to end: each `corpus/twostep/*` probe stream and `models/twostep_default` trains
 //! its build node, and the nugget scores the training records with that model. The clusters must
-//! hold the same records as Modeler's; the names must match where our CF-tree order is known to
-//! agree (the GAP in `dms_algo::twostep`).
+//! hold the same records and have the same names as Modeler's in all 42 established cases (the
+//! CF-tree ordering rules in `dms_algo::twostep`).
 
 #![cfg(feature = "corpus")]
 #![allow(
@@ -23,18 +23,48 @@ use std::sync::Arc;
 
 /// Cases whose cluster names equal Modeler's.
 const SAME_NAMES: &[&str] = &[
-    "ts_drug8",
-    "ts_drug8_rev",
-    "ts_drug8_cont",
-    "ts_drug9",
+    "twostep_default",
+    "ts_aic",
+    "ts_drug100",
+    "ts_drug130",
+    "ts_drug160",
     "ts_drug20",
     "ts_drug50",
+    "ts_drug60",
+    "ts_drug70",
+    "ts_drug8",
+    "ts_drug80",
+    "ts_drug8_cont",
+    "ts_drug8_rev",
+    "ts_drug9",
+    "ts_drug_cont",
+    "ts_drug_rev",
+    "ts_fixed10",
+    "ts_label_number",
+    "ts_label_prefix",
+    "ts_leaves100",
+    "ts_leaves20",
+    "ts_leaves200",
+    "ts_leaves60",
+    "ts_nostd",
+    "ts_prefix10",
+    "ts_prefix11",
+    "ts_prefix12",
+    "ts_prefix13",
+    "ts_prefix14",
+    "ts_prefix15",
+    "ts_prefix16",
+    "ts_prefix17",
+    "ts_prefix18",
+    "ts_prefix19",
     "ts_prefix3",
     "ts_prefix4",
     "ts_prefix5",
     "ts_prefix6",
     "ts_prefix7",
     "ts_prefix8",
+    "ts_prefix9",
+    "ts_range3_6",
 ];
 
 fn scored(label: &str, stream_path: &Path, uid: &str) -> Arc<Table> {

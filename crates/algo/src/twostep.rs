@@ -30,15 +30,29 @@
 //!   (`twostep_default`: `M F`, `NORMAL HIGH`). Clusters are named `<label>-<n>`, or `n` with
 //!   numeric labels (`ts_label_prefix`, `ts_label_number`).
 //!
-//! GAP: cluster numbering. Clusters are numbered by their first leaf entry in CF-tree order. The
-//! clusters themselves match Modeler's in all 42 oracle streams (`crates/exec/tests/
-//! models_twostep.rs`), and the names in 12 of them: up to 8 records (one leaf, in record order,
-//! `ts_prefix3`..`ts_prefix8`) and where few splits keep the first entries in place (`ts_drug9`,
-//! `ts_drug20`, `ts_drug50`). After a leaf split Modeler's entries are not in record order
-//! (`ts_prefix9`, one cluster per record, lists the split leaves as `0 5 3 6` and `2 7 1 4 8`
-//! where record order gives `0 3 5 6` and `1 2 4 7 8`), and no ordering of the split we tried
-//! (seeds first, distance to the seed, in-place partitions, insertion next to the closest entry)
-//! reproduces it, so larger data get the same clusters under other numbers.
+//! - CF-tree numbering: a full node (8 entries) is split before the next insertion descends
+//!   through it or adds a distinct leaf entry. Split the existing 8 entries, then insert the new
+//!   record into the nearer half, using each half's complete CF (`ts_prefix9`..`ts_prefix19`).
+//!   This applies to inner nodes too: waiting for a ninth child gives a different traversal
+//!   (`ts_leaves60/100/200`). A child's two replacement entries occupy its old position in the
+//!   parent, first seed's half followed by second seed's (`ts_leaves20`).
+//! - Split redistribution starts with the farthest pair, in entry order, one seed per half.
+//!   Among the remaining entries, take the one maximizing |d(entry, left) - d(entry, right)|,
+//!   append it to the nearer half, update that half's CF, and repeat. Distances use the growing
+//!   groups, not fixed seeds. In `ts_prefix9`, redistributing `7 1 5 3 6 4` gives `0 5 3 6` and
+//!   `2 7 1 4`, then record 8 joins the latter. `ts_prefix17` instead redistributes
+//!   `7 1 6 5 3 4`, explaining its `0 6 5 3` first half with the same eventual members.
+//! - Traverse children left to right, depth first, retaining each leaf's entry order. The
+//!   hierarchical step preserves the lower position when merging; surviving clusters receive
+//!   consecutive names in that order. Every position matches in all 21 one-cluster-per-record
+//!   probes (`ts_prefix3`..`ts_prefix19`, `ts_leaves20/60/100/200`: 567 positions), and both the
+//!   partitions and names match in all 42 oracle streams (`crates/exec/tests/models_twostep.rs`).
+//!
+//! GAP: exact ties in seed selection, redistribution preference and assignment are not isolated
+//! by these probes. We retain the first pair/candidate, and choose the first half on a tie.
+//! The singleton probes also do not distinguish splitting an inner node immediately upon
+//! reaching 8 children from splitting it before the next insertion; we use the latter. Prefix
+//! probes ending at that boundary with fixed standardization would distinguish the timings.
 //! Outlier handling, the Euclidean distance and CF-tree rebuilds (a tree deeper than three
 //! levels) are not implemented.
 
@@ -94,7 +108,7 @@ impl Default for TwoStepSettings {
     }
 }
 
-/// Leaf entries and inner nodes hold at most this many entries (`maxBranch`).
+/// Leaf and inner nodes split their existing entries at this capacity (`maxBranch`).
 const MAX_BRANCH: usize = 8;
 /// Levels of the CF tree, leaves included (`maxLevel`).
 const MAX_LEVEL: usize = 3;
@@ -189,53 +203,83 @@ impl Node {
         }
     }
 
-    /// Inserts a record; returns the two nodes replacing this one when it splits.
-    fn insert(&mut self, record: Cf, measure: &Measure<'_>) -> Option<(Node, Node)> {
-        match self {
-            Node::Leaf(entries) => {
-                let closest = closest(entries.iter(), &record, measure);
-                match closest {
-                    // Threshold 0: only an identical record joins an entry.
-                    Some((k, d)) if d <= 0.0 => entries[k] = entries[k].add(&record),
-                    _ => entries.push(record),
-                }
+    /// Splits full nodes before descending or adding a distinct leaf entry. A child's two
+    /// replacement entries stay adjacent in the parent, with the first seed's half first.
+    fn insert(
+        &mut self,
+        record: Cf,
+        measure: &Measure<'_>,
+    ) -> Result<Option<(Node, Node)>, AlgoError> {
+        if let Node::Leaf(entries) = self
+            && let Some((k, d)) = closest(entries.iter(), &record, measure)
+            && d <= 0.0
+            && let Some(entry) = entries.get_mut(k)
+        {
+            // Threshold 0: an identical record can join even a full leaf.
+            *entry = entry.add(&record);
+            return Ok(None);
+        }
+        if self.len() >= MAX_BRANCH {
+            let (mut left, mut right) = self.split(measure)?;
+            let (Some(l), Some(r)) = (left.summary(), right.summary()) else {
+                return Err(AlgoError::Data("an empty CF-tree split".into()));
+            };
+            let target = if measure.distance(&record, &l) <= measure.distance(&record, &r) {
+                &mut left
+            } else {
+                &mut right
+            };
+            // Both seeds own an entry, so each half has at most MAX_BRANCH - 1 entries.
+            // Descending may split a child, but cannot split this half on the same insertion.
+            if target.insert(record, measure)?.is_some() {
+                return Err(AlgoError::Data(
+                    "a CF-tree split did not free an entry".into(),
+                ));
             }
+            return Ok(Some((left, right)));
+        }
+        match self {
+            Node::Leaf(entries) => entries.push(record),
             Node::Inner(children) => {
-                let (k, _) = closest(children.iter().map(|(cf, _)| cf), &record, measure)?;
-                let split = children[k].1.insert(record, measure);
-                match split {
+                let (k, _) = closest(children.iter().map(|(cf, _)| cf), &record, measure)
+                    .ok_or_else(|| AlgoError::Data("an empty CF-tree inner node".into()))?;
+                let child = children
+                    .get_mut(k)
+                    .ok_or_else(|| AlgoError::Data("no closest CF-tree child".into()))?;
+                match child.1.insert(record, measure)? {
                     None => {
-                        if let Some(cf) = children[k].1.summary() {
-                            children[k].0 = cf;
-                        }
+                        child.0 = child
+                            .1
+                            .summary()
+                            .ok_or_else(|| AlgoError::Data("an empty CF-tree child".into()))?;
                     }
                     Some((left, right)) => {
                         let (Some(l), Some(r)) = (left.summary(), right.summary()) else {
-                            return None;
+                            return Err(AlgoError::Data("an empty CF-tree child split".into()));
                         };
                         children.splice(k..=k, [(l, left), (r, right)]);
                     }
                 }
             }
         }
-        (self.len() > MAX_BRANCH).then(|| self.split(measure))
+        Ok(None)
     }
 
-    /// Splits around the farthest pair of entries: each entry joins the nearer seed (the first
-    /// on a tie), keeping its order.
-    fn split(&mut self, measure: &Measure<'_>) -> (Node, Node) {
+    /// Seeds are the farthest pair. Redistribute by the greatest distance preference, updating
+    /// the chosen group's CF after each transfer (see the module docs).
+    fn split(&mut self, measure: &Measure<'_>) -> Result<(Node, Node), AlgoError> {
         match self {
             Node::Leaf(entries) => {
                 let (a, b) = farthest(entries, measure);
-                let (left, right) = partition(std::mem::take(entries), a, b, |cf| cf, measure);
-                (Node::Leaf(left), Node::Leaf(right))
+                let (left, right) = partition(std::mem::take(entries), a, b, |cf| cf, measure)?;
+                Ok((Node::Leaf(left), Node::Leaf(right)))
             }
             Node::Inner(children) => {
                 let cfs: Vec<Cf> = children.iter().map(|(cf, _)| cf.clone()).collect();
                 let (a, b) = farthest(&cfs, measure);
                 let (left, right) =
-                    partition(std::mem::take(children), a, b, |(cf, _)| cf, measure);
-                (Node::Inner(left), Node::Inner(right))
+                    partition(std::mem::take(children), a, b, |(cf, _)| cf, measure)?;
+                Ok((Node::Inner(left), Node::Inner(right)))
             }
         }
     }
@@ -286,22 +330,56 @@ fn partition<T>(
     b: usize,
     cf: impl Fn(&T) -> &Cf,
     measure: &Measure<'_>,
-) -> (Vec<T>, Vec<T>) {
-    let seed_a = cf(&items[a]).clone();
-    let seed_b = cf(&items[b]).clone();
+) -> Result<(Vec<T>, Vec<T>), AlgoError> {
+    let seed = |k| {
+        items
+            .get(k)
+            .map(|item| cf(item).clone())
+            .ok_or_else(|| AlgoError::Data("no CF-tree split seed".into()))
+    };
+    let mut left_cf = seed(a)?;
+    let mut right_cf = seed(b)?;
+    if a == b {
+        return Err(AlgoError::Data(
+            "identical CF-tree split seed indices".into(),
+        ));
+    }
     let mut left = Vec::new();
     let mut right = Vec::new();
+    let mut pending = Vec::new();
     for (k, item) in items.into_iter().enumerate() {
-        let to_left = k == a
-            || (k != b
-                && measure.distance(cf(&item), &seed_a) <= measure.distance(cf(&item), &seed_b));
-        if to_left {
+        if k == a {
+            left.push(item);
+        } else if k == b {
+            right.push(item);
+        } else {
+            pending.push(item);
+        }
+    }
+    while !pending.is_empty() {
+        let mut best: Option<(usize, f64, f64, f64)> = None;
+        for (k, item) in pending.iter().enumerate() {
+            let dl = measure.distance(cf(item), &left_cf);
+            let dr = measure.distance(cf(item), &right_cf);
+            let preference = (dl - dr).abs();
+            if best.is_none_or(|(_, _, _, d)| preference > d) {
+                best = Some((k, dl, dr, preference));
+            }
+        }
+        let Some((k, dl, dr, _)) = best else {
+            return Err(AlgoError::Data("no CF-tree split candidate".into()));
+        };
+        // k comes from pending.iter(); stable removal retains the order of tied candidates.
+        let item = pending.remove(k);
+        if dl <= dr {
+            left_cf = left_cf.add(cf(&item));
             left.push(item);
         } else {
+            right_cf = right_cf.add(cf(&item));
             right.push(item);
         }
     }
-    (left, right)
+    Ok((left, right))
 }
 
 /// Trains a TwoStep model on the `inputs` of `table`.
@@ -423,7 +501,7 @@ pub fn train(
     let mut root = Node::Leaf(Vec::new());
     let mut levels = 1;
     for record in records {
-        if let Some((left, right)) = root.insert(record, &measure) {
+        if let Some((left, right)) = root.insert(record, &measure)? {
             levels += 1;
             if levels > MAX_LEVEL {
                 return Err(AlgoError::Unsupported(
