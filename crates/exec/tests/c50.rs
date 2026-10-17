@@ -147,6 +147,8 @@ fn c50_builders_match_every_split_count_and_distribution() {
     for (label, case) in [
         "c50_default",
         "c50_expert",
+        "c50_generality",
+        "c50_noise20",
         "c50_min_child",
         "c50_group_symbols",
         "c50_no_global_prune",
@@ -184,6 +186,140 @@ fn c50_globalprune_trees_match_every_split_count_and_distribution() {
         Fixture::load("c50_globalprune", case).compare();
     }
     println!("GLOBALPRUNE {} trees exact", cases.len());
+}
+
+fn recorded_preset_cases() -> Vec<String> {
+    let mut cases: Vec<_> = std::fs::read_dir(support::repo_root().join("corpus/c50_presets"))
+        .unwrap()
+        .filter_map(|entry| {
+            entry
+                .unwrap()
+                .file_name()
+                .to_str()
+                .unwrap()
+                .strip_suffix(".str")
+                .map(str::to_owned)
+        })
+        .collect();
+    cases.sort();
+    assert_eq!(cases.len(), 49, "update the preset evidence inventory");
+    cases
+}
+
+const PRESET_BASELINE_GAPS: &[&str] = &[
+    "c50_drughalf_expert",
+    "c50_drugtwice_expert",
+    "c50_wn_expert",
+    "c50_wn100_expert",
+];
+
+#[test]
+fn c50_simple_presets_and_expert_controls_match_exactly() {
+    let cases = recorded_preset_cases();
+    let mut count = 0;
+    for case in cases
+        .iter()
+        .filter(|c| !c.contains("winnow") && !PRESET_BASELINE_GAPS.contains(&c.as_str()))
+    {
+        let fixture = Fixture::load("c50_presets", case);
+        fixture.compare();
+        count += 1;
+        for tag in ["grid", "noisy", "drug"] {
+            if case.starts_with(&format!("c50_{tag}_")) {
+                let baseline = Fixture::load("c50_presets", &format!("c50_{tag}_simple"));
+                assert_eq!(fixture.oracle.model, baseline.oracle.model, "{case}");
+            }
+        }
+    }
+    assert_eq!(count, 26);
+    println!("PRESETS {count} Simple trees and Expert controls exact");
+    // Explicitly train Expert defaults on the three Simple baseline datasets too.
+    for tag in ["grid", "noisy", "drug"] {
+        let mut fixture = Fixture::load("c50_presets", &format!("c50_{tag}_simple"));
+        fixture.set_builder_setting("expertMode", "true");
+        fixture.compare();
+    }
+}
+
+/// Record the pre-existing failures instead of asserting that every unwinnowed
+/// control matches. Keep this full contract ready for the baseline learner fixes.
+#[test]
+#[ignore = "GAP: drughalf/drugtwice split selection and precision, wn root selection, wn100 pruning"]
+fn c50_remaining_preset_expert_controls_match_exactly() {
+    let mut mismatches = Vec::new();
+    for case in PRESET_BASELINE_GAPS {
+        if std::panic::catch_unwind(|| Fixture::load("c50_presets", case).compare()).is_err() {
+            mismatches.push(*case);
+        }
+    }
+    assert!(mismatches.is_empty(), "baseline GAPs: {mismatches:?}");
+}
+
+fn recorded_winnowing_cases() -> Vec<(&'static str, String)> {
+    let mut cases: Vec<_> = recorded_preset_cases()
+        .into_iter()
+        .filter(|c| c.contains("winnow"))
+        .map(|c| ("c50_presets", c))
+        .collect();
+    cases.push(("models_ml", "c50_winnow".into()));
+    assert_eq!(cases.len(), 20);
+    cases
+}
+
+#[test]
+fn c50_winnowing_remains_rejected_for_every_recorded_case() {
+    for (label, case) in recorded_winnowing_cases() {
+        let fixture = Fixture::load(label, &case);
+        let results =
+            dms_exec::Plan::new(&fixture.stream).evaluate(&[&fixture.uid], &fixture.context);
+        let error = results.get(&fixture.uid).unwrap().as_ref().unwrap_err();
+        assert!(
+            error.to_string().contains("winnowing (GAP c50_presets"),
+            "{label}/{case}: {error}"
+        );
+    }
+}
+
+#[test]
+#[ignore = "GAP: winnowing elimination criterion and unwinnowed baseline trees; all 20 must match before enabling"]
+fn c50_all_winnowing_trees_match_exactly() {
+    let mut mismatches = Vec::new();
+    for (label, case) in recorded_winnowing_cases() {
+        if std::panic::catch_unwind(|| Fixture::load(label, &case).compare()).is_err() {
+            mismatches.push(format!("{label}/{case}"));
+        }
+    }
+    assert!(mismatches.is_empty(), "winnowing GAPs: {mismatches:?}");
+}
+
+#[test]
+fn c50_unrecorded_simple_presets_remain_explicit_errors() {
+    for (key, value) in [
+        ("expectedNoise", "-1"),
+        ("expectedNoise", "7"),
+        ("expectedNoise", "51"),
+        ("expectedNoise", "NaN"),
+        ("expectedNoise", "999999999999999999999"),
+        ("modellingBias", "unknown"),
+        ("modelFormat", "ruleSet"),
+        ("useBoosting", "true"),
+    ] {
+        let mut fixture = Fixture::load("c50_presets", "c50_drug_noise20");
+        fixture.set_builder_setting(key, value);
+        let results =
+            dms_exec::Plan::new(&fixture.stream).evaluate(&[&fixture.uid], &fixture.context);
+        let error = results.get(&fixture.uid).unwrap().as_ref().unwrap_err();
+        let message = error.to_string();
+        assert!(
+            message.contains("expectedNoise") || message.contains("Simple"),
+            "{key}={value}: {error}"
+        );
+    }
+    let mut fixture = Fixture::load("c50_presets", "c50_drug_generality");
+    fixture.set_builder_setting("expectedNoise", "30");
+    let results = dms_exec::Plan::new(&fixture.stream).evaluate(&[&fixture.uid], &fixture.context);
+    let error = results.get(&fixture.uid).unwrap().as_ref().unwrap_err();
+    assert!(error.to_string().contains("GAP c50_presets"), "{error}");
 }
 
 /// Case weights through the algorithm (the node still rejects `useWeight`): probe
@@ -323,6 +459,39 @@ struct Fixture {
 }
 
 impl Fixture {
+    /// Modify only the in-memory stream; never write shared corpus/oracle files.
+    fn set_builder_setting(&mut self, key: &str, value: &str) {
+        use dms_strfmt::fastinfoset::{Element, Node, QualifiedName};
+        let settings = self
+            .stream
+            .diagram
+            .nodes
+            .iter_mut()
+            .find(|n| n.uid == self.uid)
+            .unwrap()
+            .settings
+            .as_mut()
+            .unwrap();
+        let value_node = Node::Text(value.into());
+        if let Some(element) = settings.children.iter_mut().find_map(|child| match child {
+            Node::Element(e) if &*e.name.local == key => Some(e),
+            _ => None,
+        }) {
+            element.children = vec![value_node];
+        } else {
+            settings.children.push(Node::Element(Element {
+                name: QualifiedName {
+                    prefix: None,
+                    namespace: None,
+                    local: key.into(),
+                },
+                namespace_declarations: Vec::new(),
+                attributes: Vec::new(),
+                children: vec![value_node],
+            }));
+        }
+    }
+
     fn load(label: &str, case: &str) -> Self {
         use dms_exec::{ExecContext, FileResolver};
         use dms_stream::Stream;
