@@ -56,6 +56,7 @@ fn node(children: Vec<Node>) -> StreamNode {
         properties_attachment: None,
         containers: Vec::new(),
         settings: Some(settings),
+        binning_output: None,
         subdiagram: None,
     }
 }

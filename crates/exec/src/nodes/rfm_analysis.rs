@@ -66,7 +66,6 @@ const SETTINGS: &[&str] = &[
     "rfmAnalysisBinValuesField",
     "recalculateBins",
     "tiedValuesMethod",
-    "BinningOutput",
 ];
 
 struct Dimension {
@@ -142,7 +141,7 @@ pub fn build(node: &StreamNode) -> Result<Box<dyn Operator>, OperatorError> {
     }
     let cached = match settings::text(s, "recalculateBins").as_deref() {
         None | Some("always") => None,
-        Some("ifnecessary") => Some(read_cache(s, &dimensions)?),
+        Some("ifnecessary") => Some(read_cache(node.binning_output.as_ref(), &dimensions)?),
         Some(other) => return Err(bad(format!("unsupported recalculateBins {other:?}"))),
     };
     Ok(Box::new(RfmAnalysis {
@@ -350,12 +349,13 @@ fn cached_score(value: f64, intervals: &[Interval], clamp: bool) -> Option<i64> 
     None
 }
 
+/// `output`: the node's `BinningOutput`, saved next to (not inside) its `properties`.
 fn read_cache(
-    s: Option<&Element>,
+    output: Option<&Element>,
     dimensions: &[Dimension; 3],
 ) -> Result<[Vec<Interval>; 3], OperatorError> {
-    let output = settings::element(s, "BinningOutput")
-        .ok_or_else(|| bad("unsupported IfNecessary without retained BinningOutput"))?;
+    let output =
+        output.ok_or_else(|| bad("unsupported IfNecessary without retained BinningOutput"))?;
     let names = settings::children(Some(output), "BinningFieldNames", "binningFieldName");
     if !names.is_empty() {
         if names.len() != dimensions.len() {

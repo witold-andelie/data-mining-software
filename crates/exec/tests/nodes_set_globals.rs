@@ -43,6 +43,7 @@ fn node(uid: &str, class: &str, settings: Vec<Node>) -> StreamNode {
         properties_attachment: None,
         containers: Vec::new(),
         settings: Some(settings),
+        binning_output: None,
         subdiagram: None,
     }
 }
