@@ -3,23 +3,25 @@
 //!
 //! Implemented: `partitionFieldName`, `trainingPartitionSize`/`testingPartitionSize`/
 //! `validationPartitionSize` (percentages; the validation partition exists when
-//! `createValidationPartition` is true; sizes are used as proportions of their sum),
+//! `createValidationPartition` is true),
 //! `partitionRandomSeed` (with `partitionUseRandomSeed`; without it the seed comes from the clock),
 //! the partition labels and `partitionValueMode` (`system_label` gives `1_Training`, `label`
-//! gives `Training`, `system` gives 1, 2, 3). The output field has `Role::Partition` and its
+//! gives `Training`, `system` gives the strings `1`, `2`, `3`: `oracle/random/part_*`). The output field has `Role::Partition` and its
 //! `ValueSpec::Categories` lists training, testing and validation values in that order, which is
 //! what `@PARTITION_FIELD`, `@TRAINING_PARTITION` etc. use.
 //!
-//! GAP: Modeler's random number generator and assignment procedure are undocumented, so
-//! records are assigned by an independent, deterministic generator seeded from the setting
-//! (one draw per record). The proportions hold on average but the individual assignment does NOT
-//! match Modeler's, so streams that depend on exact partition membership will differ.
+//! Assignment (`crate::random`): one `java.util.Random(seed).nextInt(100)` draw per record; the
+//! record goes to the first partition whose cumulative percentage exceeds the draw
+//! (`oracle/random/part_*`, every record of seven cases). GAP: sizes that do not add up to 100
+//! are scaled to 100 (no oracle), and without `partitionUseRandomSeed` Modeler seeds from the
+//! clock, which we cannot reproduce.
 //! Not implemented (error): `usePartitionHashColumn` (SQL generation by a unique field).
 
 use super::field_util::with_columns;
 use crate::context::ExecContext;
 use crate::error::OperatorError;
 use crate::operator::{Arity, Operator};
+use crate::random::JavaRandom;
 use crate::settings;
 use dms_stream::StreamNode;
 use dms_types::{Field, Measurement, Role, Storage, Table, Value, ValueSpec};
@@ -30,9 +32,9 @@ struct Partition {
     /// Values of the partitions in order: training, testing, (validation).
     values: Vec<Value>,
     storage: Storage,
-    /// Cumulative upper bounds in [0, 1] for each partition.
+    /// Cumulative upper bounds in percent for each partition.
     bounds: Vec<f64>,
-    seed: Option<u64>,
+    seed: Option<i64>,
 }
 
 pub fn build(node: &StreamNode) -> Result<Box<dyn Operator>, OperatorError> {
@@ -74,8 +76,8 @@ pub fn build(node: &StreamNode) -> Result<Box<dyn Operator>, OperatorError> {
     let bounds = sizes
         .iter()
         .map(|size| {
-            running += size / total;
-            running
+            running += size;
+            running * 100.0 / total
         })
         .collect();
     let (values, storage) = match settings::text(s, "partitionValueMode")
@@ -88,9 +90,9 @@ pub fn build(node: &StreamNode) -> Result<Box<dyn Operator>, OperatorError> {
         ),
         Some("system") => (
             (1..=labels.len())
-                .map(|n| Value::Integer(n as i64))
+                .map(|n| Value::string(n.to_string()))
                 .collect(),
-            Storage::Integer,
+            Storage::String,
         ),
         _ => (
             labels
@@ -102,8 +104,7 @@ pub fn build(node: &StreamNode) -> Result<Box<dyn Operator>, OperatorError> {
         ),
     };
     let seed = if settings::flag(s, "partitionUseRandomSeed")?.unwrap_or(true) {
-        let seed = settings::integer(s, "partitionRandomSeed")?.unwrap_or(1_234_567);
-        Some(u64::try_from(seed).unwrap_or(0))
+        Some(settings::integer(s, "partitionRandomSeed")?.unwrap_or(1_234_567))
     } else {
         None
     };
@@ -129,7 +130,7 @@ impl Operator for Partition {
         let mut random = JavaRandom::new(seed);
         let column = (0..input.row_count())
             .map(|_| {
-                let draw = random.next_double();
+                let draw = f64::from(random.next_int(100));
                 let index = self
                     .bounds
                     .iter()
@@ -152,35 +153,8 @@ impl Operator for Partition {
     }
 }
 
-fn clock_seed() -> u64 {
+fn clock_seed() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| u64::from(d.subsec_nanos()) ^ d.as_secs())
-}
-
-/// A 48-bit linear congruential generator (the well-known `java.util.Random` recurrence, from
-/// its public specification), used only as a reproducible source of uniform draws.
-struct JavaRandom {
-    state: u64,
-}
-
-const MASK: u64 = (1 << 48) - 1;
-
-impl JavaRandom {
-    fn new(seed: u64) -> JavaRandom {
-        JavaRandom {
-            state: (seed ^ 0x5DEE_CE66D) & MASK,
-        }
-    }
-
-    fn next(&mut self, bits: u32) -> u64 {
-        self.state = self.state.wrapping_mul(0x5DEE_CE66D).wrapping_add(0xB) & MASK;
-        self.state >> (48 - bits)
-    }
-
-    fn next_double(&mut self) -> f64 {
-        let high = self.next(26);
-        let low = self.next(27);
-        ((high << 27) + low) as f64 / (1u64 << 53) as f64
-    }
+        .map_or(0, |d| i64::from(d.subsec_nanos()) ^ d.as_secs() as i64)
 }

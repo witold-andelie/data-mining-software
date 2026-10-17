@@ -967,14 +967,15 @@ fn partition_value_modes_validation_and_downstream_specials() {
         many(10),
     )
     .unwrap();
+    // `system` values are the strings 1, 2 (`oracle/random/part_default`).
     assert_eq!(
         out.model().field("Partition").unwrap().storage,
-        Storage::Integer
+        Storage::String
     );
     assert!(
         col(&out, "Partition")
             .iter()
-            .all(|v| matches!(v, Value::Integer(1 | 2)))
+            .all(|v| *v == s("1") || *v == s("2"))
     );
 
     // @PARTITION_FIELD = @TRAINING_PARTITION works on the output.
@@ -995,7 +996,7 @@ fn partition_value_modes_validation_and_downstream_specials() {
         hits,
         col(&out, "Partition")
             .iter()
-            .filter(|v| **v == int(1))
+            .filter(|v| **v == s("1"))
             .count()
     );
 }
