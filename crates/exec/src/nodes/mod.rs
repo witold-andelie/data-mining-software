@@ -43,6 +43,7 @@ pub mod statistics_export;
 pub mod statistics_file;
 pub mod table;
 mod text_source;
+pub mod time_intervals;
 pub mod time_plot;
 pub mod transpose;
 pub mod r#type;
