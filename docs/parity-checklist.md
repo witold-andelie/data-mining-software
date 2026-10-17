@@ -4,8 +4,9 @@
 
 | Scope | Implemented | Total |
 |---|---|---|
-| MVP | 60 | 90 |
+| MVP | 60 | 85 |
 | later | 0 | 23 |
+| license blocked | 0 | 5 |
 | out of scope | 0 | 34 |
 
 ## Sources
@@ -112,12 +113,12 @@
 | Linear | `linear` | MVP | done | `LinearRegression!spss.alm-extension`, `ApplyLinearRegressionSplitModelNode` |
 | Regression | `regression` | MVP | done | `BuildRegressionNode`, `ApplyRegressionNode` |
 | Logistic | `logistic` | MVP | done | `BuildLogisticNode`, `ApplyLogisticNode`, `ApplyLogisticSplitModelNode` |
-| GenLin | `genlin` | MVP | missing | `spss.generalizedlinear_id!buildgeneralizedlinear` |
+| GenLin | `genlin` | license blocked | missing | `spss.generalizedlinear_id!buildgeneralizedlinear` |
 | Neural Net | `neural_net` | MVP | missing | `TrainNetNode`, `ApplyNetNode`, `ApplyNeuralNetSplitModelNode`, `neuralnet!spss.neuralnet-extension` |
-| SVM | `svm` | MVP | missing | `spss.svm_id!buildSVM` |
-| KNN | `knn` | MVP | missing | `spss.KNN_id!KNNbuilder` |
-| Bayes Net | `bayes_net` | MVP | missing | `spss.bayesian_id!buildBN` |
-| Discriminant | `discriminant` | MVP | missing | `spss.discriminant_id!builddiscriminant` |
+| SVM | `svm` | license blocked | missing | `spss.svm_id!buildSVM` |
+| KNN | `knn` | license blocked | missing | `spss.KNN_id!KNNbuilder` |
+| Bayes Net | `bayes_net` | license blocked | missing | `spss.bayesian_id!buildBN` |
+| Discriminant | `discriminant` | license blocked | missing | `spss.discriminant_id!builddiscriminant` |
 | PCA/Factor | `pca_factor` | MVP | missing | `BuildPCANode`, `ApplyPCANode` |
 | Feature Selection | `feature_selection` | MVP | done | `BuildFeatureSelectionNode`, `ApplyFeatureSelectionNode`, `FeatureSelectionModelNode` |
 | Anomaly | `anomaly` | MVP | missing | `BuildAnomalyNode`, `ApplyAnomalyNode` |
