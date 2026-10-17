@@ -52,7 +52,7 @@
 //! - Rule sets (`modelFormat` `ruleSet`): [`crate::c50_rules`].
 //!
 //! Rejected settings (never silently substituted): boosting/trials
-//! (`c50_boost_tree`, `c50_boost_rules`: GAP reweighting/stopping),
+//! (`c50_boost_tree`, `c50_boost_rules`: reweighting settled, weighted trees GAP; see `c50_boost`),
 //! costs combined with weights/rules/boosting (no combined oracle), case/frequency
 //! weights (`c50_weight`: GAP pruning and internal distributions), winnowing
 //! (`c50_winnow`: GAP elimination criterion), Simple Generality/expected noise
