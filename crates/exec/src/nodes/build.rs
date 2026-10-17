@@ -54,7 +54,7 @@ use dms_algo::cart::{self, CartSettings, Impurity, MinSize};
 use dms_algo::chaid::{self, ChaidSettings, ChiSquare, Method};
 use dms_algo::kmeans::{self, KMeansSettings};
 use dms_algo::linear::{self, LinearSettings, Style};
-use dms_algo::logistic::{self, LogisticSettings, Procedure};
+use dms_algo::logistic::{self, LogisticSettings, Method as LogisticMethod, Procedure};
 use dms_algo::twostep::{self, Criterion, TwoStepSettings};
 use dms_pmml::Pmml;
 use dms_stream::StreamNode;
@@ -374,11 +374,7 @@ fn logistic_settings(node: &StreamNode) -> Result<LogisticSpec, OperatorError> {
         }
     };
     match procedure {
-        Procedure::Multinomial => match settings::text(s, "LogregMethod").as_deref().map(str::trim)
-        {
-            None | Some("") | Some("enter") => {}
-            Some(other) => return Err(unsupported(&format!("method {other}"))),
-        },
+        Procedure::Multinomial => {}
         Procedure::Binomial => match settings::text(s, "LogregBinomialMethod")
             .as_deref()
             .map(str::trim)
@@ -408,6 +404,32 @@ fn logistic_settings(node: &StreamNode) -> Result<LogisticSpec, OperatorError> {
         }
     }
     let defaults = LogisticSettings::default();
+    let method = match procedure {
+        Procedure::Binomial => LogisticMethod::Enter,
+        Procedure::Multinomial => {
+            match settings::text(s, "LogregMethod").as_deref().map(str::trim) {
+                None | Some("") | Some("enter") => LogisticMethod::Enter,
+                Some("stepwise") => LogisticMethod::Stepwise,
+                Some("forwards") => LogisticMethod::Forwards,
+                Some("backwards") => LogisticMethod::Backwards,
+                Some(other) => return Err(unsupported(&format!("method {other}"))),
+            }
+        }
+    };
+    if method != LogisticMethod::Enter {
+        let entry = settings::text(s, "stepwiseEntryMethod").unwrap_or_default();
+        let removal = settings::text(s, "stepwiseRemovalMethod").unwrap_or_default();
+        if !matches!(entry.trim(), "" | "Score") || !matches!(removal.trim(), "" | "LR") {
+            return Err(unsupported(&format!(
+                "stepwise entry {entry:?} / removal {removal:?} (only Score / LR)"
+            )));
+        }
+        if settings::flag(s, "LogregEnableMaxTerms")?.unwrap_or(false)
+            || settings::integer(s, "minTerms")?.unwrap_or(0) != 0
+        {
+            return Err(unsupported("stepwise term limits"));
+        }
+    }
     let custom_target =
         settings::text(s, "modelTargetFieldSelection").filter(|name| !name.trim().is_empty());
     let custom_inputs = if settings::flag(s, "autoModelFieldSelection")?.unwrap_or(true) {
@@ -429,6 +451,9 @@ fn logistic_settings(node: &StreamNode) -> Result<LogisticSpec, OperatorError> {
         LogisticSettings {
             procedure,
             include_constant: settings::flag(s, "includeConstant")?.unwrap_or(true),
+            method,
+            p_in: settings::real(s, "pIn")?.unwrap_or(defaults.p_in),
+            p_out: settings::real(s, "pOut")?.unwrap_or(defaults.p_out),
             max_iterations: settings::integer(s, "maximumIterations")?
                 .and_then(|n| usize::try_from(n).ok())
                 .unwrap_or(defaults.max_iterations),

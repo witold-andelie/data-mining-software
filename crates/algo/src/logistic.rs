@@ -28,8 +28,22 @@
 //!   null space of the information matrix. The binomial HEART case has a unique MLE and
 //!   matches Modeler to 1e-8.
 //!
-//! Supported: Enter method, main effects, with or without a constant. Stepwise / forwards /
-//! backwards, custom terms, full factorial, a non-zero cell `delta`, scaling, frequency weights
+//! - Convergence: when a Newton step changes no parameter by more than `parameterConvergence`,
+//!   Modeler moves only a quarter of that step and stops (`team/model_comparison`: every
+//!   coefficient of the stepwise model sits at 0.2500 of the last step; the binomial
+//!   `logreg_binomial` coefficients move from 6e-9 to 3e-9 of Modeler's).
+//! - Stepwise selection (multinomial `stepwise`, `forwards`, `backwards`; Algorithms Guide
+//!   "Stepwise Variable Selection"): from the constant-only model, the input whose score test has
+//!   the smallest p-value enters while it is below `pIn`; with `stepwise`, after each entry the
+//!   input whose likelihood-ratio test has the largest p-value leaves while it is above `pOut`
+//!   (never the one just entered); `backwards` starts from every input and only removes. The
+//!   model keeps the inputs in input order (`team/model_comparison`: `Credit_rating` on Age,
+//!   Income and Credit_cards out of five inputs, 6/6 terminals). Records are those complete on the
+//!   inputs of each fitted model.
+//!
+//! Supported: Enter and the stepwise methods above (Score entry, LR removal), main effects, with
+//! or without a constant. The binomial stepwise methods,
+//! custom terms, full factorial, a non-zero cell `delta`, scaling, frequency weights
 //! and non-Indicator binomial contrasts return [`AlgoError::Unsupported`].
 
 use crate::common::{data_field, field_categories, mining_field};
@@ -49,6 +63,19 @@ pub enum Procedure {
     Binomial,
 }
 
+/// How the multinomial procedure chooses its effects (`LogregMethod`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Method {
+    /// `enter`: every input.
+    Enter,
+    /// `stepwise`: forward entry by the score test, then removal by the likelihood-ratio test.
+    Stepwise,
+    /// `forwards`: forward entry only.
+    Forwards,
+    /// `backwards`: start with every input and remove by the likelihood-ratio test.
+    Backwards,
+}
+
 /// Settings of a Logistic build node (Modeler's defaults in [`Default`]).
 #[derive(Debug, Clone, PartialEq)]
 pub struct LogisticSettings {
@@ -56,6 +83,12 @@ pub struct LogisticSettings {
     pub procedure: Procedure,
     /// `include_constant` (default true).
     pub include_constant: bool,
+    /// `method` (default Enter).
+    pub method: Method,
+    /// `p_in` / `pIn`: the entry significance (default 0.05).
+    pub p_in: f64,
+    /// `p_out` / `pOut`: the removal significance (default 0.1).
+    pub p_out: f64,
     /// `max_iterations` (default 20).
     pub max_iterations: usize,
     /// `max_steps` / `maximumStepHalving` (default 5).
@@ -79,6 +112,9 @@ impl Default for LogisticSettings {
         LogisticSettings {
             procedure: Procedure::Multinomial,
             include_constant: true,
+            method: Method::Enter,
+            p_in: 0.05,
+            p_out: 0.1,
             max_iterations: 20,
             max_step_halving: 5,
             parameter_convergence: 1e-6,
@@ -102,6 +138,17 @@ pub fn train(dataset: &Dataset<'_>, settings: &LogisticSettings) -> Result<Pmml,
         ));
     }
     validate_settings(settings)?;
+    if settings.method != Method::Enter {
+        let inputs = select_effects(dataset, settings)?;
+        let chosen = Dataset {
+            inputs: &inputs,
+            ..*dataset
+        };
+        let data = Data::read(&chosen, settings)?;
+        let beta = newton(&data, settings)?;
+        let pmml_beta = reparameterise(&data, &beta);
+        return Ok(to_pmml(&chosen, &data, settings, &pmml_beta));
+    }
 
     let data = Data::read(dataset, settings)?;
     let beta = newton(&data, settings)?;
@@ -488,10 +535,15 @@ fn newton(data: &Data, settings: &LogisticSettings) -> Result<Vec<f64>, AlgoErro
             .zip(&new_beta)
             .map(|(old, new)| (old - new).abs())
             .fold(0.0, f64::max);
-        beta = new_beta;
         if change < settings.parameter_convergence {
+            // The converging step goes a quarter of the way: Modeler's estimates sit at 0.25 of
+            // the last Newton step on every coefficient (team/model_comparison stepwise model).
+            for (b, n) in beta.iter_mut().zip(&new_beta) {
+                *b += 0.25 * (n - *b);
+            }
             break;
         }
+        beta = new_beta;
         if settings.log_likelihood_convergence > 0.0
             && (new_loglik - loglik).abs() < settings.log_likelihood_convergence
         {
@@ -916,4 +968,160 @@ fn to_pmml(
             param_matrix,
         }),
     }
+}
+
+// ------------------------------------------------------------------------------------------
+// Stepwise selection (NOMREG, Algorithms Guide "Stepwise Variable Selection")
+
+/// A fitted model on a subset of the inputs: its data, estimates and log-likelihood.
+struct Fit {
+    data: Data,
+    beta: Vec<f64>,
+    loglik: f64,
+}
+
+fn fit(
+    dataset: &Dataset<'_>,
+    inputs: &[usize],
+    settings: &LogisticSettings,
+) -> Result<Fit, AlgoError> {
+    let subset = Dataset { inputs, ..*dataset };
+    let data = Data::read(&subset, settings)?;
+    let beta = newton(&data, settings)?;
+    let loglik = loglik_at(&data, &beta)
+        .ok_or_else(|| AlgoError::Data("the logistic log-likelihood is not finite".into()))?;
+    Ok(Fit { data, beta, loglik })
+}
+
+/// The key of an estimated parameter, to carry estimates between nested models.
+fn param_key(param: &Param) -> String {
+    match &param.kind {
+        ParamKind::Intercept => "I".into(),
+        ParamKind::Covariate { field } => format!("C:{field}"),
+        ParamKind::Factor { field, value, .. } => format!("F:{field}={value}"),
+    }
+}
+
+/// The score statistic for adding the parameters of `larger` that `fit` lacks, at `fit`'s
+/// estimates (zero for the new parameters), and its degrees of freedom.
+fn score_statistic(fit: &Fit, larger: &Data, settings: &LogisticSettings) -> Option<(f64, f64)> {
+    let m = larger.non_ref.len();
+    let p = larger.p_est;
+    let small_p = fit.data.p_est;
+    let mut small: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    for (param, est) in fit.data.params.iter().zip(&fit.data.est_of) {
+        if let Some(s) = est {
+            small.insert(param_key(param), *s);
+        }
+    }
+    let mut beta = vec![0.0; m.checked_mul(p)?];
+    let mut added = 0usize;
+    for (param, est) in larger.params.iter().zip(&larger.est_of) {
+        let Some(s) = est else { continue };
+        match small.get(&param_key(param)) {
+            Some(&t) => {
+                for j in 0..m {
+                    beta[j * p + s] = fit.beta.get(j * small_p + t).copied().unwrap_or(0.0);
+                }
+            }
+            None => added += 1,
+        }
+    }
+    let (_, score, info) = derivatives(larger, &beta)?;
+    let solved = solve_system(&info, &score, m * p, settings.singularity)?;
+    let statistic: f64 = score.iter().zip(&solved).map(|(u, x)| u * x).sum();
+    Some((statistic, (added * m) as f64))
+}
+
+/// The inputs a stepwise, forward or backward method keeps, in input order.
+fn select_effects(
+    dataset: &Dataset<'_>,
+    settings: &LogisticSettings,
+) -> Result<Vec<usize>, AlgoError> {
+    if settings.procedure != Procedure::Multinomial {
+        return Err(AlgoError::Unsupported(
+            "stepwise methods of the binomial procedure".into(),
+        ));
+    }
+    if !settings.include_constant {
+        return Err(AlgoError::Unsupported(
+            "stepwise selection without a constant".into(),
+        ));
+    }
+    let all = dataset.inputs;
+    let ordered = |chosen: &[usize]| -> Vec<usize> {
+        all.iter().copied().filter(|p| chosen.contains(p)).collect()
+    };
+    let mut chosen: Vec<usize> = match settings.method {
+        Method::Backwards => all.to_vec(),
+        _ => Vec::new(),
+    };
+    let removal = |chosen: &mut Vec<usize>, keep: Option<usize>| -> Result<bool, AlgoError> {
+        let current = fit(dataset, &ordered(chosen), settings)?;
+        let mut worst: Option<(usize, f64)> = None;
+        for &effect in chosen.iter() {
+            if Some(effect) == keep {
+                continue;
+            }
+            let without: Vec<usize> = chosen.iter().copied().filter(|&e| e != effect).collect();
+            let reduced = fit(dataset, &ordered(&without), settings)?;
+            let df = (current.data.p_est - reduced.data.p_est) * current.data.non_ref.len();
+            let statistic = (2.0 * (current.loglik - reduced.loglik)).max(0.0);
+            let p = crate::stats::chi_square_p(statistic, df as f64);
+            if worst.is_none_or(|(_, w)| p > w) {
+                worst = Some((effect, p));
+            }
+        }
+        match worst {
+            Some((effect, p)) if p > settings.p_out => {
+                chosen.retain(|&e| e != effect);
+                Ok(true)
+            }
+            _ => Ok(false),
+        }
+    };
+    if settings.method == Method::Backwards {
+        while !chosen.is_empty() && removal(&mut chosen, None)? {}
+        return Ok(ordered(&chosen));
+    }
+    // Forward entry; stepwise also removes after each entry. Each subset is entered at most
+    // once, so the search ends.
+    let mut seen: Vec<Vec<usize>> = vec![ordered(&chosen)];
+    loop {
+        let current = fit(dataset, &ordered(&chosen), settings)?;
+        let mut best: Option<(usize, f64)> = None;
+        for &candidate in all.iter().filter(|p| !chosen.contains(p)) {
+            let mut with = chosen.clone();
+            with.push(candidate);
+            let subset = ordered(&with);
+            let larger = Data::read(
+                &Dataset {
+                    inputs: &subset,
+                    ..*dataset
+                },
+                settings,
+            )?;
+            let Some((statistic, df)) = score_statistic(&current, &larger, settings) else {
+                continue;
+            };
+            let p = crate::stats::chi_square_p(statistic, df);
+            if best.is_none_or(|(_, b)| p < b) {
+                best = Some((candidate, p));
+            }
+        }
+        let Some((entered, p)) = best.filter(|&(_, p)| p < settings.p_in) else {
+            break;
+        };
+        let _ = p;
+        chosen.push(entered);
+        if settings.method == Method::Stepwise {
+            while removal(&mut chosen, Some(entered))? {}
+        }
+        let key = ordered(&chosen);
+        if seen.contains(&key) {
+            break;
+        }
+        seen.push(key);
+    }
+    Ok(ordered(&chosen))
 }
