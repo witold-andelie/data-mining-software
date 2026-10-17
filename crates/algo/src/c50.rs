@@ -9,6 +9,16 @@
 //! - `models/c50_default`: numeric cut description-length correction, statistical
 //!   leaf pruning; all splits/counts/scores are checked by the corpus test.
 //! - `c50_min_child`: at least two branches must reach min_child_records.
+//! - Of equal gain ratios the field first in input order wins (`models/c50_default`:
+//!   `Sex` over `Cholesterol`, mirror-image partitions; `c50_weight`: `flag` over
+//!   `noise`). GAP: `c50_weight` also picks `code` over the earlier `ord` on identical
+//!   partitions, likely last-bit rounding of Modeler's single-precision counts.
+//! - Case weights scaled to sum to the record count are implemented in the algorithm
+//!   (`C50Settings::weight_field`) but the node rejects `useWeight`. GAP (`c50_weight`):
+//!   besides the tie above, Modeler prunes the `x <= 9` split under `code = 3, flag = T`
+//!   (12 records, 5 versus 1 errors) for a reason neither weighted nor unweighted error
+//!   bounds explain, exports leaf counts as float32 (`1.5546559`) with internal counts
+//!   as their double sums, and exports two leaves with all-zero distributions.
 //! - `c50_group_symbols`: greedy gain-ratio grouping of symbolic categories.
 //! - `c50_prune90`: pruning confidence is (100 - severity)/100.
 //! - `c50_no_global_prune`: local pruning alone. GAP: pruning slack (.5 global,
@@ -49,6 +59,8 @@ pub struct C50Settings {
     pub pruning_severity: f64,
     pub global_pruning: bool,
     pub group_symbolics: bool,
+    /// Position of the case-weight field (`useWeight` with `weightField`), if any.
+    pub weight_field: Option<usize>,
 }
 
 impl Default for C50Settings {
@@ -58,6 +70,7 @@ impl Default for C50Settings {
             pruning_severity: 75.0,
             global_pruning: true,
             group_symbolics: false,
+            weight_field: None,
         }
     }
 }
@@ -79,10 +92,12 @@ struct Data {
     columns: Vec<Column>,
     classes: Vec<String>,
     targets: Vec<usize>,
+    /// Case weights scaled to sum to the number of records (all 1 without a weight field).
+    weights: Vec<f64>,
 }
 
 impl Data {
-    fn read(dataset: &Dataset<'_>) -> Result<Self, AlgoError> {
+    fn read(dataset: &Dataset<'_>, weight_field: Option<usize>) -> Result<Self, AlgoError> {
         let fields = dataset.table.model().fields();
         let target = fields
             .get(dataset.target)
@@ -118,6 +133,25 @@ impl Data {
         if targets.is_empty() {
             return Err(AlgoError::Data("C5.0 has no valid targets".into()));
         }
+        let weights = match weight_field {
+            None => vec![1.0; targets.len()],
+            Some(position) => {
+                let raw = row_indices
+                    .iter()
+                    .map(
+                        |&i| match dataset.table.rows().get(i).and_then(|r| r.get(position)) {
+                            Some(Value::Integer(n)) if *n > 0 => Ok(*n as f64),
+                            Some(Value::Real(w)) if w.is_finite() && *w > 0.0 => Ok(*w),
+                            _ => Err(AlgoError::Unsupported(
+                                "C5.0 case weights that are missing or not positive".into(),
+                            )),
+                        },
+                    )
+                    .collect::<Result<Vec<f64>, _>>()?;
+                let scale = raw.len() as f64 / raw.iter().sum::<f64>();
+                raw.into_iter().map(|w| w * scale).collect()
+            }
+        };
         let mut columns = Vec::new();
         for &position in dataset.inputs {
             if position == dataset.target {
@@ -196,14 +230,20 @@ impl Data {
             columns,
             classes,
             targets,
+            weights,
         })
+    }
+
+    /// The weighted number of records in `rows`.
+    fn weight(&self, rows: &[usize]) -> f64 {
+        rows.iter().filter_map(|&r| self.weights.get(r)).sum()
     }
 
     fn counts(&self, rows: &[usize]) -> Vec<f64> {
         let mut counts = vec![0.0; self.classes.len()];
         for &row in rows {
             if let Some(c) = self.targets.get(row).and_then(|&i| counts.get_mut(i)) {
-                *c += 1.0;
+                *c += self.weights.get(row).copied().unwrap_or(0.0);
             }
         }
         counts
@@ -240,41 +280,43 @@ fn candidate(
 ) -> Option<Split> {
     let parent_counts = data.counts(rows);
     let base = entropy(&parent_counts);
-    let total = rows.len() as f64;
+    let total = data.weight(rows);
+    let min_child = min_child as f64;
     match column {
         Column::Numeric { name, values } => {
-            let mut sorted: Vec<(f64, usize)> = rows
+            let mut sorted: Vec<(f64, usize, f64)> = rows
                 .iter()
                 .filter_map(|&r| {
+                    let w = data.weights.get(r).copied()?;
                     values
                         .get(r)
                         .zip(data.targets.get(r))
-                        .map(|(&v, &c)| (v, c))
+                        .map(|(&v, &c)| (v, c, w))
                 })
                 .collect();
             sorted.sort_by(|a, b| a.0.total_cmp(&b.0));
             let mut left = vec![0.0; data.classes.len()];
             let mut right = parent_counts;
-            let mut best: Option<(f64, f64, usize)> = None;
+            let mut best: Option<(f64, f64, f64)> = None;
             let mut cuts = 0usize;
-            for (i, pair) in sorted.windows(2).enumerate() {
-                let [(value, class), (next, _)] = pair else {
+            let mut n = 0.0;
+            for pair in sorted.windows(2) {
+                let [(value, class, weight), (next, _, _)] = pair else {
                     continue;
                 };
                 if let Some(c) = left.get_mut(*class) {
-                    *c += 1.0;
+                    *c += weight;
                 }
                 if let Some(c) = right.get_mut(*class) {
-                    *c -= 1.0;
+                    *c -= weight;
                 }
-                let n = i.saturating_add(1);
-                if value == next || n < min_child || sorted.len().saturating_sub(n) < min_child {
+                n += weight;
+                if value == next || n < min_child || total - n < min_child {
                     continue;
                 }
                 cuts = cuts.saturating_add(1);
-                let gain = base
-                    - n as f64 / total * entropy(&left)
-                    - (total - n as f64) / total * entropy(&right);
+                let gain =
+                    base - n / total * entropy(&left) - (total - n) / total * entropy(&right);
                 if best.is_none_or(|(g, _, _)| gain > g + 1e-12) {
                     let midpoint = value / 2.0 + next / 2.0;
                     let cut = if midpoint >= *next { *value } else { midpoint };
@@ -283,7 +325,7 @@ fn candidate(
             }
             let (gain, cut, n) = best?;
             let gain = gain - (cuts.max(1) as f64).log2() / total;
-            let split_info = entropy(&[n as f64, total - n as f64]);
+            let split_info = entropy(&[n, total - n]);
             if gain <= 1e-10 || split_info <= 0.0 {
                 return None;
             }
@@ -340,7 +382,7 @@ fn candidate(
             }
             if groups
                 .iter()
-                .filter(|(_, rs)| rs.len() >= min_child)
+                .filter(|(_, rs)| data.weight(rs) >= min_child)
                 .count()
                 < 2
             {
@@ -392,12 +434,12 @@ fn group_quality(
     let gain = base
         - groups
             .iter()
-            .map(|(_, rs)| rs.len() as f64 / total * entropy(&data.counts(rs)))
+            .map(|(_, rs)| data.weight(rs) / total * entropy(&data.counts(rs)))
             .sum::<f64>();
     let info = entropy(
         &groups
             .iter()
-            .map(|(_, rs)| rs.len() as f64)
+            .map(|(_, rs)| data.weight(rs))
             .collect::<Vec<_>>(),
     );
     (gain, if info > 0.0 { gain / info } else { 0.0 })
@@ -407,7 +449,7 @@ fn merge_groups(data: &Data, groups: &mut Vec<(Vec<usize>, Vec<usize>)>, groupin
     if groups.len() > 64 {
         return;
     }
-    let total = groups.iter().map(|(_, rs)| rs.len()).sum::<usize>() as f64;
+    let total: f64 = groups.iter().map(|(_, rs)| data.weight(rs)).sum();
     let mut all = Vec::new();
     for (_, rows) in groups.iter() {
         all.extend(rows);
@@ -430,8 +472,9 @@ fn merge_groups(data: &Data, groups: &mut Vec<(Vec<usize>, Vec<usize>)>, groupin
                 if !grouping {
                     let ca = data.counts(a);
                     let cb = data.counts(b);
-                    let pure_a = ca.iter().position(|c| *c == a.len() as f64);
-                    let pure_b = cb.iter().position(|c| *c == b.len() as f64);
+                    let (wa, wb) = (data.weight(a), data.weight(b));
+                    let pure_a = ca.iter().position(|c| *c == wa);
+                    let pure_b = cb.iter().position(|c| *c == wb);
                     if pure_a.is_none() || pure_a != pure_b {
                         continue;
                     }
@@ -487,7 +530,7 @@ fn grow(
     *budget = budget.saturating_add(1);
     let counts = data.counts(rows);
     let class = winner(&counts, parent);
-    let total = rows.len() as f64;
+    let total = data.weight(rows);
     let distribution = data
         .classes
         .iter()
@@ -513,10 +556,12 @@ fn grow(
         children: Vec::new(),
     };
     if counts.iter().filter(|&&c| c > 0.0).count() < 2
-        || rows.len() < settings.min_child_records.saturating_mul(2)
+        || total < settings.min_child_records as f64 * 2.0
     {
         return Ok(node);
     }
+    // Of equal gain ratios the field first in input order wins (`models/c50_default`:
+    // `Sex` over `Cholesterol`, mirror-image partitions).
     let candidates: Vec<Split> = data
         .columns
         .iter()
@@ -643,7 +688,7 @@ pub fn train(dataset: &Dataset<'_>, settings: &C50Settings) -> Result<Pmml, Algo
             "C5.0 minimum child records or pruning severity out of range".into(),
         ));
     }
-    let data = Data::read(dataset)?;
+    let data = Data::read(dataset, settings.weight_field)?;
     let rows: Vec<usize> = (0..data.targets.len()).collect();
     let mut root = grow(&data, &rows, settings, 0, 0, &mut 0)?;
     prune(&mut root, settings);

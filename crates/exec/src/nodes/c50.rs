@@ -30,7 +30,10 @@ pub fn build(node: &StreamNode) -> Result<Box<dyn Operator>, OperatorError> {
             "useMisclassificationCosts",
             "misclassification-cost training",
         ),
-        ("useWeight", "case-weight normalization"),
+        (
+            "useWeight",
+            "case weights (c50_weight: every split matches, one pruning decision and the exported float32 counts do not)",
+        ),
         ("useFrequency", "frequency weights"),
         ("useCrossValidation", "cross-validation"),
         (
@@ -89,10 +92,22 @@ pub fn build(node: &StreamNode) -> Result<Box<dyn Operator>, OperatorError> {
             pruning_severity: if expert { severity } else { 75.0 },
             global_pruning: !expert || settings::flag(s, "useGlobalPruning")?.unwrap_or(true),
             group_symbolics: settings::flag(s, "groupSymbolicValues")?.unwrap_or(false),
+            weight_field: None,
         },
         target,
         inputs,
         use_partition: settings::flag(s, "usePartitionedData")?.unwrap_or(true),
+        weight: if settings::flag(s, "useWeight")?.unwrap_or(false) {
+            Some(
+                settings::text(s, "weightField")
+                    .filter(|f| !f.trim().is_empty())
+                    .ok_or_else(|| {
+                        OperatorError::Settings("C5.0 useWeight needs weightField".into())
+                    })?,
+            )
+        } else {
+            None
+        },
     }))
 }
 
@@ -101,6 +116,8 @@ struct Build {
     target: Option<String>,
     inputs: Option<Vec<String>>,
     use_partition: bool,
+    /// The case-weight field (`useWeight`, `weightField`).
+    weight: Option<String>,
 }
 
 impl Operator for Build {
@@ -170,6 +187,23 @@ impl Operator for Build {
                 .map(|(i, _)| i)
                 .collect()
         };
+        let weight_field =
+            self.weight
+                .as_ref()
+                .map(|name| {
+                    input.model().position(name).ok_or_else(|| {
+                        OperatorError::Data(format!("C5.0 missing weight field {name}"))
+                    })
+                })
+                .transpose()?;
+        let active: Vec<usize> = active
+            .into_iter()
+            .filter(|&i| Some(i) != weight_field)
+            .collect();
+        let settings = C50Settings {
+            weight_field,
+            ..self.settings.clone()
+        };
         let table = training_partition(input, self.use_partition)?;
         let pmml = c50::train(
             &Dataset {
@@ -178,7 +212,7 @@ impl Operator for Build {
                 inputs: &active,
                 frequency: None,
             },
-            &self.settings,
+            &settings,
         )
         .map_err(|e| OperatorError::Data(format!("C5.0: {e}")))?;
         Ok(NodeOutput::Model(Arc::new(pmml)))
