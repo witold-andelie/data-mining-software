@@ -13,39 +13,39 @@
 //! - `c50_min_child`: at least two branches must reach min_child_records.
 //! - Of equal gain ratios the field first in input order wins (`models/c50_default`:
 //!   `Sex` over `Cholesterol`, mirror-image partitions; `c50_weight`: `flag` over
-//!   `noise`). `c50_costs`/`c50_weight`: nominal wins an equal-ratio tie with an
-//!   ordinal field having identical partitions (`code` over `ord`). GAP: the
-//!   oracles do not distinguish a measurement preference from an ordinal penalty.
+//!   `noise`).
+//! - Without `groupSymbolicValues` every symbol is its own branch while splits are
+//!   evaluated; after pruning, sibling leaves of a symbolic split that predict the same
+//!   class merge into one set branch (`c50_costs`: `code in {2, 3}`; `c50_partition`;
+//!   `c50_weighted/c50_x4_unit`: `cat in {green, red}`). Merging pure symbols before
+//!   evaluation picks `cat` over `code` in `c50_weighted/c50_w2_loose`.
+//! - An ordinal field splits in two at a cut over its values in sorted order, costing
+//!   log2(cuts)/total of gain like a numeric threshold (`c50_weighted`: `ord in {high,
+//!   low}` versus `{middle}`; `c50_costs`: `code` beats the uncorrected `ord` cut).
+//! - A split must gain at least the average over the fields that can split the node,
+//!   zero gain included (`c50_weighted/c50_w2_loose`: `x > 11` fails it). GAP: under
+//!   misclassification costs the test is skipped, since `c50_costs` grows `x` at the
+//!   18-record `amber, flag = T, x <= 9` node although it fails it.
 //! - `c50_costs` (B->C 8, C->B 2): minimize sum(count[actual]*cost[actual][predicted]),
 //!   retaining the parent's class on ties. Counts stay raw. Bound the number of
 //!   misclassified cases, then multiply by their mean cost; for zero observed
 //!   errors retain the ordinary bound. Under amber/flag=T/x<=9 this gives leaf
 //!   8.75954415583688 versus subtree 7.567663573829303, so the split stays.
-//! - Growth uses raw counts even with costs. The average-gain denominator includes
-//!   zero-gain fields: x gain 0.09645172825007178 exceeds 0.5040579037580681/7
-//!   at that 18-case node (but not the previous positive-candidates-only average
-//!   0.12601447593951703). This reproduces `c50_costs` and the seven earlier trees
-//!   without cost-dependent class factors. GAP: counting only globally variable
-//!   fields can also fit this fixture; duplicate/constant-field probes are needed.
-//! - `c50_costs`: after pruning, merge symbolic sibling leaves with the same score,
-//!   even without groupSymbolicValues (red/code in {2,3}); recompute distributions.
-//! - Case weights scaled to sum to the record count are implemented in the algorithm
-//!   (`C50Settings::weight_field`, diagnostic only) but the node rejects `useWeight`.
-//!   `c50_weight` leaf counts use eight significant decimal digits, NOT f32 (e.g.
-//!   3.1093117408906883 -> 3.1093117, not 3.1093118). Totals sum printed child counts.
-//!   GAP: node 34 (red/code=3/flag=T) prunes x<=9 although its weighted bounds are
-//!   5.403606975510416 versus 3.197396295622889. Nodes 23/24 (red/code=1/5<x<=11)
-//!   have all-zero distributions despite nonzero counts. Internal distributions
-//!   are NOT always child sums: node 4 A=15.546559 versus child sum 15.5465589;
-//!   nodes 3/4/8/9/13/14/33 match independently rounded raw counts instead. The
-//!   internal summation below is still diagnostic; 20 of 36 nodes match exactly,
-//!   and the full weighted contract is explicitly ignored, not claimed passing.
+//!   Growth uses raw counts even with costs.
+//! - Case weights (`C50Settings::weight_field`; the node still rejects `useWeight`):
+//!   each weight keeps six significant digits, then all are scaled to sum to the
+//!   record count. Probe `c50_weighted_streams` (weights of boosting trial 2, subsets,
+//!   pruning settings) reproduces every tree exactly. GAP `c50_weight` (weights 1 and
+//!   6): global pruning removes `red, code = 3, flag = T`'s `x <= 9` split (margin
+//!   2.21) yet keeps `code = 1, x > 11`'s flag split (margin 2.14), so global pruning
+//!   is no fixed margin; and Modeler exports the subtree `red, code = 1, x <= 11,
+//!   x > 5` with all-zero distributions, even with severity 1 and local pruning only,
+//!   and scores its leaves with confidence 0.
 //! - `c50_group_symbols`: greedy gain-ratio grouping of symbolic categories.
 //! - `c50_prune90`: pruning confidence is (100 - severity)/100.
 //! - `c50_no_global_prune`: local pruning alone. GAP: pruning slack (.5 global,
-//!   .1 local) is inferred from the two default trees; a low-support balanced
-//!   exception probe varying total sample size would distinguish a global error
-//!   budget from a fixed slack. Subtree raising is not established.
+//!   .1 local) is inferred from the unweighted trees; `c50_weight` shows the global
+//!   stage is not a fixed slack. Subtree raising is not established.
 //! - Tree confidence is (class_count+1)/(node_count+target_categories), with zero
 //!   for absent classes in the exported distribution; raw binary propensity uses
 //!   confidence and its complement, including absent classes (`c50_partition`).
@@ -253,6 +253,13 @@ impl Data {
                         },
                     )
                     .collect::<Result<Vec<f64>, _>>()?;
+                // `c50_weighted/c50_w2_default`: weights keep six significant digits
+                // (3.9285714 -> 3.92857) before scaling; a leaf of one such case
+                // exports 3.9285701.
+                let raw: Vec<f64> = raw
+                    .into_iter()
+                    .map(|w| format!("{w:.5e}").parse::<f64>().unwrap_or(w))
+                    .collect();
                 let total = raw.iter().sum::<f64>();
                 if !total.is_finite() {
                     return Err(AlgoError::Data("C5.0 case-weight sum overflow".into()));
@@ -386,7 +393,6 @@ struct Split {
     gain: f64,
     ratio: f64,
     groups: Vec<(Predicate, Vec<usize>)>,
-    ordinal: bool,
 }
 
 fn candidate(
@@ -452,7 +458,7 @@ fn candidate(
             let (gain, cut, n) = best?;
             let gain = gain - (cuts.max(1) as f64).log2() / total;
             let split_info = entropy(&[n, total - n]);
-            if gain <= 1e-10 || split_info <= 0.0 {
+            if split_info <= 0.0 {
                 return None;
             }
             let (left, right): (Vec<_>, Vec<_>) = rows
@@ -462,7 +468,6 @@ fn candidate(
             Some(Split {
                 gain,
                 ratio: gain / split_info,
-                ordinal: false,
                 groups: vec![
                     (
                         Predicate::Simple {
@@ -504,8 +509,12 @@ fn candidate(
                 })
                 .filter(|(_, rs): &(Vec<usize>, Vec<usize>)| !rs.is_empty())
                 .collect();
-            // Identically pure symbols are interchangeable even without explicit grouping.
-            if !flag {
+            if *ordinal && !flag {
+                return ordinal_cut(data, name, labels, groups, base, total, min_child);
+            }
+            // Without grouping every symbol is its own branch; same-class leaves merge only
+            // after pruning (`merge_leaves`).
+            if grouping && !flag {
                 merge_groups(data, &mut groups, grouping);
             }
             if groups
@@ -517,9 +526,6 @@ fn candidate(
                 return None;
             }
             let (gain, ratio) = group_quality(data, &groups, base, total);
-            if gain <= 1e-10 {
-                return None;
-            }
             let sets = !flag && (grouping || groups.iter().any(|(labels, _)| labels.len() > 1));
             let groups = groups
                 .into_iter()
@@ -548,10 +554,77 @@ fn candidate(
                 gain,
                 ratio,
                 groups,
-                ordinal: *ordinal,
             })
         }
     }
+}
+
+/// An ordinal field splits in two at the cut of highest gain over its values in sorted
+/// order (`c50_weighted`, `c50_boost`: `ord in {high, low}` versus `{middle}`). Like a
+/// numeric threshold the cut costs log2(cuts) / total of gain (`c50_costs`: `code` beats
+/// the uncorrected `ord` cut).
+fn ordinal_cut(
+    data: &Data,
+    name: &str,
+    labels: &[String],
+    mut groups: Vec<(Vec<usize>, Vec<usize>)>,
+    base: f64,
+    total: f64,
+    min_child: f64,
+) -> Option<Split> {
+    groups.sort_by(|(a, _), (b, _)| {
+        let label = |codes: &Vec<usize>| codes.first().and_then(|&c| labels.get(c));
+        label(a).cmp(&label(b))
+    });
+    let side = |part: &[(Vec<usize>, Vec<usize>)]| -> (Vec<usize>, Vec<usize>) {
+        (
+            part.iter().flat_map(|(c, _)| c.iter().copied()).collect(),
+            part.iter().flat_map(|(_, r)| r.iter().copied()).collect(),
+        )
+    };
+    let mut best: Option<(f64, f64, usize)> = None;
+    let mut cuts = 0usize;
+    for cut in 1..groups.len() {
+        let (low, high) = groups.split_at(cut);
+        let two = [side(low), side(high)];
+        if two.iter().any(|(_, rs)| data.weight(rs) < min_child) {
+            continue;
+        }
+        cuts = cuts.saturating_add(1);
+        let (gain, _) = group_quality(data, &two, base, total);
+        if best.is_none_or(|(g, _, _)| gain > g + 1e-12) {
+            let info = entropy(
+                &two.iter()
+                    .map(|(_, rs)| data.weight(rs))
+                    .collect::<Vec<_>>(),
+            );
+            best = Some((gain, info, cut));
+        }
+    }
+    let (gain, info, cut) = best?;
+    let gain = gain - (cuts.max(1) as f64).log2() / total;
+    if info <= 0.0 {
+        return None;
+    }
+    let (low, high) = groups.split_at(cut);
+    let branch = |part: &[(Vec<usize>, Vec<usize>)]| {
+        let (codes, rows) = side(part);
+        let values = codes
+            .iter()
+            .filter_map(|&i| labels.get(i).cloned())
+            .collect();
+        let predicate = Predicate::SimpleSet {
+            field: name.to_string(),
+            is_in: true,
+            values,
+        };
+        (predicate, rows)
+    };
+    Some(Split {
+        gain,
+        ratio: gain / info,
+        groups: vec![branch(low), branch(high)],
+    })
 }
 
 fn group_quality(
@@ -717,7 +790,7 @@ fn grow(
     {
         return Ok(node);
     }
-    // Input order breaks ties except identical nominal/ordinal partitions.
+    // Of equal gain ratios the field first in input order wins.
     let candidates: Vec<Split> = data
         .columns
         .iter()
@@ -731,25 +804,23 @@ fn grow(
             )
         })
         .collect();
+    // A split must gain at least the average over the fields that can split this node,
+    // zero gain included (`c50_weighted/c50_w2_loose`: `x > 11` fails it, `code` wins).
+    // GAP: under misclassification costs the test is skipped (`c50_costs` node 5 grows
+    // `x`, which fails it); the costs-only oracle cannot tell why.
+    let average = if data.costs.is_some() {
+        f64::NEG_INFINITY
+    } else {
+        candidates.iter().map(|c| c.gain.max(0.0)).sum::<f64>() / candidates.len().max(1) as f64
+    };
+    let candidates: Vec<Split> = candidates.into_iter().filter(|c| c.gain > 1e-10).collect();
     if candidates.is_empty() {
         return Ok(node);
     }
-    // Include zero-gain fields; otherwise cost-tree node 5 cannot grow its x split.
-    let average = candidates.iter().map(|c| c.gain).sum::<f64>() / data.columns.len() as f64;
     let mut best: Option<Split> = None;
     for split in candidates {
         if split.gain >= average - 1e-9
-            && best.as_ref().is_none_or(|s| {
-                split.ratio > s.ratio + 1e-12
-                    || ((split.ratio - s.ratio).abs() <= 1e-12
-                        && s.ordinal
-                        && !split.ordinal
-                        && split.groups.len() == s.groups.len()
-                        && split
-                            .groups
-                            .iter()
-                            .all(|(_, rows)| s.groups.iter().any(|(_, other)| rows == other)))
-            })
+            && best.as_ref().is_none_or(|s| split.ratio > s.ratio + 1e-12)
         {
             best = Some(split);
         }
@@ -906,9 +977,9 @@ fn number(node: &mut Node, next: &mut usize) {
     node.default_child = largest.map(|(_, id)| id);
 }
 
-fn merge_cost_leaves(node: &mut Node) {
+fn merge_leaves(node: &mut Node) {
     for child in &mut node.children {
-        merge_cost_leaves(child);
+        merge_leaves(child);
     }
     let mut merged = false;
     let mut i = 0;
@@ -996,32 +1067,26 @@ fn refresh_distribution(node: &mut Node) {
     }
 }
 
-/// `c50_weight`: leaf class counts have eight significant decimal digits;
-/// Totals are f64 sums of exported children. Summing internal distributions is
-/// only a diagnostic hypothesis: the oracle disagrees at nodes 3/4/8/9/13/14/33.
-/// This is NOT f32 rounding: 3.1093117408906883 exports as 3.1093117, whereas its
-/// nearest f32 is 3.109311819076538. GAP: zero distributions at nodes 23 and 24.
+/// Weighted exports: every distribution keeps eight significant digits of its own weighted
+/// count (`c50_w2_default`: A 117.5032, not the children's 117.503197), a leaf's total is
+/// the sum of those, an internal total sums its children's (`c50_weighted/*`: exact).
+/// GAP: `c50_w2_loose` totals `red` (two leaves) 7.77688522, the class-by-class sum,
+/// where the children's totals give 7.7768852200000005. `c50_weight`: the zero-
+/// distribution subtree under `red, code = 1, x <= 11, x > 5` and node 28 (`code = 2`,
+/// whose C count is the sum of its children's) are not reproduced.
 fn finalize_weighted_counts(node: &mut Node) -> Result<(), AlgoError> {
+    for d in &mut node.distribution {
+        d.record_count = format!("{:.7e}", d.record_count)
+            .parse::<f64>()
+            .map_err(|e| AlgoError::Data(format!("C5.0 weighted count formatting: {e}")))?;
+    }
     if node.children.is_empty() {
-        for d in &mut node.distribution {
-            d.record_count = format!("{:.7e}", d.record_count)
-                .parse::<f64>()
-                .map_err(|e| AlgoError::Data(format!("C5.0 weighted count formatting: {e}")))?;
-        }
         node.record_count = Some(node.distribution.iter().map(|d| d.record_count).sum());
     } else {
         for child in &mut node.children {
             finalize_weighted_counts(child)?;
         }
         node.record_count = Some(node.children.iter().filter_map(|c| c.record_count).sum());
-        for (i, d) in node.distribution.iter_mut().enumerate() {
-            d.record_count = node
-                .children
-                .iter()
-                .filter_map(|c| c.distribution.get(i))
-                .map(|d| d.record_count)
-                .sum();
-        }
     }
     refresh_distribution(node);
     Ok(())
@@ -1037,8 +1102,8 @@ pub fn train(dataset: &Dataset<'_>, settings: &C50Settings) -> Result<Pmml, Algo
     train_tree(dataset, settings)
 }
 
-/// One decision tree (no boosting, no rule set). Weighted training is diagnostic:
-/// see the module GAPs; the exec node deliberately rejects `useWeight`.
+/// One decision tree (no boosting, no rule set). The exec node still rejects
+/// `useWeight`: see the module GAPs.
 pub fn train_tree(dataset: &Dataset<'_>, settings: &C50Settings) -> Result<Pmml, AlgoError> {
     validate_settings(dataset, settings)?;
     let mut data = Data::read(dataset, settings.weight_field)?;
@@ -1050,9 +1115,7 @@ pub fn train_tree(dataset: &Dataset<'_>, settings: &C50Settings) -> Result<Pmml,
     let rows: Vec<usize> = (0..data.targets.len()).collect();
     let mut root = grow(&data, &rows, settings, 0, 0, &mut 0)?;
     prune(&mut root, settings, data.costs.as_deref());
-    if data.costs.is_some() {
-        merge_cost_leaves(&mut root);
-    }
+    merge_leaves(&mut root);
     if settings.weight_field.is_some() {
         finalize_weighted_counts(&mut root)?;
     }

@@ -155,9 +155,40 @@ fn c50_builders_match_every_split_count_and_distribution() {
     ]
     .iter()
     .map(|c| ("models_ml", *c))
-    .chain([("models", "c50_default")])
-    {
+    .chain([
+        ("models", "c50_default"),
+        ("c50_weighted", "c50_x4_unit"),
+        ("c50_weighted", "c50_x8t_unit"),
+        ("c50_weighted", "c50_w2_unit_loose"),
+    ]) {
         Fixture::load(label, case).compare();
+    }
+}
+
+/// Case weights through the algorithm (the node still rejects `useWeight`): probe
+/// `c50_weighted_streams`, settings as each stream sets them.
+#[test]
+fn c50_weighted_trees_match_every_split_count_and_distribution() {
+    use dms_algo::c50::C50Settings;
+    let expert = |severity: f64, global: bool| C50Settings {
+        pruning_severity: severity,
+        global_pruning: global,
+        ..C50Settings::default()
+    };
+    for (case, settings) in [
+        ("c50_w2_default", C50Settings::default()),
+        ("c50_w2_noglobal", expert(75.0, false)),
+        ("c50_w2_sev50", expert(50.0, true)),
+        ("c50_x4_w2", C50Settings::default()),
+        ("c50_x4_w2_loose", expert(1.0, false)),
+    ] {
+        let fixture = Fixture::load("c50_weighted", case);
+        let ours = fixture.train_weighted(settings);
+        println!("TREE c50_weighted/{case}");
+        match (&ours.model, &fixture.oracle.model) {
+            (dms_pmml::Model::Tree(a), dms_pmml::Model::Tree(b)) => compare_tree(&a.root, &b.root),
+            _ => panic!("expected trees"),
+        }
     }
 }
 
@@ -245,6 +276,46 @@ impl Fixture {
         }
     }
 
+    /// Train on the builder's input table with its `weight` field as case weights.
+    fn train_weighted(&self, settings: dms_algo::c50::C50Settings) -> Pmml {
+        use dms_exec::{NodeOutput, Plan};
+        use dms_types::Role;
+        let source = self.manifest["data"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|e| e["type"] == "type" && e["terminal"]["id"] == self.uid)
+            .unwrap()["id"]
+            .as_str()
+            .unwrap();
+        let results = Plan::new(&self.stream).evaluate(&[source], &self.context);
+        let table = match results.get(source).unwrap() {
+            Ok(NodeOutput::Data(t)) => t,
+            other => panic!("weighted training input: {other:?}"),
+        };
+        let fields = table.model().fields();
+        let target = fields.iter().position(|f| f.role == Role::Target).unwrap();
+        let inputs: Vec<usize> = fields
+            .iter()
+            .enumerate()
+            .filter(|(_, f)| f.role == Role::Input)
+            .map(|(i, _)| i)
+            .collect();
+        dms_algo::c50::train_tree(
+            &dms_algo::Dataset {
+                table,
+                target,
+                inputs: &inputs,
+                frequency: None,
+            },
+            &dms_algo::c50::C50Settings {
+                weight_field: table.model().position("weight"),
+                ..settings
+            },
+        )
+        .unwrap()
+    }
+
     fn compare(&self) {
         use dms_exec::{NodeOutput, Plan};
         let results = Plan::new(&self.stream).evaluate(&[&self.uid], &self.context);
@@ -317,44 +388,8 @@ fn c50_weight_remains_rejected() {
 
 #[test]
 fn c50_weight_export_precision_and_unresolved_nodes() {
-    use dms_algo::c50::{C50Settings, train_tree};
-    use dms_exec::{NodeOutput, Plan};
-    use dms_types::Role;
     let fixture = Fixture::load("models_ml", "c50_weight");
-    let source = fixture.manifest["data"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|e| e["type"] == "type" && e["terminal"]["id"] == fixture.uid)
-        .unwrap()["id"]
-        .as_str()
-        .unwrap();
-    let results = Plan::new(&fixture.stream).evaluate(&[source], &fixture.context);
-    let table = match results.get(source).unwrap() {
-        Ok(NodeOutput::Data(t)) => t,
-        other => panic!("weighted training input: {other:?}"),
-    };
-    let fields = table.model().fields();
-    let target = fields.iter().position(|f| f.role == Role::Target).unwrap();
-    let inputs: Vec<usize> = fields
-        .iter()
-        .enumerate()
-        .filter(|(_, f)| f.role == Role::Input)
-        .map(|(i, _)| i)
-        .collect();
-    let ours = train_tree(
-        &dms_algo::Dataset {
-            table,
-            target,
-            inputs: &inputs,
-            frequency: None,
-        },
-        &C50Settings {
-            weight_field: table.model().position("weight"),
-            ..C50Settings::default()
-        },
-    )
-    .unwrap();
+    let ours = fixture.train_weighted(dms_algo::c50::C50Settings::default());
     let (dms_pmml::Model::Tree(ours), dms_pmml::Model::Tree(oracle)) =
         (&ours.model, &fixture.oracle.model)
     else {
@@ -371,8 +406,8 @@ fn c50_weight_export_precision_and_unresolved_nodes() {
         &mut internal_counts,
     );
     assert_eq!(gaps, ["23", "24", "34"]);
-    assert_eq!(internal_counts, ["4", "3", "9", "8", "14", "13"]);
-    assert_eq!(exact_nodes, 20);
+    assert_eq!(internal_counts, ["28"]);
+    assert_eq!(exact_nodes, 25);
     println!(
         "WEIGHT evidence: {exact_nodes} nodes have exact exported counts/distributions; GAP nodes {gaps:?}, internal distributions {internal_counts:?}, and affected ancestors remain unmatched"
     );
