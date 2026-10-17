@@ -295,7 +295,7 @@ pub struct OracleCase {
 /// Every oracle output of the given node types (`manifest.json` `"outputs"` entries).
 pub fn collect_oracle_cases(types: &[&str]) -> Vec<OracleCase> {
     let mut cases = Vec::new();
-    for (label, is_probe) in [("outputs", true), ("team", false)] {
+    for (label, is_probe) in [("outputs", true), ("graphs", true), ("team", false)] {
         let dir = repo_root().join("oracle").join(label);
         let Ok(entries) = std::fs::read_dir(&dir) else {
             continue;
