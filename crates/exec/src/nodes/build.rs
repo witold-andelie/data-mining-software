@@ -35,6 +35,9 @@
 //! `linreg.VarSelectionMethod` `none` without `linreg.AutoDataPreparation` and weights trains;
 //! the rest is rejected (`dms_algo::linear`).
 //!
+//! Regression (`BuildRegressionNode`) reads the node XML: `method` (`enter` only),
+//! `includeConstant`, the field selections.
+//!
 //! Rejected until implemented: frequency and analysis weights, split models, boosting and
 //! bagging, the interactive builder, misclassification costs; for C&R Tree the overfit
 //! prevention set (Modeler draws it with its own random generator; CHAID ignores the setting,
@@ -50,7 +53,7 @@ use dms_algo::Dataset;
 use dms_algo::cart::{self, CartSettings, Impurity, MinSize};
 use dms_algo::chaid::{self, ChaidSettings, ChiSquare, Method};
 use dms_algo::kmeans::{self, KMeansSettings};
-use dms_algo::linear::{self, LinearSettings};
+use dms_algo::linear::{self, LinearSettings, Style};
 use dms_algo::logistic::{self, LogisticSettings, Procedure};
 use dms_algo::twostep::{self, Criterion, TwoStepSettings};
 use dms_pmml::Pmml;
@@ -68,6 +71,7 @@ pub fn build(node: &StreamNode) -> Result<Box<dyn Operator>, OperatorError> {
         "BuildTwoStepNode" => Algorithm::TwoStep(twostep_settings(node)?),
         "BuildLogisticNode" => Algorithm::Logistic(logistic_settings(node)?),
         "LinearRegression!spss.alm-extension" => Algorithm::Linear,
+        "BuildRegressionNode" => Algorithm::Regression(regression_settings(node)?),
         other => {
             return Err(OperatorError::Settings(format!(
                 "training {other} is not implemented yet"
@@ -99,7 +103,11 @@ enum Algorithm {
     Logistic(LogisticSpec),
     /// Extension parameters, read when training.
     Linear,
+    /// The settings, an optional custom target, and optional custom inputs.
+    Regression(RegressionSpec),
 }
+
+type RegressionSpec = (LinearSettings, Option<String>, Option<Vec<String>>);
 
 type LogisticSpec = (LogisticSettings, Option<String>, Option<Vec<String>>);
 
@@ -155,6 +163,18 @@ impl Operator for Build {
                 .map_err(|error| OperatorError::Data(format!("Logistic: {error}")))?;
             return Ok(NodeOutput::Model(Arc::new(pmml)));
         }
+        if let Algorithm::Regression((settings, target, inputs)) = &self.algorithm {
+            let (target, fields) = supervised_fields(&table, target.as_deref(), inputs.as_deref())?;
+            let dataset = Dataset {
+                table: &table,
+                target,
+                inputs: &fields,
+                frequency: None,
+            };
+            let pmml = linear::train(&dataset, settings)
+                .map_err(|error| OperatorError::Data(format!("Regression: {error}")))?;
+            return Ok(NodeOutput::Model(Arc::new(pmml)));
+        }
         let parameters = self.parameters(context)?;
         tree_checks(&parameters)?;
         let prefix = match self.algorithm {
@@ -175,7 +195,10 @@ impl Operator for Build {
                 .map_err(|error| OperatorError::Data(format!("CHAID: {error}")))?,
             Algorithm::Linear => linear::train(&dataset, &linear_settings(&parameters)?)
                 .map_err(|error| OperatorError::Data(format!("Linear: {error}")))?,
-            Algorithm::KMeans(_) | Algorithm::TwoStep(_) | Algorithm::Logistic(_) => {
+            Algorithm::KMeans(_)
+            | Algorithm::TwoStep(_)
+            | Algorithm::Logistic(_)
+            | Algorithm::Regression(_) => {
                 return Err(OperatorError::Settings("clustering has no target".into()));
             }
         };
@@ -557,9 +580,50 @@ fn linear_settings(p: &Parameters) -> Result<LinearSettings, OperatorError> {
         Some(_) => p.flag("linreg.Intercept")?,
     };
     Ok(LinearSettings {
+        style: Style::Linear,
         intercept,
         name: None,
     })
+}
+
+/// Regression settings from the node's XML: the `enter` method only.
+fn regression_settings(node: &StreamNode) -> Result<RegressionSpec, OperatorError> {
+    let s = node.settings.as_ref();
+    match settings::text(s, "method").as_deref().map(str::trim) {
+        None | Some("") | Some("enter") => {}
+        Some(other) => {
+            return Err(OperatorError::Settings(format!(
+                "Regression method {other:?} is not supported yet"
+            )));
+        }
+    }
+    let auto_fields = settings::flag(s, "autoModelFieldSelection")?.unwrap_or(true);
+    let target = (!auto_fields)
+        .then(|| settings::text(s, "modelTargetFieldSelection"))
+        .flatten()
+        .filter(|name| !name.trim().is_empty());
+    let inputs = (!auto_fields)
+        .then(|| {
+            settings::children(s, "modelInputFieldSelection", "field")
+                .into_iter()
+                .map(|f| f.text().trim().to_string())
+                .filter(|name| !name.is_empty())
+                .collect::<Vec<_>>()
+        })
+        .filter(|names| !names.is_empty());
+    let name = (!settings::flag(s, "autoModelName")?.unwrap_or(true))
+        .then(|| settings::text(s, "modelName"))
+        .flatten()
+        .filter(|n| !n.trim().is_empty());
+    Ok((
+        LinearSettings {
+            style: Style::Regression,
+            intercept: settings::flag(s, "includeConstant")?.unwrap_or(true),
+            name,
+        },
+        target,
+        inputs,
+    ))
 }
 
 /// Choices the tree algorithms share that are not supported yet.
