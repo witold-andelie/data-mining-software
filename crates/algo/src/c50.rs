@@ -101,12 +101,65 @@
 //!   confidence and its complement, including absent classes (`c50_partition`).
 //! - Rule sets (`modelFormat` `ruleSet`): [`crate::c50_rules`].
 //!
+//! Simple presets and winnowing investigation (Modeler 19, `c50_presets_streams`,
+//! recorded oracles only, 2026-10-17):
+//! - All 24 Simple TreeModels (exception grid, noisy grid, DRUG1n; accuracy noise
+//!   0/5/10/20/30/50, generality noise 0/20) are identical within each dataset,
+//!   including predicates, counts, distributions and MiningSchema. Our Expert
+//!   defaults reproduce all 24 exactly. The older `models_ml/c50_generality` and
+//!   `c50_noise20` also equal `c50_default`. The node accepts these recorded presets
+//!   as training no-ops. This is an evidence-based mapping, not proof about all
+//!   Simple settings: other noise values/combinations and nondefault presets with
+//!   rules/boosting remain unsupported (no corresponding oracle).
+//! - GAP baseline learner: the supplied `c50_tree_diff` diagnostic finds exact
+//!   unwinnowed trees for grid, noisy, drug, drugnoise and gw, but NOT drughalf,
+//!   drugtwice, wn or wn100. Their structure/exact differing-line counts are
+//!   respectively 6/10, 4/8, 39/41 and 2/2. drughalf has an extra Age split and
+//!   chooses Na instead of K; drugtwice also chooses Na instead of K; wn roots at
+//!   c1 instead of b; wn100 retains b=7.3 below c3=T/c1=F/c2=F. Numeric export
+//!   precision also differs (0.735051 vs 0.7350505, 0.040038 vs 0.04003799).
+//!   All nine datasets' stream inputs equal the exported Type records numerically;
+//!   these differences are not caused by loading different training records.
+//! - GAP winnowing: examined all 19 presets winnowing trees plus models_ml/c50_winnow.
+//!   Exhaustively retraining every nonempty input subset with each case's pruning
+//!   settings gives 2,900 trials. Only 12/20 oracles admit any exact subset. None
+//!   matches drugtwice (all 3 settings), wn (all 3), or wn100 (default/noglobal).
+//!   Therefore a field-elimination rule alone cannot reproduce every oracle with
+//!   this learner. Keep winnowing rejected; do not install a data-specific selector.
+//! - Dropping only fields unused in the final unwinnowed tree is insufficient:
+//!   drug uses Sex but winnowing removes it; wn100 uses no a before winnowing but
+//!   does afterwards (11 vs 20 nodes). PMML active fields describe final splits,
+//!   not the full candidate set surviving selection. For example all eight subsets
+//!   with/without e1/e2/e3 and without Sex reproduce drugnoise, so those exports
+//!   cannot establish whether the three noise fields were eliminated.
+//! - A monotone threshold on a field's collapsed-subtree error contribution, even
+//!   relative to N, fails: in the 100-row drughalf ORACLE, collapsing Age adds 9
+//!   training errors (CF=.25 bound increase 7.216168), versus Cholesterol's 5
+//!   (3.999582), yet winnowing removes Age and retains Cholesterol. wn100 retains
+//!   c1 although collapsing it decreases that bound by 1.251574. These bounds sum
+//!   leaf estimates before/after collapsing every split on the indicated field.
+//! - Best tested partial rule: independently omit each field, retrain, then remove
+//!   fields whose omission does not increase total training error (or the sum of
+//!   CF=.25 leaf error bounds). Both reproduce only 8/20 exact trees: drug,
+//!   drugnoise at all three settings, grid, noisy, gw, and models_ml/c50_winnow.
+//!   In our drughalf baseline, dropping Age increases errors 5->8 (bound
+//!   17.851101->21.062915), Na 5->11 (21.268205); the oracle drops both. In our
+//!   wn100 baseline, dropping a improves errors 19->16 (bound 30.017739->28.721417),
+//!   yet the winnowed oracle uses a. These retraining numbers describe OUR learner,
+//!   whose four baseline GAPs must be resolved before inferring a selection rule.
+//! - Partial subset evidence, not an algorithm: excluding Sex exactly reproduces
+//!   drug and drugnoise; retaining K/BP/Cholesterol (with or without unused Sex)
+//!   reproduces all three drughalf winnowing settings. Pruning variants do not
+//!   disambiguate those sets; wn100 severity 90 admits 12 different exact subsets.
+//!   Sampling, a different preliminary tree, and selection-specific pruning remain
+//!   unsettled. Recorded final classifiers cannot identify those internal choices.
+//!
 //! Rejected settings (never silently substituted): boosting/trials
 //! (`c50_boost_tree`, `c50_boost_rules`: reweighting settled, weighted trees GAP; see `c50_boost`),
 //! costs combined with weights/rules/boosting (no combined oracle), case/frequency
 //! weights (`c50_weight`: GAP pruning and internal distributions), winnowing
-//! (`c50_winnow`: GAP elimination criterion), Simple Generality/expected noise
-//! (`c50_generality`, `c50_noise20`: GAP preset mapping), adjusted-propensity
+//! (`c50_presets`: GAP elimination criterion and four unwinnowed baselines),
+//! unrecorded Simple presets/combinations (scope above), adjusted-propensity
 //! training (`c50_partition`: GAP calibration pooling/rounding), cross-validation,
 //! split-field training and missing/unknown training predictors (no captured
 //! c50_missing oracle). PMML scoring supports rules and boosts independently.

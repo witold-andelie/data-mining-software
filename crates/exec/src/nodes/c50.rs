@@ -41,7 +41,9 @@ pub fn build(node: &StreamNode) -> Result<Box<dyn Operator>, OperatorError> {
         }
     }
     if expert && settings::flag(s, "use_winnowing")?.unwrap_or(false) {
-        return Err(unsupported("winnowing"));
+        return Err(unsupported(
+            "winnowing (GAP c50_presets: selection criterion unresolved; no input subset reproduces drugtwice/wn or default/noglobal wn100 with the current learner)",
+        ));
     }
     let rules = match settings::text(s, "modelFormat").as_deref() {
         None | Some("decisionTree") => false,
@@ -62,12 +64,21 @@ pub fn build(node: &StreamNode) -> Result<Box<dyn Operator>, OperatorError> {
         None
     };
     if !expert {
-        if settings::integer(s, "expectedNoise")?.unwrap_or(0) != 0 {
-            return Err(unsupported("Simple expected-noise preset"));
-        }
-        match settings::text(s, "modellingBias").as_deref() {
-            None | Some("accuracy") => {}
+        let generality = match settings::text(s, "modellingBias").as_deref() {
+            None | Some("accuracy") => false,
+            Some("generality") => true,
             Some(other) => return Err(unsupported(&format!("Simple modellingBias {other:?}"))),
+        };
+        let noise = settings::integer(s, "expectedNoise")?.unwrap_or(0);
+        // c50_presets: these Simple tree presets reproduce Expert defaults exactly.
+        // Unrecorded values/combinations remain explicit GAPs, not interpolated presets.
+        if !matches!(noise, 0 | 5 | 10 | 20 | 30 | 50)
+            || (generality && !matches!(noise, 0 | 20))
+            || ((generality || noise != 0) && (rules || boost_trials.is_some()))
+        {
+            return Err(unsupported(
+                "Simple preset (GAP c50_presets: recorded unboosted trees cover accuracy noise 0/5/10/20/30/50 and generality noise 0/20 only)",
+            ));
         }
     }
     let min = settings::integer(s, "minRecordsPerBranch")?.unwrap_or(2);
