@@ -7,9 +7,20 @@
 //!   multiway symbols; depth-first ids; flags true before false; largest default
 //!   child (first on ties); parent prediction resolves tied class counts.
 //! - `models/c50_default`: numeric cut description-length correction, statistical
-//!   leaf pruning, six-significant-digit thresholds (K = 0.0373315). Rounding is
-//!   applied only when it preserves the observed partition. GAP: closer inputs
-//!   need a threshold-precision probe. All eight oracle trees use exact comparison.
+//!   leaf pruning. Numeric thresholds floor the binary64 midpoint to eight decimal
+//!   places, only if finite and partition-preserving; see [`numeric_cut`]. This
+//!   retains K = 0.0373315 but also the seven-digit `drughalf` Na = 0.7350505
+//!   and `drugtwice` K = 0.04003799, refuting six significant digits.
+//! - Numeric description length is log2(min(cuts, range/gap))/N. `cuts` counts
+//!   distinct adjacent values with two sufficiently large children, not records;
+//!   range and best-cut gap are local to the node. In `c50_presets/drughalf`
+//!   (case names prefixed `c50_`, suffixed `_expert`), the six-record node 13 has
+//!   identical Na/K partitions, raw gain 1 and three eligible cuts. K's range/gap
+//!   is 2.1778846154, so corrected gain 0.8128454130 beats Na's 0.7358395832.
+//!   In `drugtwice` node 31 (28 records, 14 distinct numeric values), Na/K have
+//!   equal uncorrected gain and class counts but DIFFERENT record partitions.
+//!   Both have 13 cuts; K's range/gap = 6.3636650869 gives ratio 0.2248254785
+//!   versus Na's 0.1626179637. This is not an input-order tie.
 //! - `c50_min_child`: at least two branches must reach min_child_records.
 //! - Of equal gain ratios the field first in input order wins (`models/c50_default`:
 //!   `Sex` over `Cholesterol`, mirror-image partitions; `c50_weight`: `flag` over
@@ -38,12 +49,13 @@
 //!   pruning settings): five weighted fixtures compare exactly; remaining GAPs below.
 //! - Pruning (probe `c50_globalprune_streams`, 110 trees exact): local pruning collapses a
 //!   subtree whose error bound is not lower than its leaf's by more than 0.1; global
-//!   pruning is weakest-link pruning on training errors counted in records (costs under
-//!   misclassification costs), see [`global_prune`]. Plain multiway splits have a branch
-//!   for every declared value, and a nominal field with too many values is never used
+//!   pruning ranks subtrees by the training errors added by collapsing them, counted
+//!   in records (costs under misclassification costs), see [`global_prune`]. Plain
+//!   multiway splits have a branch for every declared value, and a nominal field
+//!   with too many values is never used
 //!   (see [`MANY_VALUES`]). GAP `c50_weight`, `c50_cw_sev50`: global pruning there
 //!   removes `red, code = 3, flag = T`'s `x <= 9` split but keeps `code = 1, x > 11`'s
-//!   flag split, which have equal weakest links; likely tied to the zero distributions.
+//!   flag split, which have equal error increases; likely tied to the zero distributions.
 //! - GAP zero distributions: with case weights Modeler exports some leaves with all
 //!   class counts 0 but their record count kept, sums them into their ancestors, and
 //!   scores them with confidence 0. Smallest case `c50_weighted/c50_rc1_x6_10` (12
@@ -111,15 +123,36 @@
 //!   as training no-ops. This is an evidence-based mapping, not proof about all
 //!   Simple settings: other noise values/combinations and nondefault presets with
 //!   rules/boosting remain unsupported (no corresponding oracle).
-//! - GAP baseline learner: the supplied `c50_tree_diff` diagnostic finds exact
-//!   unwinnowed trees for grid, noisy, drug, drugnoise and gw, but NOT drughalf,
-//!   drugtwice, wn or wn100. Their structure/exact differing-line counts are
-//!   respectively 6/10, 4/8, 39/41 and 2/2. drughalf has an extra Age split and
-//!   chooses Na instead of K; drugtwice also chooses Na instead of K; wn roots at
-//!   c1 instead of b; wn100 retains b=7.3 below c3=T/c1=F/c2=F. Numeric export
-//!   precision also differs (0.735051 vs 0.7350505, 0.040038 vs 0.04003799).
-//!   All nine datasets' stream inputs equal the exported Type records numerically;
-//!   these differences are not caused by loading different training records.
+//! - Baseline follow-up (recorded oracles only, 2026-10-18): drughalf and drugtwice
+//!   now compare exactly, including 200/800 scored rows respectively, alongside
+//!   all 110 unweighted global-prune trees and the previously exact controls.
+//!   In drughalf, collapsing the Age subtree adds two errors, versus three for
+//!   the Na/K subtree. Dividing by removed leaves reverses that ranking (2 vs
+//!   1.5), wrongly rejects both under the 5 + sqrt(5*95/100) = 7.179449 budget.
+//!   Ranking by added errors collapses Age alone, ending at seven errors.
+//! - GAP baseline learner: wn and wn100 remain unresolved. With the numeric
+//!   penalty above, wn100 locally has 11 errors, budget 14.128898; successive
+//!   added-error pruning steps reach 12 then 16, so it retains too much. Its
+//!   oracle has 22 errors. Final structure/exact diffs are wn 39/41, wn100 14/14
+//!   (wn100 was 2/2 before these numeric changes). No data-specific budget or
+//!   pruning exception is used.
+//! - Rejected/ambiguous hypotheses (2026-10-18): wn's root c1 gain ratio is
+//!   0.0909106225, whereas b's best direct cut is 3.95, ratio 0.0645687711.
+//!   The oracle's b=3.85 exists below c1=T, with endpoints 3.7/4.0. Promoting
+//!   that largest child's test and regrowing its descendants on all rows makes
+//!   wn exact (800 scores), preserving the existing exact fixtures. Merely
+//!   redistributing counts keeps b=5.6 with 17 rows instead of the oracle's
+//!   5.94999999 with 21. However, several different raising estimates all fit
+//!   wn, none fits wn100, whose differing-line count grows from two in the old
+//!   learner to six with raising/regrowth and the new numeric penalty. Raising
+//!   remains unimplemented until the selection/re-estimation rule is established.
+//! - A global budget based on summed leaf error bounds (27.754211 before global
+//!   pruning in the raising experiment, oracle 32.059979) overprunes wn100 and
+//!   breaks `c50_globalprune/c50_gf16_58a`, `models_ml/c50_min_child`, and drug.
+//!   Counting all distinct numeric gaps, including ineligible child sizes, or
+//!   using max(min_child, min(25, .1*N/classes)) does not resolve wn100 either.
+//!   These variants are not retained. All nine datasets' stream inputs equal
+//!   exported Type records numerically; loading different rows is not the cause.
 //! - GAP winnowing: examined all 19 presets winnowing trees plus models_ml/c50_winnow.
 //!   Exhaustively retraining every nonempty input subset with each case's pruning
 //!   settings gives 2,900 trials. Only 12/20 oracles admit any exact subset. None
@@ -146,7 +179,7 @@
 //!   17.851101->21.062915), Na 5->11 (21.268205); the oracle drops both. In our
 //!   wn100 baseline, dropping a improves errors 19->16 (bound 30.017739->28.721417),
 //!   yet the winnowed oracle uses a. These retraining numbers describe OUR learner,
-//!   whose four baseline GAPs must be resolved before inferring a selection rule.
+//!   whose remaining baseline GAPs must be resolved before inferring a selection rule.
 //! - Partial subset evidence, not an algorithm: excluding Sex exactly reproduces
 //!   drug and drugnoise; retaining K/BP/Cholesterol (with or without unused Sex)
 //!   reproduces all three drughalf winnowing settings. Pruning variants do not
@@ -495,6 +528,27 @@ fn entropy(counts: &[f64]) -> f64 {
         .sum()
 }
 
+/// Recorded PMML uses eight fractional decimal places, floored rather than rounded.
+/// Binary64 scaling matters: drugtwice's midpoint 0.040038 exports 0.04003799.
+/// Of 312 numeric predicates in the five recorded tree families, this reproduces
+/// 308 from the final node's endpoints. Candidate endpoints 3.7/4.0 also explain
+/// the four wn roots (final endpoints 3.8/3.9); see the unresolved raising GAP.
+/// Overflow when scaling and closely spaced inputs must not change the partition.
+fn numeric_cut(lower: f64, upper: f64) -> f64 {
+    let midpoint = lower / 2.0 + upper / 2.0;
+    let cut = if midpoint >= lower && midpoint < upper {
+        midpoint
+    } else {
+        lower
+    };
+    let rounded = (cut * 1e8).floor() / 1e8;
+    if rounded.is_finite() && rounded >= lower && rounded < upper {
+        rounded
+    } else {
+        cut
+    }
+}
+
 struct Split {
     gain: f64,
     ratio: f64,
@@ -527,7 +581,7 @@ fn candidate(
             sorted.sort_by(|a, b| a.0.total_cmp(&b.0));
             let mut left = vec![0.0; data.classes.len()];
             let mut right = parent_counts;
-            let mut best: Option<(f64, f64, f64)> = None;
+            let mut best: Option<(f64, f64, f64, f64)> = None;
             let mut cuts = 0usize;
             let mut n = 0.0;
             for pair in sorted.windows(2) {
@@ -547,22 +601,17 @@ fn candidate(
                 cuts = cuts.saturating_add(1);
                 let gain =
                     base - n / total * entropy(&left) - (total - n) / total * entropy(&right);
-                if best.is_none_or(|(g, _, _)| gain > g + 1e-12) {
-                    let midpoint = value / 2.0 + next / 2.0;
-                    let cut = if midpoint >= *next { *value } else { midpoint };
-                    // `models/c50_default`: exported K cut is 0.0373315, not
-                    // 0.037331500000000004. Keep the training partition intact
-                    // when six significant digits cannot separate close values.
-                    let cut = format!("{cut:.5e}")
-                        .parse::<f64>()
-                        .ok()
-                        .filter(|rounded| *rounded >= *value && *rounded < *next)
-                        .unwrap_or(cut);
-                    best = Some((gain, cut, n));
+                if best.is_none_or(|(g, _, _, _)| gain > g + 1e-12) {
+                    let cut = numeric_cut(*value, *next);
+                    best = Some((gain, cut, n, next - value));
                 }
             }
-            let (gain, cut, n) = best?;
-            let gain = gain - (cuts.max(1) as f64).log2() / total;
+            let (gain, cut, n, gap) = best?;
+            // Encoding the threshold within its observed range can be cheaper
+            // than identifying one of every eligible gap (drughalf/drugtwice).
+            let range = sorted.last()?.0 - sorted.first()?.0;
+            let cuts = (cuts.max(1) as f64).min(range / gap).max(1.0);
+            let gain = gain - cuts.log2() / total;
             let split_info = entropy(&[n, total - n]);
             if split_info <= 0.0 {
                 return None;
@@ -1157,53 +1206,52 @@ fn record_errors(data: &Data, node: &Node, rows: &[usize]) -> f64 {
         .sum()
 }
 
-/// (errors as a leaf, errors of its leaves, leaf count), by record count.
-fn subtree_errors(data: &Data, node: &Node, rows: &[usize]) -> (f64, f64, usize) {
+/// (errors as a leaf, errors of its leaves), by record count.
+fn subtree_errors(data: &Data, node: &Node, rows: &[usize]) -> (f64, f64) {
     let leaf = record_errors(data, node, rows);
     if node.children.is_empty() {
-        return (leaf, leaf, 1);
+        return (leaf, leaf);
     }
-    let (mut errors, mut leaves) = (0.0, 0);
+    let mut errors = 0.0;
     for child in &node.children {
         let sub: Vec<usize> = rows
             .iter()
             .copied()
             .filter(|&r| row_matches(data, &child.predicate, r))
             .collect();
-        let (_, e, l) = subtree_errors(data, child, &sub);
+        let (_, e) = subtree_errors(data, child, &sub);
         errors += e;
-        leaves += l;
     }
-    (leaf, errors, leaves)
+    (leaf, errors)
 }
 
-/// The smallest error increase per removed leaf over the internal nodes.
-fn weakest_link(data: &Data, node: &Node, rows: &[usize]) -> Option<f64> {
+/// The smallest total error increase from collapsing an internal node.
+fn weakest_subtree(data: &Data, node: &Node, rows: &[usize]) -> Option<f64> {
     if node.children.is_empty() {
         return None;
     }
-    let (leaf, sub, leaves) = subtree_errors(data, node, rows);
-    let mut best = Some((leaf - sub) / leaves.saturating_sub(1).max(1) as f64);
+    let (leaf, sub) = subtree_errors(data, node, rows);
+    let mut best = Some(leaf - sub);
     for child in &node.children {
         let sub: Vec<usize> = rows
             .iter()
             .copied()
             .filter(|&r| row_matches(data, &child.predicate, r))
             .collect();
-        if let Some(a) = weakest_link(data, child, &sub) {
+        if let Some(a) = weakest_subtree(data, child, &sub) {
             best = best.map(|b: f64| b.min(a));
         }
     }
     best
 }
 
-/// Collapse every internal node whose link strength is `alpha`, outermost first.
-fn collapse_links(data: &Data, node: &mut Node, rows: &[usize], alpha: f64) {
+/// Collapse every subtree adding `extra` errors, outermost first.
+fn collapse_subtrees(data: &Data, node: &mut Node, rows: &[usize], extra: f64) {
     if node.children.is_empty() {
         return;
     }
-    let (leaf, sub, leaves) = subtree_errors(data, node, rows);
-    if ((leaf - sub) / leaves.saturating_sub(1).max(1) as f64 - alpha).abs() <= 1e-9 {
+    let (leaf, sub) = subtree_errors(data, node, rows);
+    if (leaf - sub - extra).abs() <= 1e-9 {
         node.children.clear();
         return;
     }
@@ -1213,15 +1261,16 @@ fn collapse_links(data: &Data, node: &mut Node, rows: &[usize], alpha: f64) {
             .copied()
             .filter(|&r| row_matches(data, &child.predicate, r))
             .collect();
-        collapse_links(data, child, &sub, alpha);
+        collapse_subtrees(data, child, &sub, extra);
     }
 }
 
-/// Global pruning: weakest-link (cost-complexity) pruning on training errors counted in
-/// records, nodes of equal link strength together, keeping the smallest tree whose errors
-/// stay within one standard error of the locally pruned tree's (`c50_globalprune`:
+/// Global pruning ranks whole subtrees by added training errors, without dividing
+/// by removed leaves (`c50_presets/c50_drughalf_expert`: Age adds 2, Na/K adds 3).
+/// Equal increases are tried together; cumulative errors must stay within one standard
+/// error of the locally pruned tree's (`c50_globalprune`:
 /// exception blocks correcting one record go, two stay, at every severity and with case
-/// weights; `models/c50_default`: `BP = HIGH` goes; `c50_min_child`: the equal links
+/// weights; `models/c50_default`: `BP = HIGH` goes; `c50_min_child`: the equal increases
 /// `green`, `red` would reach 87 > 79 + 7.92 together and stay).
 fn global_prune(data: &Data, root: &mut Node) {
     let rows: Vec<usize> = (0..data.targets.len()).collect();
@@ -1230,15 +1279,15 @@ fn global_prune(data: &Data, root: &mut Node) {
     let limit = start + (start * (n - start) / n).max(0.0).sqrt();
     let mut trial = root.clone();
     let mut steps = Vec::new();
-    while let Some(alpha) = weakest_link(data, &trial, &rows) {
-        collapse_links(data, &mut trial, &rows, alpha);
+    while let Some(extra) = weakest_subtree(data, &trial, &rows) {
+        collapse_subtrees(data, &mut trial, &rows, extra);
         if subtree_errors(data, &trial, &rows).1 > limit + 1e-9 {
             break;
         }
-        steps.push(alpha);
+        steps.push(extra);
     }
-    for alpha in steps {
-        collapse_links(data, root, &rows, alpha);
+    for extra in steps {
+        collapse_subtrees(data, root, &rows, extra);
     }
 }
 
@@ -1454,6 +1503,31 @@ mod tests {
         )
         .unwrap()
     }
+    #[test]
+    fn numeric_threshold_precision_preserves_partitions() {
+        // Recorded endpoints: models/default, presets/drughalf and drugtwice.
+        for (lower, upper, expected) in [
+            (0.037124, 0.037539, 0.0373315),
+            (0.722286, 0.747815, 0.7350505),
+            (0.038171, 0.041905, 0.04003799),
+        ] {
+            assert_eq!(numeric_cut(lower, upper), expected);
+        }
+        // Scaling may overflow, or flooring may fall below the lower endpoint.
+        // Even adjacent floats must remain separated, including subnormals.
+        for (lower, upper) in [
+            (1.0_f64.next_up(), 1.0_f64.next_up().next_up()),
+            (f64::MAX.next_down(), f64::MAX),
+            (-f64::MAX, -f64::MAX.next_down()),
+            (-f64::MAX, f64::MAX),
+            (f64::from_bits(1), f64::from_bits(2)),
+            (-f64::from_bits(2), -f64::from_bits(1)),
+        ] {
+            let cut = numeric_cut(lower, upper);
+            assert!(cut.is_finite() && cut >= lower && cut < upper);
+        }
+    }
+
     #[test]
     fn numeric_midpoint_and_smoothed_confidence() {
         let table = sample();
