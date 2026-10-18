@@ -627,7 +627,9 @@ fn factor_settings(
         return Err(unsupported("weights or frequencies"));
     }
     let count = if !expert {
-        FactorCount::Eigenvalue(1.0)
+        // Simple mode keeps every component (`models_next2/factor_default`: 5 factors from 5
+        // inputs, where the eigenvalue rule of expert mode keeps fewer).
+        FactorCount::Maximum(usize::MAX)
     } else {
         match text("limitFactors").as_deref() {
             None | Some("By Eigenvalue") => {

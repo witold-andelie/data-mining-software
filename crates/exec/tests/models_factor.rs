@@ -38,9 +38,13 @@ fn betas(model: &Model) -> Vec<Vec<(String, f64)>> {
 #[test]
 fn trained_factor_scores_equal_modeler_coefficients() {
     let root = support::repo_root();
-    for case in ["factor_varimax", "factor_nfactors"] {
+    for (label, case) in [
+        ("models_next", "factor_varimax"),
+        ("models_next", "factor_nfactors"),
+        ("models_next2", "factor_default"),
+    ] {
         let archive = dms_strfmt::container::read_archive(
-            &std::fs::read(root.join(format!("corpus/models_next/{case}.str"))).unwrap(),
+            &std::fs::read(root.join(format!("corpus/{label}/{case}.str"))).unwrap(),
             &ArchiveLimits::default(),
         )
         .unwrap();
@@ -53,7 +57,7 @@ fn trained_factor_scores_equal_modeler_coefficients() {
             .unwrap();
         let context = ExecContext {
             files: FileResolver {
-                data_dirs: vec![root.join("corpus/models_next")],
+                data_dirs: vec![root.join(format!("corpus/{label}"))],
             },
             attachments: Arc::new(
                 archive
@@ -70,7 +74,7 @@ fn trained_factor_scores_equal_modeler_coefficients() {
             Some(Ok(NodeOutput::Model(model))) => model.clone(),
             other => panic!("{case}: builder failed: {other:?}"),
         };
-        let dir = root.join(format!("oracle/models_next/{case}/models"));
+        let dir = root.join(format!("oracle/{label}/{case}/models"));
         let file = std::fs::read_dir(&dir)
             .unwrap()
             .map(|e| e.unwrap().path())
