@@ -464,3 +464,63 @@ fn category_probabilities_use_the_prediction_fields_index() {
     );
     assert_eq!(column(&out, "$LP1-A"), [Value::real(0.5), Value::Null]);
 }
+
+#[test]
+fn saved_alm_interval_boundaries_and_outside_domain_scores() {
+    // PMML 4.3 valid-value intervals; the Auto Numeric oracle excludes this component
+    // outside its input domain. Exercise all closure boundaries without external files.
+    for (closure, low_valid, high_valid) in [
+        ("closedClosed", true, true),
+        ("closedOpen", true, false),
+        ("openClosed", false, true),
+        ("openOpen", false, false),
+    ] {
+        let xml = format!(
+            r#"<PMML version="4.3"><DataDictionary><DataField name="x" dataType="double" optype="continuous"><Interval closure="{closure}" leftMargin="0" rightMargin="1"/></DataField><DataField name="y" dataType="double" optype="continuous"/></DataDictionary><GeneralRegressionModel algorithmName="ALM" functionName="regression" modelType="regression" targetVariableName="y"><MiningSchema><MiningField name="x"/><MiningField name="y" usageType="predicted"/></MiningSchema><ParameterList><Parameter name="p"/></ParameterList><CovariateList><Predictor name="x"/></CovariateList><PPMatrix><PPCell parameterName="p" predictorName="x" value="1"/></PPMatrix><ParamMatrix><PCell parameterName="p" beta="2"/></ParamMatrix></GeneralRegressionModel></PMML>"#
+        );
+        let node = nugget(
+            "ApplyLinearRegressionSplitModelNode",
+            vec![Node::Element(element("model", vec![("pmml", "m")], vec![]))],
+        );
+        let context = ExecContext {
+            attachments: Arc::new(HashMap::from([(
+                "m".to_string(),
+                Arc::from(xml.into_bytes()),
+            )])),
+            ..ExecContext::default()
+        };
+        let input = Arc::new(
+            Table::new(
+                DataModel::new(vec![Field::new("x", Storage::Real)]).unwrap(),
+                [-0.1, 0.0, 0.5, 1.0, 1.1]
+                    .iter()
+                    .map(|x| vec![Value::real(*x)])
+                    .collect(),
+            )
+            .unwrap(),
+        );
+        let output = apply::build(&node)
+            .unwrap()
+            .run(&[input], &context)
+            .unwrap();
+        assert_eq!(
+            column(&output, "$L-y"),
+            vec![
+                Value::Null,
+                if low_valid {
+                    Value::real(0.0)
+                } else {
+                    Value::Null
+                },
+                Value::real(1.0),
+                if high_valid {
+                    Value::real(2.0)
+                } else {
+                    Value::Null
+                },
+                Value::Null
+            ],
+            "{closure}"
+        );
+    }
+}

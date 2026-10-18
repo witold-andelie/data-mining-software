@@ -23,22 +23,6 @@ use std::sync::Arc;
 
 use super::field_util::{Column, with_columns};
 
-/// Component nugget classes (`modelOutput@class`) and the nugget type that scores them.
-const COMPONENTS: [(&str, &str); 3] = [
-    (
-        "KMeansOutput",
-        "com.spss.clementine.component.node.ApplyKMeansNode",
-    ),
-    (
-        "TwoStepOutput",
-        "com.spss.clementine.component.node.ApplyTwoStepNode",
-    ),
-    (
-        "KohonenNetOutput",
-        "com.spss.clementine.component.node.ApplyKohonenNode",
-    ),
-];
-
 pub fn apply(node: &StreamNode) -> Result<Box<dyn Operator>, OperatorError> {
     let s = node.settings.as_ref();
     if settings::element(s, "model")
@@ -60,40 +44,15 @@ pub fn apply(node: &StreamNode) -> Result<Box<dyn Operator>, OperatorError> {
             in_use.len()
         )));
     };
-    let output = item
-        .child("modelOutput")
-        .ok_or_else(|| OperatorError::Settings("an Auto Cluster component has no model".into()))?;
-    let class = output
-        .attribute("class")
-        .map(dms_stream::simple_class_name)
-        .unwrap_or_default();
-    let nugget = COMPONENTS
-        .iter()
-        .find(|(output_class, _)| *output_class == class)
-        .map(|(_, nugget)| *nugget)
-        .ok_or_else(|| {
-            OperatorError::Settings(format!(
-                "Auto Cluster component {class} is not supported yet"
-            ))
-        })?;
-    let component = StreamNode {
-        uid: format!("{}#0", node.uid),
-        class: nugget.to_string(),
-        extension: None,
-        model_builder: output
-            .child("modelBuildInfo")
-            .and_then(|info| info.attribute("modelBuilderId"))
-            .map(str::to_string),
-        name: item.attribute("modelName").map(str::to_string),
-        label: None,
-        position: None,
-        properties_attachment: None,
-        containers: Vec::new(),
-        settings: output.child("properties").cloned(),
-        binning_output: None,
-        result_items: Vec::new(),
-        subdiagram: None,
-    };
+    let component = super::auto_models::component(node, item, 0)?;
+    if !matches!(
+        component.type_identifier().as_str(),
+        "ApplyKMeansNode" | "ApplyTwoStepNode" | "ApplyKohonenNode"
+    ) {
+        return Err(OperatorError::Settings(
+            "GAP: Auto Cluster component is not a supported clustering nugget".into(),
+        ));
+    }
     // The nugget's own output field (`model/outputs/output/name`, prefix `$XC`).
     let field = settings::children(s, "model/outputs", "output")
         .into_iter()

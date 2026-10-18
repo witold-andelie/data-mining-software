@@ -46,7 +46,18 @@ fn report_lines_match_the_oracle() {
     for case in support::collect_oracle_cases(&["report"]) {
         let file = case.output_file.file_name().unwrap().to_string_lossy();
         let name = format!("{}/{file}", case.stream_name);
-        let actual = support::evaluate_stream_output(&case.label, &case.stream_path, &case.node_id);
+        // Corpus junctions are read-only. File-mode reports still need to write while
+        // checking their returned lines, so redirect them just as the byte comparison does.
+        let out = std::path::PathBuf::from(env!("CARGO_TARGET_TMPDIR"))
+            .join("report_lines")
+            .join(&case.stream_name);
+        std::fs::create_dir_all(&out).unwrap();
+        let actual = support::evaluate_stream_output_to(
+            &case.label,
+            &case.stream_path,
+            &case.node_id,
+            Some(out),
+        );
         let refused = REFUSED.contains(&case.stream_name.as_str());
         let actual = match (actual, refused) {
             (Ok(actual), false) => actual,

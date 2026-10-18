@@ -109,6 +109,12 @@ enum Kind {
 pub fn build(node: &StreamNode) -> Result<Box<dyn Operator>, OperatorError> {
     if matches!(
         node.type_identifier().as_str(),
+        "ApplyAutoClassifierNode" | "ApplyBinaryClassifierNode" | "ApplyNumericPredictorNode"
+    ) {
+        return super::auto_models::apply(node);
+    }
+    if matches!(
+        node.type_identifier().as_str(),
         "ApplyFeatureSelectionNode" | "FeatureSelectionModelNode"
     ) {
         return super::feature_selection::apply(node);
@@ -414,7 +420,7 @@ impl Operator for Apply {
 }
 
 impl Apply {
-    fn saved_model(&self, context: &ExecContext) -> Result<Pmml, OperatorError> {
+    fn saved_model_xml(&self, context: &ExecContext) -> Result<String, OperatorError> {
         let member = self.pmml_member.as_deref().ok_or_else(|| {
             OperatorError::Settings(
                 "the nugget saved no PMML model and its build node did not run".into(),
@@ -453,7 +459,7 @@ impl Apply {
                 })?
                 .to_string()
         };
-        Pmml::parse(&text).map_err(|error| OperatorError::Data(format!("{member}: {error}")))
+        Ok(text)
     }
 
     /// Apriori nugget columns. Tabular baskets are one row each (`apriori_default`).
@@ -557,9 +563,23 @@ impl Apply {
         let input = inputs
             .first()
             .ok_or_else(|| OperatorError::Inputs("a model nugget needs one input".into()))?;
-        let pmml = match model {
-            Some(model) => model,
-            None => Arc::new(self.saved_model(context)?),
+        let (pmml, valid_intervals) = match model {
+            Some(model) => (model, Vec::new()),
+            None => {
+                let xml = self.saved_model_xml(context)?;
+                let intervals = if self.kind == Kind::Linear {
+                    alm_valid_intervals(&xml, input.model())?
+                } else {
+                    Vec::new()
+                };
+                (
+                    Arc::new(
+                        Pmml::parse(&xml)
+                            .map_err(|error| OperatorError::Data(format!("model: {error}")))?,
+                    ),
+                    intervals,
+                )
+            }
         };
         if self.kind == Kind::Apriori {
             return self.score_apriori(input, &pmml);
@@ -711,6 +731,22 @@ impl Apply {
             .rows()
             .iter()
             .map(|row| {
+                // Saved ALM DataDictionary intervals define valid input values. A score
+                // outside that domain is invalid (null), so an Auto Numeric ensemble
+                // excludes this component, rather than extrapolating it (an_default grid 4).
+                if valid_intervals.iter().any(|(index, intervals)| {
+                    row.get(*index)
+                        .and_then(Value::as_f64)
+                        .is_some_and(|x| !intervals.iter().any(|interval| interval.contains(x)))
+                }) {
+                    return Ok(Prediction {
+                        value: PmmlValue::Missing,
+                        confidence: None,
+                        probabilities: Vec::new(),
+                        entity_id: None,
+                        affinity: None,
+                    });
+                }
                 let record: Vec<PmmlValue> = row.iter().map(to_pmml).collect();
                 scorer
                     .score(&record)
@@ -1232,6 +1268,120 @@ fn category_probability(prediction: &Prediction, category: &str) -> Option<f64> 
         .iter()
         .find(|(name, _)| name == category)
         .map(|(_, probability)| *probability)
+}
+
+struct ValidInterval {
+    low: Option<f64>,
+    high: Option<f64>,
+    closed_low: bool,
+    closed_high: bool,
+}
+
+impl ValidInterval {
+    fn contains(&self, x: f64) -> bool {
+        x.is_finite()
+            && self
+                .low
+                .is_none_or(|low| x > low || (self.closed_low && x == low))
+            && self
+                .high
+                .is_none_or(|high| x < high || (self.closed_high && x == high))
+    }
+}
+
+/// PMML 4.3 DataDictionary/Interval validity for saved ALM models. Kept in the nugget
+/// adapter until the general PMML data-field model retains intervals. Other model families
+/// have separate treatments; applying ALM's rule to them has no oracle.
+/// Specification: https://dmg.org/pmml/v4-3/DataDictionary.html#xsdElement_Interval
+fn alm_valid_intervals(
+    xml: &str,
+    model: &dms_types::DataModel,
+) -> Result<Vec<(usize, Vec<ValidInterval>)>, OperatorError> {
+    let document = roxmltree::Document::parse(xml)
+        .map_err(|error| OperatorError::Data(format!("ALM PMML: {error}")))?;
+    let root = document.root_element();
+    let Some(alm) = root.children().find(|e| {
+        e.is_element()
+            && e.tag_name().name() == "GeneralRegressionModel"
+            && e.attribute("algorithmName") == Some("ALM")
+    }) else {
+        return Ok(Vec::new());
+    };
+    let active: HashSet<_> = alm
+        .children()
+        .filter(|e| e.is_element() && e.tag_name().name() == "MiningSchema")
+        .flat_map(|e| e.children())
+        .filter(|e| {
+            e.is_element()
+                && e.tag_name().name() == "MiningField"
+                && matches!(e.attribute("usageType"), None | Some("active"))
+        })
+        .filter_map(|e| e.attribute("name"))
+        .collect();
+    let mut ranges = Vec::new();
+    for field in root
+        .children()
+        .filter(|e| e.is_element() && e.tag_name().name() == "DataDictionary")
+        .flat_map(|e| e.children())
+        .filter(|e| e.is_element() && e.tag_name().name() == "DataField")
+    {
+        let Some(name) = field.attribute("name").filter(|name| active.contains(name)) else {
+            continue;
+        };
+        let index = model
+            .position(name)
+            .ok_or_else(|| OperatorError::Data(format!("ALM input {name:?} is absent")))?;
+        let mut intervals = Vec::new();
+        for interval in field
+            .children()
+            .filter(|e| e.is_element() && e.tag_name().name() == "Interval")
+        {
+            let margin = |key| -> Result<Option<f64>, OperatorError> {
+                interval
+                    .attribute(key)
+                    .map(|text| {
+                        text.parse::<f64>()
+                            .ok()
+                            .filter(|x| x.is_finite())
+                            .ok_or_else(|| {
+                                OperatorError::Data(format!("ALM {name}: invalid {key}"))
+                            })
+                    })
+                    .transpose()
+            };
+            let low = margin("leftMargin")?;
+            let high = margin("rightMargin")?;
+            if low.zip(high).is_some_and(|(low, high)| low > high) {
+                return Err(OperatorError::Data(format!(
+                    "ALM {name}: reversed interval"
+                )));
+            }
+            let (closed_low, closed_high) = match interval.attribute("closure") {
+                Some("closedClosed") => (true, true),
+                Some("closedOpen") => (true, false),
+                Some("openClosed") => (false, true),
+                Some("openOpen") => (false, false),
+                other => {
+                    return Err(OperatorError::Settings(format!(
+                        "GAP: ALM interval closure {other:?}"
+                    )));
+                }
+            };
+            if intervals.len() >= 10_000 {
+                return Err(OperatorError::Data("ALM: too many intervals".into()));
+            }
+            intervals.push(ValidInterval {
+                low,
+                high,
+                closed_low,
+                closed_high,
+            });
+        }
+        if !intervals.is_empty() {
+            ranges.push((index, intervals));
+        }
+    }
+    Ok(ranges)
 }
 
 /// Which neural score fields the nugget writes. Defaults match a nugget with no properties

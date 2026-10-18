@@ -183,6 +183,71 @@ struct Side {
     value: Value,
 }
 
+/// Explicit component scores from Auto nuggets. They need no score-field discovery:
+/// several components share a family, and their temporary columns are never user output.
+pub(crate) struct FlagCombiner {
+    method: Method,
+    tie: Tie,
+}
+
+impl FlagCombiner {
+    pub(crate) fn new(settings: Option<&Element>) -> Result<Self, OperatorError> {
+        let method = parse_method(
+            &trimmed(settings, "ensembleFlagsMethod")
+                .ok_or_else(|| settings_error("GAP: Auto ensembleFlagsMethod is required"))?,
+        )?;
+        if method != Method::ConfidenceWeighted {
+            return Err(settings_error(
+                "GAP: Auto nuggets currently support confidenceWeightedVoting only",
+            ));
+        }
+        Ok(Self {
+            method,
+            tie: parse_tie(settings)?,
+        })
+    }
+
+    pub(crate) fn score(
+        &self,
+        target: &Field,
+        votes: &[(Value, Value)],
+    ) -> Result<[Value; 2], OperatorError> {
+        let (true_value, false_value) = flag_pair(target)?;
+        let mut fields = Vec::new();
+        let mut row = Vec::new();
+        let mut components = Vec::new();
+        for (prediction, confidence) in votes {
+            let index = fields.len();
+            fields.push(Field::new(format!("p{index}"), target.storage));
+            fields.push(Field::new(format!("c{index}"), Storage::Real));
+            row.extend([prediction.clone(), confidence.clone()]);
+            components.push(Component {
+                family: Family::C50,
+                index: 0,
+                order: index,
+                prediction: Some(index),
+                confidence: Some(index.saturating_add(1)),
+                raw: None,
+                adjusted: None,
+            });
+        }
+        let model =
+            DataModel::new(fields).map_err(|error| OperatorError::Data(error.to_string()))?;
+        score_row(
+            &ScoreCtx {
+                model: &model,
+                true_value: &true_value,
+                false_value: &false_value,
+                target: &target.name,
+                tie: self.tie,
+            },
+            self.method,
+            &row,
+            &components,
+        )
+    }
+}
+
 pub fn build(node: &StreamNode) -> Result<Box<dyn Operator>, OperatorError> {
     let settings = node.settings.as_ref();
     reject_unknown(settings)?;
