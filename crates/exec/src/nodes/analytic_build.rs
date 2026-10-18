@@ -1,4 +1,4 @@
-//! Settings observed in `models_as/treeas_*` (Modeler 19).
+//! Settings observed in `models_as/treeas_*` and `linearas/lin_*` (Modeler 19).
 //! Unverified algorithm settings fail with GAP instead of silently changing training.
 
 use crate::{OperatorError, settings};
@@ -13,6 +13,7 @@ fn defaults(
     node: &StreamNode,
     expected: &[(&str, &str)],
     variable: &[&str],
+    analytic_weight_toggle: bool,
 ) -> Result<(), OperatorError> {
     let s = node.settings.as_ref();
     if let Some(s) = s {
@@ -39,6 +40,11 @@ fn defaults(
         "calculateRawPropensities",
         "calculateAdjustedPropensities",
     ] {
+        // Linear-AS saves the generic UI toggle as true while _useWeight is false.
+        if analytic_weight_toggle && key == "useWeight" {
+            settings::flag(s, key).map_err(gap)?;
+            continue;
+        }
         if settings::flag(s, key).map_err(gap)?.unwrap_or(false) {
             return Err(gap(format!("{key}=true")));
         }
@@ -98,6 +104,7 @@ pub(super) fn tree(node: &StreamNode) -> Result<ChaidSettings, OperatorError> {
             "_display_rule_id",
             "_costs",
         ],
+        false,
     )?;
     let s = node.settings.as_ref();
     for key in ["_calculate_conf", "_display_rule_id"] {
@@ -126,4 +133,56 @@ pub(super) fn tree(node: &StreamNode) -> Result<ChaidSettings, OperatorError> {
         max_depth: usize::try_from(depth).map_err(gap)?,
         ..ChaidSettings::default()
     })
+}
+
+/// The custom field list and defaults saved by all three Linear-AS oracles.
+pub(super) fn linear(node: &StreamNode) -> Result<(String, Vec<String>), OperatorError> {
+    defaults(
+        node,
+        &[
+            ("_maxSteps", "1"),
+            ("_Pin", "0.05"),
+            ("_maxEffects", "1"),
+            ("_useCustomMaxSteps", "false"),
+            ("_detectTwoWayInteraction", "true"),
+            ("_staticImage", ""),
+            ("_detectUnusualCategory", "false"),
+            ("_Pout", "0.1"),
+            ("_useFrequency", "false"),
+            ("_Cin", "95.0"),
+            ("_varSelectionMethod", "ForwardStepwise"),
+            ("_criteriaForBestSubsets", "AdjustedRSquare"),
+            ("_regressionWeightField", ""),
+            ("_useWeight", "false"),
+            ("_useCustomMaxEffects", "false"),
+            ("_criteriaForForwardStepwise", "AdjustedRSquare"),
+            ("_computeTypeIII", "false"),
+            ("_calculateCookDistance", "false"),
+            ("_frequencyWeightField", ""),
+            ("_intercept", "true"),
+            ("_factorSortOrder", "ascending"),
+        ],
+        &["_targetField", "_inputFieldList"],
+        true,
+    )?;
+    let s = node.settings.as_ref();
+    if settings::flag(s, "autoModelFieldSelection")
+        .map_err(gap)?
+        .unwrap_or(true)
+    {
+        return Err(gap(
+            "autoModelFieldSelection: only saved custom fields verified",
+        ));
+    }
+    let target = settings::text(s, "_targetField")
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| gap("_targetField must name the custom target"))?;
+    let inputs: Vec<_> = settings::children(s, "_inputFieldList", "field")
+        .iter()
+        .map(|f| f.text())
+        .collect();
+    if inputs.is_empty() || inputs.len() > 50 || inputs.iter().any(String::is_empty) {
+        return Err(gap("_inputFieldList requires 1..50 custom fields"));
+    }
+    Ok((target, inputs))
 }

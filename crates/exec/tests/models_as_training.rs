@@ -74,16 +74,14 @@ fn unverified_tree_as_settings_return_gap() {
     }
 }
 
-#[test]
-fn linear_as_selection_gap_is_measured_and_rejected() {
-    use dms_algo::{
-        Dataset,
-        linear::{self, LinearSettings, Selection},
-    };
-    use dms_types::Role;
+fn train_linear_as(
+    label: &str,
+    case: &str,
+) -> (Pmml, Vec<dms_algo::linear_as::ParameterInfo>, Pmml, String) {
+    use dms_algo::{Dataset, linear_as};
     let root = support::repo_root();
     let archive = dms_strfmt::container::read_archive(
-        &std::fs::read(root.join("corpus/models_as/linearas_default.str")).unwrap(),
+        &std::fs::read(root.join(format!("corpus/{label}/{case}.str"))).unwrap(),
         &ArchiveLimits::default(),
     )
     .unwrap();
@@ -92,7 +90,7 @@ fn linear_as_selection_gap_is_measured_and_rejected() {
         .diagram
         .nodes
         .iter()
-        .find(|n| n.class.ends_with("ExtensionBuildModelNode"))
+        .find(|n| n.type_identifier() == "spss.linearEngine!linearEngine")
         .unwrap();
     let input = stream
         .diagram
@@ -102,7 +100,7 @@ fn linear_as_selection_gap_is_measured_and_rejected() {
         .unwrap();
     let context = ExecContext {
         files: FileResolver {
-            data_dirs: vec![root.join("corpus/models_as")],
+            data_dirs: vec![root.join(format!("corpus/{label}"))],
         },
         attachments: Arc::new(
             archive
@@ -116,59 +114,216 @@ fn linear_as_selection_gap_is_measured_and_rejected() {
     };
     let results =
         Plan::new(&stream).evaluate(&[builder.uid.as_str(), input.uid.as_str()], &context);
-    assert!(
-        matches!(results.get(&builder.uid), Some(Err(dms_exec::NodeError { kind: dms_exec::ErrorKind::Settings(s), .. })) if s.starts_with("GAP:") && s.contains("7 parameters"))
-    );
-    assert!(!dms_exec::registry::is_implemented("linear_as"));
+    let trained = match results.get(&builder.uid) {
+        Some(Ok(NodeOutput::Model(m))) => (**m).clone(),
+        other => panic!("{label}/{case}: builder failed: {other:?}"),
+    };
     let Some(Ok(NodeOutput::Data(table))) = results.get(&input.uid) else {
         panic!("training data failed");
     };
-    let fields = table.model().fields();
-    let target = fields.iter().position(|f| f.role == Role::Target).unwrap();
-    let inputs: Vec<_> = fields
+    let settings = builder.settings.as_ref();
+    let target = table
+        .model()
+        .position(&dms_exec::settings::text(settings, "_targetField").unwrap())
+        .unwrap();
+    let inputs: Vec<_> = dms_exec::settings::children(settings, "_inputFieldList", "field")
         .iter()
-        .enumerate()
-        .filter(|(_, f)| f.role == Role::Input)
-        .map(|(i, _)| i)
+        .map(|f| table.model().position(&f.text()).unwrap())
         .collect();
-    let fitted = linear::train(
-        &Dataset {
-            table,
-            target,
-            inputs: &inputs,
-            frequency: None,
-        },
-        &LinearSettings {
-            selection: Selection::AdjustedRSquare,
-            ..LinearSettings::default()
-        },
-    )
+    let with_metadata = linear_as::train(&Dataset {
+        table,
+        target,
+        inputs: &inputs,
+        frequency: None,
+    })
     .unwrap();
-    let oracle = Pmml::parse(
-        &std::fs::read_to_string(
-            root.join("oracle/models_as/linearas_default/models/01_models_as.xml"),
-        )
-        .unwrap(),
-    )
-    .unwrap();
-    let (Model::GeneralRegression(a), Model::GeneralRegression(b)) = (&fitted.model, &oracle.model)
-    else {
-        panic!("expected generalLinear");
-    };
-    assert_eq!(a.param_matrix.len(), 6);
-    assert_eq!(b.param_matrix.len(), 7);
-    assert_eq!(a.pp_matrix, &b.pp_matrix[..5]);
-    let extra = b.pp_matrix.last().unwrap();
-    assert_eq!((&*extra.predictor, &*extra.value), ("x4", "2"));
-    let mut max_error = 0.0_f64;
-    for (a, b) in a.param_matrix.iter().zip(&b.param_matrix) {
-        close(a.beta, b.beta, &a.parameter);
-        max_error = max_error.max((a.beta - b.beta).abs());
+    // The builder and the direct fit (which keeps labels and df) carry the same model.
+    assert_eq!(trained, with_metadata.pmml);
+    let oracle_path = std::fs::read_dir(root.join(format!("oracle/{label}/{case}/models")))
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .find(|p| p.extension().is_some_and(|e| e == "xml"))
+        .unwrap();
+    let oracle_xml = std::fs::read_to_string(oracle_path).unwrap();
+    let oracle = Pmml::parse(&oracle_xml).unwrap();
+    (trained, with_metadata.parameters, oracle, oracle_xml)
+}
+
+#[test]
+fn trained_linear_as_models_match_oracle_parameters_and_scoring() {
+    assert!(dms_exec::registry::is_implemented("linear_as"));
+    for (label, case) in [
+        ("linearas", "lin_default"),
+        ("linearas", "lin_factor"),
+        ("models_as", "linearas_default"),
+    ] {
+        let (ours, ours_info, oracle, oracle_xml) = train_linear_as(label, case);
+        let (Model::GeneralRegression(a), Model::GeneralRegression(b)) =
+            (&ours.model, &oracle.model)
+        else {
+            panic!("expected generalLinear");
+        };
+        assert_eq!(ours.version, oracle.version);
+        assert_eq!(ours.data_dictionary, oracle.data_dictionary);
+        assert_eq!(a.header.algorithm, b.header.algorithm);
+        assert_eq!(a.header.function, b.header.function);
+        assert_eq!(a.model_type, b.model_type);
+        let old = case == "linearas_default";
+        let count = if old { 6 } else { b.parameters.len() };
+        if old {
+            // Exact-linear residuals make the oracle's extra x4 square floating noise.
+            assert_eq!(b.parameters.len(), 7);
+            assert_eq!(b.pp_matrix.last().unwrap().value, "2");
+            assert_eq!(b.pp_matrix.last().unwrap().predictor, "x4");
+            assert!(b.param_matrix.last().unwrap().beta.abs() < 2e-16);
+        } else {
+            assert_eq!(a.parameters, b.parameters);
+            assert_eq!(a.header.mining_schema, b.header.mining_schema);
+            assert_eq!(a.factors, b.factors);
+            assert_eq!(a.covariates, b.covariates);
+            assert_eq!(a.pp_matrix, b.pp_matrix);
+        }
+        let oracle_doc = roxmltree::Document::parse(&oracle_xml).unwrap();
+        let attrs = |doc: &roxmltree::Document<'_>, tag: &str, attr: &str| -> Vec<String> {
+            doc.descendants()
+                .filter(|n| n.has_tag_name(tag))
+                .map(|n| n.attribute(attr).unwrap().to_string())
+                .collect()
+        };
+        let labels: Vec<_> = ours_info.iter().map(|p| p.label.clone()).collect();
+        let dfs: Vec<_> = ours_info.iter().map(|p| p.df.to_string()).collect();
+        assert_eq!(
+            labels[..count],
+            attrs(&oracle_doc, "Parameter", "label")[..count]
+        );
+        assert_eq!(dfs[..count], attrs(&oracle_doc, "PCell", "df")[..count]);
+        let mut max_relative = 0.0_f64;
+        for (a, b) in a.param_matrix.iter().zip(&b.param_matrix).take(count) {
+            assert_eq!(a.parameter, b.parameter);
+            // The old exact-linear oracle also has a near-zero intercept; only
+            // its five main-effect betas have meaningful relative precision.
+            if old && a.parameter == "P0000001" {
+                assert!(a.beta.abs() < 1e-12 && b.beta.abs() < 1e-12);
+                continue;
+            }
+            let tolerance = 1e-9 * b.beta.abs();
+            assert!(
+                (a.beta - b.beta).abs() <= tolerance,
+                "{case} {}: ours {}, oracle {}",
+                a.parameter,
+                a.beta,
+                b.beta
+            );
+            if b.beta != 0.0 {
+                max_relative = max_relative.max(((a.beta - b.beta) / b.beta).abs());
+            }
+        }
+        let names: Vec<_> = ours
+            .data_dictionary
+            .iter()
+            .map(|f| f.name.as_str())
+            .collect();
+        let scorer = ours.bind(&names).unwrap();
+        let mut scored = 0;
+        let data_dir = support::repo_root().join(format!("oracle/{label}/{case}/data"));
+        for path in std::fs::read_dir(data_dir)
+            .unwrap()
+            .map(|p| p.unwrap().path())
+        {
+            if path.extension().is_none_or(|e| e != "csv") {
+                continue;
+            }
+            let text = std::fs::read_to_string(path).unwrap();
+            let mut lines = text.lines();
+            let header = support::parse_csv_line(lines.next().unwrap());
+            let Some(predicted) = header.iter().position(|n| n == "$L-y") else {
+                continue;
+            };
+            for line in lines.filter(|s| !s.is_empty()) {
+                let cells = support::parse_csv_line(line);
+                let row: Vec<_> = names
+                    .iter()
+                    .map(|name| {
+                        let p = header.iter().position(|n| n == name).unwrap();
+                        cells[p]
+                            .parse::<f64>()
+                            .map(dms_pmml::Value::Number)
+                            .unwrap_or_else(|_| dms_pmml::Value::Text(cells[p].clone()))
+                    })
+                    .collect();
+                let prediction = scorer.score(&row).unwrap();
+                let dms_pmml::Value::Number(actual) = prediction.value else {
+                    panic!("missing prediction");
+                };
+                let expected: f64 = cells[predicted].parse().unwrap();
+                assert!(
+                    (actual - expected).abs() <= 1e-9 * expected.abs().max(1.0),
+                    "{case} row {scored}: {actual} vs {expected}"
+                );
+                scored += 1;
+            }
+        }
+        assert!(scored > 0, "{case}: no oracle scored records");
+        println!(
+            "TRAINED {label}/{case}: {count} parameters, max relative beta error {max_relative:e}, {scored} scored records"
+        );
     }
-    println!(
-        "GAP linearas_default: reused Linear 6 parameters, Modeler 7; max common coefficient error {max_error:e}; oracle x4^2 beta {:e}",
-        b.param_matrix.last().unwrap().beta
-    );
+}
+
+#[test]
+fn unverified_linear_as_settings_return_named_gaps() {
+    use dms_strfmt::fastinfoset::Node as XmlNode;
+    let archive = dms_strfmt::container::read_archive(
+        &std::fs::read(support::repo_root().join("corpus/linearas/lin_factor.str")).unwrap(),
+        &ArchiveLimits::default(),
+    )
+    .unwrap();
+    let stream = Stream::from_document(&archive.document).unwrap();
+    let builder = stream
+        .diagram
+        .nodes
+        .iter()
+        .find(|n| n.type_identifier() == "spss.linearEngine!linearEngine")
+        .unwrap();
+    for (key, value) in [
+        ("_varSelectionMethod", "None"),
+        ("_criteriaForForwardStepwise", "AICC"),
+        ("_detectTwoWayInteraction", "false"),
+        ("_intercept", "false"),
+        ("_useCustomMaxEffects", "true"),
+        ("_useCustomMaxSteps", "true"),
+        ("_maxEffects", "999999999999999999999"),
+        ("_maxSteps", "NaN"),
+        ("_Pin", "0.1"),
+        ("_Pout", "0.2"),
+        ("_useWeight", "true"),
+        ("_useFrequency", "true"),
+        ("_regressionWeightField", "x1"),
+        ("_frequencyWeightField", "x1"),
+        ("autoModelFieldSelection", "true"),
+        ("useEvents", "true"),
+        ("weightField", "x1"),
+        ("useFrequency", "true"),
+    ] {
+        let mut node = builder.clone();
+        let property = node
+            .settings
+            .as_mut()
+            .unwrap()
+            .children
+            .iter_mut()
+            .find_map(|n| match n {
+                XmlNode::Element(e) if &*e.name.local == key => Some(e),
+                _ => None,
+            })
+            .unwrap();
+        property.children = vec![XmlNode::Text(value.into())];
+        let error = match dms_exec::nodes::build::build(&node) {
+            Err(e) => format!("{e:?}"),
+            Ok(_) => panic!("accepted {key}={value}"),
+        };
+        assert!(error.contains("GAP:") && error.contains(key), "{error}");
+    }
 }
 
 fn tree(a: &Node, b: &Node, case: &str) -> usize {

@@ -54,6 +54,7 @@ const BUILT_IN: &[(&str, Factory)] = &[
     ("c50", model_node),
     ("chaid", model_node),
     ("tree_as", model_node),
+    ("linear_as", model_node),
     ("kmeans", model_node),
     ("apriori", model_node),
     ("carma", model_node),
@@ -96,10 +97,9 @@ const PENDING: &[&str] = &[];
 /// Time Series (`corpus/models_next/ts_arima.str`, `ts_expert.str`,
 /// `corpus/models_next2/ts_simple.str`, `ts_holt.str`): the nugget scores the saved ARIMA
 /// or exponential smoothing model; estimation (`spss.ts!ts_builder`) is a GAP.
-/// Analytic Engine Random Trees, Linear-AS and LSVM score their saved PMML.
-/// Tree-AS trains through the shared CHAID learner. Linear-AS selection remains a GAP:
-/// `linearas_default` exports seven parameters including a redundant x4-square term;
-/// reusing ALM selects six, so equal predictions alone do not establish training parity.
+/// Analytic Engine Random Trees and LSVM score their saved PMML.
+/// Tree-AS trains through the shared CHAID learner; Linear-AS trains with its
+/// correlation/sweep selection (`linearas/lin_default`, `lin_factor`).
 const SCORING_ONLY: &[&str] = &[
     "neural_net",
     "kohonen",
@@ -109,7 +109,6 @@ const SCORING_ONLY: &[&str] = &[
     "auto_classifier",
     "auto_numeric",
     "random_trees",
-    "linear_as",
     "lsvm",
 ];
 
@@ -140,10 +139,6 @@ const TRAINING_GAPS: &[(&str, &str)] = &[
     (
         "spss.ts!ts_builder",
         "Time Series estimation is not reproduced: the saved smoothing parameters are the optimizer's stopping point (ts_simple alpha 0.9999889 on a series whose optimum is alpha = 1), which the 1e-9 comparison cannot meet without Modeler's optimizer",
-    ),
-    (
-        "spss.linearEngine!linearEngine",
-        "Linear-AS training selection is not reproduced: linearas_default oracle has 7 parameters (including x4 squared), the reused Linear learner selects 6",
     ),
     (
         "spss.linearSVM!linearSVM",
