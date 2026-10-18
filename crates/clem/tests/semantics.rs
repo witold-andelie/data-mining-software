@@ -95,6 +95,9 @@ fn null_propagation_and_comparisons() {
     assert_eq!(eval("undef = 1"), Datum::Bool(false));
     assert_eq!(eval("undef = undef"), Datum::Bool(true));
     assert_eq!(eval("undef /= undef"), Datum::Bool(false));
+    // `'$null$'` (no such field) is null like `undef` (`ibm-demos/bayes_bankloan`).
+    assert_eq!(eval("age = '$null$'"), Datum::Bool(false));
+    assert_eq!(eval("(undef + 1) = '$null$'"), Datum::Bool(true));
     assert_eq!(eval("age >= 40"), Datum::Bool(true));
     assert_eq!(eval("age /== 40"), Datum::Bool(false));
     assert_eq!(eval("'heart disease' = \"yes\""), Datum::Bool(true));
