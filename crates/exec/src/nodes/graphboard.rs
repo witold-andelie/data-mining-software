@@ -17,10 +17,15 @@
 //!   stays in the last bin. The centre is the midpoint of the two edges. Empty bins are left
 //!   out. System-missing values are their own first row (an empty bin cell and `count`).
 //!   Cells are Java doubles (`6.0`, `-6.916666666666666`). Header `{x}_bin`, `count`.
-//! - Pie (`pie_categories`): one row per `graphCategoriesField` value, first appearance, the
-//!   sum of non-missing `graphValuesField`. Header `{categories}`, `{values}_sum`. A blank
-//!   category is the cell `""` (`&quot;&quot;` in the VIZML). A group whose values are all
-//!   missing keeps the row and leaves the sum empty.
+//! - Pie (`pie_categories`) and bar (`bar_region_amount`): one row per `graphCategoriesField`
+//!   value, first appearance, the sum of non-missing `graphValuesField`. Header
+//!   `{categories}`, `{values}_sum`. A blank category is the cell `""` (`&quot;&quot;` in the
+//!   VIZML). A group whose values are all missing keeps the row and leaves the sum empty.
+//! - Pie and bar of counts (`piecounts_region`, `barcounts_region`): one row per
+//!   `graphCategoriesField` value, first appearance, the number of records (blank categories
+//!   included). Header `{categories}`, `count`. A bar of counts with `graphColorField`
+//!   (`bar_counts_color`) groups by (categories, color) pairs in first appearance; header
+//!   `{categories}`, `{color}`, `count`.
 //! - Line (`line_score_amount`) and area (`area_score_amount`): one row per `graphXField`
 //!   value, first appearance, the mean of non-missing `graphYField`. Header `{x}`, `{y}_mean`.
 //!   A blank numeric x is an empty cell (the blank score mean is `-0.625`).
@@ -48,8 +53,9 @@
 //! in ascending value) are not in the cases. A category with no present y is omitted. Maps,
 //! 3-D, animation, overlays, transparency, templates, an axis summary other than `MEAN`, and
 //! inputs larger than `graphLargeDatasetReadThreshold` (default 2000; Modeler then samples or
-//! bins) are rejected. So are graph types and field slots the cases do not use (bar, counts,
-//! pie on x/y, heatmap on x/y, shape, panel, data labels, summary field).
+//! bins) are rejected. So are graph types and field slots the cases do not use (pie or bar on
+//! x/y, colour on a summed bar or any pie, heatmap on x/y, shape, panel, data labels, summary
+//! field).
 //!
 //! `nodes::graph_data::BinSettings` is the Histogram node's binning and is not used here.
 
@@ -96,11 +102,10 @@ const ALWAYS_EMPTY: &[&str] = &[
 enum Kind {
     /// `{x}_bin` and `count`.
     Histogram { x: String },
-    /// Key columns, then `{value}_mean` or `{value}_sum`.
+    /// Key columns, then the summary column.
     Aggregate {
         keys: Vec<String>,
-        value: String,
-        mean: bool,
+        summary: Summary,
         label: &'static str,
     },
     /// One input row per output row, these columns.
@@ -110,6 +115,16 @@ enum Kind {
     },
     /// Scale field, then the category field.
     Box { category: String, scale: String },
+}
+
+/// What an aggregate graph shows per key.
+enum Summary {
+    /// `{value}_mean` of the non-missing values.
+    Mean(String),
+    /// `{value}_sum` of the non-missing values.
+    Sum(String),
+    /// `count` of the records.
+    Count,
 }
 
 struct Graphboard {
@@ -251,19 +266,37 @@ fn build_kind(graph_type: &str, slots: &mut Slots) -> Result<Kind, OperatorError
         "HISTOGRAM" => Kind::Histogram {
             x: require(&mut slots.x, "graphXField")?,
         },
-        "PIE" => {
+        "PIE" | "BAR" => {
+            let label = if graph_type.eq_ignore_ascii_case("PIE") {
+                "Pie"
+            } else {
+                "Bar"
+            };
             if (slots.categories.is_none() || slots.values.is_none())
                 && (slots.x.is_some() || slots.y.is_some())
             {
-                return Err(gap(
-                    "Graphboard pie on graphXField/graphYField is not supported (pie_categories uses graphCategoriesField and graphValuesField)",
-                ));
+                return Err(gap(&format!(
+                    "Graphboard {label} on graphXField/graphYField is not supported (pie_categories and bar_region_amount use graphCategoriesField and graphValuesField)"
+                )));
             }
             Kind::Aggregate {
                 keys: vec![require(&mut slots.categories, "graphCategoriesField")?],
-                value: require(&mut slots.values, "graphValuesField")?,
-                mean: false,
-                label: "Pie",
+                summary: Summary::Sum(require(&mut slots.values, "graphValuesField")?),
+                label,
+            }
+        }
+        "PIE_OF_COUNTS" => Kind::Aggregate {
+            keys: vec![require(&mut slots.categories, "graphCategoriesField")?],
+            summary: Summary::Count,
+            label: "PieCounts",
+        },
+        "BAR_OF_COUNTS" => {
+            let mut keys = vec![require(&mut slots.categories, "graphCategoriesField")?];
+            keys.extend(slots.color.take());
+            Kind::Aggregate {
+                keys,
+                summary: Summary::Count,
+                label: "BarCounts",
             }
         }
         "LINE" | "AREA" => {
@@ -274,8 +307,7 @@ fn build_kind(graph_type: &str, slots: &mut Slots) -> Result<Kind, OperatorError
             };
             Kind::Aggregate {
                 keys: vec![require(&mut slots.x, "graphXField")?],
-                value: require(&mut slots.y, "graphYField")?,
-                mean: true,
+                summary: Summary::Mean(require(&mut slots.y, "graphYField")?),
                 label,
             }
         }
@@ -292,8 +324,7 @@ fn build_kind(graph_type: &str, slots: &mut Slots) -> Result<Kind, OperatorError
                     require(&mut slots.columns, "graphColumnsField")?,
                     require(&mut slots.rows, "graphRowsField")?,
                 ],
-                value: require(&mut slots.color, "graphColorField")?,
-                mean: true,
+                summary: Summary::Mean(require(&mut slots.color, "graphColorField")?),
                 label: "Heatmap",
             }
         }
@@ -444,18 +475,24 @@ struct Accum {
 fn aggregate_table(
     input: &Table,
     keys: &[String],
-    value: &str,
-    mean: bool,
+    summary: &Summary,
 ) -> Result<DocumentTable, OperatorError> {
     let key_at = keys
         .iter()
         .map(|name| position(input, name))
         .collect::<Result<Vec<_>, _>>()?;
-    let value_at = position(input, value)?;
+    let value_at = match summary {
+        Summary::Mean(value) | Summary::Sum(value) => Some(position(input, value)?),
+        Summary::Count => None,
+    };
     let mut groups: Vec<Accum> = Vec::new();
     for row in input.rows() {
         let key_cells: Vec<String> = key_at.iter().map(|&at| cell_at(input, row, at)).collect();
-        let number = number_at(input, row, value_at);
+        // A count takes every record; a mean or sum its non-missing values.
+        let number = match value_at {
+            Some(at) => number_at(input, row, at),
+            None => Some(1.0),
+        };
         if let Some(group) = groups.iter_mut().find(|group| group.keys == key_cells) {
             if let Some(number) = number {
                 group.sum += number;
@@ -473,9 +510,12 @@ fn aggregate_table(
             });
         }
     }
-    let suffix = if mean { "mean" } else { "sum" };
     let mut header = keys.to_vec();
-    header.push(format!("{value}_{suffix}"));
+    header.push(match summary {
+        Summary::Mean(value) => format!("{value}_mean"),
+        Summary::Sum(value) => format!("{value}_sum"),
+        Summary::Count => "count".to_string(),
+    });
     let rows = groups
         .into_iter()
         .map(|group| {
@@ -484,7 +524,10 @@ fn aggregate_table(
                 String::new()
             } else {
                 let total = group.count as f64;
-                java_double(if mean { group.sum / total } else { group.sum })
+                java_double(match summary {
+                    Summary::Mean(_) => group.sum / total,
+                    Summary::Sum(_) | Summary::Count => group.sum,
+                })
             };
             cells.push(stat);
             cells
@@ -802,9 +845,7 @@ impl Operator for Graphboard {
         }
         let table = match &self.kind {
             Kind::Histogram { x } => histogram_table(input, x)?,
-            Kind::Aggregate {
-                keys, value, mean, ..
-            } => aggregate_table(input, keys, value, *mean)?,
+            Kind::Aggregate { keys, summary, .. } => aggregate_table(input, keys, summary)?,
             Kind::Raw { columns, .. } => raw_table(input, columns)?,
             Kind::Box { category, scale } => box_table(input, category, scale)?,
         };
@@ -905,7 +946,7 @@ mod tests {
             prop("graphYField", "amount"),
         ])));
         assert!(bar.contains("GAP:"), "{bar}");
-        assert!(bar.contains("BAR"), "{bar}");
+        assert!(bar.contains("graphXField"), "{bar}");
 
         let pie_axes = settings_error(super::build(&properties(vec![
             prop("graphType", "Pie"),
