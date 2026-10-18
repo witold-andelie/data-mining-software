@@ -63,6 +63,8 @@ fn eval_node(
     if !unknown_children.is_empty() {
         match tree.missing_value_strategy {
             MissingValueStrategy::LastPrediction => {
+                // Tree-AS (`models_as/treeas_*`) keeps this node's score AND id;
+                // `treeas_numeric` writes the id even for a continuous target.
                 return prediction_from_node(pmml, tree, node);
             }
             MissingValueStrategy::NullPrediction => {

@@ -71,6 +71,11 @@ use std::sync::Arc;
 enum Kind {
     /// Decision trees and rule sets: `$R-`, `$RC-`, `$RRP-`.
     Rule,
+    /// Analytic Engine Random Trees and Tree-AS (`models_as`).
+    RandomTrees,
+    TreeAs,
+    /// Analytic Engine linear SVM: `$L-`, `$LC-` (classification only).
+    LinearSvm,
     /// Logistic regression: `$L-`, `$LP-`, `$LRP-`, and `$LP-<category>` when enabled.
     Logistic,
     /// Linear (ALM) nugget: `$L-<target>` only.
@@ -129,6 +134,10 @@ pub fn build(node: &StreamNode) -> Result<Box<dyn Operator>, OperatorError> {
             Kind::Rule
         }
         "ApplyLogisticNode" => Kind::Logistic,
+        "spss.randomTrees!applyRandomTrees" => Kind::RandomTrees,
+        "spss.treeEngine!applyTree" => Kind::TreeAs,
+        "spss.linearEngine!applyLinearEngine" => Kind::Linear,
+        "spss.linearSVM!applyLinearSVM" => Kind::LinearSvm,
         "LinearRegressionModel!spss.alm-extension" | "ApplyLinearRegressionSplitModelNode" => {
             Kind::Linear
         }
@@ -149,6 +158,11 @@ pub fn build(node: &StreamNode) -> Result<Box<dyn Operator>, OperatorError> {
             )));
         }
     };
+    let analytic = matches!(kind, Kind::RandomTrees | Kind::TreeAs | Kind::LinearSvm)
+        || node.type_identifier() == "spss.linearEngine!applyLinearEngine";
+    if analytic {
+        validate_analytic_settings(s)?;
+    }
     if kind == Kind::DecisionList
         && (settings::flag(s, "calculateRawPropensities")?.unwrap_or(false)
             || settings::flag(s, "calculateAdjustedPropensities")?.unwrap_or(false))
@@ -217,7 +231,14 @@ pub fn build(node: &StreamNode) -> Result<Box<dyn Operator>, OperatorError> {
                     })
                     .map(|container| container.member.clone())
             }),
-        confidences: settings::flag(s, "calculateConfidences")?.unwrap_or(true),
+        confidences: settings::flag(s, if analytic { "_calculate_conf" } else { "calculateConfidences" })?.unwrap_or(true)
+            // `rt_noconf`, `rt_batch`: oracle runs the builder before exporting
+            // terminal inputs. Its replacement-linked nugget regains the default
+            // confidence field; detached copies retain `_calculate_conf=false`.
+            // Reproduce this schema while scoring the saved model (no training).
+            || (kind == Kind::RandomTrees
+                && settings::text(s, "refreshLinkState").as_deref() == Some("TurnOnReplaceLink")
+                && settings::text(s, "repalcebuilderNodeId").is_some_and(|id| !id.trim().is_empty())),
         raw_propensities: settings::flag(s, "calculateRawPropensities")?.unwrap_or(false),
         // `$LP-<category>`: the flag, or always for the binomial procedure
         // (`models/logreg_binomial` leaves `appendProbabilities` false and still writes them).
@@ -233,6 +254,7 @@ pub fn build(node: &StreamNode) -> Result<Box<dyn Operator>, OperatorError> {
             settings::flag(s, "displayProbabilityField")?.unwrap_or(true),
             settings::flag(s, "displayRuleIdField")?.unwrap_or(true),
         ),
+        tree_id: kind == Kind::TreeAs && settings::flag(s, "_display_rule_id")?.unwrap_or(true),
         cluster_label: kind == Kind::Kohonen
             && settings::flag(s, "appendClusterLabel")?.unwrap_or(true),
         model_name,
@@ -323,12 +345,43 @@ struct Apply {
     cluster_label: bool,
     /// Decision List: the probability and rule id fields.
     decision_fields: (bool, bool),
+    tree_id: bool,
     model_name: String,
     /// Extension properties attachment (`scoring.isPrediction`, ...). Neural Net only.
     properties: Option<String>,
     anomaly: Option<AnomalyOptions>,
     /// Apriori `associationMaxPredictions` (0 for other nuggets).
     max_predictions: usize,
+}
+
+/// `models_as`: native and the saved default (`false`) produce identical score fields.
+/// Propensity scoring has no successful oracle in these cases; never silently ignore it.
+fn validate_analytic_settings(
+    s: Option<&dms_strfmt::fastinfoset::Element>,
+) -> Result<(), OperatorError> {
+    for name in [
+        "calculateRawPropensities",
+        "calculateAdjustedPropensities",
+        "_calculateRawProp",
+    ] {
+        if settings::flag(s, name)
+            .map_err(|e| OperatorError::Settings(format!("GAP: AS {e:?}")))?
+            .unwrap_or(false)
+        {
+            return Err(OperatorError::Settings(format!(
+                "GAP: AS {name}=true has no scoring oracle"
+            )));
+        }
+    }
+    for name in ["_calculate_conf", "_display_rule_id"] {
+        settings::flag(s, name).map_err(|e| OperatorError::Settings(format!("GAP: AS {e:?}")))?;
+    }
+    match settings::text(s, "_GenerateSQL").as_deref().map(str::trim) {
+        None | Some("false" | "native") => Ok(()),
+        Some(other) => Err(OperatorError::Settings(format!(
+            "GAP: AS _GenerateSQL={other:?} has no scoring oracle"
+        ))),
+    }
 }
 
 /// A value of the nugget's `buildSettings/propertySetting` list (the build node's settings).
@@ -376,6 +429,21 @@ impl Apply {
                     "the model in {member} is not readable PMML: {error}"
                 ))
             })?
+        } else if dms_strfmt::zip_payload(bytes).is_ok() {
+            // `models_as/*`: the AS PMML container is a length-prefixed ZIP with
+            // `.meta` and `PMML.xml`. Reuse the bounded reader used by Time Series.
+            let members =
+                dms_strfmt::read_length_prefixed_zip(bytes, &dms_strfmt::ArchiveLimits::default())
+                    .map_err(|error| OperatorError::Data(format!("{member}: {error}")))?;
+            let pmml = members
+                .iter()
+                .find(|m| m.name == "PMML.xml")
+                .ok_or_else(|| {
+                    OperatorError::Data(format!("{member}: GAP: AS container has no PMML.xml"))
+                })?;
+            std::str::from_utf8(&pmml.bytes)
+                .map_err(|error| OperatorError::Data(format!("{member}/PMML.xml: {error}")))?
+                .to_string()
         } else {
             std::str::from_utf8(bytes)
                 .map_err(|_| {
@@ -747,6 +815,7 @@ impl Apply {
         let target = target_name(pmml)?;
         let (value_prefix, confidence_prefix, propensity_prefix) = match self.kind {
             Kind::Logistic | Kind::Linear => ("$L", "$LP", "$LRP"),
+            Kind::LinearSvm => ("$L", "$LC", "$LRP"),
             Kind::Regression => ("$E", "$EC", "$ERP"),
             Kind::Neural | Kind::Factor | Kind::Anomaly | Kind::DecisionList => {
                 return Err(OperatorError::Data(
@@ -754,14 +823,26 @@ impl Apply {
                         .into(),
                 ));
             }
-            Kind::Rule | Kind::KMeans | Kind::TwoStep | Kind::Kohonen => ("$R", "$RC", "$RRP"),
+            Kind::Rule
+            | Kind::RandomTrees
+            | Kind::TreeAs
+            | Kind::KMeans
+            | Kind::TwoStep
+            | Kind::Kohonen => ("$R", "$RC", "$RRP"),
             Kind::Apriori => {
                 return Err(OperatorError::Data(
                     "Apriori score fields are not built on this path".into(),
                 ));
             }
         };
-        let continuous_only = matches!(self.kind, Kind::Linear | Kind::Regression);
+        let continuous_only = matches!(self.kind, Kind::Linear | Kind::Regression)
+            || (matches!(
+                self.kind,
+                Kind::RandomTrees | Kind::TreeAs | Kind::LinearSvm
+            ) && pmml
+                .data_dictionary
+                .iter()
+                .any(|field| field.name == target && field.optype == dms_pmml::OpType::Continuous));
         // The first index whose prediction field is free.
         let index = (0..)
             .map(|n: usize| if n == 0 { String::new() } else { n.to_string() })
@@ -810,6 +891,21 @@ impl Apply {
                 predictions
                     .iter()
                     .map(|p| real(p.probabilities.get(1).map(|(_, probability)| *probability)))
+                    .collect(),
+            ));
+        }
+        if self.tree_id {
+            columns.push(column(
+                &format!("$RI{index}-{target}"),
+                Storage::Integer,
+                predictions
+                    .iter()
+                    .map(|p| {
+                        p.entity_id
+                            .as_deref()
+                            .and_then(|id| id.parse::<i64>().ok())
+                            .map_or(Value::Null, Value::Integer)
+                    })
                     .collect(),
             ));
         }

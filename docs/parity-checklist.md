@@ -5,7 +5,7 @@
 | Scope | Implemented | Total |
 |---|---|---|
 | MVP | 68 | 85 |
-| later | 0 | 23 |
+| later | 0 | 25 |
 | license blocked | 0 | 5 |
 | out of scope | 0 | 34 |
 
@@ -108,7 +108,9 @@
 | C&R Tree | `cart` | MVP | done | `BuildCartRuleNode`, `ApplyCartRuleNode`, `ApplyCartSplitModelNode`, `Cart!spss.tree-extension` |
 | CHAID | `chaid` | MVP | done | `BuildChaidRuleNode`, `ApplyChaidRuleNode`, `ApplyChaidSplitModelNode`, `Chaid!spss.tree-extension` |
 | QUEST | `quest` | MVP | missing | `BuildQuestNode`, `ApplyQuestRuleNode`, `ApplyQuestSplitModelNode`, `Quest!spss.tree-extension` |
-| Random Trees | `random_trees` | MVP | missing | (unmapped) |
+| Random Trees | `random_trees` | MVP | missing | `spss.randomTrees!RT`, `spss.randomTrees!applyRandomTrees` |
+| Tree-AS | `tree_as` | later | missing | `spss.treeEngine!treeEngine`, `spss.treeEngine!applyTree` |
+| Linear-AS | `linear_as` | later | missing | `spss.linearEngine!linearEngine`, `spss.linearEngine!applyLinearEngine` |
 | Decision List | `decision_list` | MVP | missing | `BuildDecisionListNode`, `ApplyDecisionListNode`, `ApplyDecisionListSplitModelNode` |
 | Linear | `linear` | MVP | done | `LinearRegression!spss.alm-extension`, `ApplyLinearRegressionSplitModelNode` |
 | Regression | `regression` | MVP | done | `BuildRegressionNode`, `ApplyRegressionNode` |
@@ -127,7 +129,7 @@
 | GLMM | `glmm` | later | missing | `GLMM!spss.glmm-extension` |
 | GLE | `gle` | later | missing | (unmapped) |
 | Cox | `cox` | later | missing | `spss.coxreg_id!buildcoxreg` |
-| LSVM | `lsvm` | later | missing | (unmapped) |
+| LSVM | `lsvm` | later | missing | `spss.linearSVM!linearSVM`, `spss.linearSVM!applyLinearSVM` |
 | Self-Learning Response Model | `slrm` | later | missing | `spss.selflearning!selflearning` |
 | Temporal Causal Model | `tcm` | later | missing | `tcm!pasw.timeseries-extension` |
 | Random Forest (Python) | `random_forest` | later | missing | `rf!spss.rf` |

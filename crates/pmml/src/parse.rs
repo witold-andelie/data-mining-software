@@ -456,6 +456,59 @@ pub(crate) fn parse_expr(node: roxmltree::Node<'_, '_>, depth: usize) -> Result<
                 map_missing_to,
             })
         }
+        "Discretize" => {
+            let mut bins = Vec::new();
+            for bin in node.children().filter(roxmltree::Node::is_element) {
+                if is_skipped_element(bin.tag_name().name()) {
+                    continue;
+                }
+                if bin.tag_name().name() != "DiscretizeBin" {
+                    return Err(PmmlError::Parse("unexpected Discretize child".into()));
+                }
+                let intervals: Vec<_> = bin
+                    .children()
+                    .filter(|n| n.has_tag_name("Interval"))
+                    .collect();
+                let [interval] = intervals.as_slice() else {
+                    return Err(PmmlError::Parse(
+                        "DiscretizeBin needs exactly one Interval".into(),
+                    ));
+                };
+                let (left_closed, right_closed) = match req_attr(*interval, "closure")? {
+                    "openOpen" => (false, false),
+                    "openClosed" => (false, true),
+                    "closedOpen" => (true, false),
+                    "closedClosed" => (true, true),
+                    other => {
+                        return Err(PmmlError::Parse(format!(
+                            "invalid Interval closure {other:?}"
+                        )));
+                    }
+                };
+                let left = opt_f64_attr(*interval, "leftMargin")?;
+                let right = opt_f64_attr(*interval, "rightMargin")?;
+                if let (Some(left), Some(right)) = (left, right)
+                    && left > right
+                {
+                    return Err(PmmlError::Parse(
+                        "Interval leftMargin exceeds rightMargin".into(),
+                    ));
+                }
+                bins.push(crate::DiscretizeBin {
+                    value: parse_value_str(req_attr(bin, "binValue")?),
+                    left,
+                    right,
+                    left_closed,
+                    right_closed,
+                });
+            }
+            Ok(Expr::Discretize {
+                field: req_attr(node, "field")?.to_string(),
+                bins,
+                default: node.attribute("defaultValue").map(parse_value_str),
+                map_missing_to: node.attribute("mapMissingTo").map(parse_value_str),
+            })
+        }
         "NormDiscrete" => {
             let field = req_attr(node, "field")?.to_string();
             let value = req_attr(node, "value")?.to_string();

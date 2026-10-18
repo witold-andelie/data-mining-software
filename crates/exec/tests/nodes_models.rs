@@ -65,6 +65,143 @@ fn nugget(class: &str, settings: Vec<Node>) -> StreamNode {
     }
 }
 
+fn analytic_nugget(extension: &str, kind: &str, settings: Vec<Node>) -> StreamNode {
+    let mut node = nugget("ExtensionApplyModelNode", settings);
+    node.extension = Some(dms_stream::Extension::Element {
+        extension_id: extension.into(),
+        element_id: kind.into(),
+    });
+    node
+}
+
+#[test]
+fn analytic_nuggets_reject_uncovered_settings() {
+    for (extension, kind) in [
+        ("spss.randomTrees", "applyRandomTrees"),
+        ("spss.treeEngine", "applyTree"),
+        ("spss.linearEngine", "applyLinearEngine"),
+        ("spss.linearSVM", "applyLinearSVM"),
+    ] {
+        for (name, value) in [
+            ("calculateRawPropensities", "true"),
+            ("calculateAdjustedPropensities", "true"),
+            ("_calculateRawProp", "true"),
+            ("_calculate_conf", "bogus"),
+            ("_display_rule_id", "bogus"),
+            ("_GenerateSQL", "udf"),
+        ] {
+            let node = analytic_nugget(extension, kind, vec![p(name, value)]);
+            let Err(dms_exec::OperatorError::Settings(message)) = apply::build(&node) else {
+                panic!("{extension}!{kind} must reject {name}={value}");
+            };
+            assert!(message.contains("GAP:"), "{message}");
+        }
+    }
+}
+
+#[test]
+fn analytic_confidence_flags_and_replacement_link_schema() {
+    // `rt_noconf`, `rt_batch`: a detached copy obeys false, the automatic
+    // replacement-linked nugget has the confidence column in the oracle export.
+    for (linked, confidence) in [(false, false), (true, true)] {
+        let mut props = settings(false);
+        props.push(p("_calculate_conf", "false"));
+        if linked {
+            props.push(p("refreshLinkState", "TurnOnReplaceLink"));
+            props.push(p("repalcebuilderNodeId", "builder"));
+        }
+        let node = analytic_nugget("spss.randomTrees", "applyRandomTrees", props);
+        let output = apply::build(&node)
+            .unwrap()
+            .run(&[Arc::new(input(false))], &context(&tree("40")))
+            .unwrap();
+        assert_eq!(output.model().position("$RC-risk").is_some(), confidence);
+    }
+    for enabled in [false, true] {
+        let mut props = settings(false);
+        props.push(p(
+            "_display_rule_id",
+            if enabled { "true" } else { "false" },
+        ));
+        let node = analytic_nugget("spss.treeEngine", "applyTree", props);
+        let output = apply::build(&node)
+            .unwrap()
+            .run(&[Arc::new(input(false))], &context(&tree("40")))
+            .unwrap();
+        assert_eq!(output.model().position("$RI-risk").is_some(), enabled);
+        if enabled {
+            assert_eq!(
+                column(&output, "$RI-risk"),
+                [Value::Integer(1), Value::Integer(2), Value::Null]
+            );
+        }
+    }
+}
+
+#[test]
+fn analytic_builders_are_scoring_only_and_fail_with_gap() {
+    for (id, extension, builder, applier) in [
+        ("random_trees", "spss.randomTrees", "RT", "applyRandomTrees"),
+        ("tree_as", "spss.treeEngine", "treeEngine", "applyTree"),
+        (
+            "linear_as",
+            "spss.linearEngine",
+            "linearEngine",
+            "applyLinearEngine",
+        ),
+        ("lsvm", "spss.linearSVM", "linearSVM", "applyLinearSVM"),
+    ] {
+        assert!(!dms_exec::registry::is_implemented(id));
+        let factory = dms_exec::registry::factory(id).unwrap();
+        let mut node = analytic_nugget(extension, builder, vec![]);
+        node.class = "com.spss.clementine.component.node.ExtensionBuildModelNode".into();
+        let Err(dms_exec::OperatorError::Settings(message)) = factory(&node) else {
+            panic!("{id} builder must fail");
+        };
+        assert!(message.starts_with("GAP:"));
+        assert!(factory(&analytic_nugget(extension, applier, vec![])).is_ok());
+    }
+}
+
+fn as_zip_pmml(member: &str, data: &[u8]) -> Vec<u8> {
+    // Stored local ZIP record, with the four-byte big-endian AS length prefix.
+    let mut zip = vec![0; 30];
+    zip[..4].copy_from_slice(b"PK\x03\x04");
+    zip[18..22].copy_from_slice(&(data.len() as u32).to_le_bytes());
+    zip[22..26].copy_from_slice(&(data.len() as u32).to_le_bytes());
+    zip[26..28].copy_from_slice(&(member.len() as u16).to_le_bytes());
+    zip.extend_from_slice(member.as_bytes());
+    zip.extend_from_slice(data);
+    let mut wrapped = (zip.len() as u32).to_be_bytes().to_vec();
+    wrapped.extend(zip);
+    wrapped
+}
+
+#[test]
+fn analytic_container_reads_pmml_xml_and_handles_corruption() {
+    let mut node = analytic_nugget("spss.treeEngine", "applyTree", vec![]);
+    node.containers.push(dms_stream::Container {
+        name: Some("PMML".into()),
+        member: "saved".into(),
+    });
+    let operator = apply::build(&node).unwrap();
+    let pmml = tree("40");
+    for (bytes, valid) in [
+        (as_zip_pmml("PMML.xml", pmml.as_bytes()), true),
+        (as_zip_pmml("other.xml", pmml.as_bytes()), false),
+        (as_zip_pmml("PMML.xml", b"broken XML"), false),
+        (as_zip_pmml("PMML.xml", &[0xff]), false),
+        (b"\0\0\0\x04PK\x03\x04".to_vec(), false),
+    ] {
+        let ctx = ExecContext {
+            attachments: Arc::new(HashMap::from([("saved".into(), Arc::from(bytes))])),
+            ..ExecContext::default()
+        };
+        let result = operator.run(&[Arc::new(input(false))], &ctx);
+        assert_eq!(result.is_ok(), valid, "{result:?}");
+    }
+}
+
 /// A one-split tree on `age` predicting the flag `risk` (N/Y).
 fn tree(threshold: &str) -> String {
     format!(

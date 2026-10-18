@@ -405,7 +405,7 @@ fn parse_replacement(rep: &str, data_field: Option<&DataField>) -> Value {
 
 fn score_mining(pmml: &Pmml, mining: &MiningModel, env: &Env<'_>) -> Result<Prediction, PmmlError> {
     match mining.method.as_str() {
-        "" | "selectFirst" | "c50ConfidenceVote" => {}
+        "" | "selectFirst" | "c50ConfidenceVote" | "majorityVote" | "average" => {}
         other => {
             return Err(PmmlError::Unsupported(format!(
                 "MiningModel multipleModelMethod {other:?}"
@@ -416,6 +416,8 @@ fn score_mining(pmml: &Pmml, mining: &MiningModel, env: &Env<'_>) -> Result<Pred
         .into_iter()
         .map(|c| (c.to_string(), 0.0))
         .collect();
+    let mut sum = 0.0;
+    let mut count = 0usize;
     for segment in &mining.segments {
         if !segment_matches(&segment.predicate, env)? {
             continue;
@@ -458,16 +460,40 @@ fn score_mining(pmml: &Pmml, mining: &MiningModel, env: &Env<'_>) -> Result<Pred
                 ))
             }
         }?;
-        if mining.method != "c50ConfidenceVote" {
+        if mining.method == "average" {
+            if let Value::Number(value) = prediction.value {
+                sum += value;
+                count = count.saturating_add(1);
+                if !sum.is_finite() {
+                    return Err(PmmlError::Score("non-finite MiningModel average".into()));
+                }
+            }
+            continue;
+        }
+        if !matches!(mining.method.as_str(), "c50ConfidenceVote" | "majorityVote") {
             return Ok(prediction);
         }
-        if let (Value::Text(class), Some(confidence)) = (prediction.value, prediction.confidence) {
+        // Random Trees (`rt_default`, `rt_shallow`): one vote per tree, independent
+        // of its leaf confidence; the winning fraction is `$RC-respond`.
+        let weight = if mining.method == "majorityVote" {
+            Some(1.0)
+        } else {
+            prediction.confidence
+        };
+        if let (Value::Text(class), Some(confidence)) = (prediction.value, weight) {
             if let Some((_, vote)) = votes.iter_mut().find(|(c, _)| c == &class) {
                 *vote += confidence;
             } else {
                 votes.push((class, confidence));
             }
         }
+    }
+    // `rt_numeric`, `rt_numeric_batch`: arithmetic mean of the saved tree scores.
+    if mining.method == "average" && count > 0 {
+        return Ok(Prediction {
+            value: Value::Number(sum / count as f64),
+            ..empty_prediction()
+        });
     }
     let total: f64 = votes.iter().map(|(_, v)| v).sum();
     if total > 0.0 && total.is_finite() {
@@ -683,6 +709,7 @@ fn collect_expr_fields<'a>(
         Expr::Constant(_) => {}
         Expr::FieldRef { field, .. }
         | Expr::NormContinuous { field, .. }
+        | Expr::Discretize { field, .. }
         | Expr::NormDiscrete { field, .. } => {
             if !params.contains(&field.as_str()) {
                 out.insert(field.as_str());
