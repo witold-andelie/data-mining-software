@@ -87,7 +87,15 @@ const PENDING: &[&str] = &[];
 /// Decision List: `ibm-demos/pm_decisionlist` scores a saved list; training has no oracle yet
 /// (`models_next` found no segments on 48 rows; `models_next2` probes more data).
 /// Sequence: the nugget scores its saved rules; training is a GAP (`nodes::sequence`).
-const SCORING_ONLY: &[&str] = &["neural_net", "kohonen", "decision_list", "sequence"];
+/// Time Series (`corpus/models_next/ts_arima.str`, `ts_expert.str`): the nugget scores the
+/// saved ARIMA; estimation (`spss.ts!ts_builder`) is a GAP.
+const SCORING_ONLY: &[&str] = &[
+    "neural_net",
+    "kohonen",
+    "decision_list",
+    "sequence",
+    "time_series",
+];
 
 pub fn factory(catalog_id: &str) -> Option<Factory> {
     BUILT_IN
@@ -114,6 +122,10 @@ fn model_node(node: &StreamNode) -> Result<Box<dyn Operator>, OperatorError> {
 fn nugget_or_builder(node: &StreamNode) -> Result<Box<dyn Operator>, OperatorError> {
     if is_nugget(node) {
         nodes::apply::build(node)
+    } else if node.type_identifier() == "spss.ts!ts_builder" {
+        Err(OperatorError::Settings(
+            "GAP: training Time Series (spss.ts!ts_builder) is not implemented; ARIMA/exponential-smoothing estimation is not reproduced".into(),
+        ))
     } else {
         Err(OperatorError::Settings(format!(
             "training {} is not implemented yet",
@@ -139,5 +151,6 @@ pub fn implemented() -> impl Iterator<Item = &'static str> {
 fn is_nugget(node: &StreamNode) -> bool {
     node.type_identifier().starts_with("Apply")
         || node.class.ends_with(".CFApplyModelNode")
+        || node.class.ends_with(".ExtensionApplyModelNode")
         || node.type_identifier() == "FeatureSelectionModelNode"
 }

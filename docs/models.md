@@ -25,6 +25,7 @@
 | K-Means | `$KM-<模型名>` |
 | TwoStep | `$T-<模型名>` |
 | Apriori | `$A-<模型名>-k` 后件、`$AC-<模型名>-k` 置信度、`$A-Rule_ID-k` 规则号（k = 1..=`associationMaxPredictions`，三个样例都是 3）。前件都在且后件不在篮里才命中；同一后件只留置信度最高的一条。事务数据写在每个连续 id 的最后一行（`apriori_transactional` 篮子 14） |
+| Time Series | `$FutureFlag`（0/1，插在周期字段后）；每个目标 `$TS-`、`$TSLCI-`、`$TSUCI-`（`ts_arima`、`ts_expert`）。训练是 GAP，模型块用流里保存的 ARIMA 评分 |
 
 同一流上串联多个同目标模型时，后加的带序号：`$R1-`、`$RC1-`、`$RRP1-`（`model_comparison`）。距离、概率等可选字段由模型块设置决定，逐个算法用 oracle 确认。
 

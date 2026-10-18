@@ -182,6 +182,53 @@ fn identifies_extension_nodes_containers_and_supernodes() {
 }
 
 #[test]
+fn reads_analytic_server_content_containers() {
+    // `ts_arima.str` ts_applier: nested content[@content], not containerData.
+    let diagram = el(
+        "diagram",
+        &[],
+        vec![el(
+            "nodes",
+            &[],
+            vec![node(
+                "0",
+                "uidTs",
+                "com.spss.clementine.component.node.ExtensionApplyModelNode",
+                &[
+                    ("extensionID", "spss.ts"),
+                    ("extensionElementID", "ts_applier"),
+                ],
+                vec![
+                    el(
+                        "modelBuildInfo",
+                        &[("modelBuilderId", "spss.ts!ts_builder")],
+                        vec![],
+                    ),
+                    el(
+                        "contentContainers",
+                        &[],
+                        vec![el(
+                            "containers",
+                            &[],
+                            vec![el(
+                                "container",
+                                &[("name", "PMML")],
+                                vec![el("content", &[("content", "data/0003.dat")], vec![])],
+                            )],
+                        )],
+                    ),
+                ],
+            )],
+        )],
+    );
+    let stream = Stream::from_document(&document(diagram)).unwrap();
+    let node = &stream.diagram.nodes[0];
+    assert_eq!(node.type_identifier(), "spss.ts!ts_applier");
+    assert_eq!(node.containers[0].name.as_deref(), Some("PMML"));
+    assert_eq!(node.containers[0].member, "data/0003.dat");
+}
+
+#[test]
 fn rejects_non_streams_and_duplicate_uids() {
     let other = Document {
         children: vec![el("PMML", &[], vec![])],

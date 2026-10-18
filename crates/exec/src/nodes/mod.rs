@@ -53,6 +53,7 @@ pub mod table;
 mod text_source;
 pub mod time_intervals;
 pub mod time_plot;
+pub mod time_series;
 pub mod transform;
 pub mod transpose;
 pub mod r#type;

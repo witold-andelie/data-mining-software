@@ -202,7 +202,7 @@ pub const NODES: &[NodeSpec] = &[
     n("pca_factor", "PCA/Factor", Modeling, Mvp, &["BuildPCANode", "ApplyPCANode"]),
     n("feature_selection", "Feature Selection", Modeling, Mvp, &["BuildFeatureSelectionNode", "ApplyFeatureSelectionNode", "FeatureSelectionModelNode"]),
     n("anomaly", "Anomaly", Modeling, Mvp, &["BuildAnomalyNode", "ApplyAnomalyNode"]),
-    n("time_series", "Time Series", Modeling, Mvp, &["BuildTimeSeriesNode", "ApplyTimeSeriesNode", "spss.ts!ts_builder"]),
+    n("time_series", "Time Series", Modeling, Mvp, &["BuildTimeSeriesNode", "ApplyTimeSeriesNode", "spss.ts!ts_builder", "spss.ts!ts_applier"]),
     n("pmml_model", "Imported PMML model", Modeling, Mvp, &["ApplyImportedNode"]),
     n("glmm", "GLMM", Modeling, Later, &["GLMM!spss.glmm-extension"]),
     n("gle", "GLE", Modeling, Later, &[]),

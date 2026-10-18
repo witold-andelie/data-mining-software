@@ -13,7 +13,9 @@
 | `<名称>.xml`（`data/` 之外唯一的 `.xml`） | 流文档，**Fast Infoset** 编码的 XML（见第 2 节）。新建流里叫 `clementineStream.xml`，旧文件用流名 |
 | `data/NNNN.dat` | 附件，由流文档中的 `container@containerData` 或 `node@properties` 引用 |
 
-附件类型（按首字节分类，`dms_strfmt::container::classify`）：纯文本 XML、Fast Infoset、ZIP、gzip、JSON、空文件、“4 字节大端长度 + XML/ZIP/JSON/HTML”的长度前缀格式，以及未识别的二进制（如以 `SCF\x01` 开头）。附件内容（PMML、StatXML、PSMData 等）暂不解析。
+附件类型（按首字节分类，`dms_strfmt::container::classify`）：纯文本 XML、Fast Infoset、ZIP、gzip、JSON、空文件、“4 字节大端长度 + XML/ZIP/JSON/HTML”的长度前缀格式，以及未识别的二进制（如以 `SCF\x01` 开头）。
+
+Time Series 模型块的 PMML 容器（`ts_arima.str` `data/0003.dat`）是长度前缀 ZIP：local extra 不是 ZIP extra 记录（Python `zipfile` 报 `Corrupt extra field`），flag bit 3 使用 data descriptor。`dms_strfmt::read_length_prefixed_zip` 只走 local header 并解 raw deflate。条目：`0.xml`/`1.xml`（每个目标一份 PMML `TimeSeriesModel`）、`datamodel.xml`、`TSDPOutput.json`、`.meta`。
 
 ## 2. 流文档的编码：Fast Infoset（已验证）
 
@@ -39,6 +41,8 @@ clementineStream[@version @date]          保存该文件的 Modeler 版本、�
           name, label, autoLabel          名称；setLabel 写 label 并把 autoLabel 置 false
           position/x, position/y          画布坐标
         container[@containerData]/containerName   附件引用及其类型（PMML、StatXML、PSMData）
+        contentContainers/containers/container[@name]/content[@content]
+                                                Analytic Server / Time Series（`spss.ts`）附件
         modelBuildInfo[@modelBuilderId]   模型块：建模节点的类型标识
         diagram                           超节点的内部图（结构同上，可嵌套）
       links/link[@srcId @dstId]
@@ -75,7 +79,7 @@ Python 脚本接口的属性名与文件中的元素名不同，映射要逐个�
 
 ## 7. 未解决的问题
 
-- 附件格式：PMML（标准）、StatXML、PSMData、`SCF\x01` 二进制、长度前缀格式各自的内容结构。
+- 附件格式：PMML（标准）、StatXML、PSMData、`SCF\x01` 二进制；长度前缀 ZIP（Time Series）已按 local header 读取。
 - 扩展节点 `@properties` 附件里的设置格式。
 - 元素在 `properties` 中的顺序是否稳定（目前读取不依赖顺序）。
 - 节点设置的完整映射表：需要按节点逐个探针（P2 的工作）。

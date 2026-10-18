@@ -22,6 +22,7 @@
 //! | TwoStep | `$T-<model name>`: the cluster name (`cluster-<n>`), by the log-likelihood distance; an integer with numeric labels (`buildSettings` `clusterLabelType` `NUMBER`) |
 //! | Apriori | `$A-<model>-k` consequent, `$AC-<model>-k` confidence, `$A-Rule_ID-k` rule id, for k = 1..=`associationMaxPredictions` (`apriori_default`: 3). A rule fires when every antecedent is present and, with `checkPredictions` `notInBasket`, the consequent is absent. `repeatPredictions` false keeps the best confidence per consequent. Transactional models (`usageType=group`) write the basket on the last row of each contiguous id (`apriori_transactional` basket 14) |
 //! | Neural Net | `$N-<target>` (`scoring.isPrediction`, default true). Categorical targets also `$NC-<target>` when `scoring.isConfidence` (default true): `onProbability` is the winning probability (`nn_default_a`), `onIncrease` is that minus the second (`nn_fixed_a` confidence-increase, row 10001 is 0.131866732354273). `$NP-<category>` in `DataField` order, the first `scoring.maxCategories` when `scoring.isProbabilityCategory` (`nn_fixed_a`: all three, or only `$NP-A` when the cap is 1; a missing cap emits all). Then `$RP-<target>` and `$AP-<target>` (`nn_partition`). Continuous targets emit none of those (`nn_regression`, `nn_rbf`). Targets follow `NeuralOutput` order (`nn_mixed_targets`: `$N-r,$N-y,$NC-y`). |
+//! | Time Series | `$FutureFlag` after the period field; per target `$TS-`, `$TSLCI-`, `$TSUCI-` (`ts_arima`, `ts_expert`). Training is a GAP; the nugget scores the saved ARIMA. |
 //!
 //! Neural score fields come from the nugget properties attachment (`Parameter` names above),
 //! not from scripting names. With no attachment the defaults are prediction, confidence,
@@ -115,6 +116,9 @@ pub fn build(node: &StreamNode) -> Result<Box<dyn Operator>, OperatorError> {
         "ApplyC5RuleNode" | "ApplyC5SplitModelNode"
     ) {
         return super::c50::apply(node);
+    }
+    if node.type_identifier() == "spss.ts!ts_applier" {
+        return super::time_series::apply(node);
     }
     let s = node.settings.as_ref();
     let kind = match node.type_identifier().as_str() {

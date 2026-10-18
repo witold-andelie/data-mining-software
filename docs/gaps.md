@@ -13,3 +13,4 @@
 9. **oracle 覆盖面**：超节点内部的节点；分析、数据审核、统计等输出节点本身的结果（目前只导出它们的输入数据）。
 10. **Apriori 仍拒绝的设置**（`apriori_default` / `apriori_thresholds` / `apriori_transactional` 的训练和评分已对齐）：非 `rule` 的评价度量、无前件规则、事件、`onlyTrueValues` 为假、非连续事务 id、重复预测、非 `notInBasket`、非 `confidence` 准则、`ignoreUnmatchedItems` 为假、`maxLengthSet` 不是 10、前件与后件集合不同。串联第二个模型块的 `$A1-` 没有样例。PMML 的 `Item` / `Itemset` 元素顺序未复现，比较按 id。
 10. **Auto Data Prep 其余步骤**（节点已能匹配 `adp_balanced` / `adp_rescale` / `adp_dates`）：监督合并、监督分箱、特征选择与构造、时间字段、最小-最大缩放、目标 Box-Cox。见 `crates/exec/src/nodes/auto_data_prep.rs` 的 `GAP:`。
+11. **Time Series 训练**（`spss.ts!ts_builder`）：ARIMA / 指数平滑估计不复现。模型块 `spss.ts!ts_applier` 已按保存的 ARIMA 评分（`ts_arima` none、`ts_expert` logarithmic）。指数平滑、季节项、传递函数、其它变换没有 oracle，评分时 `GAP:`。

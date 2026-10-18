@@ -1,5 +1,6 @@
 //! Distribution functions the tree algorithms test with: chi-squared and F p-values, and the
-//! Bonferroni multipliers of CHAID (Algorithms Guide, "CHAID Algorithms").
+//! Bonferroni multipliers of CHAID (Algorithms Guide, "CHAID Algorithms"). Time Series
+//! intervals use the Student t quantile (`ts_arima` df=32, `ts_expert` df=34).
 
 /// `ln Γ(x)` for `x > 0` (Lanczos approximation, about 15 significant digits).
 pub fn ln_gamma(x: f64) -> f64 {
@@ -213,12 +214,78 @@ pub fn bonferroni_ordinal_missing(c: usize, r: usize) -> f64 {
     (first + second).max(1.0)
 }
 
+/// Student t CDF for `t > 0`: `1 - ½ I_{ν/(ν+t²)}(ν/2, 1/2)`.
+pub fn student_t_cdf(t: f64, df: f64) -> f64 {
+    if !t.is_finite() || !df.is_finite() || df <= 0.0 {
+        return f64::NAN;
+    }
+    if t == 0.0 {
+        return 0.5;
+    }
+    if t < 0.0 {
+        return 1.0 - student_t_cdf(-t, df);
+    }
+    let x = df / (df + t * t);
+    1.0 - 0.5 * beta_i(df / 2.0, 0.5, x)
+}
+
+/// Upper Student t quantile `t_{p, ν}` (`ts_arima` t_{0.975,32} = 2.036933343460101).
+pub fn student_t_quantile(p: f64, df: f64) -> Option<f64> {
+    if !(p.is_finite() && df.is_finite()) || p <= 0.5 || p >= 1.0 || df <= 0.0 {
+        return None;
+    }
+    let mut lo = 0.0;
+    let mut hi = 1.0;
+    for _ in 0..64 {
+        let cdf = student_t_cdf(hi, df);
+        if cdf.is_nan() {
+            return None;
+        }
+        if cdf >= p {
+            break;
+        }
+        hi *= 2.0;
+        if hi > 1e12 {
+            return None;
+        }
+    }
+    for _ in 0..80 {
+        let mid = 0.5 * (lo + hi);
+        let cdf = student_t_cdf(mid, df);
+        if cdf.is_nan() {
+            return None;
+        }
+        if cdf >= p {
+            hi = mid;
+        } else {
+            lo = mid;
+        }
+    }
+    Some(0.5 * (lo + hi))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     fn close(a: f64, b: f64, relative: f64) -> bool {
         (a - b).abs() <= relative * a.abs().max(b.abs())
+    }
+
+    #[test]
+    fn student_t_quantile_matches_oracle_df() {
+        // R: qt(0.975, 32) and qt(0.975, 34); half-width of ts_arima t=2 uses df=32.
+        assert!(close(
+            student_t_quantile(0.975, 32.0).unwrap(),
+            2.036933343460101,
+            1e-12
+        ));
+        assert!(close(
+            student_t_quantile(0.975, 34.0).unwrap(),
+            2.0322445093177187,
+            1e-12
+        ));
+        assert!(student_t_quantile(0.5, 32.0).is_none());
     }
 
     #[test]

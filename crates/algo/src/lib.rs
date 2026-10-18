@@ -10,6 +10,7 @@
 pub mod adp;
 pub mod anomaly;
 pub mod apriori;
+pub mod arima;
 pub mod c50;
 pub mod c50_boost;
 pub mod c50_rules;
