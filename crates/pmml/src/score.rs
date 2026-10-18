@@ -130,6 +130,9 @@ impl<'p> Scorer<'p> {
             Model::Regression(reg) => crate::regression::score_regression(self.pmml, reg, &env),
             Model::Neural(network) => neural_prediction(self.pmml, network, &env),
             Model::Mining(mining) => score_mining(self.pmml, mining, &env),
+            Model::Association(_) => Err(PmmlError::Unsupported(
+                "AssociationModel is scored as a rule list, not one prediction".into(),
+            )),
             Model::Unsupported(name) => Err(PmmlError::Unsupported(name.clone())),
         }
     }
@@ -439,9 +442,11 @@ fn score_mining(pmml: &Pmml, mining: &MiningModel, env: &Env<'_>) -> Result<Pred
             Model::Unsupported(name) => Err(PmmlError::Unsupported(name.clone())),
             Model::Tree(tree) => crate::tree::score(pmml, tree, &inner_env),
             Model::RuleSet(rules) => crate::rules::score(pmml, rules, &inner_env),
-            Model::Neural(_) | Model::Mining(_) | Model::Clustering(_) => Err(
-                PmmlError::Unsupported("nested MiningModel segment type".into()),
-            ),
+            Model::Neural(_) | Model::Mining(_) | Model::Clustering(_) | Model::Association(_) => {
+                Err(PmmlError::Unsupported(
+                    "nested MiningModel segment type".into(),
+                ))
+            }
         }?;
         if mining.method != "c50ConfidenceVote" {
             return Ok(prediction);
@@ -516,6 +521,7 @@ pub(crate) fn model_header(model: &Model) -> Option<&ModelHeader> {
         Model::Regression(m) => Some(&m.header),
         Model::Neural(m) => Some(&m.header),
         Model::Mining(m) => Some(&m.header),
+        Model::Association(m) => Some(&m.header),
         Model::Unsupported(_) => None,
     }
 }
@@ -616,6 +622,13 @@ fn collect_model_fields<'a>(
                     }
                 }
                 out.extend(local);
+            }
+        }
+        Model::Association(model) => {
+            for field in &model.header.mining_schema {
+                if matches!(field.usage, Usage::Active | Usage::Group) {
+                    out.insert(field.name.as_str());
+                }
             }
         }
         Model::Unsupported(_) => {}

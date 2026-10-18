@@ -6,7 +6,7 @@
 
 | 数字 | 值 | 类型 |
 |---|---|---|
-| MVP 节点覆盖 | 0 / 100 | 实测（`cargo xtask parity`） |
+| MVP 节点覆盖 | 65 / 85 | 实测（`cargo xtask parity`，2026-10-18） |
 | 以后再做 / 不做 | 13 / 34 | 实测 |
 | `.str` 语料解码成功率 | 72 / 72（团队 7、IBM 示例 41、探针 24） | 实测（`cargo xtask test-corpus`） |
 | 语料用到的节点 | 团队 7 个流：31 种，全在 MVP 内；全部 48 个真实流：57 MVP、5 以后、9 不做，0 未映射 | 实测（`dms-cli coverage`） |
@@ -28,6 +28,7 @@
 
 ## 进度日志
 
+- 2026-10-18：PCA/Factor、Anomaly Detection（训练与打分）、Transform 输出、Apriori（表格与事务数据，规则与 oracle PMML 逐条一致）、Auto Data Prep（`misc_next` 三例）；Kohonen 仅打分。MVP 覆盖 65/85（许可证受阻的 5 个模型不计入）。
 - 2026-10-15：**P1 完成**。`.str` 流文档是 Fast Infoset（ITU-T X.891）编码的 XML；按公开规范实现解码器 `dms-strfmt`（不 panic、无递归、迭代式析构），流模型 `dms-stream`（节点、连线、超节点、两种扩展标识），`dms-cli xml/inspect/coverage`；差分探针 `cargo xtask probe`；格式规格 `docs/formats/str.md`。
 - 2026-10-15：`cargo xtask oracle` 打通：Modeler 本地批处理（`clemb`）无需 Server 许可、不弹界面；导出 PMML 和终端节点输入 CSV；跨机器数据路径按文件名重定位；druglearn 两次运行结果可复现（仅 PMML 时间戳不同）。
 - 2026-10-15：建立仓库骨架、工作区 lints、`xtask`（ci / layers / parity / corpus）、146 个节点的目录（MVP 100 个）、语料清单 49 个文件。

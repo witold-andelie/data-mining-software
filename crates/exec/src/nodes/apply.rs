@@ -20,6 +20,7 @@
 //! | Regression | `$E-<target>` prediction (`models/regression_enter`) |
 //! | K-Means | `$KM-<model name>`: `cluster-<cluster name>`; `$KMD-<model name>`: the Euclidean distance to that center, when the nugget's `buildSettings` set `generateDistanceField` |
 //! | TwoStep | `$T-<model name>`: the cluster name (`cluster-<n>`), by the log-likelihood distance; an integer with numeric labels (`buildSettings` `clusterLabelType` `NUMBER`) |
+//! | Apriori | `$A-<model>-k` consequent, `$AC-<model>-k` confidence, `$A-Rule_ID-k` rule id, for k = 1..=`associationMaxPredictions` (`apriori_default`: 3). A rule fires when every antecedent is present and, with `checkPredictions` `notInBasket`, the consequent is absent. `repeatPredictions` false keeps the best confidence per consequent. Transactional models (`usageType=group`) write the basket on the last row of each contiguous id (`apriori_transactional` basket 14) |
 //! | Neural Net | `$N-<target>` (`scoring.isPrediction`, default true). Categorical targets also `$NC-<target>` when `scoring.isConfidence` (default true): `onProbability` is the winning probability (`nn_default_a`), `onIncrease` is that minus the second (`nn_fixed_a` confidence-increase, row 10001 is 0.131866732354273). `$NP-<category>` in `DataField` order, the first `scoring.maxCategories` when `scoring.isProbabilityCategory` (`nn_fixed_a`: all three, or only `$NP-A` when the cap is 1; a missing cap emits all). Then `$RP-<target>` and `$AP-<target>` (`nn_partition`). Continuous targets emit none of those (`nn_regression`, `nn_rbf`). Targets follow `NeuralOutput` order (`nn_mixed_targets`: `$N-r,$N-y,$NC-y`). |
 //!
 //! Neural score fields come from the nugget properties attachment (`Parameter` names above),
@@ -58,10 +59,11 @@ use crate::output::NodeOutput;
 use crate::settings;
 use dms_pmml::{
     DataType, NeuralNetworkModel, NeuralOutputKind, NeuralTarget, Pmml, Prediction, Usage,
-    Value as PmmlValue,
+    Value as PmmlValue, score_rules,
 };
 use dms_stream::StreamNode;
 use dms_types::{Measurement, Storage, Table, Value};
+use std::collections::HashSet;
 use std::sync::Arc;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -90,6 +92,8 @@ enum Kind {
     /// with `appendClusterLabel`, `$KXY-<model name>` (its cluster name, `X=0, Y=2`;
     /// `models_next/kohonen_*`).
     Kohonen,
+    /// Apriori: `$A-`, `$AC-`, `$A-Rule_ID-`.
+    Apriori,
 }
 
 pub fn build(node: &StreamNode) -> Result<Box<dyn Operator>, OperatorError> {
@@ -117,6 +121,7 @@ pub fn build(node: &StreamNode) -> Result<Box<dyn Operator>, OperatorError> {
         "ApplyRegressionNode" => Kind::Regression,
         "ApplyKMeansNode" => Kind::KMeans,
         "ApplyTwoStepNode" => Kind::TwoStep,
+        "ApplyAprioriNode" => Kind::Apriori,
         "neuralnetmodel!spss.neuralnet-extension"
         | "ApplyNetNode"
         | "ApplyNeuralNetSplitModelNode" => Kind::Neural,
@@ -164,6 +169,11 @@ pub fn build(node: &StreamNode) -> Result<Box<dyn Operator>, OperatorError> {
     } else {
         None
     };
+    let max_predictions = if kind == Kind::Apriori {
+        apriori_predictions(s)?
+    } else {
+        0
+    };
     let model_name = settings::text(s, "modelName")
         .filter(|name| !name.trim().is_empty())
         .or_else(|| node.name.clone())
@@ -201,6 +211,7 @@ pub fn build(node: &StreamNode) -> Result<Box<dyn Operator>, OperatorError> {
         model_name,
         properties: node.properties_attachment.clone(),
         anomaly,
+        max_predictions,
     }))
 }
 
@@ -210,6 +221,63 @@ struct AnomalyOptions {
     cutoff: Option<f64>,
     /// `numAnomalyFields`: how many contributing fields each record reports.
     fields: usize,
+}
+
+/// `associationMaxPredictions` and the other Apriori nugget settings that change scores.
+/// Defaults are the values `apriori_default` stores: 3 predictions, no repeats, `notInBasket`,
+/// criterion confidence, unmatched items ignored, `maxLengthSet` 10.
+fn apriori_predictions(
+    s: Option<&dms_strfmt::fastinfoset::Element>,
+) -> Result<usize, OperatorError> {
+    let unsupported = |what: &str| {
+        OperatorError::Settings(format!(
+            "Apriori {what} is not supported yet (GAP: no oracle)"
+        ))
+    };
+    let count = settings::integer(s, "associationMaxPredictions")?.unwrap_or(3);
+    if !(1..=10_000).contains(&count) {
+        return Err(OperatorError::Settings(format!(
+            "Apriori associationMaxPredictions must be from 1 to 10000, found {count}"
+        )));
+    }
+    if settings::flag(s, "repeatPredictions")?.unwrap_or(false) {
+        return Err(unsupported("repeatPredictions"));
+    }
+    match settings::text(s, "checkPredictions")
+        .as_deref()
+        .map(str::trim)
+    {
+        None | Some("") | Some("notInBasket") => {}
+        Some(other) => {
+            return Err(OperatorError::Settings(format!(
+                "Apriori checkPredictions {other:?} is not supported yet (GAP: only notInBasket has an oracle)"
+            )));
+        }
+    }
+    match settings::text(s, "ruleCriteria").as_deref().map(str::trim) {
+        None | Some("") | Some("confidence") => {}
+        Some(other) => {
+            return Err(OperatorError::Settings(format!(
+                "Apriori ruleCriteria {other:?} is not supported yet (GAP: only confidence has an oracle)"
+            )));
+        }
+    }
+    if !settings::flag(s, "ignoreUnmatchedItems")?.unwrap_or(true) {
+        return Err(unsupported("ignoreUnmatchedItems false"));
+    }
+    match settings::integer(s, "maxLengthSet")? {
+        None | Some(10) => {}
+        Some(other) => {
+            return Err(OperatorError::Settings(format!(
+                "Apriori maxLengthSet {other} is not supported yet (GAP: the oracles use 10)"
+            )));
+        }
+    }
+    usize::try_from(count).map_err(|_| {
+        OperatorError::Settings(format!(
+            "Apriori associationMaxPredictions must be from 1 to 10000, found {count}"
+        ))
+    })
 }
 
 struct Apply {
@@ -230,6 +298,8 @@ struct Apply {
     /// Extension properties attachment (`scoring.isPrediction`, ...). Neural Net only.
     properties: Option<String>,
     anomaly: Option<AnomalyOptions>,
+    /// Apriori `associationMaxPredictions` (0 for other nuggets).
+    max_predictions: usize,
 }
 
 /// A value of the nugget's `buildSettings/propertySetting` list (the build node's settings).
@@ -289,6 +359,98 @@ impl Apply {
         Pmml::parse(&text).map_err(|error| OperatorError::Data(format!("{member}: {error}")))
     }
 
+    /// Apriori nugget columns. Tabular baskets are one row each (`apriori_default`).
+    /// Transactional baskets are contiguous id runs; only the last row carries the rules
+    /// (`apriori_transactional`, basket 14's `jam` row).
+    /// GAP: a second Apriori nugget on the same fields uses `$A1-` / `$AC1-` / `$A1-Rule_ID-`.
+    /// No oracle shows that index.
+    fn score_apriori(&self, input: &Table, pmml: &Pmml) -> Result<Table, OperatorError> {
+        let dms_pmml::Model::Association(model) = &pmml.model else {
+            return Err(OperatorError::Data(
+                "the nugget's model is not an AssociationModel".into(),
+            ));
+        };
+        let model_name = model
+            .header
+            .name
+            .clone()
+            .filter(|name| !name.is_empty())
+            .unwrap_or_else(|| self.model_name.clone());
+        let taken = |name: &str| input.model().position(name).is_some();
+        let index = (0..MAX_CATEGORY_FIELDS)
+            .map(|n| if n == 0 { String::new() } else { n.to_string() })
+            .find(|suffix| {
+                !taken(&format!("$A{suffix}-{model_name}-1"))
+                    && !taken(&format!("$AC{suffix}-{model_name}-1"))
+                    && !taken(&format!("$A{suffix}-Rule_ID-1"))
+            })
+            .ok_or_else(|| OperatorError::Data("no free $A- score field index".into()))?;
+        let group = model
+            .header
+            .mining_schema
+            .iter()
+            .find(|field| field.usage == Usage::Group);
+        let hits = if let Some(group) = group {
+            let id_at = input.model().position(&group.name).ok_or_else(|| {
+                OperatorError::Data(format!("Apriori needs transaction id {:?}", group.name))
+            })?;
+            let content = model
+                .header
+                .mining_schema
+                .iter()
+                .find(|field| field.usage == Usage::Active)
+                .ok_or_else(|| {
+                    OperatorError::Data("Apriori transactional model names no content field".into())
+                })?;
+            let content_at = input.model().position(&content.name).ok_or_else(|| {
+                OperatorError::Data(format!("Apriori needs content field {:?}", content.name))
+            })?;
+            transactional_hits(model, input, id_at, content_at, self.max_predictions)?
+        } else {
+            flag_hits(pmml, model, input, self.max_predictions)?
+        };
+        let mut columns = Vec::new();
+        for slot in 1..=self.max_predictions {
+            let prediction = hits
+                .iter()
+                .map(|row| match row.get(slot - 1) {
+                    Some(hit) => Value::string(hit.item.clone()),
+                    None => Value::Null,
+                })
+                .collect();
+            let confidence = hits
+                .iter()
+                .map(|row| match row.get(slot - 1) {
+                    Some(hit) => Value::real(hit.confidence),
+                    None => Value::Null,
+                })
+                .collect();
+            let rule_id = hits
+                .iter()
+                .map(|row| match row.get(slot - 1) {
+                    Some(hit) => Value::Integer(hit.rule_id),
+                    None => Value::Null,
+                })
+                .collect();
+            columns.push(column(
+                &format!("$A{index}-{model_name}-{slot}"),
+                Storage::String,
+                prediction,
+            ));
+            columns.push(column(
+                &format!("$AC{index}-{model_name}-{slot}"),
+                Storage::Real,
+                confidence,
+            ));
+            columns.push(column(
+                &format!("$A{index}-Rule_ID-{slot}"),
+                Storage::Integer,
+                rule_id,
+            ));
+        }
+        with_columns(input, columns)
+    }
+
     fn score(
         &self,
         inputs: &[Arc<Table>],
@@ -302,6 +464,9 @@ impl Apply {
             Some(model) => model,
             None => Arc::new(self.saved_model(context)?),
         };
+        if self.kind == Kind::Apriori {
+            return self.score_apriori(input, &pmml);
+        }
         let names: Vec<&str> = input
             .model()
             .fields()
@@ -499,6 +664,11 @@ impl Apply {
                 ));
             }
             Kind::Rule | Kind::KMeans | Kind::TwoStep | Kind::Kohonen => ("$R", "$RC", "$RRP"),
+            Kind::Apriori => {
+                return Err(OperatorError::Data(
+                    "Apriori score fields are not built on this path".into(),
+                ));
+            }
         };
         let continuous_only = matches!(self.kind, Kind::Linear | Kind::Regression);
         // The first index whose prediction field is free.
@@ -635,6 +805,126 @@ fn anomaly_columns(
     columns
 }
 
+fn flag_hits(
+    pmml: &Pmml,
+    model: &dms_pmml::AssociationModel,
+    input: &Table,
+    max_predictions: usize,
+) -> Result<Vec<Vec<dms_pmml::ScoredAssociation>>, OperatorError> {
+    let mut specs = Vec::new();
+    for field in model
+        .header
+        .mining_schema
+        .iter()
+        .filter(|field| field.usage == Usage::Active)
+    {
+        let position = input
+            .model()
+            .position(&field.name)
+            .ok_or_else(|| OperatorError::Data(format!("Apriori needs field {:?}", field.name)))?;
+        let true_value = pmml
+            .data_dictionary
+            .iter()
+            .find(|data| data.name == field.name)
+            .and_then(|data| data.flag_true_value.clone())
+            .ok_or_else(|| {
+                OperatorError::Data(format!(
+                    "Apriori field {:?} has no flag true value",
+                    field.name
+                ))
+            })?;
+        specs.push((position, field.name.clone(), true_value));
+    }
+    let mut rows = Vec::with_capacity(input.rows().len());
+    for row in input.rows() {
+        let mut present = HashSet::new();
+        for (position, name, true_value) in &specs {
+            if row
+                .get(*position)
+                .is_some_and(|value| value.to_string() == *true_value)
+            {
+                present.insert(name.clone());
+            }
+        }
+        rows.push(
+            score_rules(model, &present, max_predictions, false, true)
+                .map_err(|error| OperatorError::Data(format!("Apriori: {error}")))?,
+        );
+    }
+    Ok(rows)
+}
+
+fn transactional_hits(
+    model: &dms_pmml::AssociationModel,
+    input: &Table,
+    id_at: usize,
+    content_at: usize,
+    max_predictions: usize,
+) -> Result<Vec<Vec<dms_pmml::ScoredAssociation>>, OperatorError> {
+    let known: HashSet<&str> = model.items.iter().map(|item| item.value.as_str()).collect();
+    let mut out = vec![Vec::new(); input.rows().len()];
+    let mut start = 0;
+    while start < input.rows().len() {
+        let id = input
+            .rows()
+            .get(start)
+            .and_then(|row| row.get(id_at))
+            .cloned()
+            .unwrap_or(Value::Null);
+        if id == Value::Null {
+            return Err(OperatorError::Data(format!(
+                "Apriori transaction id is null at row {}",
+                start + 1
+            )));
+        }
+        let mut end = start.saturating_add(1);
+        while end < input.rows().len() {
+            let next = input
+                .rows()
+                .get(end)
+                .and_then(|row| row.get(id_at))
+                .cloned()
+                .unwrap_or(Value::Null);
+            if next == Value::Null {
+                return Err(OperatorError::Data(format!(
+                    "Apriori transaction id is null at row {}",
+                    end + 1
+                )));
+            }
+            if next != id {
+                break;
+            }
+            end = end.saturating_add(1);
+        }
+        let mut present = HashSet::new();
+        for row_index in start..end {
+            let Some(content) = input
+                .rows()
+                .get(row_index)
+                .and_then(|row| row.get(content_at))
+            else {
+                continue;
+            };
+            if *content == Value::Null {
+                continue;
+            }
+            let text = content.to_string();
+            // `ignoreUnmatchedItems` true (the oracle): values that are not model items are
+            // skipped. The nugget rejects the false setting.
+            if known.contains(text.as_str()) {
+                present.insert(text);
+            }
+        }
+        let scored = score_rules(model, &present, max_predictions, false, true)
+            .map_err(|error| OperatorError::Data(format!("Apriori: {error}")))?;
+        if let Some(slot) = out.get_mut(end.saturating_sub(1)) {
+            *slot = scored;
+        }
+        start = end;
+    }
+    Ok(out)
+}
+
 fn column(name: &str, storage: Storage, values: Vec<Value>) -> Column {
     let mut field = dms_types::Field::new(name, storage);
     field.measurement = match storage {
@@ -653,6 +943,11 @@ fn target_name(pmml: &Pmml) -> Result<String, OperatorError> {
         dms_pmml::Model::Neural(model) => &model.header,
         dms_pmml::Model::Clustering(model) => &model.header,
         dms_pmml::Model::Mining(model) => &model.header,
+        dms_pmml::Model::Association(_) => {
+            return Err(OperatorError::Data(
+                "an association model has no single target".into(),
+            ));
+        }
         dms_pmml::Model::Unsupported(element) => {
             return Err(OperatorError::Data(format!(
                 "model {element} cannot be scored yet"

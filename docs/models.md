@@ -24,6 +24,7 @@
 | Linear | `$L-` |
 | K-Means | `$KM-<模型名>` |
 | TwoStep | `$T-<模型名>` |
+| Apriori | `$A-<模型名>-k` 后件、`$AC-<模型名>-k` 置信度、`$A-Rule_ID-k` 规则号（k = 1..=`associationMaxPredictions`，三个样例都是 3）。前件都在且后件不在篮里才命中；同一后件只留置信度最高的一条。事务数据写在每个连续 id 的最后一行（`apriori_transactional` 篮子 14） |
 
 同一流上串联多个同目标模型时，后加的带序号：`$R1-`、`$RC1-`、`$RRP1-`（`model_comparison`）。距离、概率等可选字段由模型块设置决定，逐个算法用 oracle 确认。
 
@@ -31,8 +32,8 @@
 
 | crate | 层 | 内容 |
 |---|---|---|
-| `dms-pmml` | L0（无工作区依赖） | PMML 4.3 读写；模型中间表示（`DataDictionary`、`MiningSchema`、`LocalTransformations` 和各模型元素）；**评分**：`TreeModel`、`GeneralRegressionModel`、`RegressionModel`、`ClusteringModel`、`NeuralNetwork`，之后 `NaiveBayesModel`、`RuleSetModel`、`SupportVectorMachineModel`、`NearestNeighborModel`、`MiningModel`（集成）。自带一个小的值类型，不依赖 `dms-types`。 |
-| `dms-algo` | L2 | 训练算法：CART、CHAID、K-Means、Logistic、Linear、TwoStep、C5.0、神经网络……输出 `dms-pmml` 的模型表示。公式依据 IBM 公开的 Algorithms Guide。线性代数用 `faer`（计划已定）。 |
+| `dms-pmml` | L0（无工作区依赖） | PMML 4.3 读写；模型中间表示（`DataDictionary`、`MiningSchema`、`LocalTransformations` 和各模型元素）；**评分**：`TreeModel`、`GeneralRegressionModel`、`RegressionModel`、`ClusteringModel`、`NeuralNetwork`、`AssociationModel`（规则列表，不是单值 `Prediction`），之后 `NaiveBayesModel`、`RuleSetModel`、`SupportVectorMachineModel`、`NearestNeighborModel`、`MiningModel`（集成）。自带一个小的值类型，不依赖 `dms-types`。 |
+| `dms-algo` | L2 | 训练算法：CART、CHAID、K-Means、Logistic、Linear、TwoStep、C5.0、Apriori、神经网络……输出 `dms-pmml` 的模型表示。公式依据 IBM 公开的 Algorithms Guide。线性代数用 `faer`（计划已定）。 |
 | `dms-exec` | L3 | 建模节点（训练）和模型块节点（评分）。 |
 
 模型的内部表示直接采用 PMML 的结构：训练结果天然可以导出成 PMML，也可以和 oracle 导出的 PMML 逐项比较；读入的模型和自己训练的模型走同一条评分路径。
@@ -65,3 +66,4 @@
 - 各模型块的可选评分字段（概率、距离、所有类别的概率）及其开关。
 - `Parameters` 扩展 XML 是否包含评分需要、而 PMML 里没有的信息。
 - 私有格式（`SCF\x01`）的模型块：只能重新训练；如果建模节点不在流里（只有模型块），这类流无法运行，需要提示用户在 Modeler 里把模型导出为 PMML。
+- Apriori 已与 `apriori_default`、`apriori_thresholds`、`apriori_transactional` 对齐（规则、支持度、置信度、提升度、评分列）。仍拒绝、没有标准答案的设置：`evaluationMeasure` 不是 `rule`、`rulesWithoutAntecdents`、事件、`onlyTrueValues` 为假、非连续事务 id、`repeatPredictions`、`checkPredictions` 不是 `notInBasket`、`ruleCriteria` 不是 `confidence`、`ignoreUnmatchedItems` 为假、`maxLengthSet` 不是 10、前件集合与后件集合不同。串联第二个模型块的 `$A1-` 下标没有样例。Modeler 的 `Item` / `Itemset` 元素顺序不是 id 顺序，导出按 id 比较，不按文件中的元素顺序。

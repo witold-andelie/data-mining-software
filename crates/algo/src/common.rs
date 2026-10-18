@@ -111,6 +111,7 @@ pub fn mining_field(table: &Table, position: usize, usage: Usage) -> Option<Mini
         low_value: None,
         high_value: None,
         invalid_treatment: InvalidTreatment::AsIs,
+        direction: None,
     })
 }
 

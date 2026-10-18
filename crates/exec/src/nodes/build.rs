@@ -52,6 +52,7 @@ use crate::output::NodeOutput;
 use crate::settings;
 use dms_algo::Dataset;
 use dms_algo::anomaly::{self, AnomalyCutoff, AnomalySettings};
+use dms_algo::apriori::{self, AprioriSettings};
 use dms_algo::cart::{self, CartSettings, Impurity, MinSize};
 use dms_algo::chaid::{self, ChaidSettings, ChiSquare, Method};
 use dms_algo::factor::{self, FactorCount, FactorSettings};
@@ -77,6 +78,7 @@ pub fn build(node: &StreamNode) -> Result<Box<dyn Operator>, OperatorError> {
         "Cart!spss.tree-extension" => Algorithm::Cart,
         "Chaid!spss.tree-extension" => Algorithm::Chaid,
         "BuildKMeansNode" => Algorithm::KMeans(kmeans_settings(node)?),
+        "BuildAprioriNode" => Algorithm::Apriori(apriori_settings(node)?),
         "BuildTwoStepNode" => Algorithm::TwoStep(twostep_settings(node)?),
         "BuildLogisticNode" => Algorithm::Logistic(logistic_settings(node)?),
         "LinearRegression!spss.alm-extension" => Algorithm::Linear,
@@ -120,6 +122,8 @@ enum Algorithm {
     Factor((FactorSettings, Option<Vec<String>>)),
     /// Anomaly Detection settings and the custom input fields (`None`: the Type roles).
     Anomaly((AnomalySettings, Option<Vec<String>>)),
+    /// Apriori association rules (`BuildAprioriNode`).
+    Apriori(AprioriSettings),
 }
 
 type RegressionSpec = (LinearSettings, Option<String>, Option<Vec<String>>);
@@ -154,6 +158,10 @@ impl Operator for Build {
             .first()
             .ok_or_else(|| OperatorError::Inputs("a build node needs one input".into()))?;
         let table = self.training_records(input)?;
+        if let Algorithm::Apriori(settings) = &self.algorithm {
+            let pmml = apriori::train(&table, settings).map_err(apriori_error)?;
+            return Ok(NodeOutput::Model(Arc::new(pmml)));
+        }
         if let Algorithm::KMeans((settings, custom)) = &self.algorithm {
             let fields = cluster_inputs(&table, custom.as_deref())?;
             let pmml = kmeans::train(&table, &fields, settings)
@@ -227,7 +235,8 @@ impl Operator for Build {
             | Algorithm::Logistic(_)
             | Algorithm::Regression(_)
             | Algorithm::Factor(_)
-            | Algorithm::Anomaly(_) => {
+            | Algorithm::Anomaly(_)
+            | Algorithm::Apriori(_) => {
                 return Err(OperatorError::Settings("clustering has no target".into()));
             }
         };
@@ -394,6 +403,123 @@ impl Build {
         DataModel::new(model.fields().to_vec())
             .and_then(|model| Table::new(model, rows))
             .map_err(|error| OperatorError::Data(format!("training records: {error}")))
+    }
+}
+
+/// Apriori settings from the node's XML (`apriori_default`, `apriori_thresholds`,
+/// `apriori_transactional`).
+///
+/// `evaluationBound` is stored even when `evaluationMeasure` is `rule`; rule confidence does
+/// not use it. `expertMode` with `rule` trains the same rules as simple mode.
+/// GAP: no oracle has `expertMode` true.
+/// `optimization` `speed` and `memory` produce the same rules (`apriori_default` is `speed`).
+fn apriori_settings(node: &StreamNode) -> Result<AprioriSettings, OperatorError> {
+    let s = node.settings.as_ref();
+    let unsupported = |what: &str| {
+        OperatorError::Settings(format!(
+            "Apriori {what} is not supported yet (GAP: no oracle)"
+        ))
+    };
+    match settings::text(s, "evaluationMeasure")
+        .as_deref()
+        .map(str::trim)
+    {
+        None | Some("") | Some("rule") => {}
+        Some(other) => {
+            return Err(OperatorError::Settings(format!(
+                "Apriori evaluationMeasure {other:?} is not supported yet (GAP: only rule confidence has an oracle)"
+            )));
+        }
+    }
+    if settings::flag(s, "rulesWithoutAntecdents")?.unwrap_or(false) {
+        return Err(unsupported("rulesWithoutAntecdents"));
+    }
+    if settings::flag(s, "useEvents")?.unwrap_or(false)
+        || !settings::children(s, "eventFields", "field").is_empty()
+    {
+        return Err(unsupported("useEvents"));
+    }
+    match settings::text(s, "optimization").as_deref().map(str::trim) {
+        None | Some("") | Some("speed") | Some("memory") => {}
+        Some(other) => {
+            return Err(OperatorError::Settings(format!(
+                "Apriori optimization {other:?} is not speed or memory"
+            )));
+        }
+    }
+    let transactional = settings::flag(s, "transactionalData")?.unwrap_or(false);
+    let only_true = settings::flag(s, "onlyTrueValues")?.unwrap_or(true);
+    if !transactional && !only_true {
+        return Err(unsupported("onlyTrueValues false"));
+    }
+    let contiguous = settings::flag(s, "contiguousID")?.unwrap_or(false);
+    if transactional && !contiguous {
+        return Err(unsupported("contiguousID false"));
+    }
+    let support = settings::real(s, "minRuleSupport")?.unwrap_or(10.0);
+    let confidence = settings::real(s, "minRuleConfidence")?.unwrap_or(80.0);
+    if !support.is_finite() || !(0.0..=100.0).contains(&support) {
+        return Err(OperatorError::Settings(format!(
+            "Apriori minRuleSupport must be from 0 to 100, found {support}"
+        )));
+    }
+    if !confidence.is_finite() || !(1.0e-4..=100.0).contains(&confidence) {
+        return Err(OperatorError::Settings(format!(
+            "Apriori minRuleConfidence must be from 0.0001 to 100, found {confidence}"
+        )));
+    }
+    let max_antecedents = settings::integer(s, "maxRuleAntecedents")?.unwrap_or(5);
+    if !(1..=32).contains(&max_antecedents) {
+        return Err(OperatorError::Settings(format!(
+            "Apriori maxRuleAntecedents must be from 1 to 32, found {max_antecedents}"
+        )));
+    }
+    let listed = |path: &str| -> Vec<String> {
+        settings::children(s, path, "field")
+            .into_iter()
+            .map(|field| field.text().trim().to_string())
+            .filter(|name| !name.is_empty())
+            .collect()
+    };
+    let auto_name = settings::flag(s, "autoModelName")?.unwrap_or(true);
+    let model_name = if auto_name {
+        // GAP: Modeler's generated name is not in these oracles. They set autoModelName false.
+        settings::text(s, "modelName")
+            .filter(|name| !name.trim().is_empty())
+            .or_else(|| node.name.clone())
+            .unwrap_or_else(|| "Apriori".to_string())
+    } else {
+        settings::text(s, "modelName")
+            .filter(|name| !name.trim().is_empty())
+            .ok_or_else(|| OperatorError::Settings("Apriori modelName is empty".into()))?
+    };
+    let max_antecedents = u32::try_from(max_antecedents).map_err(|_| {
+        OperatorError::Settings(format!(
+            "Apriori maxRuleAntecedents must be from 1 to 32, found {max_antecedents}"
+        ))
+    })?;
+    Ok(AprioriSettings {
+        min_support_percent: support,
+        min_confidence_percent: confidence,
+        max_antecedents,
+        only_true_values: only_true,
+        transactional,
+        contiguous,
+        id_field: settings::text(s, "idField").filter(|name| !name.trim().is_empty()),
+        content_field: settings::text(s, "contentField").filter(|name| !name.trim().is_empty()),
+        auto_fields: settings::flag(s, "autoModelFieldSelection")?.unwrap_or(true),
+        antecedents: listed("modelInputFieldSelection"),
+        consequents: listed("modelTargetFieldSelection"),
+        model_name,
+    })
+}
+
+fn apriori_error(error: dms_algo::AlgoError) -> OperatorError {
+    match error {
+        dms_algo::AlgoError::Settings(message) | dms_algo::AlgoError::Unsupported(message) => {
+            OperatorError::Settings(format!("Apriori: {message}"))
+        }
+        dms_algo::AlgoError::Data(message) => OperatorError::Data(format!("Apriori: {message}")),
     }
 }
 
