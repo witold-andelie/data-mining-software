@@ -142,12 +142,6 @@ fn analytic_confidence_flags_and_replacement_link_schema() {
 fn analytic_builders_are_scoring_only_and_fail_with_gap() {
     for (id, extension, builder, applier) in [
         ("random_trees", "spss.randomTrees", "RT", "applyRandomTrees"),
-        (
-            "linear_as",
-            "spss.linearEngine",
-            "linearEngine",
-            "applyLinearEngine",
-        ),
         ("lsvm", "spss.linearSVM", "linearSVM", "applyLinearSVM"),
     ] {
         assert!(!dms_exec::registry::is_implemented(id));

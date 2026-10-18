@@ -23,6 +23,7 @@ pub mod factor;
 pub mod feature_selection;
 pub mod kmeans;
 pub mod linear;
+pub mod linear_as;
 pub mod logistic;
 pub mod smooth;
 pub mod stats;

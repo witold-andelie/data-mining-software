@@ -11,6 +11,8 @@
 //! Tree-AS (`spss.treeEngine!treeEngine`) uses inline `_...` settings, Type roles,
 //! five-bin preprocessing and the shared CHAID learner (`analytic_build`, `tree_as`).
 //! Unverified AS settings and partition/split data are explicit GAPs.
+//! Linear-AS uses its saved custom fields and the correlation/sweep learner in
+//! `dms_algo::linear_as`, independently of the Linear node.
 //!
 //! K-Means (`BuildKMeansNode`) keeps its settings in the node's XML (`docs/formats/nodes/kmeans.md`):
 //! `numClusters`; with `expertMode` the `encodingValueForSets` and, when `stoppingCondition` is
@@ -83,6 +85,9 @@ pub fn build(node: &StreamNode) -> Result<Box<dyn Operator>, OperatorError> {
         "Cart!spss.tree-extension" => Algorithm::Cart,
         "Chaid!spss.tree-extension" => Algorithm::Chaid,
         "spss.treeEngine!treeEngine" => Algorithm::TreeAs(super::analytic_build::tree(node)?),
+        "spss.linearEngine!linearEngine" => {
+            Algorithm::LinearAs(super::analytic_build::linear(node)?)
+        }
         "BuildKMeansNode" => Algorithm::KMeans(kmeans_settings(node)?),
         "BuildAprioriNode" => Algorithm::Apriori(apriori_settings(node)?),
         "BuildCarmaNode" => Algorithm::Carma(carma_settings(node)?),
@@ -99,7 +104,7 @@ pub fn build(node: &StreamNode) -> Result<Box<dyn Operator>, OperatorError> {
             )));
         }
     };
-    if !matches!(algorithm, Algorithm::TreeAs(_))
+    if !matches!(algorithm, Algorithm::TreeAs(_) | Algorithm::LinearAs(_))
         && (settings::flag(s, "useFrequency")?.unwrap_or(false)
             || settings::flag(s, "useWeight")?.unwrap_or(false))
     {
@@ -119,6 +124,7 @@ enum Algorithm {
     Cart,
     Chaid,
     TreeAs(ChaidSettings),
+    LinearAs((String, Vec<String>)),
     /// The settings, and the custom input fields (`None`: the Type roles).
     KMeans((KMeansSettings, Option<Vec<String>>)),
     TwoStep((TwoStepSettings, Option<Vec<String>>)),
@@ -171,7 +177,34 @@ impl Operator for Build {
         let input = inputs
             .first()
             .ok_or_else(|| OperatorError::Inputs("a build node needs one input".into()))?;
+        if matches!(self.algorithm, Algorithm::LinearAs(_))
+            && input
+                .model()
+                .fields()
+                .iter()
+                .any(|f| matches!(f.role, Role::Split | Role::Frequency | Role::Partition))
+        {
+            return Err(OperatorError::Settings(
+                "GAP: Linear-AS split/weight/partition fields".into(),
+            ));
+        }
         let table = self.training_records(input)?;
+        if let Algorithm::LinearAs((target, inputs)) = &self.algorithm {
+            let (target, fields) = supervised_fields(&table, Some(target), Some(inputs))?;
+            let model = dms_algo::linear_as::train(&Dataset {
+                table: &table,
+                target,
+                inputs: &fields,
+                frequency: None,
+            })
+            .map_err(|error| match error {
+                dms_algo::AlgoError::Unsupported(_) | dms_algo::AlgoError::Settings(_) => {
+                    OperatorError::Settings(format!("GAP: {error}"))
+                }
+                _ => OperatorError::Data(error.to_string()),
+            })?;
+            return Ok(NodeOutput::Model(Arc::new(model.pmml)));
+        }
         if let Algorithm::DecisionList((settings, target, inputs)) = &self.algorithm {
             let (target, fields) = supervised_fields(&table, target.as_deref(), inputs.as_deref())?;
             let pmml = decision_list::train(
@@ -296,6 +329,7 @@ impl Operator for Build {
                 .map_err(|error| OperatorError::Data(format!("Linear: {error}")))?,
             Algorithm::KMeans(_)
             | Algorithm::TreeAs(_)
+            | Algorithm::LinearAs(_)
             | Algorithm::TwoStep(_)
             | Algorithm::Logistic(_)
             | Algorithm::Regression(_)
