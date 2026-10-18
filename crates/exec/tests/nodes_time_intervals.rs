@@ -47,6 +47,7 @@ fn node(properties: Vec<Node>) -> StreamNode {
         containers: vec![],
         settings: Some(properties),
         binning_output: None,
+        result_items: Vec::new(),
         subdiagram: None,
     }
 }

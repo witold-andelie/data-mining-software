@@ -108,6 +108,9 @@ pub fn build(node: &StreamNode) -> Result<Box<dyn Operator>, OperatorError> {
     ) {
         return super::feature_selection::apply(node);
     }
+    if node.type_identifier() == "ApplyAutoClusterNode" {
+        return super::auto_cluster::apply(node);
+    }
     if node.type_identifier() == "ApplySequenceNode" {
         return super::sequence::apply(node);
     }

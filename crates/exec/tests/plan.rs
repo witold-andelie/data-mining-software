@@ -28,6 +28,7 @@ fn node(uid: &str, class: &str) -> StreamNode {
         containers: Vec::new(),
         settings: None,
         binning_output: None,
+        result_items: Vec::new(),
         subdiagram: None,
     }
 }

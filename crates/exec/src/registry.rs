@@ -86,6 +86,8 @@ const PENDING: &[&str] = &[];
 /// drawn with an unknown generator (`randomSeed`), so it is a GAP.
 /// Decision List: `ibm-demos/pm_decisionlist` scores a saved list; training has no oracle yet
 /// (`models_next` found no segments on 48 rows; `models_next2` probes more data).
+/// Auto Cluster: the nugget scores its saved component model (`nodes::auto_cluster`);
+/// training (`BuildAutoClusteringModelNode`) is not implemented.
 /// Sequence: the nugget scores its saved rules; training is a GAP (`nodes::sequence`).
 /// Time Series (`corpus/models_next/ts_arima.str`, `ts_expert.str`): the nugget scores the
 /// saved ARIMA; estimation (`spss.ts!ts_builder`) is a GAP.
@@ -95,6 +97,7 @@ const SCORING_ONLY: &[&str] = &[
     "decision_list",
     "sequence",
     "time_series",
+    "auto_cluster",
 ];
 
 pub fn factory(catalog_id: &str) -> Option<Factory> {
