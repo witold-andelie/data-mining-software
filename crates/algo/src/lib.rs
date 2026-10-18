@@ -13,6 +13,7 @@ pub mod apriori;
 pub mod c50;
 pub mod c50_boost;
 pub mod c50_rules;
+pub mod carma;
 pub mod cart;
 pub mod chaid;
 mod common;

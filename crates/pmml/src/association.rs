@@ -2,12 +2,16 @@
 //! [`score_rules`] returns every rule whose antecedent items are in the basket.
 //!
 //! With `consequent_absent` (nugget `checkPredictions` `notInBasket`, `apriori_default`) the
-//! consequent must be absent. `allow_repeats` false keeps one rule per consequent: higher
-//! confidence, then the lower rule id (`apriori_default` row 14 keeps rule 2, jam ⇒ butter,
-//! over rule 4). Remaining hits are ordered by confidence descending, then rule id ascending
-//! (`apriori_thresholds` rows 9–10 keep rule 5 over rule 4).
+//! consequent must be absent. Hits are ordered by confidence descending, then rule id ascending
+//! (`apriori_thresholds` rows 9–10 keep rule 5 over rule 4). With `allow_repeats` false a hit
+//! whose consequent items were all predicted by earlier hits is skipped: one rule per single
+//! consequent (`apriori_default` row 14 keeps rule 2, jam ⇒ butter, over rule 4), and
+//! `jam & butter` after `butter` and `jam` (`carma_default` grid row 2).
 //!
-//! GAP: a consequent itemset with more than one item is an error. No oracle has one.
+//! A consequent of several items (CARMA, `carma_default` rules 11, 14, 16) predicts their
+//! values joined by ` & ` in `ItemRef` order (`butter & bread`); with `consequent_absent` it is
+//! dropped only when every one of its items is in the basket (`carma_default` training row 3,
+//! butter and jam: rule 11, jam => butter & bread, is predicted).
 //! GAP: `repeatPredictions` true is accepted by this function; the nugget rejects it until an
 //! oracle shows the columns.
 
@@ -228,17 +232,16 @@ pub fn score_rules(
     for rule in &model.rules {
         let antecedent = model.itemset_values(&rule.antecedent)?;
         let consequent = model.itemset_values(&rule.consequent)?;
-        let [item] = consequent.as_slice() else {
+        if consequent.is_empty() {
             return Err(PmmlError::Score(format!(
-                "association rule {:?} has {} consequent items; only one is supported",
-                rule.id,
-                consequent.len()
+                "association rule {:?} has no consequent items",
+                rule.id
             )));
-        };
+        }
         if !antecedent.iter().all(|name| present.contains(*name)) {
             continue;
         }
-        if consequent_absent && present.contains(*item) {
+        if consequent_absent && consequent.iter().all(|name| present.contains(*name)) {
             continue;
         }
         let rule_id = rule.id.parse::<i64>().map_err(|_| {
@@ -247,33 +250,33 @@ pub fn score_rules(
                 rule.id
             ))
         })?;
-        hits.push(ScoredAssociation {
-            item: (*item).to_string(),
-            confidence: rule.confidence,
-            rule_id,
-        });
+        let items: Vec<String> = consequent.iter().map(|name| (*name).to_string()).collect();
+        hits.push((
+            ScoredAssociation {
+                item: items.join(" & "),
+                confidence: rule.confidence,
+                rule_id,
+            },
+            items,
+        ));
     }
-    if !allow_repeats {
-        let mut best: Vec<ScoredAssociation> = Vec::new();
-        for hit in hits {
-            if let Some(kept) = best.iter_mut().find(|kept| kept.item == hit.item) {
-                let replace = hit.confidence > kept.confidence
-                    || (hit.confidence == kept.confidence && hit.rule_id < kept.rule_id);
-                if replace {
-                    *kept = hit;
-                }
-            } else {
-                best.push(hit);
-            }
-        }
-        hits = best;
-    }
-    hits.sort_by(|left, right| {
+    hits.sort_by(|(left, _), (right, _)| {
         right
             .confidence
             .total_cmp(&left.confidence)
             .then(left.rule_id.cmp(&right.rule_id))
     });
-    hits.truncate(max_predictions);
-    Ok(hits)
+    let mut predicted: HashSet<String> = HashSet::new();
+    let mut kept = Vec::new();
+    for (hit, items) in hits {
+        if !allow_repeats && items.iter().all(|item| predicted.contains(item)) {
+            continue;
+        }
+        predicted.extend(items);
+        kept.push(hit);
+        if kept.len() == max_predictions {
+            break;
+        }
+    }
+    Ok(kept)
 }

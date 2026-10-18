@@ -125,7 +125,7 @@ pub fn build(node: &StreamNode) -> Result<Box<dyn Operator>, OperatorError> {
         "ApplyRegressionNode" => Kind::Regression,
         "ApplyKMeansNode" => Kind::KMeans,
         "ApplyTwoStepNode" => Kind::TwoStep,
-        "ApplyAprioriNode" => Kind::Apriori,
+        "ApplyAprioriNode" | "ApplyCarmaNode" => Kind::Apriori,
         "neuralnetmodel!spss.neuralnet-extension"
         | "ApplyNetNode"
         | "ApplyNeuralNetSplitModelNode" => Kind::Neural,

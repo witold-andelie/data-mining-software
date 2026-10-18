@@ -53,6 +53,7 @@ use crate::settings;
 use dms_algo::Dataset;
 use dms_algo::anomaly::{self, AnomalyCutoff, AnomalySettings};
 use dms_algo::apriori::{self, AprioriSettings};
+use dms_algo::carma::{self, CarmaSettings};
 use dms_algo::cart::{self, CartSettings, Impurity, MinSize};
 use dms_algo::chaid::{self, ChaidSettings, ChiSquare, Method};
 use dms_algo::factor::{self, FactorCount, FactorSettings};
@@ -79,6 +80,7 @@ pub fn build(node: &StreamNode) -> Result<Box<dyn Operator>, OperatorError> {
         "Chaid!spss.tree-extension" => Algorithm::Chaid,
         "BuildKMeansNode" => Algorithm::KMeans(kmeans_settings(node)?),
         "BuildAprioriNode" => Algorithm::Apriori(apriori_settings(node)?),
+        "BuildCarmaNode" => Algorithm::Carma(carma_settings(node)?),
         "BuildTwoStepNode" => Algorithm::TwoStep(twostep_settings(node)?),
         "BuildLogisticNode" => Algorithm::Logistic(logistic_settings(node)?),
         "LinearRegression!spss.alm-extension" => Algorithm::Linear,
@@ -124,6 +126,8 @@ enum Algorithm {
     Anomaly((AnomalySettings, Option<Vec<String>>)),
     /// Apriori association rules (`BuildAprioriNode`).
     Apriori(AprioriSettings),
+    /// CARMA association rules (`BuildCarmaNode`).
+    Carma(CarmaSettings),
 }
 
 type RegressionSpec = (LinearSettings, Option<String>, Option<Vec<String>>);
@@ -160,6 +164,10 @@ impl Operator for Build {
         let table = self.training_records(input)?;
         if let Algorithm::Apriori(settings) = &self.algorithm {
             let pmml = apriori::train(&table, settings).map_err(apriori_error)?;
+            return Ok(NodeOutput::Model(Arc::new(pmml)));
+        }
+        if let Algorithm::Carma(settings) = &self.algorithm {
+            let pmml = carma::train(&table, settings).map_err(apriori_error)?;
             return Ok(NodeOutput::Model(Arc::new(pmml)));
         }
         if let Algorithm::KMeans((settings, custom)) = &self.algorithm {
@@ -236,7 +244,8 @@ impl Operator for Build {
             | Algorithm::Regression(_)
             | Algorithm::Factor(_)
             | Algorithm::Anomaly(_)
-            | Algorithm::Apriori(_) => {
+            | Algorithm::Apriori(_)
+            | Algorithm::Carma(_) => {
                 return Err(OperatorError::Settings("clustering has no target".into()));
             }
         };
@@ -514,6 +523,61 @@ fn apriori_settings(node: &StreamNode) -> Result<AprioriSettings, OperatorError>
     })
 }
 
+/// CARMA settings (`carma_default`, `carma_minsupp`): rule support and confidence, the largest
+/// itemset and the input fields. Everything without an oracle is rejected
+/// (`crates/algo/src/carma.rs`).
+fn carma_settings(node: &StreamNode) -> Result<CarmaSettings, OperatorError> {
+    let s = node.settings.as_ref();
+    let unsupported =
+        |what: &str| OperatorError::Settings(format!("CARMA {what} is not supported yet (GAP)"));
+    for flag in [
+        "transactionalData",
+        "usePruning",
+        "varySupport",
+        "rulesWithoutAntecdents",
+        "excludeMultipleConsequents",
+        "useWeight",
+        "useFrequency",
+    ] {
+        if settings::flag(s, flag)?.unwrap_or(false) {
+            return Err(unsupported(flag));
+        }
+    }
+    let percent = |name: &str| -> Result<f64, OperatorError> {
+        let value = settings::real(s, name)?.unwrap_or(20.0);
+        if !(0.0..=100.0).contains(&value) {
+            return Err(OperatorError::Settings(format!(
+                "CARMA {name} must be from 0 to 100, found {value}"
+            )));
+        }
+        Ok(value)
+    };
+    let max_size = usize::try_from(settings::integer(s, "maxLengthSet")?.unwrap_or(10))
+        .map_err(|_| OperatorError::Settings("CARMA maxLengthSet is negative".into()))?;
+    let inputs = if settings::flag(s, "autoModelFieldSelection")?.unwrap_or(true) {
+        Vec::new()
+    } else {
+        settings::children(s, "modelInputFieldSelection", "field")
+            .into_iter()
+            .map(|field| field.text().trim().to_string())
+            .filter(|name| !name.is_empty())
+            .collect()
+    };
+    let model_name = (!settings::flag(s, "autoModelName")?.unwrap_or(true))
+        .then(|| settings::text(s, "modelName"))
+        .flatten()
+        .filter(|name| !name.trim().is_empty())
+        .or_else(|| node.name.clone())
+        .unwrap_or_else(|| "CARMA".to_string());
+    Ok(CarmaSettings {
+        min_support_percent: percent("minRuleSupport")?,
+        min_confidence_percent: percent("minRuleConfidence")?,
+        max_size,
+        inputs,
+        model_name,
+    })
+}
+
 fn apriori_error(error: dms_algo::AlgoError) -> OperatorError {
     match error {
         dms_algo::AlgoError::Settings(message) | dms_algo::AlgoError::Unsupported(message) => {
@@ -523,7 +587,6 @@ fn apriori_error(error: dms_algo::AlgoError) -> OperatorError {
     }
 }
 
-/// K-Means settings from the node's XML.
 /// PCA/Factor (`BuildPCANode`, `oracle/models_next/factor_*`): principal components of the
 /// correlation matrix with complete records, factors by eigenvalue or by count, no rotation or
 /// varimax, regression scores. Anything else is rejected (`crates/algo/src/factor.rs`).
@@ -684,6 +747,7 @@ fn anomaly_settings(
     Ok((anomaly_settings, custom))
 }
 
+/// K-Means settings from the node's XML.
 fn kmeans_settings(
     node: &StreamNode,
 ) -> Result<(KMeansSettings, Option<Vec<String>>), OperatorError> {

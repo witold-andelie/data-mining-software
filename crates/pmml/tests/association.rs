@@ -85,7 +85,7 @@ fn parses_items_direction_and_group() {
 }
 
 #[test]
-fn multi_item_consequent_is_an_error() {
+fn multi_item_consequent_joins_items_and_needs_one_absent() {
     let xml = MODEL.replace(
         r#"<Itemset id="2" numberOfItems="1" support="0.75"><ItemRef itemRef="2"/></Itemset>"#,
         r#"<Itemset id="2" numberOfItems="2" support="0.75"><ItemRef itemRef="1"/><ItemRef itemRef="2"/></Itemset>"#,
@@ -96,5 +96,14 @@ fn multi_item_consequent_is_an_error() {
     };
     let mut present = HashSet::new();
     present.insert("eggs".to_string());
-    assert!(score_rules(model, &present, 3, false, true).is_err());
+    // CARMA (`carma_default` rule 11): the label joins the items; one absent item is enough.
+    let hits = score_rules(model, &present, 3, false, true).unwrap();
+    assert_eq!(hits.len(), 1);
+    assert_eq!(hits[0].item, "eggs & milk");
+    present.insert("milk".to_string());
+    assert!(
+        score_rules(model, &present, 3, false, true)
+            .unwrap()
+            .is_empty()
+    );
 }

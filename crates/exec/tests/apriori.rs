@@ -27,6 +27,9 @@ fn trained_rules_match_modeler() {
         "apriori_default",
         "apriori_thresholds",
         "apriori_transactional",
+        // CARMA writes the same model (`crates/algo/src/carma.rs`).
+        "carma_default",
+        "carma_minsupp",
     ] {
         let ours = train(case);
         let oracle = oracle_model(case);
@@ -44,7 +47,12 @@ fn train(case: &str) -> AssociationModel {
         .diagram
         .nodes
         .iter()
-        .find(|node| node.type_identifier() == "BuildAprioriNode")
+        .find(|node| {
+            matches!(
+                node.type_identifier().as_str(),
+                "BuildAprioriNode" | "BuildCarmaNode"
+            )
+        })
         .map(|node| node.uid.clone())
         .unwrap();
     let attachments: HashMap<String, Arc<[u8]>> = archive

@@ -4,7 +4,7 @@
 
 | Scope | Implemented | Total |
 |---|---|---|
-| MVP | 65 | 85 |
+| MVP | 66 | 85 |
 | later | 0 | 23 |
 | license blocked | 0 | 5 |
 | out of scope | 0 | 34 |
@@ -147,7 +147,7 @@
 | In-database: Oracle Data Mining | `in_database_oracle` | out of scope | missing | (unmapped) |
 | In-database: Netezza | `in_database_netezza` | out of scope | missing | (unmapped) |
 | Apriori | `apriori` | MVP | done | `BuildAprioriNode`, `ApplyAprioriNode` |
-| CARMA | `carma` | MVP | missing | `BuildCarmaNode`, `ApplyCarmaNode` |
+| CARMA | `carma` | MVP | done | `BuildCarmaNode`, `ApplyCarmaNode` |
 | Sequence | `sequence` | MVP | missing | `BuildSequenceNode`, `ApplySequenceNode` |
 | K-Means | `kmeans` | MVP | done | `BuildKMeansNode`, `ApplyKMeansNode` |
 | Kohonen | `kohonen` | MVP | missing | `TrainKohonenNode`, `ApplyKohonenNode` |

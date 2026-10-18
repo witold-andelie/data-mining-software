@@ -124,10 +124,10 @@ enum Columns {
     Transactions { id: usize, content: usize },
 }
 
-struct Prepared {
-    transactions: Vec<Vec<String>>,
+pub(crate) struct Prepared {
+    pub(crate) transactions: Vec<Vec<String>>,
     /// Tie-break order: field order, or declared categories then first seen.
-    order: Vec<String>,
+    pub(crate) order: Vec<String>,
     columns: Columns,
     antecedent: HashSet<String>,
     consequent: HashSet<String>,
@@ -138,12 +138,14 @@ struct Node {
     tids: Vec<u32>,
 }
 
-struct Mined {
-    antecedent: Vec<u16>,
-    consequent: u16,
-    union_count: u64,
-    ant_count: u64,
-    cons_count: u64,
+/// A rule over item ranks (indices into the mined names): antecedent and consequent items in
+/// the order their ids are assigned.
+pub(crate) struct Mined {
+    pub(crate) antecedent: Vec<u16>,
+    pub(crate) consequent: Vec<u16>,
+    pub(crate) union_count: u64,
+    pub(crate) ant_count: u64,
+    pub(crate) cons_count: u64,
 }
 
 struct Assigned {
@@ -211,7 +213,10 @@ fn prepare(table: &Table, settings: &AprioriSettings) -> Result<Prepared, AlgoEr
     }
 }
 
-fn prepare_flags(table: &Table, settings: &AprioriSettings) -> Result<Prepared, AlgoError> {
+pub(crate) fn prepare_flags(
+    table: &Table,
+    settings: &AprioriSettings,
+) -> Result<Prepared, AlgoError> {
     let (antecedents, consequents) = if settings.auto_fields {
         (
             role_names(table, |role| matches!(role, Role::Input | Role::Both)),
@@ -509,7 +514,7 @@ fn mine(
                 }
                 rules.push(Mined {
                     antecedent,
-                    consequent: cons,
+                    consequent: vec![cons],
                     union_count,
                     ant_count,
                     cons_count,
@@ -624,6 +629,17 @@ fn assemble(
     prepared: &Prepared,
     mined: &(Vec<String>, Vec<Mined>, u64),
 ) -> Result<Pmml, AlgoError> {
+    assemble_model(table, settings, prepared, mined, "Apriori")
+}
+
+/// The `AssociationModel` of mined rules, written as Modeler writes Apriori and CARMA models.
+pub(crate) fn assemble_model(
+    table: &Table,
+    settings: &AprioriSettings,
+    prepared: &Prepared,
+    mined: &(Vec<String>, Vec<Mined>, u64),
+    algorithm: &str,
+) -> Result<Pmml, AlgoError> {
     let (names, rules, n) = mined;
     let assigned = assign_ids(names, rules)?;
     let min_support = assigned
@@ -685,7 +701,7 @@ fn assemble(
             header: ModelHeader {
                 name,
                 function: MiningFunction::Other("associationRules".into()),
-                algorithm: Some("Apriori".into()),
+                algorithm: Some(algorithm.into()),
                 mining_schema: schema,
                 output: Vec::new(),
                 local_transformations: Vec::new(),
@@ -716,10 +732,13 @@ fn assign_ids(names: &[String], rules: &[Mined]) -> Result<Assigned, AlgoError> 
                 .ok_or_else(|| AlgoError::Data("Apriori antecedent rank is out of range".into()))?;
             antecedent_ids.push(item_id(&mut item_of, &mut items, &mut next_item, name)?);
         }
-        let cons_name = names
-            .get(usize::from(rule.consequent))
-            .ok_or_else(|| AlgoError::Data("Apriori consequent rank is out of range".into()))?;
-        let cons_id = item_id(&mut item_of, &mut items, &mut next_item, cons_name)?;
+        let mut consequent_ids = Vec::new();
+        for rank in &rule.consequent {
+            let name = names
+                .get(usize::from(*rank))
+                .ok_or_else(|| AlgoError::Data("Apriori consequent rank is out of range".into()))?;
+            consequent_ids.push(item_id(&mut item_of, &mut items, &mut next_item, name)?);
+        }
         let antecedent = itemset_id(
             &mut itemset_of,
             &mut itemsets,
@@ -731,7 +750,7 @@ fn assign_ids(names: &[String], rules: &[Mined]) -> Result<Assigned, AlgoError> 
             &mut itemset_of,
             &mut itemsets,
             &mut next_itemset,
-            &[cons_id],
+            &consequent_ids,
             rule.cons_count,
         )?;
         stored.push((
@@ -831,7 +850,7 @@ fn dictionary(
     Ok((data, schema))
 }
 
-fn percent_basis(percent: f64) -> Result<u128, AlgoError> {
+pub(crate) fn percent_basis(percent: f64) -> Result<u128, AlgoError> {
     let scaled = (percent * PERCENT_SCALE as f64).round();
     if !scaled.is_finite() || !(0.0..=100.0 * PERCENT_SCALE as f64).contains(&scaled) {
         return Err(AlgoError::Settings(
@@ -842,12 +861,12 @@ fn percent_basis(percent: f64) -> Result<u128, AlgoError> {
 }
 
 /// `count / total >= basis / 1e8`, with `basis = round(percent * 1e6)`.
-fn at_least(count: u64, basis: u128, total: u64) -> bool {
+pub(crate) fn at_least(count: u64, basis: u128, total: u64) -> bool {
     (count as u128).saturating_mul(PERCENT_SCALE * 100) >= basis.saturating_mul(total as u128)
 }
 
 /// `numer / denom >= basis / 1e8`.
-fn at_least_ratio(numer: u64, denom: u64, basis: u128) -> bool {
+pub(crate) fn at_least_ratio(numer: u64, denom: u64, basis: u128) -> bool {
     if denom == 0 {
         return false;
     }
