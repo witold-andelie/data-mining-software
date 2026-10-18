@@ -33,10 +33,22 @@
 //! - An ordinal field splits in two at a cut over its values in sorted order, costing
 //!   log2(cuts)/total of gain like a numeric threshold (`c50_weighted`: `ord in {high,
 //!   low}` versus `{middle}`; `c50_costs`: `code` beats the uncorrected `ord` cut).
-//! - A split must gain at least the average over the fields that can split the node,
-//!   zero gain included (`c50_weighted/c50_w2_loose`: `x > 11` fails it). GAP: under
-//!   misclassification costs the test is skipped, since `c50_costs` grows `x` at the
-//!   18-record `amber, flag = T, x <= 9` node although it fails it.
+//! - A split's gain must reach the average gain of the tests examined at the node.
+//!   The ratio still uses the local corrected gain. A numeric or ordinal test whose
+//!   local trial count is above one is examined at the textbook gain
+//!   `raw − log2(N−1)/N` while that gain is positive; otherwise the examined gain is
+//!   the local corrected gain. A test with a non-positive examined gain and under one
+//!   bit of raw gain in total (`raw × N < 1`) is not examined. Examined non-positive
+//!   gains still count as zero (`c50_weighted/c50_w2_loose`: `x > 11` fails, `code`
+//!   wins). On `models_next2/ens_voting` this omits root `spend` and `visits`
+//!   (`raw × 519` ≈ 0.010 and 0.095), so the average of region/channel/tier is 0.200
+//!   and `region` wins; at east (147 rows) `spend`'s textbook gain 0.276 is under the
+//!   average 0.292, so `channel` wins. A wiped-out local gain stays in the average:
+//!   `drugtwice` node 31 keeps `K` because Age's `raw × 28` ≈ 2.59 counts as zero, and
+//!   a weighted node whose textbook gain is negative keeps its local gain so `code`
+//!   still beats `cat`. GAP: under misclassification costs the test is skipped, since
+//!   `c50_costs` grows `x` at the 18-record `amber, flag = T, x <= 9` node although
+//!   it fails it.
 //! - `c50_costs` (B->C 8, C->B 2): minimize sum(count[actual]*cost[actual][predicted]),
 //!   retaining the parent's class on ties. Counts stay raw. Bound the number of
 //!   misclassified cases, then multiply by their mean cost; for zero observed
@@ -550,9 +562,28 @@ fn numeric_cut(lower: f64, upper: f64) -> f64 {
 }
 
 struct Split {
+    /// Local corrected gain. The gain ratio uses this, not [`Self::gate`].
     gain: f64,
+    /// Gain before the local threshold penalty. Discrete tests store `gain`.
+    raw: f64,
+    /// Gain compared with the average. See the average-gain rule on [`grow`].
+    gate: f64,
     ratio: f64,
     groups: Vec<(Predicate, Vec<usize>)>,
+}
+
+/// Gain used by the average test. Several plausible thresholds pay the textbook
+/// `log2(N−1)/N` penalty while that still leaves a positive gain. A penalty that
+/// wipes the gain out leaves the local corrected gain in place, and the ratio is
+/// untouched either way (`drugtwice` node 31 versus `ens_voting` east `spend`).
+fn examined_gain(raw: f64, local: f64, trials: f64, total: f64) -> f64 {
+    if trials > 1.0 && total > 1.0 {
+        let classical = raw - (total - 1.0).log2() / total;
+        if classical > 0.0 {
+            return classical;
+        }
+    }
+    local
 }
 
 fn candidate(
@@ -606,12 +637,12 @@ fn candidate(
                     best = Some((gain, cut, n, next - value));
                 }
             }
-            let (gain, cut, n, gap) = best?;
+            let (raw, cut, n, gap) = best?;
             // Encoding the threshold within its observed range can be cheaper
             // than identifying one of every eligible gap (drughalf/drugtwice).
             let range = sorted.last()?.0 - sorted.first()?.0;
-            let cuts = (cuts.max(1) as f64).min(range / gap).max(1.0);
-            let gain = gain - cuts.log2() / total;
+            let trials = (cuts.max(1) as f64).min(range / gap).max(1.0);
+            let gain = raw - trials.log2() / total;
             let split_info = entropy(&[n, total - n]);
             if split_info <= 0.0 {
                 return None;
@@ -622,6 +653,8 @@ fn candidate(
                 .partition(|&r| values.get(r).is_some_and(|v| *v <= cut));
             Some(Split {
                 gain,
+                raw,
+                gate: examined_gain(raw, gain, trials, total),
                 ratio: gain / split_info,
                 groups: vec![
                     (
@@ -714,6 +747,8 @@ fn candidate(
                 .collect();
             Some(Split {
                 gain,
+                raw: gain,
+                gate: gain,
                 ratio,
                 groups,
             })
@@ -769,8 +804,9 @@ fn ordinal_cut(
             best = Some((gain, info, cut));
         }
     }
-    let (gain, info, cut) = best?;
-    let gain = gain - (cuts.max(1) as f64).log2() / total;
+    let (raw, info, cut) = best?;
+    let trials = cuts.max(1) as f64;
+    let gain = raw - trials.log2() / total;
     if info <= 0.0 {
         return None;
     }
@@ -790,6 +826,8 @@ fn ordinal_cut(
     };
     Some(Split {
         gain,
+        raw,
+        gate: examined_gain(raw, gain, trials, total),
         ratio: gain / info,
         groups: vec![branch(low), branch(high)],
     })
@@ -972,22 +1010,36 @@ fn grow(
             )
         })
         .collect();
-    // A split must gain at least the average over the fields that can split this node,
-    // zero gain included (`c50_weighted/c50_w2_loose`: `x > 11` fails it, `code` wins).
-    // GAP: under misclassification costs the test is skipped (`c50_costs` node 5 grows
-    // `x`, which fails it); the costs-only oracle cannot tell why.
+    // Average over examined tests. A non-positive gate with under one bit of raw
+    // gain is not a test (`ens_voting` root spend/visits). Other non-positive gates
+    // count as zero (`c50_w2_loose`, `drugtwice` node 31). Costs skip the test
+    // (`c50_costs` node 5 grows `x`).
     let average = if data.costs.is_some() {
         f64::NEG_INFINITY
     } else {
-        candidates.iter().map(|c| c.gain.max(0.0)).sum::<f64>() / candidates.len().max(1) as f64
+        let mut examined = 0usize;
+        let mut sum = 0.0;
+        for split in &candidates {
+            if split.gate >= 0.0 || split.raw * total >= 1.0 {
+                examined = examined.saturating_add(1);
+                sum += split.gate.max(0.0);
+            }
+        }
+        if examined == 0 {
+            f64::INFINITY
+        } else {
+            sum / examined as f64
+        }
     };
-    let candidates: Vec<Split> = candidates.into_iter().filter(|c| c.gain > 1e-10).collect();
-    if candidates.is_empty() {
-        return Ok(node);
-    }
     let mut best: Option<Split> = None;
     for split in candidates {
-        if split.gain >= average - 1e-9
+        let value = if data.costs.is_some() {
+            split.gain
+        } else {
+            split.gate
+        };
+        if value > 1e-10
+            && value >= average - 1e-9
             && best.as_ref().is_none_or(|s| split.ratio > s.ratio + 1e-12)
         {
             best = Some(split);
