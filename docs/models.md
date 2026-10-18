@@ -100,3 +100,22 @@
 **GAP。** 四类训练、raw/adjusted propensity（包括 LSVM `_calculateRawProp=true`）未实现，明确拒绝；`_GenerateSQL` 除缺省、`false`、`native` 外的值（例如 `udf`）明确拒绝。非法布尔值同样返回带 `GAP:` 的 Settings 错误。LSVM 多分类、树平票没有 oracle；通用 majorityVote 在平票时采用目标 DataField 类别顺序，此行为有合成测试但未获 IBM 对照确认。Tree-AS `_display_rule_id=false` 的省略字段有合成测试，本批流均为 true。
 
 规范依据为 DMG [PMML 4.3 Transformations](https://dmg.org/pmml/v4-3/Transformations.html) 与 [Multiple Models](https://dmg.org/pmml/v4-3/MultipleModels.html)；Modeler 设置来自公开脚本接口的既有探针记录 `xtask/oracle/probes/models_as_streams.py`。合成测试覆盖投票与叶置信度的区别、均值与溢出、分箱边界/缺失/default/畸形参数、lastPrediction/id、LSVM 决策值、设置拒绝和损坏附件；语料测试 `crates/exec/tests/models_as.rs` 覆盖全部 48 个终端输入。
+
+## 7. Decision List 训练
+
+`BuildDecisionListNode` 通过 `dms-algo::decision_list` 原生训练并替换链接的 nugget，已移出
+`SCORING_ONLY`。实现逐项移植已验证的 `dl-lab/dl.py`，分箱、sea-level split、局部
+Clopper–Pearson 界和两层 beam search 的规则均在模块文档逐例列明。F 分位数通过逆正则化
+不完全 beta 求解；SciPy 1.14.1 的 5 个 F 分位数（相对容差 1e-12）及 9 组置信区间
+（绝对容差 1e-12，含百万样本）为数值基准，不需要 Python 运行时。
+
+`train_xml` 输出完整规则 PMML：`RuleSet0`、`firstHit`、从 1 开始的规则 id、`nbCorrect`、
+`recordCount`、响应类 `score`、六位小数数值谓词、按首次使用顺序列出的 mining fields，
+以及 `isDisabled`、`searchDirection=up`、`label=remainder`。`train` 解析为现有评分 IR；
+IR 保留禁用状态，不保留未建模的 label/searchDirection 扩展，完整 XML 可由 `train_xml` 获取。
+
+9 个指定 oracle 模型严格比较 RuleSet（含规则顺序、谓词、计数、禁用状态、模型头和 schema）
+全部一致。第 10 例 `models_next2/dl_max_rules` 为已知响应率平票 GAP：原型和 Rust 选
+north+web，Modeler 选 web+gold；测试固定双方谓词和计数以免掩盖新的差异。
+11 个流比较 31/33，仅该例为 1/3。完整案例、设置映射、拒绝范围和验证输出见
+[`decision-list-validation.md`](decision-list-validation.md)。

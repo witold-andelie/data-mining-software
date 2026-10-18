@@ -2,6 +2,8 @@
 
 > 更新：2026-10-18
 
+Decision List 已支持训练（MVP 69/85）。9/10 指定模型的规则顺序、谓词、计数和 mining schema 一致；剩余 GAP：`models_next2/dl_max_rules` 响应率平票时，原型及 Rust 保留 north+web（80+60 个响应），Modeler 选 web+gold（60+55）。该流比较 1/3，其余 10 个流各 3/3。保留原型稳定顺序，未猜测新的平票规则。显式拒绝 down 搜索、`reuseFields=false`、频率/权重、缺失输入/目标、事件、交互状态、Split 字段；未知存储和资源上限返回错误。见 `docs/decision-list-validation.md`。
+
 1. **P2：类型系统和 CLEM**：存储类型、测量级别、缺失值、日期基准（流属性 `dateBaseline`、`date2DigitBaseline`）；CLEM 解析与求值的子集。
 2. **P2：节点设置映射**：每个节点的脚本属性名 ↔ 文件元素名 ↔ 取值形式，用探针逐个确定（`docs/formats/str.md` 第 5 节），按团队流的使用频率排序（Type、Statistics File、Table、Var. File、Derive、Filter、Select、Data Audit……）。
 3. **P2：执行器和第一批数据节点**：参考执行器 + Polars 执行器；`dms-cli run` 跑流，结果与 `oracle/` 标准答案比对。
