@@ -23,6 +23,7 @@ pub mod feature_selection;
 pub mod kmeans;
 pub mod linear;
 pub mod logistic;
+pub mod smooth;
 pub mod stats;
 pub mod twostep;
 

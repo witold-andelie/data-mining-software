@@ -89,8 +89,9 @@ const PENDING: &[&str] = &[];
 /// Auto Cluster: the nugget scores its saved component model (`nodes::auto_cluster`);
 /// training (`BuildAutoClusteringModelNode`) is not implemented.
 /// Sequence: the nugget scores its saved rules; training is a GAP (`nodes::sequence`).
-/// Time Series (`corpus/models_next/ts_arima.str`, `ts_expert.str`): the nugget scores the
-/// saved ARIMA; estimation (`spss.ts!ts_builder`) is a GAP.
+/// Time Series (`corpus/models_next/ts_arima.str`, `ts_expert.str`,
+/// `corpus/models_next2/ts_simple.str`, `ts_holt.str`): the nugget scores the saved ARIMA
+/// or exponential smoothing model; estimation (`spss.ts!ts_builder`) is a GAP.
 const SCORING_ONLY: &[&str] = &[
     "neural_net",
     "kohonen",
