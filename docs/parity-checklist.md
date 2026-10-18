@@ -122,7 +122,7 @@
 | PCA/Factor | `pca_factor` | MVP | done | `BuildPCANode`, `ApplyPCANode` |
 | Feature Selection | `feature_selection` | MVP | done | `BuildFeatureSelectionNode`, `ApplyFeatureSelectionNode`, `FeatureSelectionModelNode` |
 | Anomaly | `anomaly` | MVP | done | `BuildAnomalyNode`, `ApplyAnomalyNode` |
-| Time Series | `time_series` | MVP | missing | `BuildTimeSeriesNode`, `ApplyTimeSeriesNode`, `spss.ts!ts_builder` |
+| Time Series | `time_series` | MVP | missing | `BuildTimeSeriesNode`, `ApplyTimeSeriesNode`, `spss.ts!ts_builder`, `spss.ts!ts_applier` |
 | Imported PMML model | `pmml_model` | MVP | missing | `ApplyImportedNode` |
 | GLMM | `glmm` | later | missing | `GLMM!spss.glmm-extension` |
 | GLE | `gle` | later | missing | (unmapped) |

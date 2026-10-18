@@ -12,8 +12,10 @@
 pub mod container;
 pub mod fastinfoset;
 pub mod scf;
+pub mod zipwalk;
 
 pub use container::{
     ArchiveError, ArchiveLimits, Attachment, AttachmentKind, StreamArchive, read_archive,
 };
 pub use scf::{ScfError, read_model_xml};
+pub use zipwalk::{ZipMember, ZipWalkError, read_length_prefixed_zip, read_local_zip, zip_payload};

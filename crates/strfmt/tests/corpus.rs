@@ -85,3 +85,28 @@ fn corpus_mutations_never_panic() {
         }
     }
 }
+
+/// `ts_arima.str` `data/0003.dat`: length-prefixed ZIP with data descriptors. Python zipfile
+/// rejects the extra field; walking local headers yields the per-target PMML.
+#[test]
+fn time_series_nugget_zip_walks() {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../corpus/models_next/ts_arima.str");
+    let bytes = std::fs::read(&path).expect("corpus/models_next/ts_arima.str");
+    let archive = read_archive(&bytes, &ArchiveLimits::default()).expect("archive");
+    let attachment = archive
+        .attachments
+        .iter()
+        .find(|attachment| attachment.name == "data/0003.dat")
+        .expect("data/0003.dat");
+    let members =
+        dms_strfmt::read_length_prefixed_zip(&attachment.bytes, &ArchiveLimits::default())
+            .expect("walk");
+    let names: Vec<&str> = members.iter().map(|m| m.name.as_str()).collect();
+    assert!(names.contains(&"0.xml"), "{names:?}");
+    assert!(names.contains(&"1.xml"), "{names:?}");
+    assert!(names.contains(&"datamodel.xml"), "{names:?}");
+    let pmml = members.iter().find(|m| m.name == "0.xml").expect("0.xml");
+    let text = std::str::from_utf8(&pmml.bytes).expect("utf8");
+    assert!(text.contains("TimeSeriesModel"), "{text}");
+    assert!(text.contains("constantTerm"), "{text}");
+}

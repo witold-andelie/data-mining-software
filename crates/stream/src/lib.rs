@@ -8,6 +8,8 @@
 //!   diagram/nodes/node[@id @uid @class]           nodes (supernodes nest another diagram)
 //!     properties/*                                node settings, under Modeler's internal names
 //!     container[@containerData]/containerName     attachments (PMML, StatXML, ...)
+//!     contentContainers/containers/container[@name]/content[@content]
+//!                                                 Analytic Server / spss.ts attachments
 //!     modelBuildInfo[@modelBuilderId]             the builder of a model nugget
 //!   diagram/links/link[@srcId @dstId]             links between the per-save node ids
 //! ```
@@ -284,18 +286,8 @@ fn read_node(element: &Element, depth: usize) -> Result<StreamNode, StreamError>
         }),
         _ => None,
     };
-    let containers = element
-        .child_elements()
-        .filter(|e| &*e.name.local == "container")
-        .filter_map(|container| {
-            Some(Container {
-                member: container.attribute("containerData")?.to_string(),
-                name: container
-                    .child("containerName")
-                    .map(Element::text)
-                    .filter(|name| !name.is_empty()),
-            })
-        })
+    let containers = classic_containers(element)
+        .chain(analytic_server_containers(element))
         .chain(
             // Some nuggets name their model attachment in a node attribute instead
             // (`ApplyAnomalyNode ANOMALY_XML="data/0002.dat"`, `models_next/anomaly_default`).
@@ -330,6 +322,50 @@ fn read_node(element: &Element, depth: usize) -> Result<StreamNode, StreamError>
         subdiagram,
         class,
     })
+}
+
+/// `container[@containerData]/containerName` (classic nuggets).
+fn classic_containers(element: &Element) -> impl Iterator<Item = Container> + '_ {
+    element
+        .child_elements()
+        .filter(|e| &*e.name.local == "container")
+        .filter_map(|container| {
+            Some(Container {
+                member: container.attribute("containerData")?.to_string(),
+                name: container
+                    .child("containerName")
+                    .map(Element::text)
+                    .filter(|name| !name.is_empty()),
+            })
+        })
+}
+
+/// Analytic Server / `spss.ts` nuggets nest the attachment under
+/// `contentContainers/containers/container[@name]/content[@content]`
+/// (`ts_arima.str` PMML `data/0003.dat`).
+fn analytic_server_containers(element: &Element) -> impl Iterator<Item = Container> + '_ {
+    element
+        .child("contentContainers")
+        .and_then(|cc| cc.child("containers"))
+        .into_iter()
+        .flat_map(|containers| containers.child_elements())
+        .filter(|child| &*child.name.local == "container")
+        .filter_map(|container| {
+            let member = container
+                .child("content")?
+                .attribute("content")?
+                .to_string();
+            if member.is_empty() {
+                return None;
+            }
+            Some(Container {
+                member,
+                name: container
+                    .attribute("name")
+                    .map(str::to_string)
+                    .filter(|name| !name.is_empty()),
+            })
+        })
 }
 
 /// `com.spss.clementine.component.node.SelectNode` -> `SelectNode`.
