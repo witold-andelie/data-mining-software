@@ -1,13 +1,21 @@
-//! Time Series nugget (`spss.ts!ts_applier`, catalog `time_series`): score the ARIMA model
-//! saved in the stream. Training (`spss.ts!ts_builder`) stays a GAP.
+//! Time Series nugget (`spss.ts!ts_applier`, catalog `time_series`): score the model saved
+//! in the stream. Training (`spss.ts!ts_builder`) stays a GAP.
 //!
 //! The applier's PMML container (`contentContainers/.../container[@name=PMML]/content`,
-//! `ts_arima.str` `data/0003.dat`) is a length-prefixed ZIP. Entries `0.xml`, `1.xml` are
-//! one PMML 4.3 `TimeSeriesModel` per target, in `datamodel.xml` metric order.
+//! `ts_arima.str` `data/0003.dat`, and the same layout in `ts_simple.str` / `ts_holt.str`)
+//! is a length-prefixed ZIP. Entries `0.xml`, `1.xml` are one PMML 4.3 `TimeSeriesModel`
+//! per target, in `datamodel.xml` metric order.
 //!
-//! Output (`oracle/models_next/ts_arima/data/*.csv`, `ts_expert`): `$FutureFlag` after the
-//! period field, then per target `$TS-`, `$TSLCI-`, `$TSUCI-`. Record 1 has no prediction;
-//! future records (`$FutureFlag` 1) copy the period (`t` 37..42) and leave the targets empty.
+//! Output (`oracle/models_next/ts_arima/data/*.csv`, `ts_expert`,
+//! `oracle/models_next2/ts_simple`, `ts_holt`): `$FutureFlag` after the period field, then
+//! per target `$TS-`, `$TSLCI-`, `$TSUCI-`. Future records (`$FutureFlag` 1) copy the
+//! period (`t` 37..42 on the ARIMA series, `t` 49..54 on the smoothing series) and leave
+//! the targets empty.
+//!
+//! ARIMA (`ts_arima`, `ts_expert`): record 1 has no prediction. Exponential smoothing
+//! (`ts_simple` simple, `ts_holt` Holt linear trend): record 1 is the forecast from the
+//! saved initial level (and trend). Seasonal, damped, Winters, Brown, and transformations
+//! other than `none` are `GAP:` (`parse_smooth`).
 //!
 //! Settings honoured (saved on the nugget, scripting names in the Python guide):
 //! `_forecastSpan` (`forecastperiods`, 6), `_doForecast` (`extend_records_into_future`),
@@ -21,6 +29,7 @@ use crate::operator::{Arity, Operator};
 use crate::output::NodeOutput;
 use crate::settings;
 use dms_algo::arima::{self, ArimaSpec, Forecast, Transform};
+use dms_algo::smooth::{self, SmoothSpec};
 use dms_pmml::Pmml;
 use dms_stream::StreamNode;
 use dms_strfmt::{ArchiveLimits, read_length_prefixed_zip};
@@ -142,6 +151,12 @@ struct TimeSeriesApply {
     conf_percent: f64,
 }
 
+#[derive(Debug)]
+enum SavedModel {
+    Arima(ArimaSpec),
+    Smooth(SmoothSpec),
+}
+
 impl Operator for TimeSeriesApply {
     fn arity(&self) -> Arity {
         Arity::Exactly(1)
@@ -205,16 +220,9 @@ impl TimeSeriesApply {
         let mut fitted: Vec<Vec<Option<Forecast>>> = Vec::with_capacity(models.len());
         let mut forecasts: Vec<Vec<Forecast>> = Vec::with_capacity(models.len());
         for ((_name, spec), y) in models.iter().zip(&series) {
-            let scored =
-                arima::score(spec, y, self.forecast_span, self.conf_percent).map_err(|error| {
-                    match error {
-                        arima::ArimaError::Settings(message) | arima::ArimaError::Data(message) => {
-                            OperatorError::Data(message)
-                        }
-                    }
-                })?;
-            fitted.push(scored.fitted);
-            forecasts.push(scored.forecasts);
+            let (history, ahead) = score_saved(spec, y, self.forecast_span, self.conf_percent)?;
+            fitted.push(history);
+            forecasts.push(ahead);
         }
         assemble(
             input,
@@ -227,9 +235,45 @@ impl TimeSeriesApply {
     }
 }
 
+fn score_saved(
+    model: &SavedModel,
+    y: &[f64],
+    horizon: usize,
+    conf_percent: f64,
+) -> Result<(Vec<Option<Forecast>>, Vec<Forecast>), OperatorError> {
+    match model {
+        SavedModel::Arima(spec) => {
+            let scored = arima::score(spec, y, horizon, conf_percent).map_err(score_message)?;
+            Ok((scored.fitted, scored.forecasts))
+        }
+        SavedModel::Smooth(spec) => {
+            let scored = smooth::score(spec, y, horizon, conf_percent).map_err(score_message)?;
+            let history = scored
+                .fitted
+                .into_iter()
+                .map(|forecast| Some(smooth_forecast(forecast)))
+                .collect();
+            let ahead = scored.forecasts.into_iter().map(smooth_forecast).collect();
+            Ok((history, ahead))
+        }
+    }
+}
+
+fn score_message(error: impl std::fmt::Display) -> OperatorError {
+    OperatorError::Data(error.to_string())
+}
+
+fn smooth_forecast(forecast: smooth::Forecast) -> Forecast {
+    Forecast {
+        point: forecast.point,
+        lower: forecast.lower,
+        upper: forecast.upper,
+    }
+}
+
 fn resolve_targets(
     listed: &[String],
-    models: &[(String, ArimaSpec)],
+    models: &[(String, SavedModel)],
 ) -> Result<Vec<String>, OperatorError> {
     if listed.len() > MAX_TARGETS || models.len() > MAX_TARGETS {
         return Err(OperatorError::Data(format!(
@@ -245,7 +289,7 @@ fn resolve_targets(
 fn load_saved_models(
     member: &str,
     context: &ExecContext,
-) -> Result<Vec<(String, ArimaSpec)>, OperatorError> {
+) -> Result<Vec<(String, SavedModel)>, OperatorError> {
     let bytes = context
         .attachments
         .get(member)
@@ -277,7 +321,7 @@ fn load_saved_models(
     }
     let mut models = Vec::with_capacity(indexed.len());
     for (position, (_, xml)) in indexed.iter().enumerate() {
-        let spec = parse_arima_pmml(xml)?;
+        let spec = parse_saved_model(xml)?;
         let name = names
             .get(position)
             .cloned()
@@ -318,7 +362,7 @@ fn datamodel_targets(entries: &[dms_strfmt::ZipMember]) -> Result<Vec<String>, O
     Ok(names)
 }
 
-fn parse_arima_pmml(xml: &str) -> Result<ArimaSpec, OperatorError> {
+fn parse_saved_model(xml: &str) -> Result<SavedModel, OperatorError> {
     if xml.len() > 16 * 1024 * 1024 {
         return Err(OperatorError::Data(
             "Time Series PMML exceeds 16 MiB".into(),
@@ -330,20 +374,36 @@ fn parse_arima_pmml(xml: &str) -> Result<ArimaSpec, OperatorError> {
         .descendants()
         .find(|n| n.has_tag_name("TimeSeriesModel"))
         .ok_or_else(|| OperatorError::Data("the nugget is not a TimeSeriesModel".into()))?;
+    let has_smooth = model
+        .descendants()
+        .any(|n| n.has_tag_name("ExponentialSmoothing"));
+    let has_arima = model.descendants().any(|n| n.has_tag_name("ARIMA"));
+    if has_smooth && has_arima {
+        return Err(OperatorError::Settings(
+            "GAP: Time Series PMML mixes ARIMA and ExponentialSmoothing".into(),
+        ));
+    }
+    if has_smooth {
+        return parse_smooth(model).map(SavedModel::Smooth);
+    }
+    let algorithm = model.attribute("algorithmName").unwrap_or("");
+    let best = model.attribute("bestFit").unwrap_or("");
+    if algorithm == "exponential smoothing" || best == "ExponentialSmoothing" {
+        return Err(OperatorError::Data(
+            "Time Series PMML names exponential smoothing but has no ExponentialSmoothing element"
+                .into(),
+        ));
+    }
+    parse_arima_model(model).map(SavedModel::Arima)
+}
+
+fn parse_arima_model(model: roxmltree::Node<'_, '_>) -> Result<ArimaSpec, OperatorError> {
     let algorithm = model.attribute("algorithmName").unwrap_or("");
     let best = model.attribute("bestFit").unwrap_or("");
     if algorithm != "ARIMA" && best != "ARIMA" {
         return Err(OperatorError::Settings(format!(
             "GAP: Time Series algorithm {algorithm:?} / bestFit {best:?} is not ARIMA"
         )));
-    }
-    if model
-        .descendants()
-        .any(|n| n.has_tag_name("ExponentialSmoothing"))
-    {
-        return Err(OperatorError::Settings(
-            "GAP: exponential smoothing Time Series models have no oracle".into(),
-        ));
     }
     let mut arima_el = None;
     let mut sigma2 = None;
@@ -444,6 +504,172 @@ fn parse_arima_pmml(xml: &str) -> Result<ArimaSpec, OperatorError> {
         sigma2,
         df,
     })
+}
+
+fn parse_smooth(model: roxmltree::Node<'_, '_>) -> Result<SmoothSpec, OperatorError> {
+    let el = model
+        .descendants()
+        .find(|n| n.has_tag_name("ExponentialSmoothing"))
+        .ok_or_else(|| {
+            OperatorError::Data("Time Series PMML has no ExponentialSmoothing element".into())
+        })?;
+    let transform = el.attribute("transformation").unwrap_or("none");
+    if transform != "none" && !transform.is_empty() {
+        return Err(OperatorError::Settings(format!(
+            "GAP: exponential smoothing transformation {transform:?} has no oracle"
+        )));
+    }
+    let mut level = None;
+    let mut trend = None;
+    for child in el.children().filter(|n| n.is_element()) {
+        match child.tag_name().name() {
+            "Level" => {
+                if level.is_some() {
+                    return Err(OperatorError::Data(
+                        "exponential smoothing has more than one Level".into(),
+                    ));
+                }
+                if child.attribute("quadraticSmoothedValue").is_some()
+                    || child.attribute("cubicSmoothedValue").is_some()
+                {
+                    return Err(OperatorError::Settings(
+                        "GAP: Brown exponential smoothing (quadratic or cubic smoothed level) has no oracle"
+                            .into(),
+                    ));
+                }
+                level = Some(child);
+            }
+            "Trend_ExpoSmooth" => {
+                if trend.is_some() {
+                    return Err(OperatorError::Data(
+                        "exponential smoothing has more than one trend".into(),
+                    ));
+                }
+                trend = Some(child);
+            }
+            "Seasonality_ExpoSmooth" => {
+                return Err(OperatorError::Settings(
+                    "GAP: seasonal exponential smoothing, including Winters (Seasonality_ExpoSmooth), has no oracle"
+                        .into(),
+                ));
+            }
+            other => {
+                return Err(OperatorError::Settings(format!(
+                    "GAP: exponential smoothing element {other:?} is not implemented"
+                )));
+            }
+        }
+    }
+    let level =
+        level.ok_or_else(|| OperatorError::Data("exponential smoothing has no Level".into()))?;
+    let alpha = required_smoothing_f64(level, "alpha")?;
+    // Reject a trend this build cannot score before asking for the numeric state,
+    // so a damped or seasonal file is a GAP even when errVariance is absent.
+    let gamma = match trend {
+        None => None,
+        Some(node) => Some(additive_gamma(node)?),
+    };
+    let mut sigma2 = None;
+    let mut df = None;
+    let mut init_level = None;
+    let mut init_trend = None;
+    for ext in model.children().filter(|n| n.has_tag_name("Extension")) {
+        match ext.attribute("name") {
+            Some("errVariance") => {
+                sigma2 = parse_f64_attr(ext, "value", "errVariance")?;
+            }
+            Some("degreesOfFreedom") => {
+                df = parse_f64_attr(ext, "value", "degreesOfFreedom")?;
+            }
+            Some("initLevel") => {
+                init_level = parse_f64_attr(ext, "value", "initLevel")?;
+            }
+            Some("initTrend") => {
+                init_trend = parse_f64_attr(ext, "value", "initTrend")?;
+            }
+            Some("periodStartIndex") => {
+                let value = ext.attribute("value").unwrap_or("");
+                if value != "0" && !value.is_empty() {
+                    return Err(OperatorError::Settings(format!(
+                        "GAP: Time Series periodStartIndex {value:?} is not implemented"
+                    )));
+                }
+            }
+            Some("positiveParameters") => {
+                let value = ext.attribute("value").unwrap_or("");
+                if value != "1" && !value.is_empty() {
+                    return Err(OperatorError::Settings(format!(
+                        "GAP: Time Series positiveParameters {value:?} is not implemented"
+                    )));
+                }
+            }
+            _ => {}
+        }
+    }
+    let sigma2 =
+        sigma2.ok_or_else(|| OperatorError::Data("Time Series PMML has no errVariance".into()))?;
+    let df =
+        df.ok_or_else(|| OperatorError::Data("Time Series PMML has no degreesOfFreedom".into()))?;
+    let init_level = init_level
+        .ok_or_else(|| OperatorError::Data("exponential smoothing has no initLevel".into()))?;
+    let Some(gamma) = gamma else {
+        if init_trend.is_some() {
+            return Err(OperatorError::Settings(
+                "GAP: exponential smoothing initTrend without a trend element has no oracle".into(),
+            ));
+        }
+        return Ok(SmoothSpec::Simple {
+            alpha,
+            init_level,
+            sigma2,
+            df,
+        });
+    };
+    let init_trend = init_trend
+        .ok_or_else(|| OperatorError::Data("Holt exponential smoothing has no initTrend".into()))?;
+    Ok(SmoothSpec::Holt {
+        alpha,
+        gamma,
+        init_level,
+        init_trend,
+        sigma2,
+        df,
+    })
+}
+
+fn additive_gamma(trend: roxmltree::Node<'_, '_>) -> Result<f64, OperatorError> {
+    if let Some(phi) = trend.attribute("phi").filter(|text| !text.is_empty()) {
+        let phi = parse_finite(phi, "phi")?;
+        if phi != 1.0 {
+            return Err(OperatorError::Settings(format!(
+                "GAP: damped-trend exponential smoothing (phi={phi}) has no oracle"
+            )));
+        }
+    }
+    match trend.attribute("trend").unwrap_or("") {
+        "additive" => required_smoothing_f64(trend, "gamma"),
+        "damped" => Err(OperatorError::Settings(
+            "GAP: damped-trend exponential smoothing has no oracle".into(),
+        )),
+        "multiplicative" => Err(OperatorError::Settings(
+            "GAP: multiplicative-trend exponential smoothing has no oracle".into(),
+        )),
+        "polynomial_exponential" => Err(OperatorError::Settings(
+            "GAP: polynomial exponential smoothing has no oracle".into(),
+        )),
+        other => Err(OperatorError::Settings(format!(
+            "GAP: exponential smoothing trend {other:?} has no oracle"
+        ))),
+    }
+}
+
+fn required_smoothing_f64(node: roxmltree::Node<'_, '_>, name: &str) -> Result<f64, OperatorError> {
+    let text = node.attribute(name).ok_or_else(|| {
+        OperatorError::Data(format!(
+            "Time Series exponential smoothing {name} is missing"
+        ))
+    })?;
+    parse_finite(text, name)
 }
 
 fn parse_coef_array(
@@ -660,5 +886,94 @@ fn next_period(value: &Value) -> Result<Value, OperatorError> {
         _ => Err(OperatorError::Settings(
             "GAP: Time Series period field is not numeric".into(),
         )),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn model(body: &str) -> String {
+        format!(
+            "<PMML><TimeSeriesModel algorithmName=\"exponential smoothing\" bestFit=\"ExponentialSmoothing\">{body}</TimeSeriesModel></PMML>"
+        )
+    }
+
+    fn gap(xml: &str) -> String {
+        match parse_saved_model(xml).unwrap_err() {
+            OperatorError::Settings(message) => message,
+            other => panic!("expected a settings error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_simple_and_holt_parameters() {
+        let simple = model(
+            "<ExponentialSmoothing transformation=\"none\"><Level alpha=\"0.9999889207657683\" smoothedValue=\"43.9999944603215\"/></ExponentialSmoothing><Extension name=\"errVariance\" value=\"0.25000542184106844\"/><Extension name=\"degreesOfFreedom\" value=\"47\"/><Extension name=\"initLevel\" value=\"20.50000553967849\"/><Extension name=\"periodStartIndex\" value=\"0\"/>",
+        );
+        match parse_saved_model(&simple).unwrap() {
+            SavedModel::Smooth(SmoothSpec::Simple {
+                alpha,
+                init_level,
+                sigma2,
+                df,
+            }) => {
+                assert_eq!(alpha, 0.9999889207657683);
+                assert_eq!(init_level, 20.50000553967849);
+                assert_eq!(sigma2, 0.25000542184106844);
+                assert_eq!(df, 47.0);
+            }
+            other => panic!("expected simple smoothing, got {other:?}"),
+        }
+        let holt = model(
+            "<ExponentialSmoothing RMSE=\"0.0\" transformation=\"none\"><Level alpha=\"0.8\" smoothedValue=\"44\"/><Trend_ExpoSmooth trend=\"additive\" gamma=\"0.4\" smoothedValue=\"0.5\"/></ExponentialSmoothing><Extension name=\"errVariance\" value=\"0.0\"/><Extension name=\"degreesOfFreedom\" value=\"46\"/><Extension name=\"initLevel\" value=\"20\"/><Extension name=\"initTrend\" value=\"0.5\"/>",
+        );
+        match parse_saved_model(&holt).unwrap() {
+            SavedModel::Smooth(SmoothSpec::Holt {
+                alpha,
+                gamma,
+                init_level,
+                init_trend,
+                sigma2,
+                df,
+            }) => {
+                assert_eq!(alpha, 0.8);
+                assert_eq!(gamma, 0.4);
+                assert_eq!(init_level, 20.0);
+                assert_eq!(init_trend, 0.5);
+                assert_eq!(sigma2, 0.0);
+                assert_eq!(df, 46.0);
+            }
+            other => panic!("expected Holt smoothing, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn rejects_smoothing_models_outside_the_oracle() {
+        let seasonal = model(
+            "<ExponentialSmoothing transformation=\"none\"><Level alpha=\"0.2\" smoothedValue=\"1\"/><Seasonality_ExpoSmooth type=\"additive\" period=\"12\" delta=\"0.2\"/></ExponentialSmoothing>",
+        );
+        assert!(gap(&seasonal).starts_with("GAP:"));
+        assert!(gap(&seasonal).contains("Winters"));
+        let damped = model(
+            "<ExponentialSmoothing transformation=\"none\"><Level alpha=\"0.2\" smoothedValue=\"1\"/><Trend_ExpoSmooth trend=\"damped\" gamma=\"0.1\" phi=\"0.8\" smoothedValue=\"0.1\"/></ExponentialSmoothing>",
+        );
+        assert!(gap(&damped).contains("damped"));
+        let phi = model(
+            "<ExponentialSmoothing transformation=\"none\"><Level alpha=\"0.2\" smoothedValue=\"1\"/><Trend_ExpoSmooth trend=\"additive\" gamma=\"0.1\" phi=\"0.9\" smoothedValue=\"0.1\"/></ExponentialSmoothing>",
+        );
+        assert!(gap(&phi).contains("phi"));
+        let brown = model(
+            "<ExponentialSmoothing transformation=\"none\"><Level alpha=\"0.2\" smoothedValue=\"1\" quadraticSmoothedValue=\"0.4\"/></ExponentialSmoothing>",
+        );
+        assert!(gap(&brown).contains("Brown"));
+        let logged = model(
+            "<ExponentialSmoothing transformation=\"logarithmic\"><Level alpha=\"0.2\" smoothedValue=\"1\"/></ExponentialSmoothing><Extension name=\"errVariance\" value=\"1\"/><Extension name=\"degreesOfFreedom\" value=\"10\"/><Extension name=\"initLevel\" value=\"1\"/>",
+        );
+        assert!(gap(&logged).contains("transformation"));
+        let multiplicative = model(
+            "<ExponentialSmoothing transformation=\"none\"><Level alpha=\"0.2\" smoothedValue=\"1\"/><Trend_ExpoSmooth trend=\"multiplicative\" gamma=\"0.1\" smoothedValue=\"1\"/></ExponentialSmoothing>",
+        );
+        assert!(gap(&multiplicative).contains("multiplicative"));
     }
 }
