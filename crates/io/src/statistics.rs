@@ -15,8 +15,14 @@
 //!   [`MissingSpec`] on the field (null and, for strings, white space count as blank too).
 //! - Values are left `Unknown` in the field: the Type node instantiates them.
 //!
-//! Not implemented: reading value labels as data, password-encrypted files, and storage from the
-//! field format (`useFieldFormatForStorage`).
+//! - With the field format deciding storage (`useFieldFormatForStorage`), an `F` variable with
+//!   no decimals is `Integer` (`ibm-demos/pm_decisionlist`, `pm_customer_train1.sav`: `F10.0`
+//!   fields such as `customer_id` print as integers, the `F9.3` `income` and `rfm_score` stay
+//!   real); date formats are as above. GAP: other numeric formats with no decimals (`DOLLAR8`
+//!   in `employee_data.sav`) and non-integral values in an `F w.0` variable have no oracle and
+//!   are rejected.
+//!
+//! Not implemented: reading value labels as data and password-encrypted files.
 
 use dms_sav::{Measure, MissingValues, SavFile, Variable};
 use dms_types::calendar::{MICROS_PER_DAY, MICROS_PER_SECOND};
@@ -37,6 +43,8 @@ pub enum NameMode {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct StatisticsOptions {
     pub names: NameMode,
+    /// `useFieldFormatForStorage`: integers from `F w.0` formats.
+    pub field_format_storage: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -74,7 +82,17 @@ pub fn table_from_sav(
     let mut fields = Vec::with_capacity(file.variables.len());
     let mut storages = Vec::with_capacity(file.variables.len());
     for (index, variable) in file.variables.iter().enumerate() {
-        let storage = storage_of(variable);
+        let storage = storage_of(variable, options.field_format_storage)?;
+        if storage == Storage::Integer
+            && file.rows.iter().any(|row| {
+                matches!(row.get(index), Some(dms_sav::Value::Number(x)) if x.is_finite() && x.fract() != 0.0)
+            })
+        {
+            return Err(StatisticsError::Sav(format!(
+                "variable {} has an F w.0 format but non-integral values (GAP: storage unknown)",
+                variable.name
+            )));
+        }
         storages.push(storage);
         let name = match (options.names, variable.label.as_deref()) {
             (NameMode::LabelsAsNames, Some(label)) if !label.trim().is_empty() => label.to_string(),
@@ -111,17 +129,24 @@ pub fn table_from_sav(
     Table::new(model, rows).map_err(StatisticsError::Model)
 }
 
-fn storage_of(variable: &Variable) -> Storage {
+fn storage_of(variable: &Variable, field_format: bool) -> Result<Storage, StatisticsError> {
     if variable.is_string() {
-        return Storage::String;
+        return Ok(Storage::String);
     }
-    let code = variable.print_format.type_code;
-    match code {
+    let format = &variable.print_format;
+    Ok(match format.type_code {
         20 | 23 | 24 | 28..=30 | 38 | 39 => Storage::Date,
         22 | 41 => Storage::Timestamp,
         21 | 25 | 40 => Storage::Time,
+        5 if field_format && format.decimals == 0 => Storage::Integer,
+        code if field_format && format.decimals == 0 => {
+            return Err(StatisticsError::Sav(format!(
+                "variable {}: storage from format code {code} with no decimals is unknown (GAP)",
+                variable.name
+            )));
+        }
         _ => Storage::Real,
-    }
+    })
 }
 
 fn measurement_of(variable: &Variable) -> Measurement {
@@ -146,6 +171,10 @@ fn convert(value: &dms_sav::Value, storage: Storage) -> Value {
                 Storage::Date => date_value(*number),
                 Storage::Timestamp => timestamp_value(*number),
                 Storage::Time => time_value(*number),
+                // Integral and finite (checked when the storage was chosen); larger magnitudes
+                // than i64 stay real.
+                #[allow(clippy::cast_possible_truncation)]
+                Storage::Integer if number.abs() < 9.0e18 => Value::Integer(*number as i64),
                 _ => Value::real(*number),
             }
         }
@@ -254,6 +283,41 @@ fn roles(file: &SavFile) -> std::collections::HashMap<String, Role> {
 mod tests {
     use super::*;
     use dms_types::calendar;
+
+    fn numeric(type_code: u8, decimals: u8) -> Variable {
+        let format = dms_sav::Format {
+            type_code,
+            width: 10,
+            decimals,
+        };
+        Variable {
+            name: "v".into(),
+            short_name: "V".into(),
+            label: None,
+            width: 0,
+            print_format: format,
+            write_format: format,
+            measure: Measure::Scale,
+            alignment: None,
+            display_width: None,
+            missing: MissingValues::None,
+        }
+    }
+
+    #[test]
+    fn field_format_storage_makes_f_w0_integers() {
+        // `pm_customer_train1.sav`: F10.0 integer, F9.3 real, DATETIME timestamp.
+        assert_eq!(storage_of(&numeric(5, 0), true), Ok(Storage::Integer));
+        assert_eq!(storage_of(&numeric(5, 3), true), Ok(Storage::Real));
+        assert_eq!(storage_of(&numeric(22, 0), true), Ok(Storage::Timestamp));
+        assert_eq!(storage_of(&numeric(5, 0), false), Ok(Storage::Real));
+        // DOLLAR8 (`employee_data.sav`) has no oracle.
+        assert!(storage_of(&numeric(4, 0), true).is_err());
+        assert_eq!(
+            convert(&dms_sav::Value::Number(7.0), Storage::Integer),
+            Value::Integer(7)
+        );
+    }
 
     #[test]
     fn spss_epoch_matches_the_calendar() {

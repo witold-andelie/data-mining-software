@@ -8,8 +8,8 @@
 //! [`dms_types::MissingSpec`], variable and value labels attached to [`dms_types::Field`]), and
 //! embedded `filterTable`/`typeTable` rules.
 //!
-//! Not implemented: `readValues = labelsAsData`, `useFieldFormatForStorage = true`,
-//! `fileIsPasswordEncrypted = true`, and non-`None` `check` modes in `typeTable`.
+//! `useFieldFormatForStorage` follows `dms_io::statistics`. Not implemented:
+//! `readValues = labelsAsData`, `fileIsPasswordEncrypted = true`, and non-`None` `check` modes in `typeTable`.
 
 use super::r#type::{SourceTables, apply_source_tables, parse_source_tables};
 use crate::context::ExecContext;
@@ -35,11 +35,7 @@ pub fn build(node: &StreamNode) -> Result<Box<dyn Operator>, OperatorError> {
             OperatorError::Settings("Statistics File: inputFileName is required".into())
         })?;
 
-    if settings::flag(s, "useFieldFormatForStorage")?.unwrap_or(false) {
-        return Err(OperatorError::Settings(
-            "Statistics File: useFieldFormatForStorage is not supported yet".into(),
-        ));
-    }
+    let field_format_storage = settings::flag(s, "useFieldFormatForStorage")?.unwrap_or(false);
     if settings::flag(s, "fileIsPasswordEncrypted")?.unwrap_or(false) {
         return Err(OperatorError::Settings(
             "Statistics File: password-encrypted files are not supported yet".into(),
@@ -76,7 +72,10 @@ pub fn build(node: &StreamNode) -> Result<Box<dyn Operator>, OperatorError> {
     let tables = parse_source_tables(s)?;
     Ok(Box::new(StatisticsFile {
         file_name,
-        options: StatisticsOptions { names },
+        options: StatisticsOptions {
+            names,
+            field_format_storage,
+        },
         tables,
     }))
 }

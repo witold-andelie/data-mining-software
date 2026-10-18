@@ -504,13 +504,6 @@ fn statistics_file_rejects_unsupported_and_missing_settings() {
     assert!(
         statistics_file::build(&node(vec![
             p("inputFileName", "x.sav"),
-            p("useFieldFormatForStorage", "true"),
-        ]))
-        .is_err()
-    );
-    assert!(
-        statistics_file::build(&node(vec![
-            p("inputFileName", "x.sav"),
             p("fileIsPasswordEncrypted", "true"),
         ]))
         .is_err()

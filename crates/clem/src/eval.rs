@@ -185,6 +185,9 @@ fn bind(expr: &Expr, b: &Binder<'_>) -> Result<Node, ClemError> {
         },
         Expr::Quoted(name) => match b.model.position(name) {
             Some(position) => Node::Field(position),
+            // `'$null$'` without such a field is null and compares like `undef`
+            // (`ibm-demos/bayes_bankloan`: `default = '$null$'` discards the 150 null defaults).
+            None if name == "$null$" => Node::Undef,
             None => Node::Const(Datum::Value(Value::string(name.as_str()))),
         },
         Expr::Special(name) => special(name, b)?,
