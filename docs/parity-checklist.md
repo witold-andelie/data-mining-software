@@ -5,7 +5,7 @@
 | Scope | Implemented | Total |
 |---|---|---|
 | MVP | 69 | 85 |
-| later | 0 | 25 |
+| later | 1 | 25 |
 | license blocked | 0 | 5 |
 | out of scope | 0 | 34 |
 
@@ -109,7 +109,7 @@
 | CHAID | `chaid` | MVP | done | `BuildChaidRuleNode`, `ApplyChaidRuleNode`, `ApplyChaidSplitModelNode`, `Chaid!spss.tree-extension` |
 | QUEST | `quest` | MVP | missing | `BuildQuestNode`, `ApplyQuestRuleNode`, `ApplyQuestSplitModelNode`, `Quest!spss.tree-extension` |
 | Random Trees | `random_trees` | MVP | missing | `spss.randomTrees!RT`, `spss.randomTrees!applyRandomTrees` |
-| Tree-AS | `tree_as` | later | missing | `spss.treeEngine!treeEngine`, `spss.treeEngine!applyTree` |
+| Tree-AS | `tree_as` | later | done | `spss.treeEngine!treeEngine`, `spss.treeEngine!applyTree` |
 | Linear-AS | `linear_as` | later | missing | `spss.linearEngine!linearEngine`, `spss.linearEngine!applyLinearEngine` |
 | Decision List | `decision_list` | MVP | done | `BuildDecisionListNode`, `ApplyDecisionListNode`, `ApplyDecisionListSplitModelNode` |
 | Linear | `linear` | MVP | done | `LinearRegression!spss.alm-extension`, `ApplyLinearRegressionSplitModelNode` |

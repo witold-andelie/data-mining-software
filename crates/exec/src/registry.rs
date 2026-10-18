@@ -53,6 +53,7 @@ const BUILT_IN: &[(&str, Factory)] = &[
     ("cart", model_node),
     ("c50", model_node),
     ("chaid", model_node),
+    ("tree_as", model_node),
     ("kmeans", model_node),
     ("apriori", model_node),
     ("carma", model_node),
@@ -95,8 +96,10 @@ const PENDING: &[&str] = &[];
 /// Time Series (`corpus/models_next/ts_arima.str`, `ts_expert.str`,
 /// `corpus/models_next2/ts_simple.str`, `ts_holt.str`): the nugget scores the saved ARIMA
 /// or exponential smoothing model; estimation (`spss.ts!ts_builder`) is a GAP.
-/// Analytic Engine Random Trees, Tree-AS, Linear-AS and LSVM likewise score their
-/// saved PMML (`models_as`, 16 cases); all four builders explicitly return GAP.
+/// Analytic Engine Random Trees, Linear-AS and LSVM score their saved PMML.
+/// Tree-AS trains through the shared CHAID learner. Linear-AS selection remains a GAP:
+/// `linearas_default` exports seven parameters including a redundant x4-square term;
+/// reusing ALM selects six, so equal predictions alone do not establish training parity.
 const SCORING_ONLY: &[&str] = &[
     "neural_net",
     "kohonen",
@@ -106,7 +109,6 @@ const SCORING_ONLY: &[&str] = &[
     "auto_classifier",
     "auto_numeric",
     "random_trees",
-    "tree_as",
     "linear_as",
     "lsvm",
 ];
@@ -139,6 +141,10 @@ fn nugget_or_builder(node: &StreamNode) -> Result<Box<dyn Operator>, OperatorErr
     } else if node.type_identifier() == "spss.ts!ts_builder" {
         Err(OperatorError::Settings(
             "GAP: training Time Series (spss.ts!ts_builder) is not implemented; ARIMA/exponential-smoothing estimation is not reproduced".into(),
+        ))
+    } else if node.type_identifier() == "spss.linearEngine!linearEngine" {
+        Err(OperatorError::Settings(
+            "GAP: Linear-AS training selection is not reproduced: linearas_default oracle has 7 parameters (including x4 squared), the reused Linear learner selects 6; use the saved nugget".into(),
         ))
     } else {
         Err(OperatorError::Settings(format!(

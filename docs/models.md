@@ -71,7 +71,7 @@
 
 ## 6. Analytic Engine 保存模型评分（2026-10-18）
 
-`models_as` 的 16 个流全部匹配，每例 3/3，共 48/48 个终端输入。核对字段名、顺序、行数和全部单元格；数值按 `xtask compare` 的打印舍入与相对容差比较，不声称浮点逐位一致。训练不在范围内：`random_trees`、`tree_as`、`linear_as`、`lsvm` 都在 `SCORING_ONLY`；builder 返回 `OperatorError::Settings`，消息以 `GAP:` 开头。运行日志中的一个 builder 根因是预期行为，nugget 使用流内保存的 PMML。
+`models_as` 的 16 个流全部匹配，每例 3/3，共 48/48 个终端输入。核对字段名、顺序、行数和全部单元格；数值按 `xtask compare` 的打印舍入与相对容差比较，不声称浮点逐位一致。此处原验证只涵盖评分。Tree-AS 训练现已通过第 7 节的直接 builder 对照；`random_trees`、`linear_as`、`lsvm` 保留在 `SCORING_ONLY`，builder 返回带 `GAP:` 的 Settings 错误，nugget 使用流内保存的 PMML。
 
 | 目录 id | builder 标识 | nugget 标识 |
 |---|---|---|
@@ -97,7 +97,7 @@
 
 **自动替换字段例外（观察与推断分开）。** `rt_noconf`、`rt_batch` 的保存流中，两份 nugget 的 `_calculate_conf` 都为 false；但 oracle 的原始自动回填 nugget 仍有 `$RC-respond`，独立 Grid scores 副本没有。前者保存了 `refreshLinkState=TurnOnReplaceLink` 和非空的 `repalcebuilderNodeId`（原文件拼写如此）。oracle manifest 和 `modeler_oracle.py` 显示 builder 会在导出输入前运行。原因推断为 builder 替换重置了原始 nugget 的评分字段；本实现按这两个保存标记复现观察到的字段，不训练，也不根据案例名、节点名或 uid 分支。无自动替换标记的 nugget 严格遵守 false。其他替换顺序尚未验证。
 
-**GAP。** 四类训练、raw/adjusted propensity（包括 LSVM `_calculateRawProp=true`）未实现，明确拒绝；`_GenerateSQL` 除缺省、`false`、`native` 外的值（例如 `udf`）明确拒绝。非法布尔值同样返回带 `GAP:` 的 Settings 错误。LSVM 多分类、树平票没有 oracle；通用 majorityVote 在平票时采用目标 DataField 类别顺序，此行为有合成测试但未获 IBM 对照确认。Tree-AS `_display_rule_id=false` 的省略字段有合成测试，本批流均为 true。
+**GAP。** Random Trees、Linear-AS、LSVM 训练、raw/adjusted propensity（包括 LSVM `_calculateRawProp=true`）未实现，明确拒绝；`_GenerateSQL` 除缺省、`false`、`native` 外的值（例如 `udf`）明确拒绝。非法布尔值同样返回带 `GAP:` 的 Settings 错误。LSVM 多分类、树平票没有 oracle；通用 majorityVote 在平票时采用目标 DataField 类别顺序，此行为有合成测试但未获 IBM 对照确认。Tree-AS `_display_rule_id=false` 的省略字段有合成测试，本批流均为 true。
 
 规范依据为 DMG [PMML 4.3 Transformations](https://dmg.org/pmml/v4-3/Transformations.html) 与 [Multiple Models](https://dmg.org/pmml/v4-3/MultipleModels.html)；Modeler 设置来自公开脚本接口的既有探针记录 `xtask/oracle/probes/models_as_streams.py`。合成测试覆盖投票与叶置信度的区别、均值与溢出、分箱边界/缺失/default/畸形参数、lastPrediction/id、LSVM 决策值、设置拒绝和损坏附件；语料测试 `crates/exec/tests/models_as.rs` 覆盖全部 48 个终端输入。
 
@@ -114,8 +114,18 @@ Clopper–Pearson 界和两层 beam search 的规则均在模块文档逐例列�
 以及 `isDisabled`、`searchDirection=up`、`label=remainder`。`train` 解析为现有评分 IR；
 IR 保留禁用状态，不保留未建模的 label/searchDirection 扩展，完整 XML 可由 `train_xml` 获取。
 
-9 个指定 oracle 模型严格比较 RuleSet（含规则顺序、谓词、计数、禁用状态、模型头和 schema）
-全部一致。第 10 例 `models_next2/dl_max_rules` 为已知响应率平票 GAP：原型和 Rust 选
-north+web，Modeler 选 web+gold；测试固定双方谓词和计数以免掩盖新的差异。
-11 个流比较 31/33，仅该例为 1/3。完整案例、设置映射、拒绝范围和验证输出见
+8 个 oracle 模型（`train_next` 的 7 例和 `models_next2/dl_min_group`）严格比较 RuleSet
+（规则顺序、谓词、计数、禁用状态、模型头和 schema）全部一致。响应率相同时取覆盖更少的列表；
+纯分段数据上按不同顺序拆分记录的平票（`models_next2/dl_default`、`dl_max_rules`）拒绝为 GAP，
+nugget 保留已保存的模型。11 个流比较全部 3/3。完整案例、设置映射、拒绝范围和验证输出见
 [`decision-list-validation.md`](decision-list-validation.md)。
+
+## 7. Tree-AS 训练及 Linear-AS 剩余差异（2026-10-18）
+
+依据 Modeler 19 Algorithms Guide 的 “Tree AS Algorithm”（第 4、5 节）和保存的 builder 设置。`treeas_default`、`treeas_depth`、`treeas_numeric` 分别训练出 7、7、11 个节点，分箱字段数 2、2、5。`models_as_training` 直接运行 builder，逐个比较 bin interval、分裂谓词、节点 id、记录数、预测、概率和置信度；结构相等，浮点相对容差 1e-10（尺度下限 1）。不通过 nugget 的保存模型取得训练结果。
+
+已验证的差异：连续输入先变成 `<field>_BINNED` ordinal 字段，五箱（重复边界合并），`Discretize` 左闭右开、末箱无上界；三例中连续输入的所有边界都已核对。按排序后 `round(n*k/5)` 的零基下标取值、去重并去掉最小值，可复现这些边界；这条通用分箱公式是推断。树增长复用 CHAID 的默认 merge/split alpha=.05、Bonferroni、Pearson、最小父/子节点 2%/1%，深度按 builder 的 3/5；无 surrogate/defaultChild，`missingValueStrategy=lastPrediction`。Flag 目标 true 类别在前，分类置信度为 `(n_class+1)/(n+k)`，概率为频率；连续目标不写 ScoreDistribution。节点按广度优先编号。
+
+非默认算法设置、权重、成本、拆分/分区、缺失训练值，以及达到 record_threshold=1000000 的 effect-size 路径都返回带 GAP 的 Settings 错误。保留默认效果阈值设置，但小数据使用 p-value 路径，不假定百万记录路径已实现。
+
+Linear-AS 的 `linearas_default` 开启二阶项检测、前向选择、AdjustedRSquare、截距和自定义输入，无 ADP。公开说明为 covariate 添加平方候选、使用相关矩阵 sweep。复用现有 Linear 得到截距加五个主效应共 6 个参数；oracle 的 7 个参数另含 `x4 * x4`（PPMatrix exponent=2，beta=-1.32903806936708e-16）。六个共同系数最大绝对差为 2.6832079490248025e-14。按公开相关矩阵公式的两遍矩统计与 provisional-means/sweep 尝试仍未复现该冗余平方项；选择接近完全拟合时对数值运算顺序敏感是推断，不能以相同预测替代训练结构匹配。未保留这些尝试或按字段名硬编码该项；builder 继续 GAP，`linear_as` 不移出 `SCORING_ONLY`。测试同时固定此差异与拒绝行为。

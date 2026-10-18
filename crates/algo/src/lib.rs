@@ -26,6 +26,7 @@ pub mod linear;
 pub mod logistic;
 pub mod smooth;
 pub mod stats;
+pub mod tree_as;
 pub mod twostep;
 
 pub use common::{

@@ -94,6 +94,22 @@ const INTERVALS: usize = 10;
 
 /// Trains a CHAID model.
 pub fn train(dataset: &Dataset<'_>, settings: &ChaidSettings) -> Result<Pmml, AlgoError> {
+    train_impl(dataset, settings, false)
+}
+
+/// Analytic Engine presentation of a tree trained on pre-binned ordinal inputs.
+pub(crate) fn train_analytic(
+    dataset: &Dataset<'_>,
+    settings: &ChaidSettings,
+) -> Result<Pmml, AlgoError> {
+    train_impl(dataset, settings, true)
+}
+
+fn train_impl(
+    dataset: &Dataset<'_>,
+    settings: &ChaidSettings,
+    analytic: bool,
+) -> Result<Pmml, AlgoError> {
     if dataset.frequency.is_some() {
         return Err(AlgoError::Unsupported(
             "CHAID with a frequency field".into(),
@@ -104,7 +120,7 @@ pub fn train(dataset: &Dataset<'_>, settings: &ChaidSettings) -> Result<Pmml, Al
         return Err(AlgoError::Data("no records with a valid target".into()));
     }
     let tree = grow(&data, settings);
-    let root = pmml_node(&tree, 0, &data, Predicate::True);
+    let root = pmml_node(&tree, 0, &data, Predicate::True, analytic);
     let header = ModelHeader {
         name: None,
         function: if data.is_regression() {
@@ -124,7 +140,11 @@ pub fn train(dataset: &Dataset<'_>, settings: &ChaidSettings) -> Result<Pmml, Al
         functions: Vec::new(),
         model: Model::Tree(TreeModel {
             header,
-            missing_value_strategy: MissingValueStrategy::None,
+            missing_value_strategy: if analytic {
+                MissingValueStrategy::LastPrediction
+            } else {
+                MissingValueStrategy::None
+            },
             no_true_child_strategy: NoTrueChildStrategy::ReturnNullPrediction,
             root,
         }),
@@ -732,9 +752,25 @@ fn is_pure(data: &Data, rows: &[usize]) -> bool {
 // ------------------------------------------------------------------------------------------
 // PMML
 
-fn pmml_node(nodes: &[GrownNode], index: usize, data: &Data, predicate: Predicate) -> Node {
+fn pmml_node(
+    nodes: &[GrownNode],
+    index: usize,
+    data: &Data,
+    predicate: Predicate,
+    analytic: bool,
+) -> Node {
     let node = &nodes[index];
-    let (score, distribution) = summary(data, &node.rows);
+    let (score, mut distribution) = summary(data, &node.rows);
+    if analytic {
+        if data.is_regression() {
+            distribution.clear();
+        } else {
+            let denominator = node.rows.len() as f64 + distribution.len() as f64;
+            for item in &mut distribution {
+                item.confidence = Some((item.record_count + 1.0) / denominator);
+            }
+        }
+    }
     let mut out = Node {
         id: Some(node.id.to_string()),
         score: Some(score),
@@ -746,7 +782,9 @@ fn pmml_node(nodes: &[GrownNode], index: usize, data: &Data, predicate: Predicat
     };
     if let Some(split) = &node.split {
         let predictor = &data.predictors[split.predictor];
-        out.default_child = Some(nodes[split.children[split.default_child]].id.to_string());
+        if !analytic {
+            out.default_child = Some(nodes[split.children[split.default_child]].id.to_string());
+        }
         // Upper bounds of ordered groups: the bound of their last non-missing category.
         let uppers: Vec<f64> = split
             .groups
@@ -766,6 +804,15 @@ fn pmml_node(nodes: &[GrownNode], index: usize, data: &Data, predicate: Predicat
             .iter()
             .enumerate()
             .map(|(k, group)| {
+                if analytic {
+                    return pmml_node(
+                        nodes,
+                        split.children[k],
+                        data,
+                        analytic_predicate(predictor, group),
+                        true,
+                    );
+                }
                 let piece = group_predicate(predictor, group, k, &uppers, split.groups.len());
                 let predicate = Predicate::Compound {
                     operator: BooleanOperator::Surrogate,
@@ -778,11 +825,63 @@ fn pmml_node(nodes: &[GrownNode], index: usize, data: &Data, predicate: Predicat
                         },
                     ],
                 };
-                pmml_node(nodes, split.children[k], data, predicate)
+                pmml_node(nodes, split.children[k], data, predicate, false)
             })
             .collect();
     }
     out
+}
+
+/// AS emits exact category groups without surrogate defaults. Single edge bins extend
+/// outwards; multi-bin groups retain both endpoints, including unobserved bins between them.
+fn analytic_predicate(predictor: &Predictor, group: &Group) -> Predicate {
+    let simple = |operator, value| Predicate::Simple {
+        field: predictor.name.clone(),
+        operator,
+        value: Some(value),
+    };
+    if predictor.ordered {
+        let bounds: Vec<f64> = group
+            .categories
+            .iter()
+            .filter_map(|&c| predictor.uppers.get(c).copied())
+            .collect();
+        let low = bounds.first().copied().unwrap_or(0.0);
+        let high = bounds.last().copied().unwrap_or(low);
+        if low == high {
+            let operator = if predictor.uppers.first() == Some(&low) {
+                Operator::LessOrEqual
+            } else if predictor.uppers.last() == Some(&high) {
+                Operator::GreaterOrEqual
+            } else {
+                Operator::Equal
+            };
+            simple(operator, split_text(low))
+        } else {
+            Predicate::Compound {
+                operator: BooleanOperator::And,
+                predicates: vec![
+                    simple(Operator::GreaterOrEqual, split_text(low)),
+                    simple(Operator::LessOrEqual, split_text(high)),
+                ],
+            }
+        }
+    } else {
+        let mut predicates: Vec<_> = group
+            .categories
+            .iter()
+            .filter_map(|&c| predictor.labels.get(c))
+            .map(|label| simple(Operator::Equal, label.clone()))
+            .collect();
+        if predicates.len() == 1 {
+            predicates.pop().unwrap_or(Predicate::False)
+        } else {
+            Predicate::Compound {
+                operator: BooleanOperator::Or,
+                predicates,
+            }
+        }
+    }
 }
 
 fn group_predicate(
