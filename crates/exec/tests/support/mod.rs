@@ -308,6 +308,7 @@ pub fn collect_oracle_cases(types: &[&str]) -> Vec<OracleCase> {
     for (label, is_probe) in [
         ("outputs", true),
         ("graphs", true),
+        ("graphboard", true),
         ("misc", true),
         ("misc_next", true),
         ("team", false),

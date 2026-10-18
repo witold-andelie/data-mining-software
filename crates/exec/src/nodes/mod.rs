@@ -27,6 +27,7 @@ pub mod filter;
 pub mod fixed_file;
 pub mod flat_file_export;
 mod graph_data;
+pub mod graphboard;
 pub mod histogram;
 pub mod history;
 pub mod json_export;
