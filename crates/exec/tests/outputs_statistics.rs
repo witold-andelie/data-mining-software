@@ -138,6 +138,7 @@ fn make_node(children: Vec<Node>) -> StreamNode {
         containers: Vec::new(),
         settings: Some(raw_element("properties", children)),
         binning_output: None,
+        result_items: Vec::new(),
         subdiagram: None,
     }
 }

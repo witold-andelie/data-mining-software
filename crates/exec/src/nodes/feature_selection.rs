@@ -445,6 +445,7 @@ mod tests {
             containers: Vec::new(),
             settings: Some(element("properties", properties)),
             binning_output: None,
+            result_items: Vec::new(),
             subdiagram: None,
         }
     }

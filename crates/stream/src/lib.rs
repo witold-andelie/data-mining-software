@@ -68,6 +68,9 @@ pub struct StreamNode {
     /// `BinningOutput`, a sibling of `properties`: bins a node cached on its last run (RFM
     /// Analysis `IfNecessary`, `misc_rf_ifnecessary`).
     pub binning_output: Option<Element>,
+    /// `resultItem` elements, siblings of `properties`: an Auto Classifier nugget's component
+    /// models (`ibm-demos/pm_binaryclassifier`).
+    pub result_items: Vec<Element>,
     /// A supernode's inner diagram.
     pub subdiagram: Option<Diagram>,
 }
@@ -319,6 +322,11 @@ fn read_node(element: &Element, depth: usize) -> Result<StreamNode, StreamError>
         containers,
         settings: settings.cloned(),
         binning_output: element.child("BinningOutput").cloned(),
+        result_items: element
+            .child_elements()
+            .filter(|e| &*e.name.local == "resultItem")
+            .cloned()
+            .collect(),
         subdiagram,
         class,
     })
