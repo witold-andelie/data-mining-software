@@ -4,7 +4,7 @@
 
 | Scope | Implemented | Total |
 |---|---|---|
-| MVP | 63 | 85 |
+| MVP | 65 | 85 |
 | later | 0 | 23 |
 | license blocked | 0 | 5 |
 | out of scope | 0 | 34 |
@@ -60,7 +60,7 @@
 
 | Node | Id | Scope | Status | Modeler identifiers |
 |---|---|---|---|---|
-| Auto Data Prep | `auto_data_prep` | MVP | missing | `AutoDataPrepNode` |
+| Auto Data Prep | `auto_data_prep` | MVP | done | `AutoDataPrepNode` |
 | Type | `type` | MVP | done | `TypeNode` |
 | Filter | `filter` | MVP | done | `FilterNode` |
 | Derive | `derive` | MVP | done | `DeriveNode` |
@@ -146,7 +146,7 @@
 | In-database: Microsoft SQL Server | `in_database_mssql` | out of scope | missing | (unmapped) |
 | In-database: Oracle Data Mining | `in_database_oracle` | out of scope | missing | (unmapped) |
 | In-database: Netezza | `in_database_netezza` | out of scope | missing | (unmapped) |
-| Apriori | `apriori` | MVP | missing | `BuildAprioriNode`, `ApplyAprioriNode` |
+| Apriori | `apriori` | MVP | done | `BuildAprioriNode`, `ApplyAprioriNode` |
 | CARMA | `carma` | MVP | missing | `BuildCarmaNode`, `ApplyCarmaNode` |
 | Sequence | `sequence` | MVP | missing | `BuildSequenceNode`, `ApplySequenceNode` |
 | K-Means | `kmeans` | MVP | done | `BuildKMeansNode`, `ApplyKMeansNode` |

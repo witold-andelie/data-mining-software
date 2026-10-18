@@ -216,7 +216,7 @@ pub(crate) fn opt_f64_attr(
     node.attribute(attr).map(|s| parse_f64(s, attr)).transpose()
 }
 
-fn req_f64_attr(node: roxmltree::Node<'_, '_>, attr: &str) -> Result<f64, PmmlError> {
+pub(crate) fn req_f64_attr(node: roxmltree::Node<'_, '_>, attr: &str) -> Result<f64, PmmlError> {
     parse_f64(req_attr(node, attr)?, attr)
 }
 
@@ -562,6 +562,7 @@ fn parse_model(
         "RegressionModel" => Ok(Model::Regression(parse_regression_model(node)?)),
         "NeuralNetwork" => Ok(Model::Neural(crate::neural::parse(node, dictionary)?)),
         "MiningModel" => Ok(Model::Mining(parse_mining_model(node, dictionary)?)),
+        "AssociationModel" => Ok(Model::Association(crate::association::parse(node)?)),
         other => Ok(Model::Unsupported(other.to_string())),
     }
 }
@@ -639,8 +640,22 @@ fn parse_mining_schema(node: roxmltree::Node<'_, '_>) -> Result<Vec<MiningField>
             "active" => Usage::Active,
             "target" | "predicted" => Usage::Target,
             "supplementary" => Usage::Supplementary,
+            "group" => Usage::Group,
             _ => Usage::Other,
         };
+        let mut direction = None;
+        for extra in child.children().filter(roxmltree::Node::is_element) {
+            if extra.tag_name().name() == "Extension"
+                && extra.attribute("name") == Some("direction")
+            {
+                if direction.is_some() {
+                    return Err(PmmlError::Parse(format!(
+                        "MiningField {name:?} has two direction extensions"
+                    )));
+                }
+                direction = Some(req_attr(extra, "value")?.to_string());
+            }
+        }
         let missing_replacement = child
             .attribute("missingValueReplacement")
             .map(str::to_string);
@@ -670,6 +685,7 @@ fn parse_mining_schema(node: roxmltree::Node<'_, '_>) -> Result<Vec<MiningField>
             low_value,
             high_value,
             invalid_treatment,
+            direction,
         });
     }
     Ok(fields)

@@ -4,6 +4,7 @@ pub mod analysis;
 pub mod anonymize;
 pub mod append;
 pub mod apply;
+pub mod auto_data_prep;
 pub mod balance;
 pub mod binning;
 pub mod build;

@@ -16,6 +16,7 @@
 //! Output, Transformations and Built-in Functions, TreeModel, ClusteringModel,
 //! GeneralRegressionModel, RegressionModel, MiningModel.
 
+mod association;
 mod clustering;
 mod expr;
 mod neural;
@@ -25,6 +26,10 @@ mod rules;
 mod score;
 mod tree;
 
+pub use association::{
+    AssociationItem, AssociationItemset, AssociationModel, AssociationRule, ScoredAssociation,
+    score_rules,
+};
 pub use clustering::AnomalyScore;
 pub use neural::{NeuralNetworkModel, NeuralOutputKind, NeuralTarget};
 pub use score::Scorer;
@@ -119,6 +124,8 @@ pub struct MiningField {
     pub low_value: Option<f64>,
     pub high_value: Option<f64>,
     pub invalid_treatment: InvalidTreatment,
+    /// SPSS `Extension` `direction`. Tabular Apriori writes `BOTH` (`apriori_default`).
+    pub direction: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -126,6 +133,8 @@ pub enum Usage {
     Active,
     Target,
     Supplementary,
+    /// PMML `group`: the transaction id (`apriori_transactional`, field `basket`).
+    Group,
     Other,
 }
 
@@ -220,6 +229,9 @@ pub enum Model {
     /// `MiningModel` with `Segmentation` (`selectFirst`): Linear split models
     /// (`team/linear_regression`, Type role Split).
     Mining(MiningModel),
+    /// PMML `AssociationModel` (Apriori). Scored as a rule list by [`score_rules`],
+    /// not as one [`Prediction`].
+    Association(AssociationModel),
     /// A model element we read but cannot score: its element name.
     Unsupported(String),
 }
