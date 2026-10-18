@@ -8,6 +8,9 @@
 //! attachment's `tree.TargetField` and `tree.InputFieldList`, otherwise the Type roles (one
 //! target, inputs `Input` and `Both`). With `usePartitionedData` and a partition field, only the
 //! training partition (the field's first value) trains.
+//! Tree-AS (`spss.treeEngine!treeEngine`) uses inline `_...` settings, Type roles,
+//! five-bin preprocessing and the shared CHAID learner (`analytic_build`, `tree_as`).
+//! Unverified AS settings and partition/split data are explicit GAPs.
 //!
 //! K-Means (`BuildKMeansNode`) keeps its settings in the node's XML (`docs/formats/nodes/kmeans.md`):
 //! `numClusters`; with `expertMode` the `encodingValueForSets` and, when `stoppingCondition` is
@@ -79,6 +82,7 @@ pub fn build(node: &StreamNode) -> Result<Box<dyn Operator>, OperatorError> {
     let algorithm = match node.type_identifier().as_str() {
         "Cart!spss.tree-extension" => Algorithm::Cart,
         "Chaid!spss.tree-extension" => Algorithm::Chaid,
+        "spss.treeEngine!treeEngine" => Algorithm::TreeAs(super::analytic_build::tree(node)?),
         "BuildKMeansNode" => Algorithm::KMeans(kmeans_settings(node)?),
         "BuildAprioriNode" => Algorithm::Apriori(apriori_settings(node)?),
         "BuildCarmaNode" => Algorithm::Carma(carma_settings(node)?),
@@ -95,8 +99,9 @@ pub fn build(node: &StreamNode) -> Result<Box<dyn Operator>, OperatorError> {
             )));
         }
     };
-    if settings::flag(s, "useFrequency")?.unwrap_or(false)
-        || settings::flag(s, "useWeight")?.unwrap_or(false)
+    if !matches!(algorithm, Algorithm::TreeAs(_))
+        && (settings::flag(s, "useFrequency")?.unwrap_or(false)
+            || settings::flag(s, "useWeight")?.unwrap_or(false))
     {
         return Err(OperatorError::Settings(
             "model building with frequency or weight fields is not supported yet".into(),
@@ -113,6 +118,7 @@ pub fn build(node: &StreamNode) -> Result<Box<dyn Operator>, OperatorError> {
 enum Algorithm {
     Cart,
     Chaid,
+    TreeAs(ChaidSettings),
     /// The settings, and the custom input fields (`None`: the Type roles).
     KMeans((KMeansSettings, Option<Vec<String>>)),
     TwoStep((TwoStepSettings, Option<Vec<String>>)),
@@ -178,6 +184,38 @@ impl Operator for Build {
                 settings,
             )
             .map_err(|error| OperatorError::Data(format!("Decision List: {error}")))?;
+            return Ok(NodeOutput::Model(Arc::new(pmml)));
+        }
+        if let Algorithm::TreeAs(settings) = &self.algorithm {
+            if table
+                .model()
+                .fields()
+                .iter()
+                .any(|f| matches!(f.role, Role::Split | Role::Frequency | Role::Partition))
+            {
+                return Err(OperatorError::Settings(
+                    "GAP: Analytic Engine training with split/weight/partition fields".into(),
+                ));
+            }
+            if table.row_count() >= 1_000_000 {
+                return Err(OperatorError::Settings(
+                    "GAP: Tree-AS record-threshold effect-size path".into(),
+                ));
+            }
+            let (target, fields) = supervised_fields(&table, None, None)?;
+            let dataset = Dataset {
+                table: &table,
+                target,
+                inputs: &fields,
+                frequency: None,
+            };
+            let result = dms_algo::tree_as::train(&dataset, settings);
+            let pmml = result.map_err(|error| match error {
+                dms_algo::AlgoError::Unsupported(_) | dms_algo::AlgoError::Settings(_) => {
+                    OperatorError::Settings(format!("GAP: {error}"))
+                }
+                _ => OperatorError::Data(error.to_string()),
+            })?;
             return Ok(NodeOutput::Model(Arc::new(pmml)));
         }
         if let Algorithm::Apriori(settings) = &self.algorithm {
@@ -257,6 +295,7 @@ impl Operator for Build {
             Algorithm::Linear => train_linear(&dataset, &linear_settings(&parameters)?)
                 .map_err(|error| OperatorError::Data(format!("Linear: {error}")))?,
             Algorithm::KMeans(_)
+            | Algorithm::TreeAs(_)
             | Algorithm::TwoStep(_)
             | Algorithm::Logistic(_)
             | Algorithm::Regression(_)

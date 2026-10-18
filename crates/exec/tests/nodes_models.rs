@@ -142,7 +142,6 @@ fn analytic_confidence_flags_and_replacement_link_schema() {
 fn analytic_builders_are_scoring_only_and_fail_with_gap() {
     for (id, extension, builder, applier) in [
         ("random_trees", "spss.randomTrees", "RT", "applyRandomTrees"),
-        ("tree_as", "spss.treeEngine", "treeEngine", "applyTree"),
         (
             "linear_as",
             "spss.linearEngine",
@@ -161,6 +160,16 @@ fn analytic_builders_are_scoring_only_and_fail_with_gap() {
         assert!(message.starts_with("GAP:"));
         assert!(factory(&analytic_nugget(extension, applier, vec![])).is_ok());
     }
+}
+
+#[test]
+fn tree_as_builder_is_registered_for_training() {
+    assert!(dms_exec::registry::is_implemented("tree_as"));
+    let factory = dms_exec::registry::factory("tree_as").unwrap();
+    let mut node = analytic_nugget("spss.treeEngine", "treeEngine", vec![]);
+    node.class = "com.spss.clementine.component.node.ExtensionBuildModelNode".into();
+    assert!(factory(&node).is_ok());
+    assert!(factory(&analytic_nugget("spss.treeEngine", "applyTree", vec![])).is_ok());
 }
 
 fn as_zip_pmml(member: &str, data: &[u8]) -> Vec<u8> {

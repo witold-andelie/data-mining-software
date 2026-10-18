@@ -1,6 +1,7 @@
 //! Node implementations, one module per catalog id.
 pub mod aggregate;
 pub mod analysis;
+mod analytic_build;
 pub mod anonymize;
 pub mod append;
 pub mod apply;
