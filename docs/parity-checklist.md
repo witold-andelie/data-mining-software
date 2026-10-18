@@ -4,7 +4,7 @@
 
 | Scope | Implemented | Total |
 |---|---|---|
-| MVP | 66 | 85 |
+| MVP | 67 | 85 |
 | later | 0 | 23 |
 | license blocked | 0 | 5 |
 | out of scope | 0 | 34 |
@@ -64,7 +64,7 @@
 | Type | `type` | MVP | done | `TypeNode` |
 | Filter | `filter` | MVP | done | `FilterNode` |
 | Derive | `derive` | MVP | done | `DeriveNode` |
-| Ensemble | `ensemble` | MVP | missing | `EnsembleNode` |
+| Ensemble | `ensemble` | MVP | done | `EnsembleNode` |
 | Filler | `filler` | MVP | done | `FillerNode` |
 | Anonymize | `anonymize` | MVP | done | `AnonymizeNode` |
 | Reclassify | `reclassify` | MVP | done | `ReclassifyNode` |

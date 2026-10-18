@@ -15,6 +15,7 @@ pub mod data_audit;
 pub mod derive;
 pub mod distinct;
 pub mod distribution;
+pub mod ensemble;
 pub mod evaluation;
 pub mod excel_export;
 mod extension_params;
