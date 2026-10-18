@@ -53,6 +53,7 @@ const BUILT_IN: &[(&str, Factory)] = &[
     ("chaid", model_node),
     ("kmeans", model_node),
     ("apriori", model_node),
+    ("carma", model_node),
     ("twostep", model_node),
     ("logistic", model_node),
     ("linear", model_node),
