@@ -134,24 +134,64 @@ fn model_node(node: &StreamNode) -> Result<Box<dyn Operator>, OperatorError> {
     }
 }
 
-/// A nugget scores; its build node is not implemented yet.
+/// Why each scoring-only builder cannot train, by builder type. The evidence for each reason is
+/// in `plan/STATUS.md` (2026-10-19 training review) and the nugget modules.
+const TRAINING_GAPS: &[(&str, &str)] = &[
+    (
+        "spss.ts!ts_builder",
+        "Time Series estimation is not reproduced: the saved smoothing parameters are the optimizer's stopping point (ts_simple alpha 0.9999889 on a series whose optimum is alpha = 1), which the 1e-9 comparison cannot meet without Modeler's optimizer",
+    ),
+    (
+        "spss.linearEngine!linearEngine",
+        "Linear-AS training selection is not reproduced: linearas_default oracle has 7 parameters (including x4 squared), the reused Linear learner selects 6",
+    ),
+    (
+        "spss.linearSVM!linearSVM",
+        "LSVM training is not reproduced: Modeler's ADMM stops before the optimum (lsvm_default objective 0.868048 vs optimum 0.867945, lsvm_numeric 0.556714 vs 0.550353) and its blocks, inner solver and stopping rule are undocumented",
+    ),
+    (
+        "spss.randomTrees!RT",
+        "Random Trees training is not reproduced: bootstrap counts are binomial draws and predictor subsets are seeded by a hash of tree and node id, with an undocumented generator and hash; the PMML trees carry no record counts to identify them",
+    ),
+    (
+        "TrainKohonenNode",
+        "Kohonen training starts from random weights and a random record order drawn with an unknown generator",
+    ),
+    (
+        "neuralnet!spss.neuralnet-extension",
+        "Neural Net training draws random initial weights and a random 70/30 split with an unknown generator",
+    ),
+    (
+        "BuildSequenceNode",
+        "Sequence training orders tied rules by no recoverable key",
+    ),
+    (
+        "BuildAutoClusteringModelNode",
+        "Auto Cluster training needs a Kohonen component, whose training is a GAP",
+    ),
+    (
+        "BuildBinaryClassifierNode",
+        "Auto Classifier training needs Neural Net, Random Trees and LSVM components, whose training is a GAP",
+    ),
+    (
+        "BuildNumericClassifierNode",
+        "Auto Numeric training needs Neural Net, Random Trees and LSVM components, whose training is a GAP",
+    ),
+];
+
+/// A nugget scores; its build node is a GAP (`TRAINING_GAPS`).
 fn nugget_or_builder(node: &StreamNode) -> Result<Box<dyn Operator>, OperatorError> {
     if is_nugget(node) {
-        nodes::apply::build(node)
-    } else if node.type_identifier() == "spss.ts!ts_builder" {
-        Err(OperatorError::Settings(
-            "GAP: training Time Series (spss.ts!ts_builder) is not implemented; ARIMA/exponential-smoothing estimation is not reproduced".into(),
-        ))
-    } else if node.type_identifier() == "spss.linearEngine!linearEngine" {
-        Err(OperatorError::Settings(
-            "GAP: Linear-AS training selection is not reproduced: linearas_default oracle has 7 parameters (including x4 squared), the reused Linear learner selects 6; use the saved nugget".into(),
-        ))
-    } else {
-        Err(OperatorError::Settings(format!(
-            "GAP: training {} is not implemented yet; score the nugget's saved model",
-            node.type_identifier()
-        )))
+        return nodes::apply::build(node);
     }
+    let builder = node.type_identifier();
+    let reason = TRAINING_GAPS
+        .iter()
+        .find(|(id, _)| *id == builder)
+        .map_or("its training is not implemented", |(_, reason)| reason);
+    Err(OperatorError::Settings(format!(
+        "GAP: training {builder}: {reason}; score the nugget's saved model"
+    )))
 }
 
 /// Nodes the planner implements itself, without an operator (supernodes are expanded).
