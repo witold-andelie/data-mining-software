@@ -206,12 +206,7 @@ fn recorded_preset_cases() -> Vec<String> {
     cases
 }
 
-const PRESET_BASELINE_GAPS: &[&str] = &[
-    "c50_drughalf_expert",
-    "c50_drugtwice_expert",
-    "c50_wn_expert",
-    "c50_wn100_expert",
-];
+const PRESET_BASELINE_GAPS: &[&str] = &["c50_wn_expert", "c50_wn100_expert"];
 
 #[test]
 fn c50_simple_presets_and_expert_controls_match_exactly() {
@@ -231,7 +226,7 @@ fn c50_simple_presets_and_expert_controls_match_exactly() {
             }
         }
     }
-    assert_eq!(count, 26);
+    assert_eq!(count, 28);
     println!("PRESETS {count} Simple trees and Expert controls exact");
     // Explicitly train Expert defaults on the three Simple baseline datasets too.
     for tag in ["grid", "noisy", "drug"] {
@@ -241,10 +236,10 @@ fn c50_simple_presets_and_expert_controls_match_exactly() {
     }
 }
 
-/// Record the pre-existing failures instead of asserting that every unwinnowed
-/// control matches. Keep this full contract ready for the baseline learner fixes.
+/// Raising/regrowth can reproduce wn, but its selection rule and wn100 pruning
+/// remain unresolved. Keep the full contract without endorsing a partial heuristic.
 #[test]
-#[ignore = "GAP: drughalf/drugtwice split selection and precision, wn root selection, wn100 pruning"]
+#[ignore = "GAP: wn subtree raising/re-estimation and wn100 pruning"]
 fn c50_remaining_preset_expert_controls_match_exactly() {
     let mut mismatches = Vec::new();
     for case in PRESET_BASELINE_GAPS {
