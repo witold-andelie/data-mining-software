@@ -65,6 +65,7 @@ fn graph_nodes_match_modelers_graph_data() {
         &[
             "distribution",
             "histogram",
+            "graphboard",
             "plot",
             "multiplot",
             "timeplot",

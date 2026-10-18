@@ -4,7 +4,7 @@
 
 | Scope | Implemented | Total |
 |---|---|---|
-| MVP | 67 | 85 |
+| MVP | 68 | 85 |
 | later | 0 | 23 |
 | license blocked | 0 | 5 |
 | out of scope | 0 | 34 |
@@ -84,7 +84,7 @@
 
 | Node | Id | Scope | Status | Modeler identifiers |
 |---|---|---|---|---|
-| Graphboard | `graphboard` | MVP | missing | `GraphBoardNode` |
+| Graphboard | `graphboard` | MVP | done | `GraphBoardNode` |
 | Plot | `plot` | MVP | done | `ScatterPlotNode` |
 | Multiplot | `multiplot` | MVP | done | `MultiPlotNode` |
 | Time Plot | `time_plot` | MVP | done | `TimePlotNode` |
