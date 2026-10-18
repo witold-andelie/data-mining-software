@@ -4,7 +4,7 @@
 
 | Scope | Implemented | Total |
 |---|---|---|
-| MVP | 68 | 85 |
+| MVP | 69 | 85 |
 | later | 0 | 25 |
 | license blocked | 0 | 5 |
 | out of scope | 0 | 34 |
@@ -111,7 +111,7 @@
 | Random Trees | `random_trees` | MVP | missing | `spss.randomTrees!RT`, `spss.randomTrees!applyRandomTrees` |
 | Tree-AS | `tree_as` | later | missing | `spss.treeEngine!treeEngine`, `spss.treeEngine!applyTree` |
 | Linear-AS | `linear_as` | later | missing | `spss.linearEngine!linearEngine`, `spss.linearEngine!applyLinearEngine` |
-| Decision List | `decision_list` | MVP | missing | `BuildDecisionListNode`, `ApplyDecisionListNode`, `ApplyDecisionListSplitModelNode` |
+| Decision List | `decision_list` | MVP | done | `BuildDecisionListNode`, `ApplyDecisionListNode`, `ApplyDecisionListSplitModelNode` |
 | Linear | `linear` | MVP | done | `LinearRegression!spss.alm-extension`, `ApplyLinearRegressionSplitModelNode` |
 | Regression | `regression` | MVP | done | `BuildRegressionNode`, `ApplyRegressionNode` |
 | Logistic | `logistic` | MVP | done | `BuildLogisticNode`, `ApplyLogisticNode`, `ApplyLogisticSplitModelNode` |

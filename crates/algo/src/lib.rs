@@ -18,6 +18,7 @@ pub mod carma;
 pub mod cart;
 pub mod chaid;
 mod common;
+pub mod decision_list;
 pub mod factor;
 pub mod feature_selection;
 pub mod kmeans;

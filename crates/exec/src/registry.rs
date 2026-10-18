@@ -63,6 +63,7 @@ const BUILT_IN: &[(&str, Factory)] = &[
     ("pca_factor", model_node),
     ("anomaly", model_node),
     ("feature_selection", model_node),
+    ("decision_list", model_node),
     ("binning", nodes::binning::build),
     ("auto_data_prep", nodes::auto_data_prep::build),
     ("set_to_flag", nodes::set_to_flag::build),
@@ -86,8 +87,6 @@ const PENDING: &[&str] = &[];
 /// implemented.
 /// Kohonen likewise (`corpus/models_next/kohonen_*.str`): training starts from random weights
 /// drawn with an unknown generator (`randomSeed`), so it is a GAP.
-/// Decision List: `ibm-demos/pm_decisionlist` scores a saved list; training has no oracle yet
-/// (`models_next` found no segments on 48 rows; `models_next2` probes more data).
 /// Auto Cluster: the nugget scores its saved component model (`nodes::auto_cluster`);
 /// training (`BuildAutoClusteringModelNode`) is not implemented.
 /// Auto Classifier / Numeric: saved components and Ensemble scoring (`nodes::auto_models`);
@@ -101,7 +100,6 @@ const PENDING: &[&str] = &[];
 const SCORING_ONLY: &[&str] = &[
     "neural_net",
     "kohonen",
-    "decision_list",
     "sequence",
     "time_series",
     "auto_cluster",

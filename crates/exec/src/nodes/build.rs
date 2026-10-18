@@ -56,6 +56,7 @@ use dms_algo::apriori::{self, AprioriSettings};
 use dms_algo::carma::{self, CarmaSettings};
 use dms_algo::cart::{self, CartSettings, Impurity, MinSize};
 use dms_algo::chaid::{self, ChaidSettings, ChiSquare, Method};
+use dms_algo::decision_list::{self, DecisionListSettings};
 use dms_algo::factor::{self, FactorCount, FactorSettings};
 use dms_algo::kmeans::{self, KMeansSettings};
 use dms_algo::linear::{self, LinearSettings, Selection, Style};
@@ -87,6 +88,7 @@ pub fn build(node: &StreamNode) -> Result<Box<dyn Operator>, OperatorError> {
         "BuildRegressionNode" => Algorithm::Regression(regression_settings(node)?),
         "BuildPCANode" => Algorithm::Factor(factor_settings(node)?),
         "BuildAnomalyNode" => Algorithm::Anomaly(anomaly_settings(node)?),
+        "BuildDecisionListNode" => Algorithm::DecisionList(decision_list_settings(node)?),
         other => {
             return Err(OperatorError::Settings(format!(
                 "training {other} is not implemented yet"
@@ -128,11 +130,13 @@ enum Algorithm {
     Apriori(AprioriSettings),
     /// CARMA association rules (`BuildCarmaNode`).
     Carma(CarmaSettings),
+    DecisionList(DecisionListSpec),
 }
 
 type RegressionSpec = (LinearSettings, Option<String>, Option<Vec<String>>);
 
 type LogisticSpec = (LogisticSettings, Option<String>, Option<Vec<String>>);
+type DecisionListSpec = (DecisionListSettings, Option<String>, Option<Vec<String>>);
 
 struct Build {
     algorithm: Algorithm,
@@ -162,6 +166,20 @@ impl Operator for Build {
             .first()
             .ok_or_else(|| OperatorError::Inputs("a build node needs one input".into()))?;
         let table = self.training_records(input)?;
+        if let Algorithm::DecisionList((settings, target, inputs)) = &self.algorithm {
+            let (target, fields) = supervised_fields(&table, target.as_deref(), inputs.as_deref())?;
+            let pmml = decision_list::train(
+                &Dataset {
+                    table: &table,
+                    target,
+                    inputs: &fields,
+                    frequency: None,
+                },
+                settings,
+            )
+            .map_err(|error| OperatorError::Data(format!("Decision List: {error}")))?;
+            return Ok(NodeOutput::Model(Arc::new(pmml)));
+        }
         if let Algorithm::Apriori(settings) = &self.algorithm {
             let pmml = apriori::train(&table, settings).map_err(apriori_error)?;
             return Ok(NodeOutput::Model(Arc::new(pmml)));
@@ -245,7 +263,8 @@ impl Operator for Build {
             | Algorithm::Factor(_)
             | Algorithm::Anomaly(_)
             | Algorithm::Apriori(_)
-            | Algorithm::Carma(_) => {
+            | Algorithm::Carma(_)
+            | Algorithm::DecisionList(_) => {
                 return Err(OperatorError::Settings("clustering has no target".into()));
             }
         };
@@ -854,6 +873,71 @@ fn twostep_settings(
             name,
         },
         custom,
+    ))
+}
+
+/// Decision List: list depth/minimum always apply; expert controls only when enabled.
+fn decision_list_settings(node: &StreamNode) -> Result<DecisionListSpec, OperatorError> {
+    let s = node.settings.as_ref();
+    for (key, default) in [
+        ("reuseFields", true),
+        ("useEvents", false),
+        ("useInteractiveState", false),
+    ] {
+        if settings::flag(s, key)?.unwrap_or(default) != default {
+            return Err(OperatorError::Settings(format!("GAP: Decision List {key}")));
+        }
+    }
+    if settings::text(s, "searchDirection").is_some_and(|v| !matches!(v.trim(), "" | "up")) {
+        return Err(OperatorError::Settings(
+            "GAP: Decision List searchDirection other than up".into(),
+        ));
+    }
+    let count = |key, default| -> Result<usize, OperatorError> {
+        match settings::integer(s, key)? {
+            None => Ok(default),
+            Some(n) => usize::try_from(n).map_err(|_| {
+                OperatorError::Settings(format!("Decision List {key} must be positive"))
+            }),
+        }
+    };
+    let mut params = DecisionListSettings {
+        min_group_size: settings::real(s, "minGroupSize")?.unwrap_or(50.0),
+        list_depth: count("maxListDepth", 5)?,
+        response: settings::text(s, "modelTargetValue").filter(|v| !v.trim().is_empty()),
+        ..DecisionListSettings::default()
+    };
+    if settings::flag(s, "expertMode")?.unwrap_or(false) {
+        params.confidence = settings::real(s, "confidenceLevel")?.unwrap_or(95.0) / 100.0;
+        params.rule_width = count("maxRuleWidth", 5)?;
+        params.rule_depth = count("maxRuleDepth", 5)?;
+        params.list_width = count("maxListWidth", 5)?;
+        params.bin_count = count("binCount", 10)?;
+        params.segment_growth = settings::real(s, "segmentGrowth")?.unwrap_or(2.0);
+        params.equal_width = match settings::text(s, "binningMethod").as_deref().map(str::trim) {
+            None | Some("") | Some("equalFreq") => false,
+            Some("equalWidth") => true,
+            Some(other) => {
+                return Err(OperatorError::Settings(format!(
+                    "GAP: Decision List binningMethod {other}"
+                )));
+            }
+        };
+    }
+    let custom = !settings::flag(s, "autoModelFieldSelection")?.unwrap_or(true);
+    Ok((
+        params,
+        custom
+            .then(|| settings::text(s, "modelTargetFieldSelection"))
+            .flatten()
+            .filter(|v| !v.trim().is_empty()),
+        custom.then(|| {
+            settings::children(s, "modelInputFieldSelection", "field")
+                .iter()
+                .map(|f| f.text().trim().to_string())
+                .filter(|v| !v.is_empty())
+                .collect()
+        }),
     ))
 }
 
