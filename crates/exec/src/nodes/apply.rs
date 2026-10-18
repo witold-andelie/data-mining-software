@@ -816,7 +816,8 @@ impl Apply {
 
 /// A record is an anomaly when its index exceeds the cutoff (`anomaly_default`: the cutoff
 /// 1.37201 is the top training index 1.372014362108979 to six digits, and that record is `T`).
-/// Its fields are reported by decreasing contribution, the first input on a tie. A record the
+/// Its fields are reported by decreasing contribution (to 12 digits), the first input on a tie.
+/// A record the
 /// model screens out (an unseen category) gets nulls.
 fn anomaly_columns(
     scores: &[Option<dms_pmml::AnomalyScore>],
@@ -862,7 +863,11 @@ fn anomaly_columns(
                 .as_ref()
                 .map(|s| s.contributions.clone())
                 .unwrap_or_default();
-            ranked.sort_by(|a, b| b.1.total_cmp(&a.1));
+            // Contributions equal but for float noise tie, and the first input wins
+            // (`models_next2/anomaly_peers` row 1: cat 0.233313761554428 and ord
+            // 0.233313761554427 in Modeler, the other way round here).
+            let key = |x: f64| -> f64 { format!("{x:.11e}").parse().unwrap_or(x) };
+            ranked.sort_by(|a, b| key(b.1).total_cmp(&key(a.1)));
             ranked
         })
         .collect();

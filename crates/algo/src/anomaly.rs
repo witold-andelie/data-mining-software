@@ -19,14 +19,16 @@
 //!   The 15 merge distances (`X-Distances`) match to 1e-13, and BIC(1) to 1e-12.
 //! - The merge leaves 33 and 15 records; the saved peer groups (32 and 16) are the training
 //!   records nearest to each merged cluster by the log-likelihood distance (the guide's
-//!   sufficient statistics "based on the cases in cluster h").
+//!   sufficient statistics "based on the cases in cluster h"), reassigned until no record
+//!   moves (`models_next2/anomaly_adjust` needs a second pass: 29/19 after one, 30/18 saved).
 //! - The model lists the categorical inputs first, then the continuous ones, each group in
 //!   input order; clusters save their size, means, sample variances and category counts.
 //! - A cluster's `meanClusterDistance` is the mean deviation (log-likelihood distance to the
 //!   nearest cluster) of the training records nearest to it, saved to 15 significant digits
 //!   (Modeler's own sum differs in the last of them: 4.26301612350401 against 4.263016123503995).
-//! - `perRecords` p: the ceil(p% of the records)-th largest training index, to six
-//!   significant digits, is the cutoff (1% of 48: the largest, 1.372014362108979 -> 1.37201).
+//! - `perRecords` p: the ceil(p% of the records)-th largest training index, cut to six
+//!   significant digits, is the cutoff (1% of 48: the largest, 1.372014362108979 -> 1.37201;
+//!   `models_next2/anomaly_adjust`: 1.3890367 -> 1.38903, so not rounded).
 //!   GAP: only one case; whether the count is rounded up or to nearest with a minimum of one is
 //!   not settled. `numRecords` n takes the n-th largest index the same way, and `indexLevel`
 //!   is the cutoff itself (neither has an oracle case: GAP).
@@ -97,6 +99,27 @@ fn digits(x: f64, significant: usize) -> f64 {
     format!("{:.*e}", significant.saturating_sub(1), x)
         .parse()
         .unwrap_or(x)
+}
+
+/// `x` cut (not rounded) to `significant` digits: the saved anomaly cutoff
+/// (`models_next2/anomaly_adjust`: 1.3890367127061733 -> 1.38903).
+fn truncated(x: f64, significant: usize) -> f64 {
+    let text = format!("{:.*e}", significant + 3, x);
+    let Some((mantissa, exponent)) = text.split_once('e') else {
+        return x;
+    };
+    let negative = mantissa.starts_with('-');
+    let digits: String = mantissa
+        .chars()
+        .filter(char::is_ascii_digit)
+        .take(significant)
+        .collect();
+    let (head, tail) = digits.split_at(1.min(digits.len()));
+    let cut = format!(
+        "{}{head}.{tail}e{exponent}",
+        if negative { "-" } else { "" }
+    );
+    cut.parse().unwrap_or(x)
 }
 
 pub fn train(
@@ -258,24 +281,41 @@ pub fn train(
     };
     let merged = twostep::cluster(records.clone(), &deltas, parameters, &clustering)?;
     // The peer groups are the training records nearest to each merged cluster.
-    let mut clusters: Vec<Option<Cf>> = vec![None; merged.len()];
-    for record in &records {
-        let record_xi = record.log_likelihood(&deltas);
-        let nearest = merged
+    let mut centers = merged;
+    let mut assignment: Vec<usize> = Vec::new();
+    for _ in 0..100 {
+        let next: Vec<usize> = records
             .iter()
-            .map(|c| c.log_likelihood(&deltas) + record_xi - c.add(record).log_likelihood(&deltas))
-            .enumerate()
-            .fold(None, |best: Option<(usize, f64)>, (i, d)| match best {
-                Some((_, b)) if b <= d => best,
-                _ => Some((i, d)),
+            .map(|record| {
+                let record_xi = record.log_likelihood(&deltas);
+                centers
+                    .iter()
+                    .map(|c| {
+                        c.log_likelihood(&deltas) + record_xi
+                            - c.add(record).log_likelihood(&deltas)
+                    })
+                    .enumerate()
+                    .fold(None, |best: Option<(usize, f64)>, (i, d)| match best {
+                        Some((_, b)) if b <= d => best,
+                        _ => Some((i, d)),
+                    })
+                    .map_or(0, |(i, _)| i)
             })
-            .map_or(0, |(i, _)| i);
-        clusters[nearest] = Some(match clusters[nearest].take() {
-            Some(cf) => cf.add(record),
-            None => record.clone(),
-        });
+            .collect();
+        if next == assignment {
+            break;
+        }
+        assignment = next;
+        let mut grouped: Vec<Option<Cf>> = vec![None; centers.len()];
+        for (record, &k) in records.iter().zip(&assignment) {
+            grouped[k] = Some(match grouped[k].take() {
+                Some(cf) => cf.add(record),
+                None => record.clone(),
+            });
+        }
+        centers = grouped.into_iter().flatten().collect();
     }
-    let clusters: Vec<Cf> = clusters.into_iter().flatten().collect();
+    let clusters: Vec<Cf> = centers;
 
     let mut pmml = model(table, &columns, &deltas, clusters, settings);
     // Each training record's deviation from its nearest cluster sets the clusters' mean
@@ -345,7 +385,7 @@ pub fn train(
     .clamp(1, indices.len());
     let mut sorted = indices;
     sorted.sort_by(|a, b| b.total_cmp(a));
-    model.anomaly_cutoff = Some(digits(sorted[count - 1], 6));
+    model.anomaly_cutoff = Some(truncated(sorted[count - 1], 6));
     Ok(pmml)
 }
 

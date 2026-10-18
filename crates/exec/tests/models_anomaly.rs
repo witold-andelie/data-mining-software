@@ -24,10 +24,21 @@ fn close(a: f64, b: f64) -> bool {
 
 #[test]
 fn trained_peer_groups_equal_modeler_model() {
+    for (label, case) in [
+        ("models_next", "anomaly_default"),
+        ("models_next2", "anomaly_index"),
+        ("models_next2", "anomaly_records"),
+        ("models_next2", "anomaly_adjust"),
+        ("models_next2", "anomaly_peers"),
+    ] {
+        check(label, case);
+    }
+}
+
+fn check(label: &str, case: &str) {
     let root = support::repo_root();
-    let case = "anomaly_default";
     let archive = dms_strfmt::container::read_archive(
-        &std::fs::read(root.join(format!("corpus/models_next/{case}.str"))).unwrap(),
+        &std::fs::read(root.join(format!("corpus/{label}/{case}.str"))).unwrap(),
         &ArchiveLimits::default(),
     )
     .unwrap();
@@ -40,7 +51,7 @@ fn trained_peer_groups_equal_modeler_model() {
         .unwrap();
     let context = ExecContext {
         files: FileResolver {
-            data_dirs: vec![root.join("corpus/models_next")],
+            data_dirs: vec![root.join(format!("corpus/{label}"))],
         },
         attachments: Arc::new(
             archive
@@ -57,7 +68,7 @@ fn trained_peer_groups_equal_modeler_model() {
         Some(Ok(NodeOutput::Model(model))) => model.clone(),
         other => panic!("{case}: builder failed: {other:?}"),
     };
-    let dir = root.join(format!("oracle/models_next/{case}/models"));
+    let dir = root.join(format!("oracle/{label}/{case}/models"));
     let file = std::fs::read_dir(&dir)
         .unwrap()
         .map(|e| e.unwrap().path())
@@ -76,19 +87,26 @@ fn trained_peer_groups_equal_modeler_model() {
     };
     for ((a, wa), (b, wb)) in fields(ours).iter().zip(&fields(theirs)) {
         assert_eq!(a, b);
-        assert!(close(*wa, *wb), "{a}: weight {wa} vs {wb}");
+        assert!(close(*wa, *wb), "{case} {a}: weight {wa} vs {wb}");
     }
     assert_eq!(ours.fields.len(), theirs.fields.len());
-    assert_eq!(ours.clusters.len(), theirs.clusters.len(), "peer groups");
+    assert_eq!(
+        ours.clusters.len(),
+        theirs.clusters.len(),
+        "{case}: peer groups"
+    );
     for (i, (a, b)) in ours.clusters.iter().zip(&theirs.clusters).enumerate() {
-        assert_eq!(a.size, b.size, "cluster {i} size");
+        assert_eq!(a.size, b.size, "{case}: cluster {i} size");
         for (x, y) in a.center.iter().zip(&b.center) {
             assert!(close(*x, *y), "cluster {i} mean {x} vs {y}");
         }
         for (x, y) in a.variances.iter().zip(&b.variances) {
             assert!(close(*x, *y), "cluster {i} variance {x} vs {y}");
         }
-        assert_eq!(a.category_counts, b.category_counts, "cluster {i} counts");
+        assert_eq!(
+            a.category_counts, b.category_counts,
+            "{case}: cluster {i} counts"
+        );
         // Modeler's own sum differs in the 15th digit (4.263016123503995 here, 4.26301612350401
         // saved).
         let (x, y) = (a.mean_distance.unwrap(), b.mean_distance.unwrap());
@@ -107,7 +125,20 @@ fn trained_peer_groups_equal_modeler_model() {
         let parse = |t: &Option<String>| t.as_deref().map(|t| t.parse::<f64>().unwrap());
         assert_eq!(parse(&a.1), parse(&b.1), "{} replacement", a.0);
     }
-    assert_eq!(ours.anomaly_cutoff, Some(1.37201), "cutoff");
+    // The nugget keeps the cutoff outside the PMML (`model/cutoffValue`).
+    let saved = stream
+        .diagram
+        .nodes
+        .iter()
+        .filter(|n| n.type_identifier() == "ApplyAnomalyNode")
+        .find_map(|n| {
+            let mut element = n.settings.as_ref()?;
+            for name in ["model", "cutoffValue"] {
+                element = element.child(name)?;
+            }
+            element.text().trim().parse::<f64>().ok()
+        });
+    assert_eq!(ours.anomaly_cutoff, saved, "{case}: cutoff");
     println!(
         "ANOMALY {case}: {} peer groups and cutoff equal Modeler's",
         ours.clusters.len()

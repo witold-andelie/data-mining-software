@@ -13,6 +13,8 @@
 //!   2 of 5); `By Maximum` keeps `maxFactorLimit` components (`factor_nfactors`, 2). GAP: in
 //!   that case the eigenvalue rule also gives 2, so whether `By Maximum` is a cap on the
 //!   eigenvalue rule or an exact count is not settled; we keep exactly that many.
+//! - Simple mode (`expertMode` false) keeps every component (`models_next2/factor_default`:
+//!   5 of 5).
 //! - `rotationMethod` `Varimax` (`factor_varimax`): Kaiser-normalized varimax by pairwise
 //!   rotations, at most `maxIterations` sweeps, until no angle exceeds 1e-5.
 //! - Regression factor scores without inverting the (possibly singular) correlation matrix:
