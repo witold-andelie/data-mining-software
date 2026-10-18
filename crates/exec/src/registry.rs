@@ -90,6 +90,8 @@ const PENDING: &[&str] = &[];
 /// (`models_next` found no segments on 48 rows; `models_next2` probes more data).
 /// Auto Cluster: the nugget scores its saved component model (`nodes::auto_cluster`);
 /// training (`BuildAutoClusteringModelNode`) is not implemented.
+/// Auto Classifier / Numeric: saved components and Ensemble scoring (`nodes::auto_models`);
+/// their builders remain explicit GAPs and do not count toward implemented coverage.
 /// Sequence: the nugget scores its saved rules; training is a GAP (`nodes::sequence`).
 /// Time Series (`corpus/models_next/ts_arima.str`, `ts_expert.str`,
 /// `corpus/models_next2/ts_simple.str`, `ts_holt.str`): the nugget scores the saved ARIMA
@@ -103,6 +105,8 @@ const SCORING_ONLY: &[&str] = &[
     "sequence",
     "time_series",
     "auto_cluster",
+    "auto_classifier",
+    "auto_numeric",
     "random_trees",
     "tree_as",
     "linear_as",

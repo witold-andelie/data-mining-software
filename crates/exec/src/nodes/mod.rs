@@ -6,6 +6,7 @@ pub mod append;
 pub mod apply;
 pub mod auto_cluster;
 pub mod auto_data_prep;
+pub mod auto_models;
 pub mod balance;
 pub mod binning;
 pub mod build;

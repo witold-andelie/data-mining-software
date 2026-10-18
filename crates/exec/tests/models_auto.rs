@@ -1,0 +1,99 @@
+//! Saved Auto Classifier / Numeric nuggets: all columns of every oracle terminal input.
+#![cfg(feature = "corpus")]
+#![allow(clippy::unwrap_used, clippy::panic, reason = "oracle assertions")]
+
+mod support;
+
+use dms_exec::{ExecContext, FileResolver, NodeOutput, Plan};
+use dms_stream::Stream;
+use dms_strfmt::ArchiveLimits;
+use dms_types::Value;
+use serde_json::Value as Json;
+use std::sync::Arc;
+
+#[test]
+fn saved_auto_terminal_inputs_equal_oracle() {
+    let root = support::repo_root();
+    let mut terminals = 0;
+    for case in ["ac_default", "ac_restricted", "an_default"] {
+        let archive = dms_strfmt::container::read_archive(
+            &std::fs::read(root.join(format!("corpus/models_next2/{case}.str"))).unwrap(),
+            &ArchiveLimits::default(),
+        )
+        .unwrap();
+        let stream = Stream::from_document(&archive.document).unwrap();
+        let context = ExecContext {
+            files: FileResolver {
+                data_dirs: vec![root.join("corpus/models_next2")],
+            },
+            attachments: Arc::new(
+                archive
+                    .attachments
+                    .into_iter()
+                    .map(|a| (a.name, Arc::from(a.bytes)))
+                    .collect(),
+            ),
+            stream_properties: stream.properties.clone().map(Arc::new),
+            ..ExecContext::default()
+        };
+        let manifest: Json = serde_json::from_str(
+            &std::fs::read_to_string(
+                root.join(format!("oracle/models_next2/{case}/manifest.json")),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        let entries = manifest["data"].as_array().unwrap();
+        let targets: Vec<_> = entries
+            .iter()
+            .map(|entry| entry["id"].as_str().unwrap())
+            .collect();
+        let results = Plan::new(&stream).evaluate(&targets, &context);
+        for entry in entries {
+            let uid = entry["id"].as_str().unwrap();
+            let Some(Ok(NodeOutput::Data(actual))) = results.get(uid) else {
+                panic!("{case}/{uid}: {:?}", results.get(uid));
+            };
+            let text =
+                std::fs::read_to_string(support::local_path(entry["file"].as_str().unwrap()))
+                    .unwrap();
+            let mut lines = text.trim_start_matches('\u{feff}').lines();
+            let names = support::parse_csv_line(lines.next().unwrap());
+            assert_eq!(
+                actual
+                    .model()
+                    .fields()
+                    .iter()
+                    .map(|f| f.name.as_str())
+                    .collect::<Vec<_>>(),
+                names,
+                "{case}/{uid}"
+            );
+            let rows: Vec<_> = lines.map(support::parse_csv_line).collect();
+            assert_eq!(actual.rows().len(), rows.len(), "{case}/{uid}");
+            for (r, (actual, expected)) in actual.rows().iter().zip(&rows).enumerate() {
+                assert_eq!(actual.len(), expected.len());
+                for (c, (actual, expected)) in actual.iter().zip(expected).enumerate() {
+                    let matches = match actual {
+                        Value::Null => expected.is_empty() || expected == "$null$",
+                        Value::String(s) => s.as_ref() == expected,
+                        Value::Integer(_) | Value::Real(_) => {
+                            let a = actual.as_f64().unwrap();
+                            let b = expected.parse::<f64>().unwrap();
+                            a.is_finite()
+                                && b.is_finite()
+                                && (a - b).abs() <= 1e-9 * a.abs().max(b.abs()).max(1.0)
+                        }
+                        other => panic!("unexpected AS value {other:?}"),
+                    };
+                    assert!(
+                        matches,
+                        "{case}/{uid} row {r} column {c}: {actual:?} != {expected:?}"
+                    );
+                }
+            }
+            terminals += 1;
+        }
+    }
+    assert_eq!(terminals, 9);
+}
