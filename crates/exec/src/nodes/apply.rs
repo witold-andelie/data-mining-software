@@ -92,6 +92,10 @@ enum Kind {
     /// with `appendClusterLabel`, `$KXY-<model name>` (its cluster name, `X=0, Y=2`;
     /// `models_next/kohonen_*`).
     Kohonen,
+    /// Decision List: `$D-<target>` (the first matching segment's score, null for a disabled
+    /// segment), `$DP-<target>` (its share of correct training records, `displayProbabilityField`)
+    /// and `$DI-<target>` (its rule id, `displayRuleIdField`; `ibm-demos/pm_decisionlist`).
+    DecisionList,
     /// Apriori: `$A-`, `$AC-`, `$A-Rule_ID-`.
     Apriori,
 }
@@ -128,12 +132,21 @@ pub fn build(node: &StreamNode) -> Result<Box<dyn Operator>, OperatorError> {
         "ApplyPCANode" => Kind::Factor,
         "ApplyAnomalyNode" => Kind::Anomaly,
         "ApplyKohonenNode" => Kind::Kohonen,
+        "ApplyDecisionListNode" => Kind::DecisionList,
         other => {
             return Err(OperatorError::Settings(format!(
                 "model nugget {other} is not supported yet"
             )));
         }
     };
+    if kind == Kind::DecisionList
+        && (settings::flag(s, "calculateRawPropensities")?.unwrap_or(false)
+            || settings::flag(s, "calculateAdjustedPropensities")?.unwrap_or(false))
+    {
+        return Err(OperatorError::Settings(
+            "Decision List propensities are not supported yet".into(),
+        ));
+    }
     if kind == Kind::KMeans && settings::flag(s, "showClusterProximity")?.unwrap_or(false) {
         return Err(OperatorError::Settings(
             "K-Means cluster distance (showClusterProximity) is not supported yet".into(),
@@ -206,6 +219,10 @@ pub fn build(node: &StreamNode) -> Result<Box<dyn Operator>, OperatorError> {
             && build_setting(s, "generateDistanceField").as_deref() == Some("true"),
         numeric_labels: kind == Kind::TwoStep
             && build_setting(s, "clusterLabelType").as_deref() == Some("NUMBER"),
+        decision_fields: (
+            settings::flag(s, "displayProbabilityField")?.unwrap_or(true),
+            settings::flag(s, "displayRuleIdField")?.unwrap_or(true),
+        ),
         cluster_label: kind == Kind::Kohonen
             && settings::flag(s, "appendClusterLabel")?.unwrap_or(true),
         model_name,
@@ -294,6 +311,8 @@ struct Apply {
     numeric_labels: bool,
     /// Kohonen: also the cluster name (`$KXY-`).
     cluster_label: bool,
+    /// Decision List: the probability and rule id fields.
+    decision_fields: (bool, bool),
     model_name: String,
     /// Extension properties attachment (`scoring.isPrediction`, ...). Neural Net only.
     properties: Option<String>,
@@ -533,6 +552,68 @@ impl Apply {
             .ok_or_else(|| OperatorError::Data("the anomaly model has no cutoff".into()))?;
             return with_columns(input, anomaly_columns(&scores, cutoff, options.fields));
         }
+        if self.kind == Kind::DecisionList {
+            let dms_pmml::Model::RuleSet(model) = &pmml.model else {
+                return Err(OperatorError::Data(
+                    "a Decision List needs a rule set".into(),
+                ));
+            };
+            let hits = input
+                .rows()
+                .iter()
+                .map(|row| {
+                    let record: Vec<PmmlValue> = row.iter().map(to_pmml).collect();
+                    scorer
+                        .first_rule(&record)
+                        .map(|hit| hit.and_then(|index| model.rules.get(index)))
+                        .map_err(|error| OperatorError::Data(format!("model: {error}")))
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            let target = target_name(&pmml)?;
+            let storage = target_storage(&pmml, &target);
+            let mut columns = vec![column(
+                &format!("$D-{target}"),
+                storage,
+                hits.iter()
+                    .map(|hit| match hit {
+                        Some(rule) if !rule.disabled => {
+                            typed(&PmmlValue::Text(rule.score.clone()), storage)
+                        }
+                        _ => Value::Null,
+                    })
+                    .collect(),
+            )];
+            if self.decision_fields.0 {
+                columns.push(column(
+                    &format!("$DP-{target}"),
+                    Storage::Real,
+                    hits.iter()
+                        .map(|hit| match hit {
+                            Some(rule) => match (rule.correct, rule.record_count) {
+                                (Some(correct), Some(total)) if total > 0.0 => {
+                                    Value::Real(correct / total)
+                                }
+                                _ => Value::Null,
+                            },
+                            None => Value::Null,
+                        })
+                        .collect(),
+                ));
+            }
+            if self.decision_fields.1 {
+                columns.push(column(
+                    &format!("$DI-{target}"),
+                    Storage::String,
+                    hits.iter()
+                        .map(|hit| {
+                            hit.and_then(|rule| rule.id.as_deref())
+                                .map_or(Value::Null, Value::string)
+                        })
+                        .collect(),
+                ));
+            }
+            return with_columns(input, columns);
+        }
         if self.kind == Kind::Neural {
             let options = neural_options(self.properties.as_deref(), context)?;
             let predictions = input
@@ -657,7 +738,7 @@ impl Apply {
         let (value_prefix, confidence_prefix, propensity_prefix) = match self.kind {
             Kind::Logistic | Kind::Linear => ("$L", "$LP", "$LRP"),
             Kind::Regression => ("$E", "$EC", "$ERP"),
-            Kind::Neural | Kind::Factor | Kind::Anomaly => {
+            Kind::Neural | Kind::Factor | Kind::Anomaly | Kind::DecisionList => {
                 return Err(OperatorError::Data(
                     "neural network, factor and anomaly score fields are not built on this path"
                         .into(),

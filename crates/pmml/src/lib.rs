@@ -255,6 +255,9 @@ pub struct SimpleRule {
     pub weight: f64,
     pub record_count: Option<f64>,
     pub correct: Option<f64>,
+    /// Decision List: a segment the analyst excluded (`Extension name="isDisabled"`); it still
+    /// takes its records but predicts nothing.
+    pub disabled: bool,
 }
 
 /// PMML `MiningModel`: one nested model per `Segment`.

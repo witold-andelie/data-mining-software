@@ -171,6 +171,16 @@ impl<'p> Scorer<'p> {
         }
     }
 
+    /// The index of the first rule of a rule set whose predicate holds, disabled Decision List
+    /// segments included.
+    pub fn first_rule(&self, record: &[Value]) -> Result<Option<usize>, PmmlError> {
+        let env = self.prepare(record)?;
+        match &self.pmml.model {
+            Model::RuleSet(model) => crate::rules::first_hit(model, &env),
+            _ => Err(PmmlError::Score("the model is not a rule set".into())),
+        }
+    }
+
     /// Every target of a neural network, in `NeuralOutput` order. A missing input is a
     /// missing value on each target, not an error (`nn_missing_listwise`).
     pub fn score_neural(&self, record: &[Value]) -> Result<Vec<crate::NeuralTarget>, PmmlError> {
