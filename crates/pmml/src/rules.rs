@@ -82,9 +82,25 @@ fn parse_rule(
             weight,
             record_count: opt_f64_attr(node, "recordCount")?,
             correct: opt_f64_attr(node, "nbCorrect")?,
+            disabled: node.children().any(|n| {
+                n.has_tag_name("Extension")
+                    && n.attribute("name") == Some("isDisabled")
+                    && n.attribute("value") == Some("true")
+            }),
         });
     }
     Ok(())
+}
+
+/// Decision List (`algorithmName="DecisionList"`, `ibm-demos/pm_decisionlist`): the first rule
+/// whose predicate holds, disabled rules included, as its index; `None` when none holds.
+pub(crate) fn first_hit(model: &RuleSetModel, env: &Env<'_>) -> Result<Option<usize>, PmmlError> {
+    for (index, rule) in model.rules.iter().enumerate() {
+        if eval_predicate(&rule.predicate, env, 0)? == Truth::True {
+            return Ok(Some(index));
+        }
+    }
+    Ok(None)
 }
 
 pub(crate) fn score(

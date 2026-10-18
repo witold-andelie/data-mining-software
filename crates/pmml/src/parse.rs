@@ -55,9 +55,11 @@ pub(crate) fn parse(xml: &str) -> Result<Pmml, PmmlError> {
         return Err(PmmlError::Parse(format!("unsupported namespace {ns:?}")));
     }
     let version = req_attr(root, "version")?.to_string();
-    if !version.starts_with("4.") {
+    // Old nuggets carry PMML 3.x (`ibm-demos/pm_decisionlist`: a Clementine 11.1 Decision
+    // List `RuleSetModel`); the elements read here have the same form there.
+    if !version.starts_with("4.") && !version.starts_with("3.") {
         return Err(PmmlError::Parse(format!(
-            "expected PMML version 4.x, got {version:?}"
+            "expected PMML version 3.x or 4.x, got {version:?}"
         )));
     }
 

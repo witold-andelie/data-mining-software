@@ -83,7 +83,9 @@ const PENDING: &[&str] = &[];
 /// implemented.
 /// Kohonen likewise (`corpus/models_next/kohonen_*.str`): training starts from random weights
 /// drawn with an unknown generator (`randomSeed`), so it is a GAP.
-const SCORING_ONLY: &[&str] = &["neural_net", "kohonen"];
+/// Decision List: `ibm-demos/pm_decisionlist` scores a saved list; training has no oracle yet
+/// (`models_next` found no segments on 48 rows; `models_next2` probes more data).
+const SCORING_ONLY: &[&str] = &["neural_net", "kohonen", "decision_list"];
 
 pub fn factory(catalog_id: &str) -> Option<Factory> {
     BUILT_IN

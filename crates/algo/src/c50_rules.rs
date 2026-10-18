@@ -358,6 +358,7 @@ fn emit_rules(drafts: &[Draft], train: &Train<'_>) -> Result<Vec<SimpleRule>, Al
             weight: confidence,
             record_count: Some(draft.total),
             correct: Some(draft.correct),
+            disabled: false,
         });
         if rules.len() >= MAX_RULES {
             return Err(AlgoError::Unsupported("C5.0 rule limit exceeded".into()));
