@@ -28,7 +28,7 @@ manifest = {
         "Table 101 graph_type value for a parallel chart is Parallel. ParallelCoordinates is not listed.",
         "The Summary field on the Detailed tab is not scriptable, so Bar and Pie use the template default.",
         "panelrow_field and panelcol_field are typed string. This probe sets field names.",
-        "Pie and Heatmap each have two documented field bindings (axes, and categories or rows/columns).",
+        "Bar and Pie use category/value bindings; Heatmap uses rows/columns/color, not axis bindings.",
         "Parallel sets fields to a list. Table 101 types fields as field, not as a list.",
         "A property that does not apply to the graph type is ignored (guide note; y_field on a histogram).",
     ],
@@ -193,17 +193,27 @@ write_data()
 # Table 101, printed pages 192-194. Example (p.191): graph_type Line, x_field, y_field.
 # Invalid properties are ignored (p.190), so each case sets only the slots named below.
 
-# Bar (p.192). x_field category, y_field scale. Summary is not scriptable.
+# Bar: category/value (Table 101, p.194; ug.txt 3636-3643, 3694-3696).
+# pie_categories.str confirms categories_field/values_field -> graphCategoriesField/graphValuesField.
+# Applying these category/value slots to Bar is inferred from the guide; Summary is not scriptable.
 build_case("bar_region_amount", [
     ("graph_type", "Bar"),
-    ("x_field", "region"),
-    ("y_field", "amount"),
+    ("categories_field", "region"),
+    ("values_field", "amount"),
 ])
 
-# BarCounts (p.192). Counts of x_field. y_field is not set.
+# BarCounts: category only; counts need no value (ug.txt 3683-3688).
 build_case("barcounts_region", [
     ("graph_type", "BarCounts"),
-    ("x_field", "region"),
+    ("categories_field", "region"),
+])
+
+# BarCounts with color_field (Table 101, p.194; ug.txt 3698-3708 groups bars).
+# scatter_color_panel.str confirms color_field -> graphColorField; BarCounts use is unverified.
+build_case("bar_counts_color", [
+    ("graph_type", "BarCounts"),
+    ("categories_field", "region"),
+    ("color_field", "segment"),
 ])
 
 # Histogram (p.193). The guide's ignore-note names y_field as invalid on a histogram, so only x_field.
@@ -212,24 +222,17 @@ build_case("histogram_amount", [
     ("x_field", "amount"),
 ])
 
-# Pie (p.193), same axis slots as the Line example.
-build_case("pie_region_amount", [
-    ("graph_type", "Pie"),
-    ("x_field", "region"),
-    ("y_field", "amount"),
-])
-
-# Pie again, on categories_field and values_field (p.194). Descriptions there are blank.
+# Pie: category/value (Table 101, p.194; ug.txt 5044-5049, 5071-5073).
 build_case("pie_categories", [
     ("graph_type", "Pie"),
     ("categories_field", "region"),
     ("values_field", "amount"),
 ])
 
-# PieCounts (p.193). Counts of x_field.
+# PieCounts: category only; counts need no value (ug.txt 5060-5065).
 build_case("piecounts_region", [
     ("graph_type", "PieCounts"),
-    ("x_field", "region"),
+    ("categories_field", "region"),
 ])
 
 # Line (p.193). The example sets x_field and y_field to two scale fields.
@@ -272,14 +275,6 @@ build_case("heatmap_rows", [
     ("graph_type", "Heatmap"),
     ("rows_field", "region"),
     ("columns_field", "channel"),
-    ("color_field", "amount"),
-])
-
-# Heatmap again, if the template uses the axis slots instead of rows/columns.
-build_case("heatmap_axes", [
-    ("graph_type", "Heatmap"),
-    ("x_field", "region"),
-    ("y_field", "channel"),
     ("color_field", "amount"),
 ])
 
