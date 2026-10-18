@@ -42,6 +42,7 @@ pub mod rfm_analysis;
 mod rfm_settings;
 pub mod sample;
 pub mod select;
+pub mod sequence;
 pub mod set_globals;
 pub mod set_to_flag;
 pub mod sort;

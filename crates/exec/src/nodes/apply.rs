@@ -107,6 +107,9 @@ pub fn build(node: &StreamNode) -> Result<Box<dyn Operator>, OperatorError> {
     ) {
         return super::feature_selection::apply(node);
     }
+    if node.type_identifier() == "ApplySequenceNode" {
+        return super::sequence::apply(node);
+    }
     if matches!(
         node.type_identifier().as_str(),
         "ApplyC5RuleNode" | "ApplyC5SplitModelNode"

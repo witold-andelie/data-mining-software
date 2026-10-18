@@ -86,7 +86,8 @@ const PENDING: &[&str] = &[];
 /// drawn with an unknown generator (`randomSeed`), so it is a GAP.
 /// Decision List: `ibm-demos/pm_decisionlist` scores a saved list; training has no oracle yet
 /// (`models_next` found no segments on 48 rows; `models_next2` probes more data).
-const SCORING_ONLY: &[&str] = &["neural_net", "kohonen", "decision_list"];
+/// Sequence: the nugget scores its saved rules; training is a GAP (`nodes::sequence`).
+const SCORING_ONLY: &[&str] = &["neural_net", "kohonen", "decision_list", "sequence"];
 
 pub fn factory(catalog_id: &str) -> Option<Factory> {
     BUILT_IN
