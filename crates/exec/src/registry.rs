@@ -10,6 +10,7 @@ const BUILT_IN: &[(&str, Factory)] = &[
     ("table", nodes::table::build),
     ("set_globals", nodes::set_globals::build),
     ("derive", nodes::derive::build),
+    ("ensemble", nodes::ensemble::build),
     ("filler", nodes::filler::build),
     ("reclassify", nodes::reclassify::build),
     ("filter", nodes::filter::build),
