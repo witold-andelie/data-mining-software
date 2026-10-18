@@ -29,3 +29,4 @@
 - **两套执行器**：参考执行器写得简单直接，作为优化执行器的对照；两者在测试里必须给出相同结果。
 - **Python 节点**（2026-10-16 起移出 MVP、归入“以后”：团队的流一个都没用到；`dms-python` 随之推后）：Modeler 自带的 Python 3.10 里是 scikit-learn 1.1.1、xgboost 0.82、imbalanced-learn 0.8.0、hdbscan 0.8.29。我们的 Python 节点用同样的库，在用户自己的 Python 环境里以子进程运行。与 Modeler 对比的差分测试在 Windows 上用同版本环境；Apple 芯片 Mac 上没有 xgboost 0.82，用新版本，允许细微差异。
 - **跨平台**：Windows x64 和 macOS aarch64。不依赖 BLAS（faer 是纯 Rust），便于在 Mac 上直接编译。
+- **AS 模型评分**：Random Trees、Tree-AS、Linear-AS、LSVM 的 builder/nugget 均映射目录 id；`SCORING_ONLY` 让 builder 返回显式 `GAP:`，nugget 继续读取保存的 PMML。`dms-exec` 用有界 ZIP 读取器解开 AS 附件，`dms-pmml` 复用树和通用回归评分，仅增加分箱与集成汇总。未增加分层依赖；16 例、48 个终端输入已对齐。

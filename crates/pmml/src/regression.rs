@@ -156,6 +156,10 @@ pub(crate) fn score_general(
                 logits.push((cat, r));
             }
 
+            // Analytic Engine `linearSVM` exports the binary decision value as
+            // the non-reference category's logit (`models_as/lsvm_default`,
+            // `lsvm_l1`); the reference logit is zero. This same softmax gives
+            // `$LC-respond` = logistic(abs(decision)), without a second transform.
             let probabilities = softmax(&logits);
             classification_prediction(probabilities)
         }

@@ -44,6 +44,31 @@ pub(crate) fn eval(
             let x = as_f64(&val, field)?;
             eval_norm_continuous(x, points, *outliers, *map_missing_to)
         }
+        Expr::Discretize {
+            field,
+            bins,
+            default,
+            map_missing_to,
+        } => {
+            let value = lookup(field, env, params)?;
+            if value == Value::Missing {
+                return Ok(map_missing_to.clone().unwrap_or(Value::Missing));
+            }
+            let x = as_f64(&value, field)?;
+            Ok(bins
+                .iter()
+                .find(|bin| {
+                    bin.left
+                        .is_none_or(|left| x > left || (bin.left_closed && x == left))
+                        && bin
+                            .right
+                            .is_none_or(|right| x < right || (bin.right_closed && x == right))
+                })
+                .map_or_else(
+                    || default.clone().unwrap_or(Value::Missing),
+                    |bin| bin.value.clone(),
+                ))
+        }
         Expr::MapValues {
             pairs,
             output,

@@ -68,3 +68,35 @@
 - `Parameters` 扩展 XML 是否包含评分需要、而 PMML 里没有的信息。
 - 私有格式（`SCF\x01`）的模型块：只能重新训练；如果建模节点不在流里（只有模型块），这类流无法运行，需要提示用户在 Modeler 里把模型导出为 PMML。
 - Apriori 已与 `apriori_default`、`apriori_thresholds`、`apriori_transactional` 对齐（规则、支持度、置信度、提升度、评分列）。仍拒绝、没有标准答案的设置：`evaluationMeasure` 不是 `rule`、`rulesWithoutAntecdents`、事件、`onlyTrueValues` 为假、非连续事务 id、`repeatPredictions`、`checkPredictions` 不是 `notInBasket`、`ruleCriteria` 不是 `confidence`、`ignoreUnmatchedItems` 为假、`maxLengthSet` 不是 10、前件集合与后件集合不同。串联第二个模型块的 `$A1-` 下标没有样例。Modeler 的 `Item` / `Itemset` 元素顺序不是 id 顺序，导出按 id 比较，不按文件中的元素顺序。
+
+## 6. Analytic Engine 保存模型评分（2026-10-18）
+
+`models_as` 的 16 个流全部匹配，每例 3/3，共 48/48 个终端输入。核对字段名、顺序、行数和全部单元格；数值按 `xtask compare` 的打印舍入与相对容差比较，不声称浮点逐位一致。训练不在范围内：`random_trees`、`tree_as`、`linear_as`、`lsvm` 都在 `SCORING_ONLY`；builder 返回 `OperatorError::Settings`，消息以 `GAP:` 开头。运行日志中的一个 builder 根因是预期行为，nugget 使用流内保存的 PMML。
+
+| 目录 id | builder 标识 | nugget 标识 |
+|---|---|---|
+| `random_trees` | `spss.randomTrees!RT` | `spss.randomTrees!applyRandomTrees` |
+| `tree_as` | `spss.treeEngine!treeEngine` | `spss.treeEngine!applyTree` |
+| `linear_as` | `spss.linearEngine!linearEngine` | `spss.linearEngine!applyLinearEngine` |
+| `lsvm` | `spss.linearSVM!linearSVM` | `spss.linearSVM!applyLinearSVM` |
+
+本分支原目录没有 Tree-AS、Linear-AS 的独立条目，新增 `tree_as`、`linear_as` 并归入 later；仅评分不改变 MVP 已实现数。
+
+这些流均通过 `contentContainers/containers/container[@name="PMML"]/content@content` 指向附件。附件是 4 字节大端长度加 ZIP，包含 `.meta` 和 `PMML.xml`，复用 `dms-strfmt` 的有界本地 ZIP 头读取器。未读 IBM 实现代码，未运行 Modeler、oracle 或 probe；仅读取保存的流、导出的 PMML/CSV 和现有探针脚本。
+
+| 已验证规则 | 案例 |
+|---|---|
+| Random Trees 的 `majorityVote` 每棵树一票；`$R-<t>` 为多数类，`$RC-<t>` 为胜者票数/有效票数，与叶置信度无关。使用实际保存的 segment 数，不使用 builder 请求的树数 | `rt_default`、`rt_fewer`、`rt_shallow`、`rt_native`、`rt_conf` |
+| `_calculate_conf=false` 省略独立 nugget 的 `$RC-`；`_GenerateSQL=false`（保存的默认值）和 `native` 的数值评分路径相同 | `rt_noconf`、`rt_batch` 的 Grid scores；`rt_native` |
+| `average` 是保存树预测的算术平均；连续目标只输出 `$R-y`，不输出置信度，即使 `_calculate_conf=true` | `rt_numeric`、`rt_numeric_batch` |
+| Tree-AS 复用 CHAID 的 Laplace 置信度 `(n_class+1)/(n_total+k)` 和 `lastPrediction`；分类输出 `$R-<t>`、`$RC-<t>`、`$RI-<t>`，最后一个为整数节点 id | `treeas_default`、`treeas_depth` |
+| Tree-AS 的 `Discretize` 按保存的 Interval 边界分箱，无边界即无穷；如 x1 的分界为 13、22、32、41，左闭右开，末箱无上界。连续目标输出 `$R-y`、`$RI-y` | `treeas_numeric` |
+| Linear-AS 复用 `generalLinear` 的 PPMatrix 参数乘积和 ParamMatrix 加权和，只追加 `$L-y` | `linearas_default`，零输入预测约 -1.9e-14 |
+| LSVM 二分类复用 `multinomialLogistic`：参考类 Y 的决策值为 0，N 的决策值为参数加权和，softmax 得类别概率。输出 `$L-respond` 和 `$LC-respond`，二分类胜者置信度等于 logistic(abs(decision)) | `lsvm_default`、`lsvm_l1`；首行分别约 0.730410084338641、0.730802317826299 |
+| LSVM 连续目标复用 `generalLinear`，仅追加 `$L-y` | `lsvm_numeric` |
+
+**自动替换字段例外（观察与推断分开）。** `rt_noconf`、`rt_batch` 的保存流中，两份 nugget 的 `_calculate_conf` 都为 false；但 oracle 的原始自动回填 nugget 仍有 `$RC-respond`，独立 Grid scores 副本没有。前者保存了 `refreshLinkState=TurnOnReplaceLink` 和非空的 `repalcebuilderNodeId`（原文件拼写如此）。oracle manifest 和 `modeler_oracle.py` 显示 builder 会在导出输入前运行。原因推断为 builder 替换重置了原始 nugget 的评分字段；本实现按这两个保存标记复现观察到的字段，不训练，也不根据案例名、节点名或 uid 分支。无自动替换标记的 nugget 严格遵守 false。其他替换顺序尚未验证。
+
+**GAP。** 四类训练、raw/adjusted propensity（包括 LSVM `_calculateRawProp=true`）未实现，明确拒绝；`_GenerateSQL` 除缺省、`false`、`native` 外的值（例如 `udf`）明确拒绝。非法布尔值同样返回带 `GAP:` 的 Settings 错误。LSVM 多分类、树平票没有 oracle；通用 majorityVote 在平票时采用目标 DataField 类别顺序，此行为有合成测试但未获 IBM 对照确认。Tree-AS `_display_rule_id=false` 的省略字段有合成测试，本批流均为 true。
+
+规范依据为 DMG [PMML 4.3 Transformations](https://dmg.org/pmml/v4-3/Transformations.html) 与 [Multiple Models](https://dmg.org/pmml/v4-3/MultipleModels.html)；Modeler 设置来自公开脚本接口的既有探针记录 `xtask/oracle/probes/models_as_streams.py`。合成测试覆盖投票与叶置信度的区别、均值与溢出、分箱边界/缺失/default/畸形参数、lastPrediction/id、LSVM 决策值、设置拒绝和损坏附件；语料测试 `crates/exec/tests/models_as.rs` 覆盖全部 48 个终端输入。

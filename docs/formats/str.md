@@ -87,3 +87,18 @@ Python 脚本接口的属性名与文件中的元素名不同，映射要逐个�
 ## 节点设置映射
 
 各节点的脚本属性到文件元素的映射见 [`nodes/`](nodes/)（每个节点类型一个文件，`common.md` 为所有节点共有的属性），汇总的机器可读表见 [`node-settings.tsv`](node-settings.tsv)。均由差分探针 `cargo xtask probe settings_<type>` 得到。
+
+## Analytic Engine nuggets（`models_as`，2026-10-18）
+
+**已验证的保存文件事实。** 读取既有 `models_as_streams.py` 产出的 16 个流（本次没有运行 probe）：Random Trees、Tree-AS、Linear-AS、LSVM 均为 `ExtensionApplyModelNode`，标识分别为 `spss.randomTrees!applyRandomTrees`、`spss.treeEngine!applyTree`、`spss.linearEngine!applyLinearEngine`、`spss.linearSVM!applyLinearSVM`。PMML 的附件路径在 `contentContainers/containers/container[@name="PMML"]/content@content`；附件为四字节大端长度加 ZIP，成员 `.meta` 和 `PMML.xml`，local extra 元数据沿用已有有界 ZIP 读取器。StatXML、StatJSON、Output 容器不参与评分。
+
+| 脚本属性 | 保存的 properties 子元素 | 本批观察值 |
+|---|---|---|
+| `calculate_conf`（Random Trees、Tree-AS） | `_calculate_conf` | `true` / `false` |
+| `display_rule_id`（Tree-AS） | `_display_rule_id` | `true` |
+| `calculate_raw_propensities`（LSVM） | `_calculateRawProp` | `false` |
+| `enable_sql_generation` | `_GenerateSQL` | 默认保存为 `false`，显式 native 保存为 `native` |
+
+**已验证的输出差异。** `rt_noconf`、`rt_batch` 的两份 nugget 均保存 `_calculate_conf=false`。自动回填 nugget 有 `refreshLinkState=TurnOnReplaceLink` 和非空 `repalcebuilderNodeId`（拼写保留），oracle 中仍有 `$RC-respond`；独立副本无自动替换标记，也无该字段。
+
+**推断。** oracle 会运行 builder，可能由自动替换将原始 nugget 的置信度字段重置到默认。评分层按上述标记组合兼容该已观察的输出，不重训、不修改流。其他替换顺序和仅加载保存流但不运行 builder 的行为未验证。完整评分规则见 [`../models.md`](../models.md) 第 6 节。

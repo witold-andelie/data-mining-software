@@ -94,6 +94,8 @@ const PENDING: &[&str] = &[];
 /// Time Series (`corpus/models_next/ts_arima.str`, `ts_expert.str`,
 /// `corpus/models_next2/ts_simple.str`, `ts_holt.str`): the nugget scores the saved ARIMA
 /// or exponential smoothing model; estimation (`spss.ts!ts_builder`) is a GAP.
+/// Analytic Engine Random Trees, Tree-AS, Linear-AS and LSVM likewise score their
+/// saved PMML (`models_as`, 16 cases); all four builders explicitly return GAP.
 const SCORING_ONLY: &[&str] = &[
     "neural_net",
     "kohonen",
@@ -101,6 +103,10 @@ const SCORING_ONLY: &[&str] = &[
     "sequence",
     "time_series",
     "auto_cluster",
+    "random_trees",
+    "tree_as",
+    "linear_as",
+    "lsvm",
 ];
 
 pub fn factory(catalog_id: &str) -> Option<Factory> {
@@ -134,7 +140,7 @@ fn nugget_or_builder(node: &StreamNode) -> Result<Box<dyn Operator>, OperatorErr
         ))
     } else {
         Err(OperatorError::Settings(format!(
-            "training {} is not implemented yet",
+            "GAP: training {} is not implemented yet; score the nugget's saved model",
             node.type_identifier()
         )))
     }

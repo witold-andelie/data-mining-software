@@ -197,6 +197,13 @@ pub enum Expr {
         value: String,
         map_missing_to: Option<f64>,
     },
+    /// PMML interval binning (`models_as/treeas_numeric`); absent margins are unbounded.
+    Discretize {
+        field: String,
+        bins: Vec<DiscretizeBin>,
+        default: Option<Value>,
+        map_missing_to: Option<Value>,
+    },
     /// `MapValues`: the output column of the `InlineTable` row whose input columns equal the
     /// fields (`FieldColumnPair`s); `map_missing_to` when a field is missing, `default` when no row
     /// matches. Modeler's K-Means codes flags and sets this way (`models/kmeans_categorical`).
@@ -218,6 +225,15 @@ pub enum Expr {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+pub struct DiscretizeBin {
+    pub value: Value,
+    pub left: Option<f64>,
+    pub right: Option<f64>,
+    pub left_closed: bool,
+    pub right_closed: bool,
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub enum Model {
     Tree(TreeModel),
     RuleSet(RuleSetModel),
@@ -227,7 +243,8 @@ pub enum Model {
     /// PMML 4.3 `NeuralNetwork` (Modeler Neural Net nuggets).
     Neural(NeuralNetworkModel),
     /// `MiningModel` with `Segmentation` (`selectFirst`): Linear split models
-    /// (`team/linear_regression`, Type role Split).
+    /// (`team/linear_regression`, Type role Split), and Random Trees ensembles
+    /// (`models_as/rt_*`: `majorityVote` / `average`).
     Mining(MiningModel),
     /// PMML `AssociationModel` (Apriori). Scored as a rule list by [`score_rules`],
     /// not as one [`Prediction`].
@@ -264,7 +281,7 @@ pub struct SimpleRule {
 #[derive(Debug, Clone, PartialEq)]
 pub struct MiningModel {
     pub header: ModelHeader,
-    /// `Segmentation@multipleModelMethod` (`selectFirst` for split Linear).
+    /// `Segmentation@multipleModelMethod` (`selectFirst`, `majorityVote`, `average`, ...).
     pub method: String,
     pub segments: Vec<MiningSegment>,
 }
