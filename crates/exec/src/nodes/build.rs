@@ -1651,7 +1651,16 @@ fn neural_settings(p: &Parameters) -> Result<dms_algo::neural_net::NeuralSetting
         "neuralnet.MLPStoppingMaximumStepsWithoutErrorDecreasing",
         &["1"],
     )?;
-    expect("CalculatePropensity", &["NotCalculate"])?;
+    // `nn_partition` saves an adjusted-propensity network, but the Algorithms Guide trains it
+    // with the legacy "quick" network (momentum, eta schedule, persistence) whose updates the
+    // public text does not give, and Modeler's curve (raw 0 -> 0.47) is far from a converged fit.
+    if p.text("CalculatePropensity")
+        .is_some_and(|value| value != "NotCalculate")
+    {
+        return Err(gap(
+            "adjusted propensities (legacy quick-network training is undocumented)".into(),
+        ));
+    }
     expect("neuralnet.FrequencyWeightField", &[""])?;
     let hidden = match p.text("neuralnet.HiddenLayers").as_deref() {
         None | Some("automaticUnits") => {
