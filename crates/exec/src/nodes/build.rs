@@ -101,6 +101,7 @@ pub fn build(node: &StreamNode) -> Result<Box<dyn Operator>, OperatorError> {
         "BuildTwoStepNode" => Algorithm::TwoStep(twostep_settings(node)?),
         "BuildLogisticNode" => Algorithm::Logistic(logistic_settings(node)?),
         "LinearRegression!spss.alm-extension" => Algorithm::Linear,
+        "neuralnet!spss.neuralnet-extension" => Algorithm::NeuralNet,
         "BuildRegressionNode" => Algorithm::Regression(regression_settings(node)?),
         "BuildPCANode" => Algorithm::Factor(factor_settings(node)?),
         "BuildAnomalyNode" => Algorithm::Anomaly(anomaly_settings(node)?),
@@ -142,6 +143,8 @@ enum Algorithm {
     Logistic(LogisticSpec),
     /// Extension parameters, read when training.
     Linear,
+    /// Neural Net (statistical parity); extension parameters, read when training.
+    NeuralNet,
     /// The settings, an optional custom target, and optional custom inputs.
     Regression(RegressionSpec),
     /// PCA/Factor settings and the custom input fields (`None`: the Type roles).
@@ -346,6 +349,30 @@ impl Operator for Build {
                 .map_err(|error| OperatorError::Data(format!("Regression: {error}")))?;
             return Ok(NodeOutput::Model(Arc::new(pmml)));
         }
+        if matches!(self.algorithm, Algorithm::NeuralNet) {
+            let parameters = self.parameters(context)?;
+            let settings = neural_settings(&parameters)?;
+            let fields = table.model().fields();
+            if parameters.flag("role_use")? {
+                return Err(OperatorError::Settings(
+                    "GAP: Neural Net custom fields (role_use) have no oracle".into(),
+                ));
+            }
+            let targets: Vec<usize> = (0..fields.len())
+                .filter(|&i| fields[i].role == Role::Target)
+                .collect();
+            let inputs: Vec<usize> = (0..fields.len())
+                .filter(|&i| matches!(fields[i].role, Role::Input | Role::Both))
+                .collect();
+            let data = dms_algo::neural_net::NeuralData {
+                table: &table,
+                targets: &targets,
+                inputs: &inputs,
+            };
+            let pmml = dms_algo::neural_net::train(&data, &settings)
+                .map_err(|error| OperatorError::Data(format!("Neural Net: {error}")))?;
+            return Ok(NodeOutput::Model(Arc::new(pmml)));
+        }
         let parameters = self.parameters(context)?;
         tree_checks(&parameters)?;
         let prefix = match self.algorithm {
@@ -369,6 +396,7 @@ impl Operator for Build {
             Algorithm::Linear => train_linear(&dataset, &linear_settings(&parameters)?)
                 .map_err(|error| OperatorError::Data(format!("Linear: {error}")))?,
             Algorithm::KMeans(_)
+            | Algorithm::NeuralNet
             | Algorithm::TreeAs(_)
             | Algorithm::LinearAs(_)
             | Algorithm::Lsvm(_)
@@ -1283,6 +1311,140 @@ fn roles(
         .filter(|&i| matches!(fields[i].role, Role::Input | Role::Both))
         .collect();
     Ok((target, inputs))
+}
+
+/// Neural Net settings from the extension parameters (`neuralnet.*`, `models_ml/nn_*`). Only
+/// the values the oracles cover are accepted; anything else is a `GAP:`.
+fn neural_settings(p: &Parameters) -> Result<dms_algo::neural_net::NeuralSettings, OperatorError> {
+    use dms_algo::neural_net::{Hidden, MissingValues, NeuralSettings};
+    let gap = |what: String| OperatorError::Settings(format!("GAP: Neural Net {what}"));
+    let expect = |name: &str, allowed: &[&str]| -> Result<(), OperatorError> {
+        match p.text(name) {
+            Some(value) if !allowed.contains(&value.as_str()) => {
+                Err(gap(format!("{name}={value:?} has no oracle")))
+            }
+            _ => Ok(()),
+        }
+    };
+    expect("objective_goal", &["standard"])?;
+    expect("objective_choose", &["buildNewModel"])?;
+    expect(
+        "neuralnet.NeuralNetworkAlgorithm",
+        &["multilayerPerceptron"],
+    )?;
+    expect("neuralnet.MLPTrainingType", &["batch"])?;
+    expect(
+        "neuralnet.MLPTrainingOptimizationAlgorithm",
+        &["scaledConjugateGradient"],
+    )?;
+    expect(
+        "neuralnet.MLPHiddenLayerActivationFunction",
+        &["hyperbolicTangent"],
+    )?;
+    expect("neuralnet.MLPOutputLayerActivationFunction", &["identity"])?;
+    expect("neuralnet.RescalingRangeInputs", &["standardized"])?;
+    expect("neuralnet.RescalingRangeTargets", &["standardized"])?;
+    expect("neuralnet.MLPTrainingInitialSigma", &["5.0E-5"])?;
+    expect("neuralnet.MLPTrainingInitialLambda", &["5.0E-7"])?;
+    expect("neuralnet.MLPTrainingIntervalCenter", &["0.0"])?;
+    expect("neuralnet.MLPTrainingIntervalOffset", &["0.5"])?;
+    expect(
+        "neuralnet.MLPStoppingMinimumRelativeTrainingErrorChange",
+        &["1.0E-4"],
+    )?;
+    expect(
+        "neuralnet.MLPStoppingMinimumRelativeTrainingErrorRatioChange",
+        &["0.001"],
+    )?;
+    expect(
+        "neuralnet.MLPStoppingMaximumStepsWithoutErrorDecreasing",
+        &["1"],
+    )?;
+    expect("CalculatePropensity", &["NotCalculate"])?;
+    expect("neuralnet.FrequencyWeightField", &[""])?;
+    let hidden = match p.text("neuralnet.HiddenLayers").as_deref() {
+        None | Some("automaticUnits") => {
+            let bound = |name: &str, default: usize| -> Result<usize, OperatorError> {
+                match p.real(name)? {
+                    None => Ok(default),
+                    Some(v) if v >= 1.0 && v.fract() == 0.0 && v <= 1000.0 => Ok(v as usize),
+                    Some(v) => Err(gap(format!("{name}={v}"))),
+                }
+            };
+            Hidden::Automatic {
+                min: bound("neuralnet.MLPHiddenLayerUnitsMinimumNumber", 1)?,
+                max: bound("neuralnet.MLPHiddenLayerUnitsMaximumNumber", 50)?,
+            }
+        }
+        Some("customUnits") => {
+            let units = |name: &str| -> Result<usize, OperatorError> {
+                match p.real(name)? {
+                    None => Ok(0),
+                    Some(v) if v >= 0.0 && v.fract() == 0.0 && v <= 1000.0 => Ok(v as usize),
+                    Some(v) => Err(gap(format!("{name}={v}"))),
+                }
+            };
+            let first = units("neuralnet.HiddenLayer1Units")?;
+            let second = units("neuralnet.HiddenLayer2Units")?;
+            if first == 0 {
+                return Err(gap("custom architecture without units".into()));
+            }
+            Hidden::Custom(if second > 0 {
+                vec![first, second]
+            } else {
+                vec![first]
+            })
+        }
+        Some(other) => return Err(gap(format!("HiddenLayers={other:?} has no oracle"))),
+    };
+    let max_epochs = match p
+        .text("neuralnet.MLPStoppingTrainingEpochsMaximum")
+        .as_deref()
+    {
+        None | Some("computeAutomatically") => None,
+        Some("specifyCustomValue") => {
+            match p.real("neuralnet.MLPStoppingTrainingEpochsMaximumNumber")? {
+                Some(v) if v >= 1.0 && v.fract() == 0.0 && v <= 100_000.0 => Some(v as usize),
+                other => return Err(gap(format!("epoch cap {other:?}"))),
+            }
+        }
+        Some(other) => return Err(gap(format!("MLPStoppingTrainingEpochsMaximum={other:?}"))),
+    };
+    let min_accuracy = if p.flag("neuralnet.MLPStoppingMinimumAccuracy")? {
+        match p.real("neuralnet.MLPStoppingMinimumAccuracyValue")? {
+            Some(v) if (0.0..=100.0).contains(&v) => Some(v),
+            other => return Err(gap(format!("minimum accuracy {other:?}"))),
+        }
+    } else {
+        None
+    };
+    let overfit_share = if p.text("neuralnet.UseOverFitPreventionSet").as_deref() == Some("false") {
+        0.0
+    } else {
+        match p.real("neuralnet.OverFitPreventionSetPct")? {
+            None => 0.3,
+            Some(v) if (0.0..100.0).contains(&v) => v / 100.0,
+            Some(v) => return Err(gap(format!("OverFitPreventionSetPct={v}"))),
+        }
+    };
+    let missing = match p.text("neuralnet.MissingValueHandling").as_deref() {
+        None | Some("listwiseDeletion") => MissingValues::Listwise,
+        Some("missingValueImputation") => MissingValues::Impute,
+        Some(other) => return Err(gap(format!("MissingValueHandling={other:?}"))),
+    };
+    let seed = match p.real("neuralnet.RandomSeed")? {
+        Some(v) if v.is_finite() && v >= 0.0 && v.fract() == 0.0 => v as u64,
+        None => 12345,
+        Some(v) => return Err(gap(format!("RandomSeed={v}"))),
+    };
+    Ok(NeuralSettings {
+        hidden,
+        max_epochs,
+        min_accuracy,
+        overfit_share,
+        missing,
+        seed,
+    })
 }
 
 /// Linear settings from the extension parameters; unsupported settings fail explicitly.

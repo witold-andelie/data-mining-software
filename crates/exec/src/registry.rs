@@ -66,6 +66,7 @@ const BUILT_IN: &[(&str, Factory)] = &[
     ("twostep", model_node),
     ("logistic", model_node),
     ("linear", model_node),
+    ("neural_net", model_node),
     ("regression", model_node),
     ("pca_factor", model_node),
     ("anomaly", model_node),
@@ -91,14 +92,11 @@ const PENDING: &[&str] = &[];
 /// Implemented builders held to statistical rather than exact parity
 /// (`docs/statistical-parity.md`): their training draws from our own generator or converges
 /// where Modeler stops early, so they match Modeler's metrics, not its bits.
-const STATISTICAL: &[&str] = &["lsvm"];
+const STATISTICAL: &[&str] = &["lsvm", "neural_net"];
 
 /// Model nodes whose nuggets score (`nodes::apply`) while their build nodes cannot train yet;
 /// they do not count as implemented.
-/// Neural Net nuggets score from saved PMML. Training stays unimplemented, so a failed builder
-/// leaves the nugget its saved model (`corpus/models_ml/nn_fixed_a.str`). Not counted as
-/// implemented.
-/// Kohonen likewise (`corpus/models_next/kohonen_*.str`): training starts from random weights
+/// Kohonen (`corpus/models_next/kohonen_*.str`): training starts from random weights
 /// drawn with an unknown generator (`randomSeed`), so it is a GAP.
 /// Auto Cluster: the nugget scores its saved component model (`nodes::auto_cluster`);
 /// training (`BuildAutoClusteringModelNode`) is not implemented.
@@ -113,7 +111,6 @@ const STATISTICAL: &[&str] = &["lsvm"];
 /// correlation/sweep selection (`linearas/lin_default`, `lin_factor`); LSVM trains the
 /// documented objective to convergence (statistical parity, `dms_algo::lsvm`).
 const SCORING_ONLY: &[&str] = &[
-    "neural_net",
     "kohonen",
     "sequence",
     "time_series",
@@ -158,10 +155,6 @@ const TRAINING_GAPS: &[(&str, &str)] = &[
     (
         "TrainKohonenNode",
         "Kohonen training starts from random weights and a random record order drawn with an unknown generator",
-    ),
-    (
-        "neuralnet!spss.neuralnet-extension",
-        "Neural Net training draws random initial weights and a random 70/30 split with an unknown generator",
     ),
     (
         "BuildSequenceNode",

@@ -26,6 +26,7 @@ pub mod linear;
 pub mod linear_as;
 pub mod logistic;
 pub mod lsvm;
+pub mod neural_net;
 pub mod quest;
 pub mod smooth;
 pub mod stats;
