@@ -423,6 +423,7 @@ fn model_kind(model: &Model) -> &'static str {
         Model::Regression(_) => "regression",
         Model::Neural(_) => "neural",
         Model::Association(_) => "association",
+        Model::Sequence(_) => "sequence",
         Model::Unsupported(_) => "unsupported",
     }
 }

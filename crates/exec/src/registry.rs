@@ -72,6 +72,7 @@ const BUILT_IN: &[(&str, Factory)] = &[
     ("anomaly", model_node),
     ("feature_selection", model_node),
     ("decision_list", model_node),
+    ("sequence", model_node),
     ("binning", nodes::binning::build),
     ("auto_data_prep", nodes::auto_data_prep::build),
     ("set_to_flag", nodes::set_to_flag::build),
@@ -92,7 +93,7 @@ const PENDING: &[&str] = &[];
 /// Implemented builders held to statistical rather than exact parity
 /// (`docs/statistical-parity.md`): their training draws from our own generator or converges
 /// where Modeler stops early, so they match Modeler's metrics, not its bits.
-const STATISTICAL: &[&str] = &["lsvm", "neural_net"];
+const STATISTICAL: &[&str] = &["lsvm", "neural_net", "sequence"];
 
 /// Model nodes whose nuggets score (`nodes::apply`) while their build nodes cannot train yet;
 /// they do not count as implemented.
@@ -102,7 +103,6 @@ const STATISTICAL: &[&str] = &["lsvm", "neural_net"];
 /// training (`BuildAutoClusteringModelNode`) is not implemented.
 /// Auto Classifier / Numeric: saved components and Ensemble scoring (`nodes::auto_models`);
 /// their builders remain explicit GAPs and do not count toward implemented coverage.
-/// Sequence: the nugget scores its saved rules; training is a GAP (`nodes::sequence`).
 /// Time Series (`corpus/models_next/ts_arima.str`, `ts_expert.str`,
 /// `corpus/models_next2/ts_simple.str`, `ts_holt.str`): the nugget scores the saved ARIMA
 /// or exponential smoothing model; estimation (`spss.ts!ts_builder`) is a GAP.
@@ -112,7 +112,6 @@ const STATISTICAL: &[&str] = &["lsvm", "neural_net"];
 /// documented objective to convergence (statistical parity, `dms_algo::lsvm`).
 const SCORING_ONLY: &[&str] = &[
     "kohonen",
-    "sequence",
     "time_series",
     "auto_cluster",
     "auto_classifier",
@@ -155,10 +154,6 @@ const TRAINING_GAPS: &[(&str, &str)] = &[
     (
         "TrainKohonenNode",
         "Kohonen training starts from random weights and a random record order drawn with an unknown generator",
-    ),
-    (
-        "BuildSequenceNode",
-        "Sequence training orders tied rules by no recoverable key",
     ),
     (
         "BuildAutoClusteringModelNode",

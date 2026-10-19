@@ -133,6 +133,9 @@ impl<'p> Scorer<'p> {
             Model::Association(_) => Err(PmmlError::Unsupported(
                 "AssociationModel is scored as a rule list, not one prediction".into(),
             )),
+            Model::Sequence(_) => Err(PmmlError::Unsupported(
+                "SequenceModel is scored by the Sequence nugget, not one prediction".into(),
+            )),
             Model::Unsupported(name) => Err(PmmlError::Unsupported(name.clone())),
         }
     }
@@ -454,11 +457,13 @@ fn score_mining(pmml: &Pmml, mining: &MiningModel, env: &Env<'_>) -> Result<Pred
             Model::Unsupported(name) => Err(PmmlError::Unsupported(name.clone())),
             Model::Tree(tree) => crate::tree::score(pmml, tree, &inner_env),
             Model::RuleSet(rules) => crate::rules::score(pmml, rules, &inner_env),
-            Model::Neural(_) | Model::Mining(_) | Model::Clustering(_) | Model::Association(_) => {
-                Err(PmmlError::Unsupported(
-                    "nested MiningModel segment type".into(),
-                ))
-            }
+            Model::Neural(_)
+            | Model::Mining(_)
+            | Model::Clustering(_)
+            | Model::Association(_)
+            | Model::Sequence(_) => Err(PmmlError::Unsupported(
+                "nested MiningModel segment type".into(),
+            )),
         }?;
         if mining.method == "average" {
             if let Value::Number(value) = prediction.value {
@@ -558,6 +563,7 @@ pub(crate) fn model_header(model: &Model) -> Option<&ModelHeader> {
         Model::Neural(m) => Some(&m.header),
         Model::Mining(m) => Some(&m.header),
         Model::Association(m) => Some(&m.header),
+        Model::Sequence(m) => Some(&m.header),
         Model::Unsupported(_) => None,
     }
 }
@@ -663,6 +669,16 @@ fn collect_model_fields<'a>(
         Model::Association(model) => {
             for field in &model.header.mining_schema {
                 if matches!(field.usage, Usage::Active | Usage::Group) {
+                    out.insert(field.name.as_str());
+                }
+            }
+        }
+        Model::Sequence(model) => {
+            for field in &model.header.mining_schema {
+                if matches!(
+                    field.usage,
+                    Usage::Active | Usage::Group | Usage::Supplementary | Usage::Other
+                ) {
                     out.insert(field.name.as_str());
                 }
             }

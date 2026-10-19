@@ -18,6 +18,11 @@
 //! trains the squared-hinge objective to convergence (`dms_algo::lsvm`): statistical parity,
 //! because Modeler's ADMM stops before the optimum (`docs/statistical-parity.md`).
 //!
+//! Sequence (`BuildSequenceNode`) mines sequential rules (`dms_algo::sequence`) from
+//! `SequenceSupp`, `SequenceConf`, `SequenceMaxSize`, the id/time fields and the content fields:
+//! statistical parity (tie order free). Gaps, tolerance, maximum duration, pruning, events, a
+//! partition field, weights and non-contiguous ids are rejected as GAPs (`sequence_settings`).
+//!
 //! K-Means (`BuildKMeansNode`) keeps its settings in the node's XML (`docs/formats/nodes/kmeans.md`):
 //! `numClusters`; with `expertMode` the `encodingValueForSets` and, when `stoppingCondition` is
 //! `CUSTOM`, `numberIterations` and `changeTolerance` (otherwise Modeler's defaults). Inputs are the
@@ -71,6 +76,7 @@ use dms_algo::kmeans::{self, KMeansSettings};
 use dms_algo::linear::{self, LinearSettings, Selection, Style};
 use dms_algo::logistic::{self, LogisticSettings, Method as LogisticMethod, Procedure};
 use dms_algo::lsvm::{self, LsvmSettings};
+use dms_algo::sequence::{self, SequenceSettings};
 use dms_algo::twostep::{self, Criterion, TwoStepSettings};
 use dms_pmml::Pmml;
 use dms_stream::StreamNode;
@@ -106,6 +112,7 @@ pub fn build(node: &StreamNode) -> Result<Box<dyn Operator>, OperatorError> {
         "BuildPCANode" => Algorithm::Factor(factor_settings(node)?),
         "BuildAnomalyNode" => Algorithm::Anomaly(anomaly_settings(node)?),
         "BuildDecisionListNode" => Algorithm::DecisionList(decision_list_settings(node)?),
+        "BuildSequenceNode" => Algorithm::Sequence(sequence_settings(node)?),
         other => {
             return Err(OperatorError::Settings(format!(
                 "training {other} is not implemented yet"
@@ -155,6 +162,8 @@ enum Algorithm {
     Apriori(AprioriSettings),
     /// CARMA association rules (`BuildCarmaNode`).
     Carma(CarmaSettings),
+    /// Sequence rules (`BuildSequenceNode`), statistical parity (`dms_algo::sequence`).
+    Sequence(SequenceSettings),
     DecisionList(DecisionListSpec),
 }
 
@@ -301,6 +310,19 @@ impl Operator for Build {
             let pmml = carma::train(&table, settings).map_err(apriori_error)?;
             return Ok(NodeOutput::Model(Arc::new(pmml)));
         }
+        if let Algorithm::Sequence(settings) = &self.algorithm {
+            // Statistical parity (`docs/statistical-parity.md`, rule 4): the rules and their
+            // statistics are Modeler's; only the order within a tie group is ours.
+            let pmml = sequence::train(&table, settings).map_err(|error| match error {
+                dms_algo::AlgoError::Unsupported(_) | dms_algo::AlgoError::Settings(_) => {
+                    OperatorError::Settings(format!("Sequence: {error}"))
+                }
+                dms_algo::AlgoError::Data(message) => {
+                    OperatorError::Data(format!("Sequence: {message}"))
+                }
+            })?;
+            return Ok(NodeOutput::Model(Arc::new(pmml)));
+        }
         if let Algorithm::KMeans((settings, custom)) = &self.algorithm {
             let fields = cluster_inputs(&table, custom.as_deref())?;
             let pmml = kmeans::train(&table, &fields, settings)
@@ -407,6 +429,7 @@ impl Operator for Build {
             | Algorithm::Anomaly(_)
             | Algorithm::Apriori(_)
             | Algorithm::Carma(_)
+            | Algorithm::Sequence(_)
             | Algorithm::DecisionList(_) => {
                 return Err(OperatorError::Settings("clustering has no target".into()));
             }
@@ -749,9 +772,98 @@ fn apriori_error(error: dms_algo::AlgoError) -> OperatorError {
     }
 }
 
+/// Sequence settings from the node's XML (`sequence_default`, `sequence_conf75`, ...).
+///
+/// The oracles set `autoModelName` false and name the model; mining uses the support and
+/// confidence percentages, the largest mined sequence (`SequenceMaxSize`, the number of items)
+/// and the id/time/content fields. Everything else is Modeler's default in these streams:
+/// contiguous ids, no gaps, no timestamp tolerance, no maximum duration and no pruning.
+/// Settings without an oracle are rejected as GAPs.
+fn sequence_settings(node: &StreamNode) -> Result<SequenceSettings, OperatorError> {
+    let s = node.settings.as_ref();
+    let unsupported =
+        |what: &str| OperatorError::Settings(format!("Sequence {what} is not supported yet (GAP)"));
+    for flag in [
+        "useEvents",
+        "transactionalData",
+        "SequenceUseGaps",
+        "SequenceUseTolerance",
+        "SequenceUseMaxDuration",
+        "SequenceUsePruning",
+    ] {
+        if settings::flag(s, flag)?.unwrap_or(false) {
+            return Err(unsupported(flag));
+        }
+    }
+    if !settings::flag(s, "SequenceUseTime")?.unwrap_or(false) {
+        return Err(unsupported("without a time field (SequenceUseTime false)"));
+    }
+    if !settings::flag(s, "SequenceUseContent")?.unwrap_or(true) {
+        return Err(unsupported(
+            "without content fields (SequenceUseContent false)",
+        ));
+    }
+    // The property's default is false (ids need not be contiguous), but every oracle sets it.
+    if !settings::flag(s, "SequenceContiguous")?.unwrap_or(false) {
+        return Err(unsupported("non-contiguous ids (SequenceContiguous false)"));
+    }
+    if let Some(field) = settings::text(s, "partitionField").filter(|f| !f.trim().is_empty()) {
+        return Err(OperatorError::Settings(format!(
+            "Sequence partitionField {field:?} is not supported yet (GAP)"
+        )));
+    }
+    let real = |name: &str, default: f64| -> Result<f64, OperatorError> {
+        Ok(settings::real(s, name)?.unwrap_or(default))
+    };
+    let count = |name: &str, default: i64| -> Result<usize, OperatorError> {
+        let value = settings::integer(s, name)?.unwrap_or(default);
+        usize::try_from(value).map_err(|_| {
+            OperatorError::Settings(format!(
+                "Sequence {name} must not be negative, found {value}"
+            ))
+        })
+    };
+    let field = |name: &str, path: &str| -> Result<String, OperatorError> {
+        settings::text(s, path)
+            .map(|text| text.trim().to_string())
+            .filter(|text| !text.is_empty())
+            .ok_or_else(|| OperatorError::Settings(format!("Sequence needs {name}")))
+    };
+    let content_fields: Vec<String> = settings::children(s, "SequenceContentField", "field")
+        .into_iter()
+        .map(|field| field.text().trim().to_string())
+        .filter(|name| !name.is_empty())
+        .collect();
+    if content_fields.is_empty() {
+        return Err(OperatorError::Settings(
+            "Sequence needs SequenceContentField".into(),
+        ));
+    }
+    let model_name = if settings::flag(s, "autoModelName")?.unwrap_or(true) {
+        // GAP: Modeler's generated name is not in these oracles.
+        settings::text(s, "modelName")
+            .filter(|name| !name.trim().is_empty())
+            .or_else(|| node.name.clone())
+            .unwrap_or_else(|| "Sequence".to_string())
+    } else {
+        settings::text(s, "modelName")
+            .map(|name| name.trim().to_string())
+            .filter(|name| !name.is_empty())
+            .ok_or_else(|| OperatorError::Settings("Sequence modelName is empty".into()))?
+    };
+    Ok(SequenceSettings {
+        min_support_percent: real("SequenceSupp", 20.0)?,
+        min_confidence_percent: real("SequenceConf", 20.0)?,
+        max_size: count("SequenceMaxSize", 10)?,
+        id_field: field("SequenceIdField", "SequenceIdField")?,
+        time_field: field("SequenceTimeField", "SequenceTimeField")?,
+        content_fields,
+        max_sequences: count("SequenceMaxSequences", 1_000_000)?,
+        model_name,
+    })
+}
+
 /// PCA/Factor (`BuildPCANode`, `oracle/models_next/factor_*`): principal components of the
-/// correlation matrix with complete records, factors by eigenvalue or by count, no rotation or
-/// varimax, regression scores. Anything else is rejected (`crates/algo/src/factor.rs`).
 fn factor_settings(
     node: &StreamNode,
 ) -> Result<(FactorSettings, Option<Vec<String>>), OperatorError> {

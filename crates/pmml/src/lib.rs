@@ -24,6 +24,7 @@ mod parse;
 mod regression;
 mod rules;
 mod score;
+mod sequence;
 mod tree;
 
 pub use association::{
@@ -36,6 +37,9 @@ pub use neural::{
     NeuralOutputKind, NeuralTarget, Neuron, Normalization,
 };
 pub use score::Scorer;
+pub use sequence::{
+    Itemset as SequenceItemset, SequenceModel, SequenceRule, parse_rules as parse_sequence_rules,
+};
 
 /// `MiningModel` method of a PCA/Factor model: Modeler exports one `GeneralRegressionModel` per
 /// factor, side by side; scoring evaluates each (`Scorer::score_factors`).
@@ -252,6 +256,9 @@ pub enum Model {
     /// PMML `AssociationModel` (Apriori). Scored as a rule list by [`score_rules`],
     /// not as one [`Prediction`].
     Association(AssociationModel),
+    /// PMML `SequenceModel` (Sequence): sequential association rules. Scored by the
+    /// executor's Sequence nugget, not as one [`Prediction`].
+    Sequence(SequenceModel),
     /// A model element we read but cannot score: its element name.
     Unsupported(String),
 }
