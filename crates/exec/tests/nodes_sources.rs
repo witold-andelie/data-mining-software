@@ -8,7 +8,8 @@
 )]
 
 use dms_exec::nodes::{
-    derive, filler, fixed_file, json_import, statistics_file, r#type, user_input, var_file,
+    derive, filler, fixed_file, json_import, sas_import, statistics_file, r#type, user_input,
+    var_file,
 };
 use dms_exec::{ExecContext, Factory, FileResolver, OperatorError};
 use dms_stream::StreamNode;
@@ -973,5 +974,195 @@ fn user_input_combines_orders_ranges_and_refuses_bad_values() {
         user_field("x", "date", "31/12/1999"),
     ] {
         assert!(run("order", vec![bad]).is_err());
+    }
+}
+
+// ---------------------------------------------------------------- sas_import
+
+#[test]
+fn sas_import_rejects_unsupported_and_missing_settings() {
+    assert!(sas_import::build(&node(vec![])).is_err());
+    assert!(matches!(
+        sas_import::build(&node(vec![
+            p("inputFileName", "sastest.sas7bdat"),
+            p("readFormats", "true"),
+        ])),
+        Err(OperatorError::Settings(msg)) if msg.contains("GAP:")
+    ));
+    for unsupported_fmt in ["Windows", "UNIX", "SAS6", "SAS8"] {
+        assert!(matches!(
+            sas_import::build(&node(vec![
+                p("inputFileName", "sastest.sas7bdat"),
+                p("fileFormat", unsupported_fmt),
+            ])),
+            Err(OperatorError::Settings(msg)) if msg.contains("GAP:")
+        ));
+    }
+    assert!(matches!(
+        sas_import::build(&node(vec![
+            p("inputFileName", "sastest.sas7bdat"),
+            p("readVariableNames", "invalidMode"),
+        ])),
+        Err(OperatorError::Settings(_))
+    ));
+}
+
+#[test]
+fn sas_import_reads_corpus_files_and_runs_corpus_streams() {
+    let corpus_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../corpus/sas");
+    if !corpus_dir.join("sastest.sas7bdat").is_file() {
+        return;
+    }
+    let ctx = ctx_with_dir(corpus_dir.clone());
+
+    // Direct node execution: SAS7/SAS9 NamesAndLabels, LabelsAsNames, and Transport.
+    let sas9_names = run_source(
+        sas_import::build,
+        vec![
+            p("inputFileName", "sastest.sas7bdat"),
+            p("fileFormat", "SAS7"),
+            p("readVariableNames", "namesAndLabels"),
+        ],
+        &ctx,
+    )
+    .unwrap();
+    let field_names: Vec<&str> = sas9_names
+        .model()
+        .fields()
+        .iter()
+        .map(|f| f.name.as_str())
+        .collect();
+    assert_eq!(
+        field_names,
+        vec!["name", "grp", "joined", "amount", "id", "score"]
+    );
+    assert_eq!(
+        sas9_names.model().field("name").unwrap().label.as_deref(),
+        Some("Customer name")
+    );
+    assert_eq!(
+        sas9_names.model().field("joined").unwrap().storage,
+        Storage::Date
+    );
+    assert_eq!(sas9_names.row_count(), 5);
+
+    let sas9_labels = run_source(
+        sas_import::build,
+        vec![
+            p("inputFileName", "sastest.sas7bdat"),
+            p("fileFormat", "SAS9"),
+            p("readVariableNames", "labelsAsNames"),
+        ],
+        &ctx,
+    )
+    .unwrap();
+    let label_names: Vec<&str> = sas9_labels
+        .model()
+        .fields()
+        .iter()
+        .map(|f| f.name.as_str())
+        .collect();
+    assert_eq!(
+        label_names,
+        vec![
+            "Customer name",
+            "field2",
+            "Join date",
+            "Amount (EUR)",
+            "field5",
+            "field6",
+        ]
+    );
+
+    let xpt = run_source(
+        sas_import::build,
+        vec![
+            p("inputFileName", "sastest.xpt"),
+            p("fileFormat", "Transport"),
+            p("memberName", "SASTEST"),
+            p("readVariableNames", "namesAndLabels"),
+        ],
+        &ctx,
+    )
+    .unwrap();
+    let xpt_names: Vec<&str> = xpt
+        .model()
+        .fields()
+        .iter()
+        .map(|f| f.name.as_str())
+        .collect();
+    assert_eq!(
+        xpt_names,
+        vec!["NAME", "GRP", "JOINED", "AMOUNT", "ID", "SCORE"]
+    );
+    assert_eq!(xpt.rows(), sas9_names.rows());
+
+    // Execute the three saved .str streams from corpus/sas/ and verify their SASInputNode output.
+    for (stream_file, expected_cols) in [
+        (
+            "sas9_names.str",
+            vec!["name", "grp", "joined", "amount", "id", "score"],
+        ),
+        (
+            "sas9_labels.str",
+            vec![
+                "Customer name",
+                "field2",
+                "Join date",
+                "Amount (EUR)",
+                "field5",
+                "field6",
+            ],
+        ),
+        (
+            "sas_transport.str",
+            vec!["NAME", "GRP", "JOINED", "AMOUNT", "ID", "SCORE"],
+        ),
+    ] {
+        let str_path = corpus_dir.join(stream_file);
+        if !str_path.is_file() {
+            continue;
+        }
+        let bytes = std::fs::read(&str_path).unwrap();
+        let archive =
+            dms_strfmt::read_archive(&bytes, &dms_strfmt::ArchiveLimits::default()).unwrap();
+        let stream = dms_stream::Stream::from_document(&archive.document).unwrap();
+        let sas_node = stream
+            .all_nodes()
+            .into_iter()
+            .find(|n| n.type_identifier() == "SASInputNode")
+            .unwrap();
+        let props_debug: Vec<String> = sas_node
+            .settings
+            .as_ref()
+            .map(|el| {
+                el.child_elements()
+                    .map(|c| format!("{}={:?}", c.name.local, c.text()))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let plan = dms_exec::Plan::new(&stream);
+        let results = plan.evaluate(&[sas_node.uid.as_str()], &ctx);
+        let output = results
+            .get(&sas_node.uid)
+            .unwrap()
+            .as_ref()
+            .unwrap_or_else(|e| panic!("{stream_file} failed: {e} (props: {props_debug:?})"));
+        let table = output.data().unwrap();
+        let actual_cols: Vec<&str> = table
+            .model()
+            .fields()
+            .iter()
+            .map(|f| f.name.as_str())
+            .collect();
+        assert_eq!(
+            actual_cols, expected_cols,
+            "{stream_file} columns mismatch (props: {props_debug:?})"
+        );
+        assert_eq!(
+            table.rows(),
+            sas9_names.rows(),
+            "{stream_file} rows mismatch"
+        );
     }
 }
