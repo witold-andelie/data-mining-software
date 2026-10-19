@@ -30,10 +30,13 @@ QUEST and C&R Tree without an overfit prevention set stay exact (`quest_nofs/*`)
    Modeler's value must lie inside our seeds' range widened by 10 % of its width (or inside an
    absolute tolerance stated per metric when the range is degenerate). The test prints the
    range and Modeler's value.
-3. **Optimizers.** Where only the stopping point differs (LSVM, Time Series), solve to
-   convergence and compare with a stated tolerance: LSVM coefficients within 1e-3 relative and
-   identical predicted classes on every scored record; smoothing weights within 1e-4 and
-   forecasts within 1e-4 relative; ARIMA coefficients within 1e-3.
+3. **Optimizers.** Where only the stopping point differs (LSVM, Time Series), solve the
+   documented objective to convergence. Accept when our objective is no worse than the value
+   of Modeler's own coefficients on the same data (up to 1e-9 relative), predicted classes are
+   identical on every scored record, and continuous predictions differ from Modeler's by at most
+   1 % of the target's standard deviation. Modeler's early stop can leave coefficients far from
+   the optimum (`models_as/lsvm_numeric`: intercept -0.0155 against the optimum's -0.0359),
+   so coefficients are reported, not compared.
 4. **Ties.** Sequence must produce exactly Modeler's rules and statistics; only the order of
    rules tied on confidence, length and support is free.
 5. **Labelled.** Module docs, the builder's notes and the parity checklist say "statistical
