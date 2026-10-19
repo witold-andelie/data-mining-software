@@ -1428,7 +1428,7 @@ fn roles(
 /// Neural Net settings from the extension parameters (`neuralnet.*`, `models_ml/nn_*`). Only
 /// the values the oracles cover are accepted; anything else is a `GAP:`.
 fn neural_settings(p: &Parameters) -> Result<dms_algo::neural_net::NeuralSettings, OperatorError> {
-    use dms_algo::neural_net::{Hidden, MissingValues, NeuralSettings};
+    use dms_algo::neural_net::{Hidden, MissingValues, Network, NeuralSettings};
     let gap = |what: String| OperatorError::Settings(format!("GAP: Neural Net {what}"));
     let expect = |name: &str, allowed: &[&str]| -> Result<(), OperatorError> {
         match p.text(name) {
@@ -1440,10 +1440,23 @@ fn neural_settings(p: &Parameters) -> Result<dms_algo::neural_net::NeuralSetting
     };
     expect("objective_goal", &["standard"])?;
     expect("objective_choose", &["buildNewModel"])?;
-    expect(
-        "neuralnet.NeuralNetworkAlgorithm",
-        &["multilayerPerceptron"],
-    )?;
+    let network = match p.text("neuralnet.NeuralNetworkAlgorithm").as_deref() {
+        None | Some("multilayerPerceptron") => Network::Perceptron,
+        Some("radialBasisFunction") => {
+            // `nn_rbf`: normalized RBF with the automatic overlapping factor.
+            expect(
+                "neuralnet.RBFHiddenLayerActivationFunction",
+                &["normalizedRadialBasis"],
+            )?;
+            expect("neuralnet.RBFHiddenUnitsOverlap", &["automaticallyCompute"])?;
+            Network::RadialBasis
+        }
+        Some(other) => {
+            return Err(gap(format!(
+                "NeuralNetworkAlgorithm={other:?} has no oracle"
+            )));
+        }
+    };
     expect("neuralnet.MLPTrainingType", &["batch"])?;
     expect(
         "neuralnet.MLPTrainingOptimizationAlgorithm",
@@ -1550,6 +1563,7 @@ fn neural_settings(p: &Parameters) -> Result<dms_algo::neural_net::NeuralSetting
         Some(v) => return Err(gap(format!("RandomSeed={v}"))),
     };
     Ok(NeuralSettings {
+        network,
         hidden,
         max_epochs,
         min_accuracy,
