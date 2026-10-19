@@ -1,5 +1,5 @@
 //! Sequence nugget (`ApplySequenceNode`, `oracle/models_next/sequence_*`): predictions from the
-//! saved sequential rules, record by record along each id's history.
+//! saved or freshly trained sequential rules, record by record along each id's history.
 //!
 //! The nugget keeps its rules in an attachment (`model/rules@containerData`): `rule` elements
 //! whose antecedent and consequent are `SequenceCondition`s, a `then` list of `and` itemsets of
@@ -17,9 +17,12 @@
 //!   eggs 0.6, jam 0.4, where butter 0.4 loses to jam by rule order).
 //!
 //! GAP: gaps (`SequenceUseGaps`), sequences without a time field, multi-item consequents and
-//! non-contiguous ids have no oracle and are rejected. Training (`BuildSequenceNode`) is not
-//! implemented: Modeler orders rules of equal confidence and length in an order these cases do
-//! not explain (`sequence_default` rules 3/4 and 7/8).
+//! non-contiguous ids have no oracle and are rejected.
+//!
+//! Scoring is statistical parity (tie order free): with the build node's rules every oracle
+//! table matches (`crates/exec/tests/sequence.rs`). `produce` scores the model the linked build
+//! node trained; `run` scores the rules saved in the attachment, so a stream without its builder
+//! still applies its saved model.
 
 use crate::context::ExecContext;
 use crate::error::OperatorError;
@@ -32,9 +35,9 @@ use std::sync::Arc;
 
 use super::field_util::{Column, with_columns};
 
-/// One itemset: `(field, value)` conditions that all hold in one transaction.
-type Itemset = Vec<(String, String)>;
+use dms_pmml::{SequenceItemset as Itemset, SequenceRule};
 
+/// A rule as scoring uses it: a single-item consequent, read from a [`SequenceRule`].
 struct Rule {
     antecedent: Vec<Itemset>,
     consequent: String,
@@ -93,82 +96,6 @@ struct Sequence {
     max_predictions: usize,
 }
 
-/// The `then` list of a `SequenceCondition`: its itemsets.
-fn itemsets(condition: roxmltree::Node<'_, '_>) -> Result<Vec<Itemset>, OperatorError> {
-    let bad = |what: &str| OperatorError::Data(format!("Sequence rules: {what}"));
-    let children = condition
-        .children()
-        .find(|n| n.has_tag_name("children"))
-        .ok_or_else(|| bad("a condition without children"))?;
-    let mut sets = Vec::new();
-    for logical in children.children().filter(|n| n.has_tag_name("child")) {
-        let mut set = Vec::new();
-        let items = logical
-            .children()
-            .find(|n| n.has_tag_name("children"))
-            .ok_or_else(|| bad("an itemset without conditions"))?;
-        for item in items.children().filter(|n| n.has_tag_name("child")) {
-            let text = |tag: &str| {
-                item.children()
-                    .find(|n| n.has_tag_name(tag))
-                    .and_then(|n| n.text())
-                    .map(str::to_string)
-            };
-            if text("op").as_deref() != Some("equal") {
-                return Err(bad("a condition other than equal"));
-            }
-            set.push((
-                text("field").ok_or_else(|| bad("a condition without a field"))?,
-                text("value").unwrap_or_default(),
-            ));
-        }
-        sets.push(set);
-    }
-    Ok(sets)
-}
-
-fn parse_rules(bytes: &[u8]) -> Result<Vec<Rule>, OperatorError> {
-    let text = std::str::from_utf8(bytes)
-        .map_err(|_| OperatorError::Data("Sequence rules are not UTF-8".into()))?;
-    let wrapped = format!("<rules>{text}</rules>");
-    let doc = roxmltree::Document::parse(&wrapped)
-        .map_err(|error| OperatorError::Data(format!("Sequence rules: {error}")))?;
-    let mut rules = Vec::new();
-    for rule in doc
-        .root_element()
-        .children()
-        .filter(|n| n.has_tag_name("rule"))
-    {
-        let part = |tag: &str| {
-            rule.children()
-                .find(|n| n.has_tag_name(tag))
-                .ok_or_else(|| OperatorError::Data(format!("a Sequence rule has no {tag}")))
-        };
-        let antecedent = itemsets(part("antecedent")?)?;
-        let consequent = itemsets(part("consequent")?)?;
-        let [set] = consequent.as_slice() else {
-            return Err(OperatorError::Settings(
-                "Sequence consequents of several itemsets are not supported yet (GAP)".into(),
-            ));
-        };
-        let [(_, value)] = set.as_slice() else {
-            return Err(OperatorError::Settings(
-                "Sequence consequents of several items are not supported yet (GAP)".into(),
-            ));
-        };
-        let confidence = part("confidence")?
-            .text()
-            .and_then(|t| t.trim().parse::<f64>().ok())
-            .ok_or_else(|| OperatorError::Data("a Sequence rule has no confidence".into()))?;
-        rules.push(Rule {
-            antecedent,
-            consequent: value.clone(),
-            confidence,
-        });
-    }
-    Ok(rules)
-}
-
 /// Whether `pattern`'s itemsets occur in `history` in order, each in a later itemset.
 fn occurs(pattern: &[Itemset], history: &[Vec<(String, String)>]) -> bool {
     let mut next = 0;
@@ -190,16 +117,55 @@ impl Operator for Sequence {
     }
 
     fn run(&self, inputs: &[Arc<Table>], context: &ExecContext) -> Result<Table, OperatorError> {
+        self.predict(inputs, None, context)
+    }
+
+    fn produce(
+        &self,
+        inputs: &[Arc<Table>],
+        model: Option<Arc<dms_pmml::Pmml>>,
+        context: &ExecContext,
+    ) -> Result<NodeOutput, OperatorError> {
+        self.predict(inputs, model.as_deref(), context)
+            .map(|table| NodeOutput::Data(Arc::new(table)))
+    }
+}
+
+impl Sequence {
+    /// Scores with the build node's freshly trained rules when the plan passes them (Modeler
+    /// replaces the nugget's saved model on a build), else with the rules the stream saved.
+    fn predict(
+        &self,
+        inputs: &[Arc<Table>],
+        trained: Option<&dms_pmml::Pmml>,
+        context: &ExecContext,
+    ) -> Result<Table, OperatorError> {
         let input = inputs
             .first()
             .ok_or_else(|| OperatorError::Inputs("a model nugget needs one input".into()))?;
-        let bytes = context.attachments.get(&self.rules_member).ok_or_else(|| {
-            OperatorError::Io(format!(
-                "the stream file has no attachment {}",
-                self.rules_member
-            ))
-        })?;
-        let rules = parse_rules(bytes)?;
+        let rules = match trained {
+            Some(pmml) => match &pmml.model {
+                dms_pmml::Model::Sequence(model) => scoring_rules(&model.rules)?,
+                _ => {
+                    return Err(OperatorError::Data(
+                        "the Sequence nugget received a model that is not a SequenceModel".into(),
+                    ));
+                }
+            },
+            None => {
+                let bytes = context.attachments.get(&self.rules_member).ok_or_else(|| {
+                    OperatorError::Io(format!(
+                        "the stream file has no attachment {}",
+                        self.rules_member
+                    ))
+                })?;
+                let text = std::str::from_utf8(bytes)
+                    .map_err(|_| OperatorError::Data("Sequence rules are not UTF-8".into()))?;
+                let rules = dms_pmml::parse_sequence_rules(text)
+                    .map_err(|error| OperatorError::Data(error.to_string()))?;
+                scoring_rules(&rules)?
+            }
+        };
         let model = input.model();
         let position = |name: &str| {
             model
@@ -287,14 +253,29 @@ impl Operator for Sequence {
         }
         with_columns(input, columns)
     }
+}
 
-    fn produce(
-        &self,
-        inputs: &[Arc<Table>],
-        _model: Option<Arc<dms_pmml::Pmml>>,
-        context: &ExecContext,
-    ) -> Result<NodeOutput, OperatorError> {
-        self.run(inputs, context)
-            .map(|table| NodeOutput::Data(Arc::new(table)))
-    }
+/// The scoring view of rules from either channel (the build node's model or the saved rules
+/// container). Consequents of several itemsets or items have no oracle.
+fn scoring_rules(rules: &[SequenceRule]) -> Result<Vec<Rule>, OperatorError> {
+    rules
+        .iter()
+        .map(|rule| {
+            let [set] = rule.consequent.as_slice() else {
+                return Err(OperatorError::Settings(
+                    "Sequence consequents of several itemsets are not supported yet (GAP)".into(),
+                ));
+            };
+            let [(_, value)] = set.as_slice() else {
+                return Err(OperatorError::Settings(
+                    "Sequence consequents of several items are not supported yet (GAP)".into(),
+                ));
+            };
+            Ok(Rule {
+                antecedent: rule.antecedent.clone(),
+                consequent: value.clone(),
+                confidence: rule.confidence,
+            })
+        })
+        .collect()
 }

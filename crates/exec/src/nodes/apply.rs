@@ -1188,6 +1188,11 @@ fn target_name(pmml: &Pmml) -> Result<String, OperatorError> {
                 "an association model has no single target".into(),
             ));
         }
+        dms_pmml::Model::Sequence(_) => {
+            return Err(OperatorError::Data(
+                "a sequence model has no single target".into(),
+            ));
+        }
         dms_pmml::Model::Unsupported(element) => {
             return Err(OperatorError::Data(format!(
                 "model {element} cannot be scored yet"

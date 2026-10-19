@@ -6,7 +6,7 @@ Status `done (statistical)`: trained to statistical, not exact, parity with Mode
 
 | Scope | Implemented | Total |
 |---|---|---|
-| MVP | 75 | 85 |
+| MVP | 76 | 85 |
 | later | 3 | 25 |
 | license blocked | 0 | 5 |
 | out of scope | 0 | 34 |
@@ -152,7 +152,7 @@ Status `done (statistical)`: trained to statistical, not exact, parity with Mode
 | In-database: Netezza | `in_database_netezza` | out of scope | missing | (unmapped) |
 | Apriori | `apriori` | MVP | done | `BuildAprioriNode`, `ApplyAprioriNode` |
 | CARMA | `carma` | MVP | done | `BuildCarmaNode`, `ApplyCarmaNode` |
-| Sequence | `sequence` | MVP | missing | `BuildSequenceNode`, `ApplySequenceNode` |
+| Sequence | `sequence` | MVP | done (statistical) | `BuildSequenceNode`, `ApplySequenceNode` |
 | K-Means | `kmeans` | MVP | done | `BuildKMeansNode`, `ApplyKMeansNode` |
 | Kohonen | `kohonen` | MVP | missing | `TrainKohonenNode`, `ApplyKohonenNode` |
 | TwoStep | `twostep` | MVP | done | `BuildTwoStepNode`, `ApplyTwoStepNode` |

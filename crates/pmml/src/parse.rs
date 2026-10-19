@@ -618,6 +618,7 @@ fn parse_model(
         "NeuralNetwork" => Ok(Model::Neural(crate::neural::parse(node, dictionary)?)),
         "MiningModel" => Ok(Model::Mining(parse_mining_model(node, dictionary)?)),
         "AssociationModel" => Ok(Model::Association(crate::association::parse(node)?)),
+        "SequenceModel" => Ok(Model::Sequence(crate::sequence::parse(node)?)),
         other => Ok(Model::Unsupported(other.to_string())),
     }
 }
