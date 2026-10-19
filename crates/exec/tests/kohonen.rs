@@ -499,7 +499,7 @@ fn kohonen_statistical_parity_band() {
                 oracle.case
             );
             println!(
-                "{}: known outlier, Modeler MQE {modeler_mqe:.6} and {modeler_units} non-empty                  units; ours MQE {mqe_range:?}, units {unit_range:?}",
+                "{}: known outlier, Modeler MQE {modeler_mqe:.6} and {modeler_units} non-empty units; ours MQE {mqe_range:?}, units {unit_range:?}",
                 oracle.case
             );
             continue;

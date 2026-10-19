@@ -288,8 +288,11 @@ fn neural_training_matches_modeler_within_the_seed_band() {
             let high = values.iter().copied().fold(f64::NEG_INFINITY, f64::max);
             let margin = 0.1 * (high - low);
             let metric = if *target == "r" { "RMSE" } else { "accuracy" };
+            // Calibration: Modeler's rank among our runs (ties count half).
+            let rank = values.iter().filter(|v| **v < theirs[i]).count() as f64
+                + 0.5 * values.iter().filter(|v| **v == theirs[i]).count() as f64;
             println!(
-                "{case} {target}: Modeler {metric} {:.4}, our {SEEDS} seeds {low:.4}..{high:.4}",
+                "{case} {target}: Modeler {metric} {:.4}, our {SEEDS} seeds {low:.4}..{high:.4}, rank {rank}/{SEEDS}",
                 theirs[i]
             );
             assert!(
