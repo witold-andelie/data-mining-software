@@ -9,6 +9,7 @@ pub mod fixed;
 pub mod json;
 pub mod odbc;
 pub mod sas;
+pub mod sas_export;
 pub mod sav_export;
 pub mod statistics;
 pub mod text;

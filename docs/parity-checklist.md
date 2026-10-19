@@ -6,7 +6,7 @@ Status `done (statistical)`: trained to statistical, not exact, parity with Mode
 
 | Scope | Implemented | Total |
 |---|---|---|
-| MVP | 72 | 85 |
+| MVP | 73 | 85 |
 | later | 2 | 25 |
 | license blocked | 0 | 5 |
 | out of scope | 0 | 34 |
@@ -186,7 +186,7 @@ Status `done (statistical)`: trained to statistical, not exact, parity with Mode
 | Database | `database_export` | MVP | done | `ODBCExportNode`, `DBExportNode` |
 | XML | `xml_export` | MVP | done | `xml_export!spss.xml_data` |
 | JSON | `json_export` | MVP | done | `json_export!pasw.json` |
-| SAS | `sas_export` | MVP | missing | `SASExportNode` |
+| SAS | `sas_export` | MVP | done | `SASExportNode` |
 | Extension Export | `extension_export` | later | missing | `ExtensionExportNode` |
 | Data Collection | `data_collection_export` | out of scope | missing | `DimensionsExportNode` |
 | IBM Cognos | `cognos_export` | out of scope | missing | `CFExportCognosNode`, `cognos_export!spss.cognos` |
