@@ -25,6 +25,7 @@ pub mod kmeans;
 pub mod linear;
 pub mod linear_as;
 pub mod logistic;
+pub mod lsvm;
 pub mod smooth;
 pub mod stats;
 pub mod tree_as;

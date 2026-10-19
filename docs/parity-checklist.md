@@ -7,7 +7,7 @@ Status `done (statistical)`: trained to statistical, not exact, parity with Mode
 | Scope | Implemented | Total |
 |---|---|---|
 | MVP | 73 | 85 |
-| later | 2 | 25 |
+| later | 3 | 25 |
 | license blocked | 0 | 5 |
 | out of scope | 0 | 34 |
 
@@ -131,7 +131,7 @@ Status `done (statistical)`: trained to statistical, not exact, parity with Mode
 | GLMM | `glmm` | later | missing | `GLMM!spss.glmm-extension` |
 | GLE | `gle` | later | missing | (unmapped) |
 | Cox | `cox` | later | missing | `spss.coxreg_id!buildcoxreg` |
-| LSVM | `lsvm` | later | missing | `spss.linearSVM!linearSVM`, `spss.linearSVM!applyLinearSVM` |
+| LSVM | `lsvm` | later | done (statistical) | `spss.linearSVM!linearSVM`, `spss.linearSVM!applyLinearSVM` |
 | Self-Learning Response Model | `slrm` | later | missing | `spss.selflearning!selflearning` |
 | Temporal Causal Model | `tcm` | later | missing | `tcm!pasw.timeseries-extension` |
 | Random Forest (Python) | `random_forest` | later | missing | `rf!spss.rf` |
