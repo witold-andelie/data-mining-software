@@ -31,7 +31,10 @@ pub use association::{
     score_rules,
 };
 pub use clustering::AnomalyScore;
-pub use neural::{NeuralNetworkModel, NeuralOutputKind, NeuralTarget};
+pub use neural::{
+    Activation, ContinuousNorm, NeuralInput, NeuralLayer, NeuralNetworkModel, NeuralOutput,
+    NeuralOutputKind, NeuralTarget, Neuron, Normalization,
+};
 pub use score::Scorer;
 
 /// `MiningModel` method of a PCA/Factor model: Modeler exports one `GeneralRegressionModel` per

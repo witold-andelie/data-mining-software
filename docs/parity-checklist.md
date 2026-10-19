@@ -6,7 +6,7 @@ Status `done (statistical)`: trained to statistical, not exact, parity with Mode
 
 | Scope | Implemented | Total |
 |---|---|---|
-| MVP | 74 | 85 |
+| MVP | 75 | 85 |
 | later | 3 | 25 |
 | license blocked | 0 | 5 |
 | out of scope | 0 | 34 |
@@ -118,7 +118,7 @@ Status `done (statistical)`: trained to statistical, not exact, parity with Mode
 | Regression | `regression` | MVP | done | `BuildRegressionNode`, `ApplyRegressionNode` |
 | Logistic | `logistic` | MVP | done | `BuildLogisticNode`, `ApplyLogisticNode`, `ApplyLogisticSplitModelNode` |
 | GenLin | `genlin` | license blocked | missing | `spss.generalizedlinear_id!buildgeneralizedlinear` |
-| Neural Net | `neural_net` | MVP | missing | `TrainNetNode`, `ApplyNetNode`, `ApplyNeuralNetSplitModelNode`, `neuralnet!spss.neuralnet-extension` |
+| Neural Net | `neural_net` | MVP | done (statistical) | `TrainNetNode`, `ApplyNetNode`, `ApplyNeuralNetSplitModelNode`, `neuralnet!spss.neuralnet-extension` |
 | SVM | `svm` | license blocked | missing | `spss.svm_id!buildSVM` |
 | KNN | `knn` | license blocked | missing | `spss.KNN_id!KNNbuilder` |
 | Bayes Net | `bayes_net` | license blocked | missing | `spss.bayesian_id!buildBN` |
