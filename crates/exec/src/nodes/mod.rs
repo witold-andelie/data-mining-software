@@ -47,6 +47,7 @@ pub mod rfm_aggregate;
 pub mod rfm_analysis;
 mod rfm_settings;
 pub mod sample;
+pub mod sas_import;
 pub mod select;
 pub mod sequence;
 pub mod set_globals;

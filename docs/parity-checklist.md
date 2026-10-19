@@ -4,7 +4,7 @@
 
 | Scope | Implemented | Total |
 |---|---|---|
-| MVP | 71 | 85 |
+| MVP | 72 | 85 |
 | later | 2 | 25 |
 | license blocked | 0 | 5 |
 | out of scope | 0 | 34 |
@@ -21,7 +21,7 @@
 | User Input | `user_input` | MVP | done | `UserInputNode` |
 | XML | `xml_import` | MVP | missing | `xml_import!spss.xml_data` |
 | JSON | `json_import` | MVP | done | `json_import!pasw.json` |
-| SAS File | `sas_import` | MVP | missing | `SASInputNode` |
+| SAS File | `sas_import` | MVP | done | `SASInputNode` |
 | Extension Import | `extension_import` | later | missing | `ExtensionImportNode`, `script_importer!spss.scripts` |
 | R Import | `r_import` | out of scope | missing | `rimporter!spss.rstats` |
 | Data Collection | `data_collection_import` | out of scope | missing | `DimensionsImportNode` |
