@@ -14,6 +14,10 @@
 //! Linear-AS uses its saved custom fields and the correlation/sweep learner in
 //! `dms_algo::linear_as`, independently of the Linear node.
 //!
+//! Linear SVM (`spss.linearSVM!linearSVM`) uses inline `_...` settings and the Type roles, and
+//! trains the squared-hinge objective to convergence (`dms_algo::lsvm`): statistical parity,
+//! because Modeler's ADMM stops before the optimum (`docs/statistical-parity.md`).
+//!
 //! K-Means (`BuildKMeansNode`) keeps its settings in the node's XML (`docs/formats/nodes/kmeans.md`):
 //! `numClusters`; with `expertMode` the `encodingValueForSets` and, when `stoppingCondition` is
 //! `CUSTOM`, `numberIterations` and `changeTolerance` (otherwise Modeler's defaults). Inputs are the
@@ -66,6 +70,7 @@ use dms_algo::factor::{self, FactorCount, FactorSettings};
 use dms_algo::kmeans::{self, KMeansSettings};
 use dms_algo::linear::{self, LinearSettings, Selection, Style};
 use dms_algo::logistic::{self, LogisticSettings, Method as LogisticMethod, Procedure};
+use dms_algo::lsvm::{self, LsvmSettings};
 use dms_algo::twostep::{self, Criterion, TwoStepSettings};
 use dms_pmml::Pmml;
 use dms_stream::StreamNode;
@@ -88,6 +93,7 @@ pub fn build(node: &StreamNode) -> Result<Box<dyn Operator>, OperatorError> {
         "spss.linearEngine!linearEngine" => {
             Algorithm::LinearAs(super::analytic_build::linear(node)?)
         }
+        "spss.linearSVM!linearSVM" => Algorithm::Lsvm(super::analytic_build::lsvm(node)?),
         "BuildKMeansNode" => Algorithm::KMeans(kmeans_settings(node)?),
         "BuildAprioriNode" => Algorithm::Apriori(apriori_settings(node)?),
         "BuildCarmaNode" => Algorithm::Carma(carma_settings(node)?),
@@ -125,6 +131,8 @@ enum Algorithm {
     Chaid,
     TreeAs(ChaidSettings),
     LinearAs((String, Vec<String>)),
+    /// Linear SVM (`spss.linearSVM!linearSVM`), statistical parity (`dms_algo::lsvm`).
+    Lsvm(LsvmSettings),
     /// The settings, and the custom input fields (`None`: the Type roles).
     KMeans((KMeansSettings, Option<Vec<String>>)),
     TwoStep((TwoStepSettings, Option<Vec<String>>)),
@@ -251,6 +259,35 @@ impl Operator for Build {
             })?;
             return Ok(NodeOutput::Model(Arc::new(pmml)));
         }
+        if let Algorithm::Lsvm(settings) = &self.algorithm {
+            if table
+                .model()
+                .fields()
+                .iter()
+                .any(|f| matches!(f.role, Role::Split | Role::Frequency | Role::Partition))
+            {
+                return Err(OperatorError::Settings(
+                    "GAP: Linear SVM with split/weight/partition fields".into(),
+                ));
+            }
+            let (target, fields) = supervised_fields(&table, None, None)?;
+            let dataset = Dataset {
+                table: &table,
+                target,
+                inputs: &fields,
+                frequency: None,
+            };
+            // Statistical parity: the documented objective is solved to convergence
+            // (`dms_algo::lsvm`), so our coefficients are the optimum, not Modeler's
+            // early-stopped ones.
+            let pmml = lsvm::train(&dataset, settings).map_err(|error| match error {
+                dms_algo::AlgoError::Unsupported(_) | dms_algo::AlgoError::Settings(_) => {
+                    OperatorError::Settings(format!("GAP: {error}"))
+                }
+                _ => OperatorError::Data(format!("Linear SVM: {error}")),
+            })?;
+            return Ok(NodeOutput::Model(Arc::new(pmml)));
+        }
         if let Algorithm::Apriori(settings) = &self.algorithm {
             let pmml = apriori::train(&table, settings).map_err(apriori_error)?;
             return Ok(NodeOutput::Model(Arc::new(pmml)));
@@ -330,6 +367,7 @@ impl Operator for Build {
             Algorithm::KMeans(_)
             | Algorithm::TreeAs(_)
             | Algorithm::LinearAs(_)
+            | Algorithm::Lsvm(_)
             | Algorithm::TwoStep(_)
             | Algorithm::Logistic(_)
             | Algorithm::Regression(_)

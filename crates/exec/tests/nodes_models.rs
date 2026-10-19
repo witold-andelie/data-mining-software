@@ -139,21 +139,30 @@ fn analytic_confidence_flags_and_replacement_link_schema() {
 }
 
 #[test]
-fn analytic_builders_are_scoring_only_and_fail_with_gap() {
-    for (id, extension, builder, applier) in [
-        ("random_trees", "spss.randomTrees", "RT", "applyRandomTrees"),
-        ("lsvm", "spss.linearSVM", "linearSVM", "applyLinearSVM"),
-    ] {
-        assert!(!dms_exec::registry::is_implemented(id));
-        let factory = dms_exec::registry::factory(id).unwrap();
-        let mut node = analytic_nugget(extension, builder, vec![]);
-        node.class = "com.spss.clementine.component.node.ExtensionBuildModelNode".into();
-        let Err(dms_exec::OperatorError::Settings(message)) = factory(&node) else {
-            panic!("{id} builder must fail");
-        };
-        assert!(message.starts_with("GAP:"));
-        assert!(factory(&analytic_nugget(extension, applier, vec![])).is_ok());
-    }
+fn random_trees_builder_is_scoring_only_and_fails_with_gap() {
+    let (id, extension, builder, applier) =
+        ("random_trees", "spss.randomTrees", "RT", "applyRandomTrees");
+    assert!(!dms_exec::registry::is_implemented(id));
+    let factory = dms_exec::registry::factory(id).unwrap();
+    let mut node = analytic_nugget(extension, builder, vec![]);
+    node.class = "com.spss.clementine.component.node.ExtensionBuildModelNode".into();
+    let Err(dms_exec::OperatorError::Settings(message)) = factory(&node) else {
+        panic!("{id} builder must fail");
+    };
+    assert!(message.starts_with("GAP:"));
+    assert!(factory(&analytic_nugget(extension, applier, vec![])).is_ok());
+}
+
+/// Linear SVM trains (statistical parity, `docs/statistical-parity.md`) and its nugget scores.
+#[test]
+fn lsvm_builder_is_registered_for_training() {
+    assert!(dms_exec::registry::is_implemented("lsvm"));
+    assert!(dms_exec::registry::is_statistical("lsvm"));
+    let factory = dms_exec::registry::factory("lsvm").unwrap();
+    let mut node = analytic_nugget("spss.linearSVM", "linearSVM", vec![]);
+    node.class = "com.spss.clementine.component.node.ExtensionBuildModelNode".into();
+    assert!(factory(&node).is_ok());
+    assert!(factory(&analytic_nugget("spss.linearSVM", "applyLinearSVM", vec![])).is_ok());
 }
 
 #[test]

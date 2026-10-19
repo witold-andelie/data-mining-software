@@ -58,6 +58,7 @@ const BUILT_IN: &[(&str, Factory)] = &[
     ("chaid", model_node),
     ("tree_as", model_node),
     ("linear_as", model_node),
+    ("lsvm", model_node),
     ("kmeans", model_node),
     ("apriori", model_node),
     ("carma", model_node),
@@ -89,7 +90,7 @@ const PENDING: &[&str] = &[];
 /// Implemented builders held to statistical rather than exact parity
 /// (`docs/statistical-parity.md`): their training draws from our own generator or converges
 /// where Modeler stops early, so they match Modeler's metrics, not its bits.
-const STATISTICAL: &[&str] = &[];
+const STATISTICAL: &[&str] = &["lsvm"];
 
 /// Model nodes whose nuggets score (`nodes::apply`) while their build nodes cannot train yet;
 /// they do not count as implemented.
@@ -106,9 +107,10 @@ const STATISTICAL: &[&str] = &[];
 /// Time Series (`corpus/models_next/ts_arima.str`, `ts_expert.str`,
 /// `corpus/models_next2/ts_simple.str`, `ts_holt.str`): the nugget scores the saved ARIMA
 /// or exponential smoothing model; estimation (`spss.ts!ts_builder`) is a GAP.
-/// Analytic Engine Random Trees and LSVM score their saved PMML.
+/// Analytic Engine Random Trees scores its saved PMML.
 /// Tree-AS trains through the shared CHAID learner; Linear-AS trains with its
-/// correlation/sweep selection (`linearas/lin_default`, `lin_factor`).
+/// correlation/sweep selection (`linearas/lin_default`, `lin_factor`); LSVM trains the
+/// documented objective to convergence (statistical parity, `dms_algo::lsvm`).
 const SCORING_ONLY: &[&str] = &[
     "neural_net",
     "kohonen",
@@ -118,7 +120,6 @@ const SCORING_ONLY: &[&str] = &[
     "auto_classifier",
     "auto_numeric",
     "random_trees",
-    "lsvm",
 ];
 
 pub fn factory(catalog_id: &str) -> Option<Factory> {
@@ -148,10 +149,6 @@ const TRAINING_GAPS: &[(&str, &str)] = &[
     (
         "spss.ts!ts_builder",
         "Time Series estimation is not reproduced: the saved smoothing parameters are the optimizer's stopping point (ts_simple alpha 0.9999889 on a series whose optimum is alpha = 1), which the 1e-9 comparison cannot meet without Modeler's optimizer",
-    ),
-    (
-        "spss.linearSVM!linearSVM",
-        "LSVM training is not reproduced: Modeler's ADMM stops before the optimum (lsvm_default objective 0.868048 vs optimum 0.867945, lsvm_numeric 0.556714 vs 0.550353) and its blocks, inner solver and stopping rule are undocumented",
     ),
     (
         "spss.randomTrees!RT",

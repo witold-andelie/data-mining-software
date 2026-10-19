@@ -3,6 +3,7 @@
 
 use crate::{OperatorError, settings};
 use dms_algo::chaid::ChaidSettings;
+use dms_algo::lsvm::{LsvmSettings, Penalty};
 use dms_stream::StreamNode;
 
 fn gap(message: impl std::fmt::Debug) -> OperatorError {
@@ -132,6 +133,47 @@ pub(super) fn tree(node: &StreamNode) -> Result<ChaidSettings, OperatorError> {
     Ok(ChaidSettings {
         max_depth: usize::try_from(depth).map_err(gap)?,
         ..ChaidSettings::default()
+    })
+}
+
+/// Linear SVM (`spss.linearSVM!linearSVM`) settings saved by `models_as/lsvm_default`,
+/// `lsvm_l1` and `lsvm_numeric`: `_lambda` 0.1, `_epsilon` 0.1, `_intercept` true, ascending
+/// target order, automatic field selection, and the L2 or L1 `_penaltyFunction`. Any other
+/// value is a GAP. The trained model is held to statistical parity (`dms_algo::lsvm`).
+pub(super) fn lsvm(node: &StreamNode) -> Result<LsvmSettings, OperatorError> {
+    defaults(
+        node,
+        &[
+            ("_lambda", "0.1"),
+            ("_epsilon", "0.1"),
+            ("_intercept", "true"),
+            ("_target", ""),
+            ("_inputs", ""),
+            ("_excludeMissingValues", "false"),
+            ("_targetOrder", "ASCENDING"),
+            ("_calculatePI", "true"),
+        ],
+        &["_penaltyFunction"],
+        false,
+    )?;
+    let s = node.settings.as_ref();
+    if !settings::flag(s, "autoModelFieldSelection")
+        .map_err(gap)?
+        .unwrap_or(true)
+    {
+        return Err(gap("LSVM custom fields"));
+    }
+    let penalty = match settings::text(s, "_penaltyFunction")
+        .as_deref()
+        .map(str::trim)
+    {
+        None | Some("" | "L2") => Penalty::L2,
+        Some("L1") => Penalty::L1,
+        Some(other) => return Err(gap(format!("_penaltyFunction={other:?}"))),
+    };
+    Ok(LsvmSettings {
+        penalty,
+        ..LsvmSettings::default()
     })
 }
 

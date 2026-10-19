@@ -86,6 +86,39 @@ fn all_analytic_engine_terminal_inputs_equal_oracle() {
             );
             let rows: Vec<_> = lines.map(support::parse_csv_line).collect();
             assert_eq!(actual.rows().len(), rows.len(), "{case}/{uid}");
+            // LSVM trains to convergence (`dms_algo::lsvm`), so its nugget scores our optimum
+            // instead of Modeler's early-stopped coefficients. Rule 3 of
+            // `docs/statistical-parity.md` then allows a continuous score to differ by 1 % of
+            // the target's standard deviation; the predicted classes still match exactly.
+            // `lsvm.rs` holds the full statistical-parity check.
+            let band = case.strip_prefix("lsvm_").map(|_| {
+                let target = names
+                    .iter()
+                    .find_map(|name| {
+                        name.strip_prefix("$L-")
+                            .filter(|rest| !rest.starts_with('C'))
+                    })
+                    .unwrap_or_default();
+                let values: Vec<f64> = names
+                    .iter()
+                    .position(|name| *name == target)
+                    .map(|at| {
+                        actual
+                            .rows()
+                            .iter()
+                            .filter_map(|row| row.get(at).and_then(|v| v.as_f64()))
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                if values.is_empty() {
+                    // A flag target: the score is a probability, so 1 % of its range.
+                    return 0.01;
+                }
+                let mean = values.iter().sum::<f64>() / values.len() as f64;
+                0.01 * (values.iter().map(|v| (v - mean) * (v - mean)).sum::<f64>()
+                    / values.len() as f64)
+                    .sqrt()
+            });
             for (r, (actual, expected)) in actual.rows().iter().zip(&rows).enumerate() {
                 assert_eq!(actual.len(), expected.len());
                 for (c, (actual, expected)) in actual.iter().zip(expected).enumerate() {
@@ -95,9 +128,13 @@ fn all_analytic_engine_terminal_inputs_equal_oracle() {
                         Value::Integer(_) | Value::Real(_) => {
                             let a = actual.as_f64().unwrap();
                             let b = expected.parse::<f64>().unwrap();
+                            let tolerance = match band {
+                                Some(band) if names[c].starts_with("$L") => band,
+                                _ => 1e-9,
+                            };
                             a.is_finite()
                                 && b.is_finite()
-                                && (a - b).abs() <= 1e-9 * a.abs().max(b.abs()).max(1.0)
+                                && (a - b).abs() <= tolerance * a.abs().max(b.abs()).max(1.0)
                         }
                         other => panic!("unexpected AS value {other:?}"),
                     };
