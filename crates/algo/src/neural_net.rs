@@ -42,10 +42,28 @@
 //!   which our runs reach only without that stop), so the set selects weights but does not
 //!   end training.
 //!
-//! GAP: radial basis function networks, ensembles (bagging, boosting), model updates,
-//! online/mini-batch training, gradient descent, other rescalings or activations, and a time
-//! limit that would bind (ours trains in well under the saved 15 minutes) are refused by the
-//! build node.
+//! Radial basis function networks (`neuralnet.NeuralNetworkAlgorithm` `radialBasisFunction`)
+//! are deterministic and **exact** (`nn_rbf`: centers, widths and output weights to the last
+//! digit, every scored record). The Guide's two stages:
+//! - TwoStep clustering (`crate::twostep`, fixed number of clusters = the hidden units) of the
+//!   encoded inputs, every one (category indicators too) a continuous field. Counting
+//!   indicators as categories instead makes merging two `cat` values cost the same as merging
+//!   the two `flag` values and picks the other partition on `nn_rbf`; as continuous fields the
+//!   `flag` merge is cheaper, which is Modeler's partition (blue, red, green/0, green/1).
+//!   Units are ordered by size, larger first, then by their first nearest record.
+//! - Unit j's center is its cluster's mean of each encoded input (a category indicator's mean is
+//!   the category's proportion). Its width is `sqrt(h · mean_p v_jp)` over the P encoded inputs,
+//!   with `v_jp` the cluster's sample (n−1) variance of a continuous input and `q(1−q)` of an
+//!   indicator with proportion `q`, and `h = 1 + 0.1 P` (`nn_rbf`: 0.782707578956904 for 60
+//!   records, 0.71132063032254 for 30).
+//! - The hidden layer is normalized (`simplemax` over `exp(−‖x − c_j‖² / 2σ_j²)`); the output
+//!   weights are the least-squares fit to the standardized target, without a bias.
+//!
+//! GAP: automatic RBF unit selection, ordinary (unnormalized) RBF, a custom overlapping
+//! factor, RBF with categorical or several targets, imputation or an overfit prevention set
+//! (no oracle); ensembles (bagging, boosting), model updates, online/mini-batch training,
+//! gradient descent, other rescalings or activations, and a time limit that would bind (ours
+//! trains in well under the saved 15 minutes) are refused by the build node.
 
 use crate::AlgoError;
 use crate::common::{data_field, mining_field};
@@ -63,6 +81,14 @@ pub enum MissingValues {
     Impute,
 }
 
+/// The network type (`neuralnet.NeuralNetworkAlgorithm`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Network {
+    Perceptron,
+    /// Normalized radial basis function network.
+    RadialBasis,
+}
+
 /// The hidden layers (`neuralnet.HiddenLayers`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Hidden {
@@ -74,6 +100,7 @@ pub enum Hidden {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct NeuralSettings {
+    pub network: Network,
     pub hidden: Hidden,
     /// Epoch cap; `None` when Modeler computes it automatically.
     pub max_epochs: Option<usize>,
@@ -88,6 +115,7 @@ pub struct NeuralSettings {
 impl Default for NeuralSettings {
     fn default() -> Self {
         NeuralSettings {
+            network: Network::Perceptron,
             hidden: Hidden::Automatic { min: 1, max: 50 },
             max_epochs: None,
             min_accuracy: None,
@@ -1011,6 +1039,9 @@ pub fn train(data: &NeuralData<'_>, settings: &NeuralSettings) -> Result<Pmml, A
             "a custom architecture needs one or two hidden layers of 1 to 1000 units".into(),
         ));
     }
+    if settings.network == Network::RadialBasis {
+        return radial_basis(data.table, &encoded, settings);
+    }
     let mut rng = Rng(settings.seed);
     // The overfit prevention set.
     let mut train = Split {
@@ -1065,7 +1096,194 @@ pub fn train(data: &NeuralData<'_>, settings: &NeuralSettings) -> Result<Pmml, A
         min_accuracy: settings.min_accuracy,
     };
     let weights = scg(&net, start, &train, test.as_ref(), &stop, &encoded.groups);
-    Ok(pmml(data.table, &encoded, &net, &weights, settings.missing))
+    let layers = perceptron_layers(&net, &weights);
+    Ok(pmml(
+        data.table,
+        &encoded,
+        layers,
+        Network::Perceptron,
+        settings.missing,
+    ))
+}
+
+// ---------------------------------------------------------------------------------------------
+// Radial basis function network.
+
+/// Trains a normalized RBF network: TwoStep clusters give the centers and widths, least squares
+/// the output weights.
+fn radial_basis(
+    table: &Table,
+    encoded: &Encoded,
+    settings: &NeuralSettings,
+) -> Result<Pmml, AlgoError> {
+    let unsupported = |what: &str| Err(AlgoError::Unsupported(format!("GAP: RBF {what}")));
+    let units = match &settings.hidden {
+        Hidden::Custom(layers) if layers.len() == 1 => layers[0],
+        Hidden::Custom(_) => return unsupported("with two hidden layers"),
+        Hidden::Automatic { .. } => return unsupported("automatic unit selection"),
+    };
+    if !matches!(encoded.groups.as_slice(), [(_, 1, false)]) {
+        return unsupported("with a categorical target or several targets");
+    }
+    if settings.overfit_share > 0.0 || settings.missing != MissingValues::Listwise {
+        return unsupported("with an overfit prevention set or imputation");
+    }
+    // Step 1: TwoStep on the encoded inputs as continuous fields, one CF per record.
+    let records: Vec<crate::twostep::Cf> = encoded
+        .x
+        .iter()
+        .map(|x| crate::twostep::Cf {
+            n: 1.0,
+            sum: x.clone(),
+            sum_sq: x.iter().map(|v| v * v).collect(),
+            counts: Vec::new(),
+        })
+        .collect();
+    let n = records.len() as f64;
+    let continuous = records.first().map_or(0, |r| r.sum.len());
+    let deltas: Vec<f64> = (0..continuous)
+        .map(|k| {
+            let mean = records.iter().map(|r| r.sum[k]).sum::<f64>() / n;
+            records
+                .iter()
+                .map(|r| (r.sum[k] - mean).powi(2))
+                .sum::<f64>()
+                / (n - 1.0)
+        })
+        .collect();
+    let parameters = (2 * continuous) as f64;
+    let clustering = crate::twostep::TwoStepSettings {
+        auto_clusters: false,
+        clusters: units,
+        ..Default::default()
+    };
+    let clusters = crate::twostep::cluster(records, &deltas, parameters, &clustering)?;
+    // Step 2: centers and widths per cluster, in the encoded input order.
+    let p = encoded.inputs.iter().map(Column::width).sum::<usize>();
+    let overlap = 1.0 + 0.1 * p as f64;
+    let mut centers = Vec::with_capacity(clusters.len());
+    let mut widths = Vec::with_capacity(clusters.len());
+    for cluster in &clusters {
+        let m = cluster.n;
+        let mut center = Vec::with_capacity(p);
+        let mut variance = 0.0;
+        let mut at = 0;
+        for column in &encoded.inputs {
+            for _ in 0..column.width() {
+                let mean = cluster.sum[at] / m;
+                center.push(mean);
+                variance += match column {
+                    Column::Continuous { .. } if m > 1.0 => {
+                        (cluster.sum_sq[at] - m * mean * mean) / (m - 1.0)
+                    }
+                    Column::Continuous { .. } => 0.0,
+                    Column::Categorical { .. } => mean * (1.0 - mean),
+                };
+                at += 1;
+            }
+        }
+        let width = (overlap * variance / p as f64).sqrt();
+        if !(width.is_finite() && width > 0.0) {
+            return unsupported("unit with zero width (no oracle)");
+        }
+        centers.push(center);
+        widths.push(width);
+    }
+    // Units by size, larger first; equal sizes by the first record nearest to the center
+    // (`nn_rbf`: blue 60, red 60, green/0 30, green/1 30). The order does not change predictions.
+    let first: Vec<usize> = (0..centers.len())
+        .map(|j| {
+            encoded
+                .x
+                .iter()
+                .position(|x| {
+                    let distance = |c: &Vec<f64>| -> f64 {
+                        x.iter().zip(c).map(|(a, b)| (a - b) * (a - b)).sum()
+                    };
+                    let own = distance(&centers[j]);
+                    centers.iter().all(|c| own <= distance(c))
+                })
+                .unwrap_or(usize::MAX)
+        })
+        .collect();
+    let mut order: Vec<usize> = (0..centers.len()).collect();
+    order.sort_by(|&a, &b| {
+        clusters[b]
+            .n
+            .total_cmp(&clusters[a].n)
+            .then(first[a].cmp(&first[b]))
+    });
+    let centers: Vec<Vec<f64>> = order.iter().map(|&j| centers[j].clone()).collect();
+    let widths: Vec<f64> = order.iter().map(|&j| widths[j]).collect();
+    // Step 3: output weights by least squares on the normalized activations.
+    let mut design = Vec::with_capacity(encoded.x.len());
+    for x in &encoded.x {
+        let raw: Vec<f64> = centers
+            .iter()
+            .zip(&widths)
+            .map(|(center, width)| {
+                let d: f64 = x.iter().zip(center).map(|(a, b)| (a - b) * (a - b)).sum();
+                (-d / (2.0 * width * width)).exp()
+            })
+            .collect();
+        let total: f64 = raw.iter().sum();
+        if total.is_nan() || total <= 0.0 {
+            return Err(AlgoError::Data(
+                "a record lies outside every radial basis unit".into(),
+            ));
+        }
+        design.push(raw.iter().map(|a| a / total).collect());
+    }
+    let target: Vec<f64> = encoded.y.iter().map(|y| y[0]).collect();
+    let (weights, _) = crate::linear::least_squares(design, target, centers.len())?;
+    let hidden: Vec<Neuron> = centers
+        .iter()
+        .zip(&widths)
+        .enumerate()
+        .map(|(j, (center, width))| Neuron {
+            id: (p + j).to_string(),
+            bias: 0.0,
+            activation: Activation::RadialBasis,
+            connections: center
+                .iter()
+                .enumerate()
+                .map(|(i, &c)| (i.to_string(), c))
+                .collect(),
+            width: Some(*width),
+            altitude: 1.0,
+        })
+        .collect();
+    let output = Neuron {
+        id: (p + centers.len()).to_string(),
+        bias: 0.0,
+        activation: Activation::Identity,
+        connections: hidden
+            .iter()
+            .zip(&weights)
+            .map(|(unit, &w)| (unit.id.clone(), w))
+            .collect(),
+        width: None,
+        altitude: 1.0,
+    };
+    let layers = vec![
+        NeuralLayer {
+            activation: Activation::RadialBasis,
+            normalization: Normalization::Simplemax,
+            neurons: hidden,
+        },
+        NeuralLayer {
+            activation: Activation::Identity,
+            normalization: Normalization::None,
+            neurons: vec![output],
+        },
+    ];
+    Ok(pmml(
+        table,
+        encoded,
+        layers,
+        Network::RadialBasis,
+        settings.missing,
+    ))
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1121,7 +1339,63 @@ fn derived_fields(column: &Column) -> Vec<DerivedField> {
     }
 }
 
-fn pmml(table: &Table, encoded: &Encoded, net: &Net, w: &[f64], missing: MissingValues) -> Pmml {
+/// The perceptron's layers; neuron ids continue after the inputs.
+fn perceptron_layers(net: &Net, w: &[f64]) -> Vec<NeuralLayer> {
+    let mut layers = Vec::new();
+    let mut previous: Vec<String> = (0..net.sizes[0]).map(|k| k.to_string()).collect();
+    let mut next_id = net.sizes[0];
+    let mut offset = 0;
+    let count = net.sizes.len() - 1;
+    for l in 0..count {
+        let (fan_in, units) = (net.sizes[l], net.sizes[l + 1]);
+        let last = l + 1 == count;
+        let activation = if last {
+            Activation::Identity
+        } else {
+            Activation::Tanh
+        };
+        let mut neurons = Vec::with_capacity(units);
+        let mut ids = Vec::with_capacity(units);
+        for u in 0..units {
+            let base = offset + u * (fan_in + 1);
+            let id = next_id.to_string();
+            next_id += 1;
+            neurons.push(Neuron {
+                id: id.clone(),
+                bias: w[base],
+                activation,
+                connections: previous
+                    .iter()
+                    .enumerate()
+                    .map(|(k, from)| (from.clone(), w[base + 1 + k]))
+                    .collect(),
+                width: None,
+                altitude: 1.0,
+            });
+            ids.push(id);
+        }
+        offset += units * (fan_in + 1);
+        layers.push(NeuralLayer {
+            activation,
+            normalization: if last && net.softmax {
+                Normalization::Softmax
+            } else {
+                Normalization::None
+            },
+            neurons,
+        });
+        previous = ids;
+    }
+    layers
+}
+
+fn pmml(
+    table: &Table,
+    encoded: &Encoded,
+    layers: Vec<NeuralLayer>,
+    network: Network,
+    missing: MissingValues,
+) -> Pmml {
     let position = |c: &Column| match c {
         Column::Continuous { position, .. } | Column::Categorical { position, .. } => *position,
     };
@@ -1167,51 +1441,10 @@ fn pmml(table: &Table, encoded: &Encoded, net: &Net, w: &[f64], missing: Missing
             },
         })
         .collect();
-    let mut layers = Vec::new();
-    let mut previous: Vec<String> = (0..inputs.len()).map(|k| k.to_string()).collect();
-    let mut next_id = inputs.len();
-    let mut offset = 0;
-    let count = net.sizes.len() - 1;
-    for l in 0..count {
-        let (fan_in, units) = (net.sizes[l], net.sizes[l + 1]);
-        let last = l + 1 == count;
-        let activation = if last {
-            Activation::Identity
-        } else {
-            Activation::Tanh
-        };
-        let mut neurons = Vec::with_capacity(units);
-        let mut ids = Vec::with_capacity(units);
-        for u in 0..units {
-            let base = offset + u * (fan_in + 1);
-            let id = next_id.to_string();
-            next_id += 1;
-            neurons.push(Neuron {
-                id: id.clone(),
-                bias: w[base],
-                activation,
-                connections: previous
-                    .iter()
-                    .enumerate()
-                    .map(|(k, from)| (from.clone(), w[base + 1 + k]))
-                    .collect(),
-                width: None,
-                altitude: 1.0,
-            });
-            ids.push(id);
-        }
-        offset += units * (fan_in + 1);
-        layers.push(NeuralLayer {
-            activation,
-            normalization: if last && net.softmax {
-                Normalization::Softmax
-            } else {
-                Normalization::None
-            },
-            neurons,
-        });
-        previous = ids;
-    }
+    let previous: Vec<String> = layers
+        .last()
+        .map(|layer| layer.neurons.iter().map(|n| n.id.clone()).collect())
+        .unwrap_or_default();
     let mut outputs = Vec::new();
     let mut index = 0;
     for column in &encoded.targets {
@@ -1268,12 +1501,21 @@ fn pmml(table: &Table, encoded: &Encoded, net: &Net, w: &[f64], missing: Missing
                 } else {
                     MiningFunction::Regression
                 },
-                algorithm: Some("MLP".into()),
+                algorithm: Some(
+                    match network {
+                        Network::Perceptron => "MLP",
+                        Network::RadialBasis => "RBF",
+                    }
+                    .into(),
+                ),
                 mining_schema,
                 output: Vec::new(),
                 local_transformations: Vec::new(),
             },
-            activation: Activation::Tanh,
+            activation: match network {
+                Network::Perceptron => Activation::Tanh,
+                Network::RadialBasis => Activation::RadialBasis,
+            },
             inputs,
             layers,
             outputs,

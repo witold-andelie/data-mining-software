@@ -693,7 +693,7 @@ fn select(
     clippy::needless_range_loop,
     reason = "column-wise Householder updates index rows and columns together"
 )]
-fn least_squares(
+pub(crate) fn least_squares(
     mut a: Vec<Vec<f64>>,
     mut y: Vec<f64>,
     p: usize,

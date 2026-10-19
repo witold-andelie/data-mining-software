@@ -301,13 +301,60 @@ fn neural_training_matches_modeler_within_the_seed_band() {
     }
 }
 
+/// Exact tier: the RBF network (TwoStep centers and widths, least-squares output weights) is
+/// Modeler's to 1e-12, unit for unit, and the seed does not matter.
+#[test]
+fn rbf_training_matches_modeler_exactly() {
+    let layers = |model: &Pmml| match &model.model {
+        dms_pmml::Model::Neural(network) => network
+            .layers
+            .iter()
+            .map(|layer| {
+                layer
+                    .neurons
+                    .iter()
+                    .map(|n| {
+                        let mut values: Vec<f64> = n.connections.iter().map(|c| c.1).collect();
+                        values.extend(n.width);
+                        values.push(n.bias);
+                        values
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>(),
+        _ => panic!("not a neural network"),
+    };
+    let dir = support::repo_root().join("oracle/models_ml/nn_rbf/models/01_models_ml.xml");
+    let theirs = layers(&Pmml::parse(&std::fs::read_to_string(dir).unwrap()).unwrap());
+    let case = load("nn_rbf");
+    for seed in [12345, 1] {
+        let (model, _) = train(&case, seed).unwrap();
+        let ours = layers(&model);
+        assert_eq!(ours.len(), theirs.len());
+        for (l, (a, b)) in ours.iter().zip(&theirs).enumerate() {
+            assert_eq!(a.len(), b.len(), "layer {l}");
+            for (u, (x, y)) in a.iter().zip(b).enumerate() {
+                assert_eq!(x.len(), y.len(), "layer {l} unit {u}");
+                for (k, (v, w)) in x.iter().zip(y).enumerate() {
+                    assert!(
+                        (v - w).abs() < 1e-12,
+                        "layer {l} unit {u} value {k}: {v} vs {w}"
+                    );
+                }
+            }
+        }
+    }
+    println!(
+        "nn_rbf: {} RBF units and output weights match Modeler",
+        theirs[0].len()
+    );
+}
+
 #[test]
 fn neural_settings_without_an_oracle_are_gaps() {
-    for case in ["nn_rbf", "nn_partition"] {
-        let error = train(&load(case), 12345).unwrap_err();
-        assert!(error.contains("GAP"), "{case}: {error}");
-        println!("{case}: refused as a GAP");
-    }
+    let error = train(&load("nn_partition"), 12345).unwrap_err();
+    assert!(error.contains("GAP"), "nn_partition: {error}");
+    println!("nn_partition: refused as a GAP");
 }
 
 /// Exact tier: with the builder removed, every saved Neural Net nugget scores its oracle
