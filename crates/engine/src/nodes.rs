@@ -7,6 +7,11 @@ pub fn is_implemented(catalog_id: &str) -> bool {
     dms_exec::registry::is_implemented(catalog_id)
 }
 
+/// Implemented with statistical, not exact, parity (`docs/statistical-parity.md`).
+pub fn is_statistical(catalog_id: &str) -> bool {
+    dms_exec::registry::is_statistical(catalog_id)
+}
+
 pub fn coverage(scope: Scope) -> Coverage {
     dms_catalog::coverage(scope, is_implemented)
 }
