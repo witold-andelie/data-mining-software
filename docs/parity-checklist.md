@@ -6,7 +6,7 @@ Status `done (statistical)`: trained to statistical, not exact, parity with Mode
 
 | Scope | Implemented | Total |
 |---|---|---|
-| MVP | 76 | 85 |
+| MVP | 77 | 85 |
 | later | 3 | 25 |
 | license blocked | 0 | 5 |
 | out of scope | 0 | 34 |
@@ -154,7 +154,7 @@ Status `done (statistical)`: trained to statistical, not exact, parity with Mode
 | CARMA | `carma` | MVP | done | `BuildCarmaNode`, `ApplyCarmaNode` |
 | Sequence | `sequence` | MVP | done (statistical) | `BuildSequenceNode`, `ApplySequenceNode` |
 | K-Means | `kmeans` | MVP | done | `BuildKMeansNode`, `ApplyKMeansNode` |
-| Kohonen | `kohonen` | MVP | missing | `TrainKohonenNode`, `ApplyKohonenNode` |
+| Kohonen | `kohonen` | MVP | done (statistical) | `TrainKohonenNode`, `ApplyKohonenNode` |
 | TwoStep | `twostep` | MVP | done | `BuildTwoStepNode`, `ApplyTwoStepNode` |
 
 ## Output
