@@ -33,7 +33,7 @@ pub fn build(node: &StreamNode) -> Result<Box<dyn Operator>, OperatorError> {
         ("useCrossValidation", "cross-validation"),
         (
             "calculateAdjustedPropensities",
-            "adjusted-propensity calibration training",
+            "adjusted-propensity training (GAP: the builder does not write the test-partition tree that the nugget scores)",
         ),
     ] {
         if settings::flag(s, key)?.unwrap_or(false) {
@@ -316,13 +316,27 @@ pub fn apply(node: &StreamNode) -> Result<Box<dyn Operator>, OperatorError> {
     if settings::flag(s, "displayRuleIdField")?.unwrap_or(false) {
         return Err(unsupported("rule-id output"));
     }
-    if settings::flag(s, "calculateAdjustedPropensities")?.unwrap_or(false) {
-        return Err(unsupported("adjusted-propensity calibration pooling"));
-    }
+    // The adjusted-propensity model is a second tree PMML (`propensityModel@pmml`): the same
+    // splits, with each node's test-partition counts and probabilities (`c50_partition`).
+    let adjusted = if settings::flag(s, "calculateAdjustedPropensities")?.unwrap_or(false) {
+        Some(
+            settings::element(s, "propensityModel")
+                .and_then(|m| m.attribute("pmml"))
+                .map(str::to_string)
+                .ok_or_else(|| {
+                    OperatorError::Settings(
+                        "C5.0 adjusted propensities need the saved propensityModel".into(),
+                    )
+                })?,
+        )
+    } else {
+        None
+    };
     Ok(Box::new(Apply {
         member: settings::element(s, "model")
             .and_then(|m| m.attribute("pmml"))
             .map(str::to_string),
+        adjusted,
         confidence: settings::flag(s, "calculateConfidences")?.unwrap_or(true),
         raw: settings::flag(s, "calculateRawPropensities")?.unwrap_or(false),
     }))
@@ -330,8 +344,27 @@ pub fn apply(node: &StreamNode) -> Result<Box<dyn Operator>, OperatorError> {
 
 struct Apply {
     member: Option<String>,
+    /// Attachment of the adjusted-propensity tree, when `calculateAdjustedPropensities` is set.
+    adjusted: Option<String>,
     confidence: bool,
     raw: bool,
+}
+
+fn attachment_pmml(context: &ExecContext, member: &str) -> Result<Pmml, OperatorError> {
+    let bytes = context
+        .attachments
+        .get(member)
+        .ok_or_else(|| OperatorError::Io(format!("C5.0 missing attachment {member}")))?;
+    let xml = std::str::from_utf8(bytes)
+        .map_err(|e| OperatorError::Data(format!("C5.0 {member}: {e}")))?;
+    Pmml::parse(xml).map_err(|e| OperatorError::Data(format!("C5.0 {member}: {e}")))
+}
+
+fn find_node<'a>(node: &'a dms_pmml::Node, id: &str) -> Option<&'a dms_pmml::Node> {
+    if node.id.as_deref() == Some(id) {
+        return Some(node);
+    }
+    node.children.iter().find_map(|child| find_node(child, id))
 }
 
 impl Operator for Apply {
@@ -378,15 +411,7 @@ impl Apply {
                 .member
                 .as_deref()
                 .ok_or_else(|| OperatorError::Data("C5.0 nugget has no saved model".into()))?;
-            let bytes = context
-                .attachments
-                .get(member)
-                .ok_or_else(|| OperatorError::Io(format!("C5.0 missing attachment {member}")))?;
-            let xml = std::str::from_utf8(bytes)
-                .map_err(|e| OperatorError::Data(format!("C5.0 {member}: {e}")))?;
-            Arc::new(
-                Pmml::parse(xml).map_err(|e| OperatorError::Data(format!("C5.0 {member}: {e}")))?,
-            )
+            Arc::new(attachment_pmml(context, member)?)
         };
         let header = model_header(&pmml.model)?;
         let target = header
@@ -404,35 +429,41 @@ impl Apply {
         let scorer = pmml
             .bind(&names)
             .map_err(|e| OperatorError::Data(format!("C5.0: {e}")))?;
-        let mut predictions = Vec::with_capacity(input.row_count());
-        for row in input.rows() {
-            let values: Vec<PValue> = input
-                .model()
-                .fields()
-                .iter()
-                .zip(row)
-                .map(|(f, v)| {
-                    if f.is_missing(v) {
-                        return PValue::Missing;
-                    }
-                    match v {
-                        Value::Integer(n) => PValue::Number(*n as f64),
-                        Value::Real(n) => PValue::Number(*n),
-                        Value::String(s) => PValue::Text(s.to_string()),
-                        _ => PValue::Missing,
-                    }
-                })
-                .collect();
-            predictions.push(
+        let rows: Vec<Vec<PValue>> = input
+            .rows()
+            .iter()
+            .map(|row| {
+                input
+                    .model()
+                    .fields()
+                    .iter()
+                    .zip(row)
+                    .map(|(f, v)| {
+                        if f.is_missing(v) {
+                            return PValue::Missing;
+                        }
+                        match v {
+                            Value::Integer(n) => PValue::Number(*n as f64),
+                            Value::Real(n) => PValue::Number(*n),
+                            Value::String(s) => PValue::Text(s.to_string()),
+                            _ => PValue::Missing,
+                        }
+                    })
+                    .collect()
+            })
+            .collect();
+        let predictions = rows
+            .iter()
+            .map(|values| {
                 scorer
-                    .score(&values)
-                    .map_err(|e| OperatorError::Data(format!("C5.0: {e}")))?,
-            );
-        }
+                    .score(values)
+                    .map_err(|e| OperatorError::Data(format!("C5.0: {e}")))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
         let index = (0..=input.model().fields().len())
             .find(|&i| {
                 let suffix = if i == 0 { String::new() } else { i.to_string() };
-                ["$C", "$CC", "$CRP"].iter().all(|prefix| {
+                ["$C", "$CC", "$CRP", "$CAP"].iter().all(|prefix| {
                     input
                         .model()
                         .position(&format!("{prefix}{suffix}-{target}"))
@@ -472,8 +503,8 @@ impl Apply {
                 predictions.iter().map(|p| p.confidence),
             ));
         }
+        let categories = dd.map(|d| d.values.as_slice()).unwrap_or(&[]);
         if self.raw {
-            let categories = dd.map(|d| d.values.as_slice()).unwrap_or(&[]);
             let [_, positive] = categories else {
                 return Err(unsupported("raw propensity needs a binary target"));
             };
@@ -482,8 +513,67 @@ impl Apply {
                 predictions.iter().map(|p| raw_propensity(p, positive)),
             ));
         }
+        if let Some(member) = &self.adjusted {
+            let [_, positive] = categories else {
+                return Err(unsupported("adjusted propensity needs a binary target"));
+            };
+            let adjusted = attachment_pmml(context, member)?;
+            let values = adjusted_propensities(&adjusted, &names, &rows, positive)?;
+            columns.push(real_column(
+                &format!("$CAP{suffix}-{target}"),
+                values.into_iter(),
+            ));
+        }
         with_columns(input, columns)
     }
+}
+
+/// Adjusted propensity from the test-partition tree (`c50_partition`, 529 scored records): the
+/// record's leaf has `recordCount` N and, for its predicted class c, the stored
+/// `ScoreDistribution@probability` p (six significant digits, so 4/6 is 0.666667). The adjusted
+/// confidence is C5.0's Laplace estimate (N*p + 1)/(N + 2); the propensity is that confidence
+/// when c is the positive category and its complement otherwise (4/6 gives 0.62500025, 10/12
+/// gives 0.785714). Negative leaves were seen only with 0/N in both partitions; a negative leaf
+/// with mixed test counts follows the same formula untested.
+/// GAP: a record that reaches no single leaf (missing values spread over several children).
+fn adjusted_propensities(
+    pmml: &Pmml,
+    names: &[&str],
+    rows: &[Vec<PValue>],
+    positive: &str,
+) -> Result<Vec<Option<f64>>, OperatorError> {
+    let Model::Tree(tree) = &pmml.model else {
+        return Err(unsupported("adjusted-propensity model that is not a tree"));
+    };
+    let error =
+        |message: String| OperatorError::Data(format!("C5.0 adjusted propensity: {message}"));
+    let scorer = pmml.bind(names).map_err(|e| error(e.to_string()))?;
+    rows.iter()
+        .map(|values| {
+            let prediction = scorer.score(values).map_err(|e| error(e.to_string()))?;
+            let (PValue::Text(class), Some(id)) = (&prediction.value, &prediction.entity_id) else {
+                return Err(unsupported(
+                    "adjusted propensity for a record without a single leaf",
+                ));
+            };
+            let node = find_node(&tree.root, id).ok_or_else(|| error(format!("no node {id}")))?;
+            let count = node
+                .record_count
+                .ok_or_else(|| error(format!("node {id} has no recordCount")))?;
+            let probability = node
+                .distribution
+                .iter()
+                .find(|d| &d.value == class)
+                .and_then(|d| d.probability)
+                .ok_or_else(|| error(format!("node {id} has no probability for {class}")))?;
+            let confidence = (count * probability + 1.0) / (count + 2.0);
+            Ok(Some(if class == positive {
+                confidence
+            } else {
+                1.0 - confidence
+            }))
+        })
+        .collect()
 }
 
 fn raw_propensity(p: &Prediction, positive: &str) -> Option<f64> {

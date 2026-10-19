@@ -205,9 +205,10 @@
 //! weights (`c50_weight`: GAP pruning and internal distributions), winnowing
 //! (`c50_presets`: GAP elimination criterion and four unwinnowed baselines),
 //! unrecorded Simple presets/combinations (scope above), adjusted-propensity
-//! training (`c50_partition`: GAP calibration pooling/rounding), cross-validation,
-//! split-field training and missing/unknown training predictors (no captured
-//! c50_missing oracle). PMML scoring supports rules and boosts independently.
+//! training (the nugget scores its saved test-partition tree, `exec::nodes::c50`;
+//! the builder does not yet write one), cross-validation, split-field training
+//! and missing/unknown training predictors (no captured c50_missing oracle). PMML
+//! scoring supports rules and boosts independently.
 //!
 //! Follow-up probes (specifications only; none run here):
 //! - Copy the 384 rows of models_ml/tree_train.csv. Keep inputs x,cat,flag,ord,code,
