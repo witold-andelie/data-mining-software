@@ -7,6 +7,7 @@ pub mod csv;
 pub mod delimited;
 pub mod fixed;
 pub mod json;
+pub mod odbc;
 pub mod sav_export;
 pub mod statistics;
 pub mod text;

@@ -14,6 +14,7 @@ pub mod build;
 pub mod c50;
 pub mod collection;
 pub mod data_audit;
+pub mod database;
 pub mod derive;
 pub mod distinct;
 pub mod distribution;
