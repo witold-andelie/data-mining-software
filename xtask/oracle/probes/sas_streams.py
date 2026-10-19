@@ -7,9 +7,9 @@
 # (empty) SAS exports to read. Property names: Modeler 19.0 Python Scripting and Automation
 # Guide, Table 54 (sasimportnode). Each stream is SAS File -> Flat File (Table 252
 # outputfile: comma, double quotes, field names) writing corpus/sas/gui/<case>.csv.
-# Modeler 19 batch cannot read SAS files ("The input encoder was not open", -12, 2026-10-19,
-# also with these SAS-written files), so the streams are saved before running and the
-# exports are produced by opening each stream in the Modeler client and running it.
+# "The input encoder was not open" (-12) came from Windows' UTF-8 system code page (ACP 65001,
+# "Beta: Use Unicode UTF-8"); with the zh-CN code page 936 batch reads both files (2026-10-19).
+# The streams are saved before running, so `cargo xtask oracle sas <case>.str` exports them.
 import json
 import java.io.File
 import java.lang.Exception
