@@ -88,6 +88,7 @@ pub fn build(node: &StreamNode) -> Result<Box<dyn Operator>, OperatorError> {
     let s = node.settings.as_ref();
     let algorithm = match node.type_identifier().as_str() {
         "Cart!spss.tree-extension" => Algorithm::Cart,
+        "Quest!spss.tree-extension" => Algorithm::Quest,
         "Chaid!spss.tree-extension" => Algorithm::Chaid,
         "spss.treeEngine!treeEngine" => Algorithm::TreeAs(super::analytic_build::tree(node)?),
         "spss.linearEngine!linearEngine" => {
@@ -129,6 +130,7 @@ pub fn build(node: &StreamNode) -> Result<Box<dyn Operator>, OperatorError> {
 enum Algorithm {
     Cart,
     Chaid,
+    Quest,
     TreeAs(ChaidSettings),
     LinearAs((String, Vec<String>)),
     /// Linear SVM (`spss.linearSVM!linearSVM`), statistical parity (`dms_algo::lsvm`).
@@ -358,6 +360,8 @@ impl Operator for Build {
             frequency: None,
         };
         let pmml = match self.algorithm {
+            Algorithm::Quest => dms_algo::quest::train(&dataset, &quest_settings(&parameters)?)
+                .map_err(|error| OperatorError::Settings(format!("GAP: QUEST: {error}")))?,
             Algorithm::Cart => cart::train(&dataset, &cart_settings(&parameters)?)
                 .map_err(|error| OperatorError::Data(format!("C&R Tree: {error}")))?,
             Algorithm::Chaid => chaid::train(&dataset, &chaid_settings(&parameters)?)
@@ -1604,6 +1608,33 @@ fn chaid_settings(p: &Parameters) -> Result<ChaidSettings, OperatorError> {
             .text("tree.BonferroniAdjustment")
             .map_or(defaults.bonferroni, |v| v == "true"),
         chi_square,
+    })
+}
+
+fn quest_settings(p: &Parameters) -> Result<dms_algo::quest::QuestSettings, OperatorError> {
+    let gap = |what: &str| OperatorError::Settings(format!("GAP: QUEST {what}"));
+    if p.real("tree.OverFitPreventionSetPct")?.unwrap_or(30.0) != 0.0 {
+        return Err(gap("overfit prevention set requires train_pct=0"));
+    }
+    if p.text("tree.Priors").is_some_and(|s| s != "Data") {
+        return Err(gap("non-empirical priors"));
+    }
+    let (depth, min_parent, min_child) = tree_sizes(p)?;
+    let max_depth = depth.unwrap_or(5);
+    if p.real("tree.MaxTreeDepth")?
+        .is_some_and(|v| !v.is_finite() || v < 0.0 || v.fract() != 0.0)
+        || p.real("tree.MaxSurrogates")?.is_some_and(|v| v != 5.0)
+        || p.flag("tree.UseStdErrRule")?
+    {
+        return Err(gap("unverified depth, surrogates or standard error rule"));
+    }
+    Ok(dms_algo::quest::QuestSettings {
+        max_depth,
+        min_parent,
+        min_child,
+        alpha: p.real("tree.Alpha")?.unwrap_or(0.05),
+        prune: p.text("tree.PruneTree").is_none_or(|v| v == "true"),
+        ..dms_algo::quest::QuestSettings::default()
     })
 }
 

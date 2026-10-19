@@ -45,7 +45,10 @@ fn eval_node(
     for child in &node.children {
         match eval_predicate(&child.predicate, env, 0)? {
             Truth::True => {
-                let child_pred = eval_node(pmml, tree, child, env, depth + 1)?;
+                let mut child_pred = eval_node(pmml, tree, child, env, depth + 1)?;
+                if is_quest(tree) && primary_unknown(&child.predicate, env)? {
+                    child_pred.confidence = child_pred.confidence.map(|c| c * QUEST_SURROGATE);
+                }
                 if child_pred.value == Value::Missing
                     && tree.no_true_child_strategy == NoTrueChildStrategy::ReturnLastPrediction
                     && child.score.is_none()
@@ -258,10 +261,35 @@ fn collect_aggregate_leaves<'a>(
     Ok(())
 }
 
+/// SPSS tree confidences are Laplace estimates. Modeler writes QUEST's `algorithmName` as
+/// `Quest` (`models_next/quest_default`: 17 of 29 B scores (17+1)/(29+3) = 0.5625).
+/// QUEST confidence factor for each split decided by a surrogate because the primary
+/// predictor is missing (`quest_nofs_default` grid 10042: z missing, 16/21 * 0.9 = 0.685714;
+/// `models_next/quest_default` row 5: 18/32 * 0.9 = 0.50625).
+const QUEST_SURROGATE: f64 = 0.9;
+
+fn is_quest(tree: &TreeModel) -> bool {
+    tree.header.algorithm.as_deref() == Some("Quest")
+}
+
+/// Whether a child's surrogate predicate fell back past its primary split.
+fn primary_unknown(predicate: &Predicate, env: &Env<'_>) -> Result<bool, PmmlError> {
+    match predicate {
+        Predicate::Compound {
+            operator: BooleanOperator::Surrogate,
+            predicates,
+        } => match predicates.first() {
+            Some(primary) => Ok(eval_predicate(primary, env, 0)? == Truth::Unknown),
+            None => Ok(false),
+        },
+        _ => Ok(false),
+    }
+}
+
 fn uses_laplace_smoothing(tree: &TreeModel) -> bool {
     matches!(
         tree.header.algorithm.as_deref(),
-        Some("C&RT" | "C&R Tree" | "CHAID" | "QUEST")
+        Some("C&RT" | "C&R Tree" | "CHAID" | "QUEST" | "Quest")
     )
 }
 
