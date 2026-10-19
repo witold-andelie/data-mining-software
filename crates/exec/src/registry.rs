@@ -79,6 +79,7 @@ const BUILT_IN: &[(&str, Factory)] = &[
     ("json_export", nodes::json_export::build),
     ("xml_export", nodes::xml_export::build),
     ("excel_export", nodes::excel_export::build),
+    ("sas_export", nodes::sas_export::build),
     ("statistics_export", nodes::statistics_export::build),
 ];
 

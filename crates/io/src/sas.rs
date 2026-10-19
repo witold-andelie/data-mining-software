@@ -40,35 +40,35 @@ use dms_types::{DataModel, Field, Measurement, ModelError, Storage, Table, Value
 use std::fmt;
 
 /// Days from Unix epoch (`1970-01-01`) to SAS epoch (`1960-01-01`).
-const SAS_EPOCH_UNIX_DAYS: i64 = -3653;
+pub(crate) const SAS_EPOCH_UNIX_DAYS: i64 = -3653;
 
 /// Maximum page size accepted in a `sas7bdat` file (16 MiB).
 const MAX_PAGE_SIZE: usize = 16 * 1024 * 1024;
 /// Maximum number of pages accepted in a `sas7bdat` file.
 const MAX_PAGE_COUNT: usize = 1_000_000;
 /// Maximum number of columns accepted in a SAS dataset.
-const MAX_COLUMNS: usize = 65_536;
+pub(crate) const MAX_COLUMNS: usize = 65_536;
 /// Maximum number of rows accepted in a SAS dataset.
-const MAX_ROWS: usize = 10_000_000;
+pub(crate) const MAX_ROWS: usize = 10_000_000;
 
-const SAS7BDAT_MAGIC: [u8; 32] = [
+pub(crate) const SAS7BDAT_MAGIC: [u8; 32] = [
     0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xc2, 0xea, 0x81, 0x60,
     0xb3, 0x14, 0x11, 0xcf, 0xbd, 0x92, 0x08, 0x00, 0x09, 0xc7, 0x31, 0x8c, 0x18, 0x1f, 0x10, 0x11,
 ];
 
-const SIG_ROW_SIZE: [u8; 8] = [0xf7, 0xf7, 0xf7, 0xf7, 0x00, 0x00, 0x00, 0x00];
-const SIG_COL_SIZE: [u8; 8] = [0xf6, 0xf6, 0xf6, 0xf6, 0x00, 0x00, 0x00, 0x00];
-const SIG_COUNTS: [u8; 8] = [0x00, 0xfc, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff];
-const SIG_COL_TEXT: [u8; 8] = [0xfd, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff];
-const SIG_COL_NAME: [u8; 8] = [0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff];
-const SIG_COL_ATTR: [u8; 8] = [0xfc, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff];
-const SIG_COL_LIST: [u8; 8] = [0xfe, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff];
-const SIG_COL_FMT: [u8; 8] = [0xfe, 0xfb, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff];
+pub(crate) const SIG_ROW_SIZE: [u8; 8] = [0xf7, 0xf7, 0xf7, 0xf7, 0x00, 0x00, 0x00, 0x00];
+pub(crate) const SIG_COL_SIZE: [u8; 8] = [0xf6, 0xf6, 0xf6, 0xf6, 0x00, 0x00, 0x00, 0x00];
+pub(crate) const SIG_COUNTS: [u8; 8] = [0x00, 0xfc, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff];
+pub(crate) const SIG_COL_TEXT: [u8; 8] = [0xfd, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff];
+pub(crate) const SIG_COL_NAME: [u8; 8] = [0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff];
+pub(crate) const SIG_COL_ATTR: [u8; 8] = [0xfc, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff];
+pub(crate) const SIG_COL_LIST: [u8; 8] = [0xfe, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff];
+pub(crate) const SIG_COL_FMT: [u8; 8] = [0xfe, 0xfb, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff];
 
-const PAGE_META: u16 = 0x0000;
-const PAGE_DATA: u16 = 0x0100;
-const PAGE_MIX: u16 = 0x0200;
-const PAGE_AMD: u16 = 0x0400;
+pub(crate) const PAGE_META: u16 = 0x0000;
+pub(crate) const PAGE_DATA: u16 = 0x0100;
+pub(crate) const PAGE_MIX: u16 = 0x0200;
+pub(crate) const PAGE_AMD: u16 = 0x0400;
 
 const XPT_LIB_HEADER: &[u8; 48] = b"HEADER RECORD*******LIBRARY HEADER RECORD!!!!!!!";
 const XPT_MEM_HEADER: &[u8; 48] = b"HEADER RECORD*******MEMBER  HEADER RECORD!!!!!!!";
@@ -178,21 +178,26 @@ pub fn read_sas7bdat(bytes: &[u8], names: NameMode) -> Result<Table, SasError> {
     }
 
     let align_1 = read_u8(bytes, 32)?;
-    if align_1 == 0x32 {
-        return Err(SasError::Unsupported(
-            "GAP: 32-bit sas7bdat layout (align_1 = 0x32) is not supported".into(),
-        ));
-    }
-    if align_1 != 0x33 {
-        return Err(SasError::Syntax(format!(
-            "invalid sas7bdat align_1 flag 0x{align_1:02x}"
-        )));
-    }
+    let u64_layout = match align_1 {
+        0x33 => true,
+        0x22 => false,
+        0x32 => {
+            return Err(SasError::Unsupported(
+                "GAP: 32-bit sas7bdat layout (align_1 = 0x32) is not supported".into(),
+            ));
+        }
+        _ => {
+            return Err(SasError::Syntax(format!(
+                "invalid sas7bdat align_1 flag 0x{align_1:02x}"
+            )));
+        }
+    };
 
     let align_2 = read_u8(bytes, 35)?;
-    if align_2 != 0x33 {
+    let expected_align_2 = if u64_layout { 0x33 } else { 0x32 };
+    if align_2 != expected_align_2 {
         return Err(SasError::Unsupported(format!(
-            "GAP: sas7bdat align_2 flag 0x{align_2:02x} is not supported (only 0x33)"
+            "GAP: sas7bdat align_2 flag 0x{align_2:02x} is not supported (expected 0x{expected_align_2:02x})"
         )));
     }
 
@@ -215,7 +220,7 @@ pub fn read_sas7bdat(bytes: &[u8], names: NameMode) -> Result<Table, SasError> {
         )));
     }
 
-    let encoding = read_u8(bytes, 70)?;
+    let encoding = read_u8(bytes, if u64_layout { 70 } else { 71 })?;
     // 20 (0x14) = UTF-8, 0 = unspecified/default ASCII, 28 = US-ASCII.
     if !matches!(encoding, 0 | 20 | 28) {
         return Err(SasError::Unsupported(format!(
@@ -229,16 +234,23 @@ pub fn read_sas7bdat(bytes: &[u8], names: NameMode) -> Result<Table, SasError> {
         ));
     }
 
-    // With 64-bit alignment (a1 = 4, a2 = 4):
-    // header_length at 196 + 4 = 200 (u32 LE)
-    // page_size at 200 + 4 = 204 (u32 LE)
-    // page_count at 204 + 4 = 208 (u64 LE)
-    let header_length = usize::try_from(read_u32_le(bytes, 200)?)
-        .map_err(|_| SasError::Syntax("sas7bdat header_length overflow".into()))?;
-    let page_size = usize::try_from(read_u32_le(bytes, 204)?)
-        .map_err(|_| SasError::Syntax("sas7bdat page_size overflow".into()))?;
-    let page_count = usize::try_from(read_u64_le(bytes, 208)?)
-        .map_err(|_| SasError::Syntax("sas7bdat page_count overflow".into()))?;
+    let (header_length, page_size, page_count) = if u64_layout {
+        let hl = usize::try_from(read_u32_le(bytes, 200)?)
+            .map_err(|_| SasError::Syntax("sas7bdat header_length overflow".into()))?;
+        let ps = usize::try_from(read_u32_le(bytes, 204)?)
+            .map_err(|_| SasError::Syntax("sas7bdat page_size overflow".into()))?;
+        let pc = usize::try_from(read_u64_le(bytes, 208)?)
+            .map_err(|_| SasError::Syntax("sas7bdat page_count overflow".into()))?;
+        (hl, ps, pc)
+    } else {
+        let hl = usize::try_from(read_u32_le(bytes, 196)?)
+            .map_err(|_| SasError::Syntax("sas7bdat header_length overflow".into()))?;
+        let ps = usize::try_from(read_u32_le(bytes, 200)?)
+            .map_err(|_| SasError::Syntax("sas7bdat page_size overflow".into()))?;
+        let pc = usize::try_from(read_u32_le(bytes, 204)?)
+            .map_err(|_| SasError::Syntax("sas7bdat page_count overflow".into()))?;
+        (hl, ps, pc)
+    };
 
     if header_length < 288 || header_length > bytes.len() {
         return Err(SasError::Syntax(format!(
@@ -267,6 +279,11 @@ pub fn read_sas7bdat(bytes: &[u8], names: NameMode) -> Result<Table, SasError> {
         )));
     }
 
+    let page_bit_off = if u64_layout { 32usize } else { 16usize };
+    let page_hdr_size = if u64_layout { 40usize } else { 24usize };
+    let ptr_size = if u64_layout { 24usize } else { 12usize };
+    let sig_size = if u64_layout { 8usize } else { 4usize };
+
     let mut row_length: Option<usize> = None;
     let mut total_row_count: Option<usize> = None;
     let mut mix_page_row_count: usize = 0;
@@ -285,9 +302,8 @@ pub fn read_sas7bdat(bytes: &[u8], names: NameMode) -> Result<Table, SasError> {
             .get(page_offset..page_offset.saturating_add(page_size))
             .ok_or_else(|| SasError::Syntax("page slice out of bounds".into()))?;
 
-        // 64-bit page bit offset is 32; page header is 40 bytes.
-        let page_type = read_u16_le(page, 32)?;
-        let subheaders_count = usize::from(read_u16_le(page, 36)?);
+        let page_type = read_u16_le(page, page_bit_off)?;
+        let subheaders_count = usize::from(read_u16_le(page, page_bit_off + 4)?);
 
         match page_type {
             PAGE_META | PAGE_MIX | PAGE_AMD => {}
@@ -299,10 +315,10 @@ pub fn read_sas7bdat(bytes: &[u8], names: NameMode) -> Result<Table, SasError> {
             }
         }
 
-        let ptrs_end = 40usize
+        let ptrs_end = page_hdr_size
             .checked_add(
                 subheaders_count
-                    .checked_mul(24)
+                    .checked_mul(ptr_size)
                     .ok_or_else(|| SasError::Syntax("subheader pointer count overflow".into()))?,
             )
             .ok_or_else(|| SasError::Syntax("subheader table end overflow".into()))?;
@@ -313,12 +329,22 @@ pub fn read_sas7bdat(bytes: &[u8], names: NameMode) -> Result<Table, SasError> {
         }
 
         for sh_idx in 0..subheaders_count {
-            let ptr_off = 40 + sh_idx * 24;
-            let sh_offset = usize::try_from(read_u64_le(page, ptr_off)?)
-                .map_err(|_| SasError::Syntax("subheader offset overflow".into()))?;
-            let sh_length = usize::try_from(read_u64_le(page, ptr_off + 8)?)
-                .map_err(|_| SasError::Syntax("subheader length overflow".into()))?;
-            let sh_compression = read_u8(page, ptr_off + 16)?;
+            let ptr_off = page_hdr_size + sh_idx * ptr_size;
+            let (sh_offset, sh_length, sh_compression) = if u64_layout {
+                let off = usize::try_from(read_u64_le(page, ptr_off)?)
+                    .map_err(|_| SasError::Syntax("subheader offset overflow".into()))?;
+                let len = usize::try_from(read_u64_le(page, ptr_off + 8)?)
+                    .map_err(|_| SasError::Syntax("subheader length overflow".into()))?;
+                let comp = read_u8(page, ptr_off + 16)?;
+                (off, len, comp)
+            } else {
+                let off = usize::try_from(read_u32_le(page, ptr_off)?)
+                    .map_err(|_| SasError::Syntax("subheader offset overflow".into()))?;
+                let len = usize::try_from(read_u32_le(page, ptr_off + 4)?)
+                    .map_err(|_| SasError::Syntax("subheader length overflow".into()))?;
+                let comp = read_u8(page, ptr_off + 8)?;
+                (off, len, comp)
+            };
 
             // Truncated/empty subheader pointer.
             if sh_length == 0 || sh_compression == 1 {
@@ -344,24 +370,40 @@ pub fn read_sas7bdat(bytes: &[u8], names: NameMode) -> Result<Table, SasError> {
                     "sas7bdat page {page_idx} subheader {sh_idx} ({sh_offset}..{sh_end}) out of bounds"
                 ))
             })?;
-            let Some(sig) = sh.get(0..8) else {
+            let Some(sig) = sh.get(0..sig_size) else {
                 return Err(SasError::Syntax(
-                    "sas7bdat subheader shorter than 8-byte signature".into(),
+                    "sas7bdat subheader shorter than signature".into(),
                 ));
             };
 
-            if sig == SIG_ROW_SIZE {
-                if sh.len() < 128 {
-                    return Err(SasError::Syntax(
-                        "sas7bdat RowSize subheader shorter than 128 bytes".into(),
-                    ));
-                }
-                let rl = usize::try_from(read_u64_le(sh, 40)?)
-                    .map_err(|_| SasError::Syntax("row_length overflow".into()))?;
-                let rc = usize::try_from(read_u64_le(sh, 48)?)
-                    .map_err(|_| SasError::Syntax("row_count overflow".into()))?;
-                let mprc = usize::try_from(read_u64_le(sh, 120)?)
-                    .map_err(|_| SasError::Syntax("mix_page_row_count overflow".into()))?;
+            if sig == &SIG_ROW_SIZE[..sig_size] {
+                let (rl, rc, mprc) = if u64_layout {
+                    if sh.len() < 128 {
+                        return Err(SasError::Syntax(
+                            "sas7bdat RowSize subheader shorter than 128 bytes".into(),
+                        ));
+                    }
+                    let rl = usize::try_from(read_u64_le(sh, 40)?)
+                        .map_err(|_| SasError::Syntax("row_length overflow".into()))?;
+                    let rc = usize::try_from(read_u64_le(sh, 48)?)
+                        .map_err(|_| SasError::Syntax("row_count overflow".into()))?;
+                    let mprc = usize::try_from(read_u64_le(sh, 120)?)
+                        .map_err(|_| SasError::Syntax("mix_page_row_count overflow".into()))?;
+                    (rl, rc, mprc)
+                } else {
+                    if sh.len() < 64 {
+                        return Err(SasError::Syntax(
+                            "sas7bdat RowSize subheader shorter than 64 bytes".into(),
+                        ));
+                    }
+                    let rl = usize::try_from(read_u32_le(sh, 20)?)
+                        .map_err(|_| SasError::Syntax("row_length overflow".into()))?;
+                    let rc = usize::try_from(read_u32_le(sh, 24)?)
+                        .map_err(|_| SasError::Syntax("row_count overflow".into()))?;
+                    let mprc = usize::try_from(read_u32_le(sh, 60)?)
+                        .map_err(|_| SasError::Syntax("mix_page_row_count overflow".into()))?;
+                    (rl, rc, mprc)
+                };
                 if rc > MAX_ROWS {
                     return Err(SasError::Syntax(format!(
                         "sas7bdat row_count {rc} exceeds maximum {MAX_ROWS}"
@@ -370,22 +412,32 @@ pub fn read_sas7bdat(bytes: &[u8], names: NameMode) -> Result<Table, SasError> {
                 row_length = Some(rl);
                 total_row_count = Some(rc);
                 mix_page_row_count = mprc;
-            } else if sig == SIG_COL_SIZE {
-                if sh.len() < 16 {
-                    return Err(SasError::Syntax(
-                        "sas7bdat ColumnSize subheader shorter than 16 bytes".into(),
-                    ));
-                }
-                let cc = usize::try_from(read_u64_le(sh, 8)?)
-                    .map_err(|_| SasError::Syntax("col_count overflow".into()))?;
+            } else if sig == &SIG_COL_SIZE[..sig_size] {
+                let cc = if u64_layout {
+                    if sh.len() < 16 {
+                        return Err(SasError::Syntax(
+                            "sas7bdat ColumnSize subheader shorter than 16 bytes".into(),
+                        ));
+                    }
+                    usize::try_from(read_u64_le(sh, 8)?)
+                        .map_err(|_| SasError::Syntax("col_count overflow".into()))?
+                } else {
+                    if sh.len() < 8 {
+                        return Err(SasError::Syntax(
+                            "sas7bdat ColumnSize subheader shorter than 8 bytes".into(),
+                        ));
+                    }
+                    usize::try_from(read_u32_le(sh, 4)?)
+                        .map_err(|_| SasError::Syntax("col_count overflow".into()))?
+                };
                 if cc > MAX_COLUMNS {
                     return Err(SasError::Syntax(format!(
                         "sas7bdat col_count {cc} exceeds maximum {MAX_COLUMNS}"
                     )));
                 }
                 col_count = Some(cc);
-            } else if sig == SIG_COL_TEXT {
-                let payload = sh.get(8..).ok_or_else(|| {
+            } else if sig == &SIG_COL_TEXT[..sig_size] {
+                let payload = sh.get(sig_size..).ok_or_else(|| {
                     SasError::Syntax("sas7bdat ColumnText subheader missing payload".into())
                 })?;
                 if contains_subslice(payload, b"SASYZCRL") {
@@ -399,14 +451,16 @@ pub fn read_sas7bdat(bytes: &[u8], names: NameMode) -> Result<Table, SasError> {
                     ));
                 }
                 col_texts.push(payload.to_vec());
-            } else if sig == SIG_COL_NAME {
-                if sh.len() < 28 {
+            } else if sig == &SIG_COL_NAME[..sig_size] {
+                let hdr_off = if u64_layout { 16usize } else { 12usize };
+                let trl_len = if u64_layout { 12usize } else { 8usize };
+                if sh.len() < hdr_off + trl_len {
                     return Err(SasError::Syntax(
-                        "sas7bdat ColumnName subheader shorter than 28 bytes".into(),
+                        "sas7bdat ColumnName subheader too short".into(),
                     ));
                 }
-                let entries_end = sh.len() - 12;
-                let mut off = 16usize;
+                let entries_end = sh.len() - trl_len;
+                let mut off = hdr_off;
                 while off.saturating_add(8) <= entries_end {
                     let text_idx = usize::from(read_u16_le(sh, off)?);
                     let text_off = usize::from(read_u16_le(sh, off + 2)?);
@@ -414,20 +468,33 @@ pub fn read_sas7bdat(bytes: &[u8], names: NameMode) -> Result<Table, SasError> {
                     col_names.push((text_idx, text_off, text_len));
                     off += 8;
                 }
-            } else if sig == SIG_COL_ATTR {
-                if sh.len() < 28 {
+            } else if sig == &SIG_COL_ATTR[..sig_size] {
+                let hdr_off = if u64_layout { 16usize } else { 12usize };
+                let trl_len = if u64_layout { 12usize } else { 8usize };
+                let entry_size = if u64_layout { 16usize } else { 12usize };
+                if sh.len() < hdr_off + trl_len {
                     return Err(SasError::Syntax(
-                        "sas7bdat ColumnAttributes subheader shorter than 28 bytes".into(),
+                        "sas7bdat ColumnAttributes subheader too short".into(),
                     ));
                 }
-                let entries_end = sh.len() - 12;
-                let mut off = 16usize;
-                while off.saturating_add(16) <= entries_end {
-                    let col_off = usize::try_from(read_u64_le(sh, off)?)
-                        .map_err(|_| SasError::Syntax("column offset overflow".into()))?;
-                    let col_w = usize::try_from(read_u32_le(sh, off + 8)?)
-                        .map_err(|_| SasError::Syntax("column width overflow".into()))?;
-                    let type_code = read_u8(sh, off + 14)?;
+                let entries_end = sh.len() - trl_len;
+                let mut off = hdr_off;
+                while off.saturating_add(entry_size) <= entries_end {
+                    let (col_off, col_w, type_code) = if u64_layout {
+                        let co = usize::try_from(read_u64_le(sh, off)?)
+                            .map_err(|_| SasError::Syntax("column offset overflow".into()))?;
+                        let cw = usize::try_from(read_u32_le(sh, off + 8)?)
+                            .map_err(|_| SasError::Syntax("column width overflow".into()))?;
+                        let tc = read_u8(sh, off + 14)?;
+                        (co, cw, tc)
+                    } else {
+                        let co = usize::try_from(read_u32_le(sh, off)?)
+                            .map_err(|_| SasError::Syntax("column offset overflow".into()))?;
+                        let cw = usize::try_from(read_u32_le(sh, off + 4)?)
+                            .map_err(|_| SasError::Syntax("column width overflow".into()))?;
+                        let tc = read_u8(sh, off + 10)?;
+                        (co, cw, tc)
+                    };
                     let col_type = match type_code {
                         1 => ColType::Numeric,
                         2 => ColType::Character,
@@ -438,22 +505,23 @@ pub fn read_sas7bdat(bytes: &[u8], names: NameMode) -> Result<Table, SasError> {
                         }
                     };
                     col_attrs.push((col_off, col_w, col_type));
-                    off += 16;
+                    off += entry_size;
                 }
-            } else if sig == SIG_COL_FMT {
-                if sh.len() < 58 {
+            } else if sig == &SIG_COL_FMT[..sig_size] {
+                let base_off = if u64_layout { 46usize } else { 34usize };
+                if sh.len() < base_off + 12 {
                     return Err(SasError::Syntax(
-                        "sas7bdat ColumnFormatAndLabel subheader shorter than 58 bytes".into(),
+                        "sas7bdat ColumnFormatAndLabel subheader too short".into(),
                     ));
                 }
-                let fmt_idx = usize::from(read_u16_le(sh, 46)?);
-                let fmt_off = usize::from(read_u16_le(sh, 48)?);
-                let fmt_len = usize::from(read_u16_le(sh, 50)?);
-                let lbl_idx = usize::from(read_u16_le(sh, 52)?);
-                let lbl_off = usize::from(read_u16_le(sh, 54)?);
-                let lbl_len = usize::from(read_u16_le(sh, 56)?);
+                let fmt_idx = usize::from(read_u16_le(sh, base_off)?);
+                let fmt_off = usize::from(read_u16_le(sh, base_off + 2)?);
+                let fmt_len = usize::from(read_u16_le(sh, base_off + 4)?);
+                let lbl_idx = usize::from(read_u16_le(sh, base_off + 6)?);
+                let lbl_off = usize::from(read_u16_le(sh, base_off + 8)?);
+                let lbl_len = usize::from(read_u16_le(sh, base_off + 10)?);
                 col_fmt_lbls.push((fmt_idx, fmt_off, fmt_len, lbl_idx, lbl_off, lbl_len));
-            } else if sig == SIG_COUNTS || sig == SIG_COL_LIST {
+            } else if sig == &SIG_COUNTS[..sig_size] || sig == &SIG_COL_LIST[..sig_size] {
                 // Bookkeeping subheaders not needed to decode uncompressed rows.
             } else {
                 return Err(SasError::Unsupported(format!(
@@ -539,17 +607,18 @@ pub fn read_sas7bdat(bytes: &[u8], names: NameMode) -> Result<Table, SasError> {
         let page = bytes
             .get(page_offset..page_offset + page_size)
             .ok_or_else(|| SasError::Syntax("page slice out of bounds".into()))?;
-        let page_type = read_u16_le(page, 32)?;
-        let block_count = usize::from(read_u16_le(page, 34)?);
-        let subheaders_count = usize::from(read_u16_le(page, 36)?);
+        let page_type = read_u16_le(page, page_bit_off)?;
+        let block_count = usize::from(read_u16_le(page, page_bit_off + 2)?);
+        let subheaders_count = usize::from(read_u16_le(page, page_bit_off + 4)?);
 
         let (data_start, max_rows_on_page) = match page_type {
             PAGE_MIX => {
-                let ptrs_end = 40usize.saturating_add(subheaders_count.saturating_mul(24));
+                let ptrs_end =
+                    page_hdr_size.saturating_add(subheaders_count.saturating_mul(ptr_size));
                 let aligned = (ptrs_end.saturating_add(7)) & !7;
                 (aligned, mix_page_row_count)
             }
-            PAGE_DATA => (40usize, block_count),
+            PAGE_DATA => (page_hdr_size, block_count),
             _ => continue,
         };
 
