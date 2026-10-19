@@ -4,7 +4,7 @@
 
 | Scope | Implemented | Total |
 |---|---|---|
-| MVP | 69 | 85 |
+| MVP | 71 | 85 |
 | later | 2 | 25 |
 | license blocked | 0 | 5 |
 | out of scope | 0 | 34 |
@@ -17,7 +17,7 @@
 | Fixed File | `fixed_file` | MVP | done | `FixedFileImportNode` |
 | Statistics File (.sav) | `statistics_file` | MVP | done | `SPSSInputNode` |
 | Excel | `excel_import` | MVP | missing | `ExcelInputNode` |
-| Database | `database_import` | MVP | missing | `ODBCImportNode`, `DBImportNode` |
+| Database | `database_import` | MVP | done | `ODBCImportNode`, `DBImportNode` |
 | User Input | `user_input` | MVP | done | `UserInputNode` |
 | XML | `xml_import` | MVP | missing | `xml_import!spss.xml_data` |
 | JSON | `json_import` | MVP | done | `json_import!pasw.json` |
@@ -181,7 +181,7 @@
 | Flat File | `flat_file_export` | MVP | done | `TextFileExportNode` |
 | Excel | `excel_export` | MVP | done | `ExcelNode` |
 | Statistics Export (.sav) | `statistics_export` | MVP | done | `SPSSExportNode` |
-| Database | `database_export` | MVP | missing | `ODBCExportNode`, `DBExportNode` |
+| Database | `database_export` | MVP | done | `ODBCExportNode`, `DBExportNode` |
 | XML | `xml_export` | MVP | done | `xml_export!spss.xml_data` |
 | JSON | `json_export` | MVP | done | `json_export!pasw.json` |
 | SAS | `sas_export` | MVP | missing | `SASExportNode` |
