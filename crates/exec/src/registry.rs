@@ -61,6 +61,7 @@ const BUILT_IN: &[(&str, Factory)] = &[
     ("linear_as", model_node),
     ("lsvm", model_node),
     ("kmeans", model_node),
+    ("kohonen", model_node),
     ("apriori", model_node),
     ("carma", model_node),
     ("twostep", model_node),
@@ -93,12 +94,10 @@ const PENDING: &[&str] = &[];
 /// Implemented builders held to statistical rather than exact parity
 /// (`docs/statistical-parity.md`): their training draws from our own generator or converges
 /// where Modeler stops early, so they match Modeler's metrics, not its bits.
-const STATISTICAL: &[&str] = &["lsvm", "neural_net", "sequence"];
+const STATISTICAL: &[&str] = &["lsvm", "neural_net", "sequence", "kohonen"];
 
 /// Model nodes whose nuggets score (`nodes::apply`) while their build nodes cannot train yet;
 /// they do not count as implemented.
-/// Kohonen (`corpus/models_next/kohonen_*.str`): training starts from random weights
-/// drawn with an unknown generator (`randomSeed`), so it is a GAP.
 /// Auto Cluster: the nugget scores its saved component model (`nodes::auto_cluster`);
 /// training (`BuildAutoClusteringModelNode`) is not implemented.
 /// Auto Classifier / Numeric: saved components and Ensemble scoring (`nodes::auto_models`);
@@ -111,7 +110,6 @@ const STATISTICAL: &[&str] = &["lsvm", "neural_net", "sequence"];
 /// correlation/sweep selection (`linearas/lin_default`, `lin_factor`); LSVM trains the
 /// documented objective to convergence (statistical parity, `dms_algo::lsvm`).
 const SCORING_ONLY: &[&str] = &[
-    "kohonen",
     "time_series",
     "auto_cluster",
     "auto_classifier",
@@ -152,12 +150,8 @@ const TRAINING_GAPS: &[(&str, &str)] = &[
         "Random Trees training is not reproduced: bootstrap counts are binomial draws and predictor subsets are seeded by a hash of tree and node id, with an undocumented generator and hash; the PMML trees carry no record counts to identify them",
     ),
     (
-        "TrainKohonenNode",
-        "Kohonen training starts from random weights and a random record order drawn with an unknown generator",
-    ),
-    (
         "BuildAutoClusteringModelNode",
-        "Auto Cluster training needs a Kohonen component, whose training is a GAP",
+        "Auto Cluster training is not implemented: its component selection and criteria have no oracle",
     ),
     (
         "BuildBinaryClassifierNode",

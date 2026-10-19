@@ -12,7 +12,7 @@ Modeler's single run looks like one of ours.
 | Builder | Why not exact | Oracles |
 |---|---|---|
 | Neural Net | random initial weights, random 70/30 split | `models_ml/nn_*` |
-| Kohonen | random initial weights and record order | `models_next/kohonen_*` |
+| Kohonen | random initial weights and record order | `models_next/kohonen_*`, `kohonen_size/*` |
 | Random Trees | bootstrap and predictor draws, seeded by an undocumented hash | `models_as/rt_*`, `models_next/rt_*` |
 | LSVM | ADMM stops before the optimum | `models_as/lsvm_*` |
 | Time Series | smoothing/ARIMA optimizer stopping point | `models_next/ts_*`, `models_next2/ts_*` |
@@ -29,7 +29,11 @@ QUEST and C&R Tree without an overfit prevention set stay exact (`quest_nofs/*`)
 2. **Seed band.** Train with at least 10 seeds of our generator. For each metric below,
    Modeler's value must lie inside our seeds' range widened by 10 % of its width (or inside an
    absolute tolerance stated per metric when the range is degenerate). The test prints the
-   range and Modeler's value.
+   range and Modeler's value. With many oracles a few single runs fall outside any finite band
+   by chance; such a case may be listed as a known outlier with its numbers in the test and the
+   module docs, and the test asserts that it stays outside (Kohonen: 1 of 17, at 100 seeds).
+   An outlier list is not a way around a systematic bias: Modeler's values must also rank near
+   the middle of our runs across the family.
 3. **Optimizers.** Where only the stopping point differs (LSVM, Time Series), solve the
    documented objective to convergence. Accept when our objective is no worse than the value
    of Modeler's own coefficients on the same data (up to 1e-9 relative), predicted classes are

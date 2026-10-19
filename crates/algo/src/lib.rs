@@ -22,6 +22,7 @@ pub mod decision_list;
 pub mod factor;
 pub mod feature_selection;
 pub mod kmeans;
+pub mod kohonen;
 pub mod linear;
 pub mod linear_as;
 pub mod logistic;

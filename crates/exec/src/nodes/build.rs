@@ -29,6 +29,14 @@
 //! `modelInputFieldSelection` fields unless `autoModelFieldSelection`, else the Type's `Input`
 //! and `Both` fields.
 //!
+//! Kohonen (`TrainKohonenNode`) keeps its settings in the node's XML: the two phases'
+//! neighbourhood, eta and cycles (a saved third phase is not used), linear eta decay, the default stopping
+//! condition, `expertMode` with the output layer dimensions, and `randomSeed`. It trains the
+//! documented map with our own seedable generator (`dms_algo::kohonen`): statistical parity
+//! (`docs/statistical-parity.md` rule 2), because Modeler's initial weights and record order come
+//! from an undisclosed generator. Other decay/stopping/encoding/event/optimization settings and
+//! any phase values other than the oracles' are `GAP:`.
+//!
 //! TwoStep (`BuildTwoStepNode`) also keeps its settings in the node's XML
 //! (`docs/formats/nodes/twostep.md`): `standardizeFields`, `autoCluster` with `minClusters` and
 //! `maxClusters`, else `numClusters`, `clusteringCriterion` (`BIC`, `AIC`), `clusterLabelType`
@@ -73,6 +81,7 @@ use dms_algo::chaid::{self, ChaidSettings, ChiSquare, Method};
 use dms_algo::decision_list::{self, DecisionListSettings};
 use dms_algo::factor::{self, FactorCount, FactorSettings};
 use dms_algo::kmeans::{self, KMeansSettings};
+use dms_algo::kohonen::{self, KohonenSettings, Phase as KohonenPhase};
 use dms_algo::linear::{self, LinearSettings, Selection, Style};
 use dms_algo::logistic::{self, LogisticSettings, Method as LogisticMethod, Procedure};
 use dms_algo::lsvm::{self, LsvmSettings};
@@ -102,6 +111,7 @@ pub fn build(node: &StreamNode) -> Result<Box<dyn Operator>, OperatorError> {
         }
         "spss.linearSVM!linearSVM" => Algorithm::Lsvm(super::analytic_build::lsvm(node)?),
         "BuildKMeansNode" => Algorithm::KMeans(kmeans_settings(node)?),
+        "TrainKohonenNode" => Algorithm::Kohonen(kohonen_settings(node)?),
         "BuildAprioriNode" => Algorithm::Apriori(apriori_settings(node)?),
         "BuildCarmaNode" => Algorithm::Carma(carma_settings(node)?),
         "BuildTwoStepNode" => Algorithm::TwoStep(twostep_settings(node)?),
@@ -145,6 +155,8 @@ enum Algorithm {
     Lsvm(LsvmSettings),
     /// The settings, and the custom input fields (`None`: the Type roles).
     KMeans((KMeansSettings, Option<Vec<String>>)),
+    /// Kohonen map (`TrainKohonenNode`), statistical parity (`dms_algo::kohonen`).
+    Kohonen((KohonenSettings, Option<Vec<String>>)),
     TwoStep((TwoStepSettings, Option<Vec<String>>)),
     /// The settings, an optional custom target, and optional custom inputs.
     Logistic(LogisticSpec),
@@ -329,6 +341,16 @@ impl Operator for Build {
                 .map_err(|error| OperatorError::Data(format!("K-Means: {error}")))?;
             return Ok(NodeOutput::Model(Arc::new(pmml)));
         }
+        if let Algorithm::Kohonen((settings, custom)) = &self.algorithm {
+            let fields = cluster_inputs(&table, custom.as_deref())?;
+            let pmml = kohonen::train(&table, &fields, settings).map_err(|error| match error {
+                dms_algo::AlgoError::Unsupported(_) | dms_algo::AlgoError::Settings(_) => {
+                    OperatorError::Settings(format!("GAP: {error}"))
+                }
+                _ => OperatorError::Data(format!("Kohonen: {error}")),
+            })?;
+            return Ok(NodeOutput::Model(Arc::new(pmml)));
+        }
         if let Algorithm::Factor((settings, custom)) = &self.algorithm {
             let fields = cluster_inputs(&table, custom.as_deref())?;
             let pmml = factor::train(&table, &fields, settings)
@@ -419,6 +441,7 @@ impl Operator for Build {
                 .map_err(|error| OperatorError::Data(format!("Linear: {error}")))?,
             Algorithm::KMeans(_)
             | Algorithm::NeuralNet
+            | Algorithm::Kohonen(_)
             | Algorithm::TreeAs(_)
             | Algorithm::LinearAs(_)
             | Algorithm::Lsvm(_)
@@ -1070,6 +1093,149 @@ fn kmeans_settings(
             name,
         },
         custom,
+    ))
+}
+
+/// Kohonen settings from the node's XML (`TrainKohonenNode`, `models_next/kohonen_*`), statistical
+/// parity (`dms_algo::kohonen`). The two oracles save the same phases, linear decay, the default
+/// stopping condition, `memory` optimization, no events or binary encoding, a fixed seed, the Type
+/// roles and an explicit model name; any other value is a `GAP:` until an oracle covers it.
+fn kohonen_settings(
+    node: &StreamNode,
+) -> Result<(KohonenSettings, Option<Vec<String>>), OperatorError> {
+    let s = node.settings.as_ref();
+    let defaults = KohonenSettings::default();
+    let unsupported = |what: &str| OperatorError::Settings(format!("GAP: Kohonen {what}"));
+
+    if settings::flag(s, "trainExistingModel")?.unwrap_or(false) {
+        return Err(unsupported("training an existing model"));
+    }
+    if settings::flag(s, "useEvents")?.unwrap_or(false)
+        || !settings::children(s, "eventFields", "field").is_empty()
+    {
+        return Err(unsupported("event fields"));
+    }
+    if settings::flag(s, "binaryEncoding")?.unwrap_or(false) {
+        return Err(unsupported("binary encoding"));
+    }
+    if !settings::flag(s, "appendClusterLabel")?.unwrap_or(true) {
+        return Err(unsupported(
+            "appendClusterLabel false (no oracle for labels without the map position)",
+        ));
+    }
+    if !settings::flag(s, "usePartitionedData")?.unwrap_or(true) {
+        return Err(unsupported(
+            "usePartitionedData false (no oracle for training on every partition)",
+        ));
+    }
+    match settings::text(s, "learningRateDecayMode")
+        .as_deref()
+        .map(str::trim)
+    {
+        None | Some("") | Some("linear") => {}
+        Some(other) => {
+            return Err(unsupported(&format!("learning-rate decay {other}")));
+        }
+    }
+    match settings::text(s, "optimization").as_deref().map(str::trim) {
+        None | Some("") | Some("memory") => {}
+        Some(other) => return Err(unsupported(&format!("optimization {other}"))),
+    }
+    match settings::text(s, "stoppingCondition")
+        .as_deref()
+        .map(str::trim)
+    {
+        None | Some("") | Some("default") => {}
+        Some(other) => return Err(unsupported(&format!("stopping condition {other}"))),
+    }
+    if !settings::flag(s, "useRandomSeed")?.unwrap_or(false) {
+        return Err(unsupported(
+            "useRandomSeed false (Modeler picks an unknown seed)",
+        ));
+    }
+    let seed = settings::integer(s, "randomSeed")?.unwrap_or(123);
+    if !(0..=2_147_483_647).contains(&seed) {
+        return Err(OperatorError::Settings(format!(
+            "Kohonen randomSeed must be from 0 to 2147483647, found {seed}"
+        )));
+    }
+    let seed = u64::try_from(seed)
+        .map_err(|_| OperatorError::Settings(format!("Kohonen randomSeed {seed} is negative")))?;
+    if !settings::flag(s, "autoModelFieldSelection")?.unwrap_or(true) {
+        return Err(unsupported(
+            "custom input fields (autoModelFieldSelection false)",
+        ));
+    }
+    if settings::flag(s, "autoModelName")?.unwrap_or(true) {
+        return Err(unsupported("an automatic model name (autoModelName true)"));
+    }
+    let name = settings::text(s, "modelName")
+        .map(|name| name.trim().to_string())
+        .filter(|name| !name.is_empty())
+        .ok_or_else(|| OperatorError::Settings("Kohonen modelName is empty".into()))?;
+
+    let expert = settings::flag(s, "expertMode")?.unwrap_or(false);
+    let dimension = |key: &str, default: usize| -> Result<usize, OperatorError> {
+        let value = settings::integer(s, key)?.unwrap_or(default as i64);
+        let value = usize::try_from(value)
+            .map_err(|_| OperatorError::Settings(format!("Kohonen {key} is negative")))?;
+        if expert && !(1..=99).contains(&value) {
+            return Err(OperatorError::Settings(format!(
+                "Kohonen {key} must be from 1 to 99, found {value}"
+            )));
+        }
+        Ok(value)
+    };
+    let width = dimension("outputLayerWidth", defaults.width)?;
+    let length = dimension("outputLayerLength", defaults.length)?;
+
+    let phase = |number: usize, default: KohonenPhase| -> Result<KohonenPhase, OperatorError> {
+        let neighbourhood_key = format!("learningPhase{number}Neighbourhood");
+        let eta_key = format!("learningPhase{number}Eta");
+        let cycles_key = format!("learningPhase{number}EtaDecayCycles");
+        let non_negative = |key: &str, value: Option<i64>, fallback: usize| match value {
+            Some(value) => usize::try_from(value)
+                .map_err(|_| OperatorError::Settings(format!("Kohonen {key} is negative"))),
+            None => Ok(fallback),
+        };
+        let neighbourhood = non_negative(
+            &neighbourhood_key,
+            settings::integer(s, &neighbourhood_key)?,
+            default.neighbourhood,
+        )?;
+        let eta = settings::real(s, &eta_key)?.unwrap_or(default.eta);
+        let cycles = non_negative(
+            &cycles_key,
+            settings::integer(s, &cycles_key)?,
+            default.cycles,
+        )?;
+        Ok(KohonenPhase {
+            neighbourhood,
+            eta,
+            cycles,
+        })
+    };
+    let phases = [phase(1, defaults.phases[0])?, phase(2, defaults.phases[1])?];
+    for (index, value) in phases.iter().enumerate() {
+        if *value != defaults.phases[index] {
+            return Err(unsupported(&format!(
+                "phase {} settings other than the oracle defaults",
+                index + 1
+            )));
+        }
+    }
+
+    Ok((
+        KohonenSettings {
+            expert,
+            width,
+            length,
+            phases,
+            decay: defaults.decay,
+            seed,
+            name: Some(name),
+        },
+        None,
     ))
 }
 
