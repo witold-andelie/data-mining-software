@@ -727,6 +727,10 @@ impl Apply {
             let columns = neural_columns(input, &pmml, &predictions, &options)?;
             return with_columns(input, columns);
         }
+        // QUEST nuggets treat a category the model does not list as missing, so its surrogates
+        // decide (`quest_nofs/*` grid record 10043: blank `cat` scores A 0.571428 like a
+        // missing value). Other tree algorithms have no such oracle and keep PMML's default.
+        let unlisted = quest_category_fields(&pmml, input.model());
         let predictions = input
             .rows()
             .iter()
@@ -747,7 +751,15 @@ impl Apply {
                         affinity: None,
                     });
                 }
-                let record: Vec<PmmlValue> = row.iter().map(to_pmml).collect();
+                let mut record: Vec<PmmlValue> = row.iter().map(to_pmml).collect();
+                for (index, allowed) in &unlisted {
+                    if let Some(PmmlValue::Text(value)) = record.get(*index)
+                        && !allowed.iter().any(|category| category == value)
+                        && let Some(cell) = record.get_mut(*index)
+                    {
+                        *cell = PmmlValue::Missing;
+                    }
+                }
                 scorer
                     .score(&record)
                     .map_err(|error| OperatorError::Data(format!("model: {error}")))
@@ -1201,6 +1213,25 @@ fn target_storage(pmml: &Pmml, target: &str) -> Storage {
         Some(DataType::Double | DataType::Float) => Storage::Real,
         _ => Storage::String,
     }
+}
+
+/// For a QUEST tree, the input positions of its categorical fields and their listed categories.
+fn quest_category_fields(pmml: &Pmml, model: &dms_types::DataModel) -> Vec<(usize, Vec<String>)> {
+    let dms_pmml::Model::Tree(tree) = &pmml.model else {
+        return Vec::new();
+    };
+    if tree.header.algorithm.as_deref() != Some("Quest") {
+        return Vec::new();
+    }
+    pmml.data_dictionary
+        .iter()
+        .filter(|field| field.optype != dms_pmml::OpType::Continuous && !field.values.is_empty())
+        .filter_map(|field| {
+            model
+                .position(&field.name)
+                .map(|index| (index, field.values.clone()))
+        })
+        .collect()
 }
 
 fn to_pmml(value: &Value) -> PmmlValue {

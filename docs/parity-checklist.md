@@ -6,7 +6,7 @@ Status `done (statistical)`: trained to statistical, not exact, parity with Mode
 
 | Scope | Implemented | Total |
 |---|---|---|
-| MVP | 73 | 85 |
+| MVP | 74 | 85 |
 | later | 3 | 25 |
 | license blocked | 0 | 5 |
 | out of scope | 0 | 34 |
@@ -109,7 +109,7 @@ Status `done (statistical)`: trained to statistical, not exact, parity with Mode
 | C5.0 | `c50` | MVP | done | `BuildC5RuleNode`, `ApplyC5RuleNode`, `ApplyC5SplitModelNode` |
 | C&R Tree | `cart` | MVP | done | `BuildCartRuleNode`, `ApplyCartRuleNode`, `ApplyCartSplitModelNode`, `Cart!spss.tree-extension` |
 | CHAID | `chaid` | MVP | done | `BuildChaidRuleNode`, `ApplyChaidRuleNode`, `ApplyChaidSplitModelNode`, `Chaid!spss.tree-extension` |
-| QUEST | `quest` | MVP | missing | `BuildQuestNode`, `ApplyQuestRuleNode`, `ApplyQuestSplitModelNode`, `Quest!spss.tree-extension` |
+| QUEST | `quest` | MVP | done | `BuildQuestNode`, `ApplyQuestRuleNode`, `ApplyQuestSplitModelNode`, `Quest!spss.tree-extension` |
 | Random Trees | `random_trees` | MVP | missing | `spss.randomTrees!RT`, `spss.randomTrees!applyRandomTrees` |
 | Tree-AS | `tree_as` | later | done | `spss.treeEngine!treeEngine`, `spss.treeEngine!applyTree` |
 | Linear-AS | `linear_as` | later | done | `spss.linearEngine!linearEngine`, `spss.linearEngine!applyLinearEngine` |
