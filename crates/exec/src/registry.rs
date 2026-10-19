@@ -85,6 +85,11 @@ const BUILT_IN: &[(&str, Factory)] = &[
 /// Registered while their implementation is under way; not counted as implemented.
 const PENDING: &[&str] = &[];
 
+/// Implemented builders held to statistical rather than exact parity
+/// (`docs/statistical-parity.md`): their training draws from our own generator or converges
+/// where Modeler stops early, so they match Modeler's metrics, not its bits.
+const STATISTICAL: &[&str] = &[];
+
 /// Model nodes whose nuggets score (`nodes::apply`) while their build nodes cannot train yet;
 /// they do not count as implemented.
 /// Neural Net nuggets score from saved PMML. Training stays unimplemented, so a failed builder
@@ -194,6 +199,11 @@ fn nugget_or_builder(node: &StreamNode) -> Result<Box<dyn Operator>, OperatorErr
 
 /// Nodes the planner implements itself, without an operator (supernodes are expanded).
 const PLANNED: &[&str] = &["supernode"];
+
+/// Whether an implemented node meets statistical rather than exact parity.
+pub fn is_statistical(catalog_id: &str) -> bool {
+    STATISTICAL.contains(&catalog_id)
+}
 
 pub fn is_implemented(catalog_id: &str) -> bool {
     (BUILT_IN.iter().any(|(id, _)| *id == catalog_id) && !PENDING.contains(&catalog_id))

@@ -54,7 +54,9 @@ fn render() -> String {
             palette.label()
         );
         for spec in NODES.iter().filter(|spec| spec.palette == palette) {
-            let status = if nodes::is_implemented(spec.id) {
+            let status = if nodes::is_statistical(spec.id) {
+                "done (statistical)"
+            } else if nodes::is_implemented(spec.id) {
                 "done"
             } else {
                 "missing"
