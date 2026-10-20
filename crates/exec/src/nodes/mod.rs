@@ -34,6 +34,7 @@ mod graph_data;
 pub mod graphboard;
 pub mod histogram;
 pub mod history;
+pub mod imported_model;
 pub mod json_export;
 pub mod json_import;
 pub mod matrix;
