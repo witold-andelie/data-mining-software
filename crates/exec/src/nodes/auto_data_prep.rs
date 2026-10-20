@@ -77,8 +77,11 @@
 //! inputs whose correlation p-value exceeds `featureSelectionPValue` are dropped
 //! ([`correlation_p`]); categorical inputs are screened as under supervised merging.
 //!
-//! `GAP:` `uiSupervisedBinning` (its p-value is validated and not applied), feature selection
-//! against a categorical target or with date fields.
+//! Supervised binning (`uiSupervisedBinning`, objective `custom`, categorical target): continuous
+//! inputs become ordinal bins of homogeneous subsets ([`homogeneous_cuts`]).
+//!
+//! `GAP:` feature selection against a categorical target or with date fields, binning a field
+//! with missing values.
 //! `GAP:` `uiReplaceNominalFeaturesMissingValue` true does not substitute the mode (see `flg`).
 //! false is rejected. `GAP:` timestamp `ts` is copied in all three cases while
 //! `uiComputeTimeDuration` is true. A time-of-day field with that flag is rejected.
@@ -113,6 +116,9 @@ const GROUP_DATE_ORDINAL: u8 = 2;
 const GROUP_CONTINUOUS: u8 = 3;
 const GROUP_DATE_SCALE: u8 = 4;
 const GROUP_CATEGORICAL: u8 = 5;
+/// Continuous inputs binned against a categorical target follow the categorical fields
+/// (`adp_next/adp_binning`).
+const GROUP_BINNED: u8 = 6;
 
 const METADATA: &[&str] = &[
     "annotation",
@@ -251,6 +257,8 @@ struct Prep {
     unsupervised_merge: Option<i64>,
     /// `uiFeatureSelection` (objective `custom` only): the `featureSelectionPValue`.
     feature_selection: Option<f64>,
+    /// `uiSupervisedBinning` (objective `custom` only): the `homogeneousSubsetsPValue`.
+    supervised_binning: Option<f64>,
     check_feature_level: bool,
     ordinal_to_scale: i64,
     scale_to_ordinal: i64,
@@ -440,6 +448,11 @@ fn parse(s: Option<&Element>) -> Result<Prep, OperatorError> {
         } else {
             None
         },
+        supervised_binning: if custom_steps(s)? && flag(s, "uiSupervisedBinning", true)? {
+            Some(unit_interval(s, "homogeneousSubsetsPValue", 0.05)?)
+        } else {
+            None
+        },
         unsupervised_merge: if custom_steps(s)? && flag(s, "uiUnsupervisedMergeNominal", false)? {
             Some(int_or(s, "unsupervisedMergingMinNumberOfCases", 10)?)
         } else {
@@ -555,12 +568,10 @@ fn reject_unsupported(s: Option<&Element>) -> Result<(), OperatorError> {
 /// Settings the three cases save that do not change the exported table. Malformed numbers still
 /// fail. `GAP:` the supervised steps are named in the module docs.
 fn acknowledge_unused(s: Option<&Element>) -> Result<(), OperatorError> {
-    let _ = flag(s, "uiSupervisedBinning", true)?;
     let _ = flag(s, "transConsSelectFeatures", true)?;
     let _ = flag(s, "uiCheckTargetMeasureLevel", true)?;
     let _ = flag(s, "modelExist", false)?;
     let _ = flag(s, "clearAnalysis", false)?;
-    let _ = unit_interval(s, "homogeneousSubsetsPValue", 0.05)?;
     let min_cases = int_or(s, "unsupervisedMergingMinNumberOfCases", 10)?;
     if min_cases < 1 {
         return Err(OperatorError::Settings(format!(
@@ -825,6 +836,36 @@ fn prepare_continuous(
         }
         _ => {}
     }
+    if let (Some(alpha), Some(MergeTarget::Categorical(classes))) =
+        (prep.supervised_binning, target)
+    {
+        if series.iter().any(Option::is_none) {
+            return Err(OperatorError::Settings(format!(
+                "GAP: supervised binning of {:?}, which has missing values",
+                field.name
+            )));
+        }
+        let Some(cuts) = homogeneous_cuts(&series, classes, alpha) else {
+            // One homogeneous subset: the binned field is constant and excluded (`c_noise`).
+            return Ok(());
+        };
+        let mut binned = ordinal_field(extended(&field.name, &prep.name_ext)?);
+        binned.storage = Storage::Real;
+        cols.push(OutCol {
+            field: binned,
+            values: series
+                .iter()
+                .map(|x| match x {
+                    Some(x) => Value::real(cuts.iter().filter(|cut| x > *cut).count() as f64),
+                    None => Value::Null,
+                })
+                .collect(),
+            group: GROUP_BINNED,
+            key_a: 0,
+            key_b: index,
+        });
+        return Ok(());
+    }
     let missing = series.iter().filter(|value| value.is_none()).count();
     let name = extended(&field.name, &prep.name_ext)?;
     cols.push(OutCol {
@@ -926,6 +967,7 @@ fn merge_target(prep: &Prep, input: &Table) -> Result<Option<MergeTarget>, Opera
     if prep.supervised_merge.is_none()
         && prep.unsupervised_merge.is_none()
         && prep.feature_selection.is_none()
+        && prep.supervised_binning.is_none()
     {
         return Ok(None);
     }
@@ -1412,6 +1454,94 @@ fn supervised_merge(
         .collect();
     labeled.sort_by(|left, right| left.0.total_cmp(&right.0));
     labeled
+}
+
+/// Supervised binning (guide "Supervised Binning", `adp_next/adp_binning`): the predictor's class
+/// means, ascending, are grouped into homogeneous subsets with the Scheffe critical value
+/// `sqrt(2 (J-1) F_{1-alpha}(J-1, N-J)) * MS * sqrt(sum(1/W_i) / J)` (`MS` the pooled standard
+/// deviation; with `N = J` the range of the means); the cut between subsets `a` and `b` is
+/// `mean_a + sd_a / (sd_a + sd_b) * (mean_b - mean_a)`, and bin `k` holds `cut_k < x <= cut_k+1`.
+/// `None` when the means form one subset. `c_out` cuts at 0.80197, `c_skew` at 11.1323 (against
+/// the flag `ycat`); `c_noise` is one subset. Records with a missing target are left out.
+fn homogeneous_cuts(x: &[Option<f64>], classes: &[Value], alpha: f64) -> Option<Vec<f64>> {
+    // Per class: count, sum and the values for the within-class sum of squares.
+    let mut stats: Vec<(Value, f64, f64, Vec<f64>)> = Vec::new();
+    for (value, class) in x.iter().zip(classes) {
+        let (Some(value), false) = (value, class.is_null()) else {
+            continue;
+        };
+        match stats
+            .iter_mut()
+            .find(|(seen, ..)| seen.total_cmp(class) == Ordering::Equal)
+        {
+            Some(entry) => {
+                entry.1 += 1.0;
+                entry.2 += value;
+                entry.3.push(*value);
+            }
+            None => stats.push((class.clone(), 1.0, *value, vec![*value])),
+        }
+    }
+    // (mean, count, within sum of squares), means ascending.
+    let mut subsets: Vec<(f64, f64, f64)> = stats
+        .into_iter()
+        .map(|(_, w, sum, values)| {
+            let mean = sum / w;
+            (mean, w, values.iter().map(|v| (v - mean).powi(2)).sum())
+        })
+        .collect();
+    subsets.sort_by(|a, b| a.0.total_cmp(&b.0));
+    let j = subsets.len();
+    if j < 2 {
+        return None;
+    }
+    let n: f64 = subsets.iter().map(|s| s.1).sum();
+    let jf = j as f64;
+    let critical = if n <= jf {
+        subsets[j - 1].0 - subsets[0].0
+    } else {
+        let ms = (subsets.iter().map(|s| s.2).sum::<f64>() / (n - jf)).sqrt();
+        let r =
+            (2.0 * (jf - 1.0) * dms_algo::stats::f_quantile(1.0 - alpha, jf - 1.0, n - jf)).sqrt();
+        r * ms * (subsets.iter().map(|s| 1.0 / s.1).sum::<f64>() / jf).sqrt()
+    };
+    let mut merged: Vec<(f64, f64)> = Vec::new();
+    let mut i = 0;
+    while i < j {
+        let mut q = j - 1;
+        while q > i && (subsets[q].0 - subsets[i].0).abs() > critical {
+            q -= 1;
+        }
+        let group = &subsets[i..=q];
+        let w: f64 = group.iter().map(|s| s.1).sum();
+        let mean = group.iter().map(|s| s.1 * s.0).sum::<f64>() / w;
+        let m2: f64 = group.iter().map(|s| s.2 + s.1 * (mean - s.0).powi(2)).sum();
+        merged.push((
+            mean,
+            if w > 1.0 {
+                (m2 / (w - 1.0)).sqrt()
+            } else {
+                0.0
+            },
+        ));
+        i = q + 1;
+    }
+    if merged.len() < 2 {
+        return None;
+    }
+    Some(
+        merged
+            .windows(2)
+            .map(|pair| {
+                let ((ma, sa), (mb, sb)) = (pair[0], pair[1]);
+                if sa + sb > 0.0 {
+                    ma + sa / (sa + sb) * (mb - ma)
+                } else {
+                    (ma + mb) / 2.0
+                }
+            })
+            .collect(),
+    )
 }
 
 /// Two-sided p-value of the Pearson correlation of a continuous predictor with the continuous

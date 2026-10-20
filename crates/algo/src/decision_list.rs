@@ -30,6 +30,7 @@
 //!   No oracle for searchDirection down, reuseFields=false, weights/frequencies, missing
 //!   inputs; these are rejected.
 
+use crate::stats::f_quantile;
 use crate::{AlgoError, Dataset};
 use dms_pmml::Pmml;
 use dms_types::{Measurement, Role, Storage, ValueSpec};
@@ -387,41 +388,6 @@ fn candidate_limit(n: usize) -> Result<(), AlgoError> {
     } else {
         Ok(())
     }
-}
-
-/// Inverse regularized beta, monotone bisection with a fixed iteration bound.
-fn beta_inverse(p: f64, a: f64, b: f64) -> f64 {
-    // Exact boundary-shape forms avoid cancellation in lnGamma(b+1)-lnGamma(b).
-    if a == 1.0 {
-        return -((-p).ln_1p() / b).exp_m1();
-    }
-    if b == 1.0 {
-        return (p.ln() / a).exp();
-    }
-    let (mut lo, mut hi) = (0.0, 1.0);
-    for _ in 0..80 {
-        let mid = (lo + hi) * 0.5;
-        if mid == lo || mid == hi {
-            break;
-        }
-        if crate::stats::beta_i(a, b, mid) < p {
-            lo = mid;
-        } else {
-            hi = mid;
-        }
-    }
-    (lo + hi) * 0.5
-}
-
-fn f_quantile(p: f64, d1: f64, d2: f64) -> f64 {
-    if d2 == 2.0 {
-        return (d2 / d1) / (-p.ln() / (d1 * 0.5)).exp_m1();
-    }
-    if d1 == 2.0 {
-        return (d2 / d1) * (-(-p).ln_1p() / (d2 * 0.5)).exp_m1();
-    }
-    let z = beta_inverse(1.0 - p, d2 * 0.5, d1 * 0.5);
-    d2 * (1.0 - z) / (d1 * z)
 }
 
 fn ci(x: usize, n: usize, confidence: f64) -> (f64, f64) {
