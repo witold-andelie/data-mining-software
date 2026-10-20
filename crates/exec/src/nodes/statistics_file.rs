@@ -1,5 +1,5 @@
 //! Statistics File (Sources palette, `SPSSInputNode`): reads an IBM SPSS Statistics `.sav` file
-//! into a [`Table`] via [`dms_sav`] and [`dms_io::statistics`].
+//! into a [`Table`] via `dms_sav` and [`dms_io::statistics`].
 //!
 //! Implemented: `inputFileName` (resolved via [`ExecContext::files`]), `readVariableNames`
 //! (`namesAndLabels`, `labelsAsNames`), `readValues` (`dataAndLabels`), storage/measurement/role

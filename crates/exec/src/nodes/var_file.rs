@@ -5,7 +5,7 @@
 //! `useManualFieldCount`/`manualFieldCount`, `delimitOnComma`/`delimitOnTab`/`delimitOnSpace`/
 //! `delimitOnNonPrintChars`, `useDelimiterChars`/`delimiterChars`, `fieldNamesIncluded`,
 //! `singleQuoteMode`/`doubleQuoteMode` (`pairDiscard`, `discard`, `include`), the text settings
-//! of [`super::text_source`] (no trimming by default), and embedded `filterTable`/`typeTable`
+//! of `super::text_source` (no trimming by default), and embedded `filterTable`/`typeTable`
 //! rules.
 //!
 //! Not implemented: `multiBlankDelimiters`, `treatSquareBracketsAsLists`, `eolCommentChars`,
