@@ -71,6 +71,7 @@ const BUILT_IN: &[(&str, Factory)] = &[
     ("regression", model_node),
     ("pca_factor", model_node),
     ("anomaly", model_node),
+    ("random_trees", model_node),
     ("feature_selection", model_node),
     ("auto_cluster", model_node),
     ("decision_list", model_node),
@@ -103,6 +104,7 @@ const STATISTICAL: &[&str] = &[
     "lsvm",
     "neural_net",
     "quest",
+    "random_trees",
     "sequence",
     "time_series",
 ];
@@ -111,11 +113,10 @@ const STATISTICAL: &[&str] = &[
 /// they do not count as implemented.
 /// Auto Classifier / Numeric: saved components and Ensemble scoring (`nodes::auto_models`);
 /// their builders remain explicit GAPs and do not count toward implemented coverage.
-/// Analytic Engine Random Trees scores its saved PMML.
 /// Tree-AS trains through the shared CHAID learner; Linear-AS trains with its
 /// correlation/sweep selection (`linearas/lin_default`, `lin_factor`); LSVM trains the
 /// documented objective to convergence (statistical parity, `dms_algo::lsvm`).
-const SCORING_ONLY: &[&str] = &["auto_classifier", "auto_numeric", "random_trees"];
+const SCORING_ONLY: &[&str] = &["auto_classifier", "auto_numeric"];
 
 pub fn factory(catalog_id: &str) -> Option<Factory> {
     BUILT_IN
@@ -141,10 +142,6 @@ fn model_node(node: &StreamNode) -> Result<Box<dyn Operator>, OperatorError> {
 /// Why each scoring-only builder cannot train, by builder type. The evidence for each reason is
 /// in `plan/STATUS.md` (2026-10-19 training review) and the nugget modules.
 const TRAINING_GAPS: &[(&str, &str)] = &[
-    (
-        "spss.randomTrees!RT",
-        "Random Trees training is not reproduced: bootstrap counts are binomial draws and predictor subsets are seeded by a hash of tree and node id, with an undocumented generator and hash; the PMML trees carry no record counts to identify them",
-    ),
     (
         "BuildBinaryClassifierNode",
         "Auto Classifier training needs Neural Net, Random Trees and LSVM components, whose training is a GAP",

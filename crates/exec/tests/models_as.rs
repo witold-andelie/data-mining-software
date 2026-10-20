@@ -5,7 +5,7 @@
 mod support;
 
 use dms_exec::{ExecContext, FileResolver, NodeOutput, Plan};
-use dms_stream::Stream;
+use dms_stream::{NodeRef, Stream};
 use dms_strfmt::ArchiveLimits;
 use dms_types::Value;
 use serde_json::Value as Json;
@@ -38,7 +38,29 @@ fn all_analytic_engine_terminal_inputs_equal_oracle() {
             &ArchiveLimits::default(),
         )
         .unwrap();
-        let stream = Stream::from_document(&archive.document).unwrap();
+        let mut stream = Stream::from_document(&archive.document).unwrap();
+        // Random Trees trains now, and its builder feeds an apply node in these streams. Remove
+        // the builder so the apply nodes score their saved Modeler PMML (the exact nugget tier),
+        // not the statistically-parity model this run would train.
+        if case.starts_with("rt_") {
+            let builders: Vec<String> = stream
+                .diagram
+                .nodes
+                .iter()
+                .filter(|node| node.type_identifier() == "spss.randomTrees!RT")
+                .map(|node| node.uid.clone())
+                .collect();
+            stream
+                .diagram
+                .nodes
+                .retain(|node| !builders.contains(&node.uid));
+            stream.diagram.links.retain(|link| {
+                !builders.iter().any(|uid| {
+                    matches!(&link.from, NodeRef::Uid(from) if from == uid)
+                        || matches!(&link.to, NodeRef::Uid(to) if to == uid)
+                })
+            });
+        }
         let context = ExecContext {
             files: FileResolver {
                 data_dirs: vec![root.join("corpus/models_as")],

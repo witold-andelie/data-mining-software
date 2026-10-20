@@ -18,7 +18,7 @@ pub(crate) enum Truth {
 }
 
 pub(crate) fn score(pmml: &Pmml, tree: &TreeModel, env: &Env<'_>) -> Result<Prediction, PmmlError> {
-    let root_truth = eval_predicate(&tree.root.predicate, env, 0)?;
+    let root_truth = eval_predicate(pmml, &tree.root.predicate, env, 0)?;
     if root_truth != Truth::True {
         return Ok(empty_prediction());
     }
@@ -43,10 +43,10 @@ fn eval_node(
 
     let mut unknown_children: Vec<&Node> = Vec::new();
     for child in &node.children {
-        match eval_predicate(&child.predicate, env, 0)? {
+        match eval_predicate(pmml, &child.predicate, env, 0)? {
             Truth::True => {
                 let mut child_pred = eval_node(pmml, tree, child, env, depth + 1)?;
-                if is_quest(tree) && primary_unknown(&child.predicate, env)? {
+                if is_quest(tree) && primary_unknown(pmml, &child.predicate, env)? {
                     child_pred.confidence = child_pred.confidence.map(|c| c * QUEST_SURROGATE);
                 }
                 if child_pred.value == Value::Missing
@@ -171,7 +171,7 @@ fn score_aggregate_nodes(
 ) -> Result<Prediction, PmmlError> {
     let mut leaves = Vec::new();
     for &child in children {
-        collect_aggregate_leaves(child, env, depth, &mut leaves)?;
+        collect_aggregate_leaves(pmml, child, env, depth, &mut leaves)?;
     }
     if leaves.is_empty() {
         return Ok(empty_prediction());
@@ -229,6 +229,7 @@ fn score_aggregate_nodes(
 }
 
 fn collect_aggregate_leaves<'a>(
+    pmml: &Pmml,
     node: &'a Node,
     env: &Env<'_>,
     depth: usize,
@@ -245,8 +246,8 @@ fn collect_aggregate_leaves<'a>(
     }
     let mut unknowns = Vec::new();
     for child in &node.children {
-        match eval_predicate(&child.predicate, env, 0)? {
-            Truth::True => return collect_aggregate_leaves(child, env, depth + 1, leaves),
+        match eval_predicate(pmml, &child.predicate, env, 0)? {
+            Truth::True => return collect_aggregate_leaves(pmml, child, env, depth + 1, leaves),
             Truth::False => {}
             Truth::Unknown => unknowns.push(child),
         }
@@ -255,7 +256,7 @@ fn collect_aggregate_leaves<'a>(
         leaves.push(node);
     } else {
         for u in unknowns {
-            collect_aggregate_leaves(u, env, depth + 1, leaves)?;
+            collect_aggregate_leaves(pmml, u, env, depth + 1, leaves)?;
         }
     }
     Ok(())
@@ -273,13 +274,13 @@ fn is_quest(tree: &TreeModel) -> bool {
 }
 
 /// Whether a child's surrogate predicate fell back past its primary split.
-fn primary_unknown(predicate: &Predicate, env: &Env<'_>) -> Result<bool, PmmlError> {
+fn primary_unknown(pmml: &Pmml, predicate: &Predicate, env: &Env<'_>) -> Result<bool, PmmlError> {
     match predicate {
         Predicate::Compound {
             operator: BooleanOperator::Surrogate,
             predicates,
         } => match predicates.first() {
-            Some(primary) => Ok(eval_predicate(primary, env, 0)? == Truth::Unknown),
+            Some(primary) => Ok(eval_predicate(pmml, primary, env, 0)? == Truth::Unknown),
             None => Ok(false),
         },
         _ => Ok(false),
@@ -415,6 +416,7 @@ fn convert_score_value(score: &str, function: &MiningFunction) -> Result<Value, 
 }
 
 pub(crate) fn eval_predicate(
+    pmml: &Pmml,
     pred: &Predicate,
     env: &Env<'_>,
     depth: usize,
@@ -467,17 +469,37 @@ pub(crate) fn eval_predicate(
                         return Ok(Truth::Unknown);
                     }
                     let rhs_str = value.as_deref().unwrap_or("");
-                    let lhs_num = as_f64(val, field)?;
-                    let rhs_num = rhs_str.trim().parse::<f64>().map_err(|_| {
-                        PmmlError::Score(format!(
-                            "non-numeric threshold {rhs_str:?} for field {field:?}"
-                        ))
-                    })?;
+                    // Numeric thresholds compare as numbers. A text field that is not numeric
+                    // (Modeler's ordinal-string splits) compares by its DataDictionary value
+                    // order, which is the declared category order.
+                    let ordering = match (as_f64(val, field), rhs_str.trim().parse::<f64>()) {
+                        (Ok(lhs), Ok(rhs)) => lhs.partial_cmp(&rhs),
+                        _ => {
+                            let declared = pmml
+                                .data_dictionary
+                                .iter()
+                                .find(|data| data.name == *field)
+                                .map(|data| data.values.as_slice())
+                                .unwrap_or(&[]);
+                            let lhs = declared
+                                .iter()
+                                .position(|item| value_matches_str(val, item));
+                            let rhs = declared.iter().position(|item| item == rhs_str);
+                            match (lhs, rhs) {
+                                (Some(lhs), Some(rhs)) => Some(lhs.cmp(&rhs)),
+                                _ => {
+                                    return Err(PmmlError::Score(format!(
+                                        "non-numeric threshold {rhs_str:?} for field {field:?}"
+                                    )));
+                                }
+                            }
+                        }
+                    };
                     let res = match operator {
-                        Operator::LessThan => lhs_num < rhs_num,
-                        Operator::LessOrEqual => lhs_num <= rhs_num,
-                        Operator::GreaterThan => lhs_num > rhs_num,
-                        _ => lhs_num >= rhs_num,
+                        Operator::LessThan => ordering == Some(std::cmp::Ordering::Less),
+                        Operator::LessOrEqual => ordering != Some(std::cmp::Ordering::Greater),
+                        Operator::GreaterThan => ordering == Some(std::cmp::Ordering::Greater),
+                        _ => ordering != Some(std::cmp::Ordering::Less),
                     };
                     Ok(if res { Truth::True } else { Truth::False })
                 }
@@ -505,7 +527,7 @@ pub(crate) fn eval_predicate(
             BooleanOperator::And => {
                 let mut saw_unknown = false;
                 for p in predicates {
-                    match eval_predicate(p, env, depth + 1)? {
+                    match eval_predicate(pmml, p, env, depth + 1)? {
                         Truth::False => return Ok(Truth::False),
                         Truth::True => {}
                         Truth::Unknown => saw_unknown = true,
@@ -520,7 +542,7 @@ pub(crate) fn eval_predicate(
             BooleanOperator::Or => {
                 let mut saw_unknown = false;
                 for p in predicates {
-                    match eval_predicate(p, env, depth + 1)? {
+                    match eval_predicate(pmml, p, env, depth + 1)? {
                         Truth::True => return Ok(Truth::True),
                         Truth::False => {}
                         Truth::Unknown => saw_unknown = true,
@@ -535,7 +557,7 @@ pub(crate) fn eval_predicate(
             BooleanOperator::Xor => {
                 let mut true_count = 0usize;
                 for p in predicates {
-                    match eval_predicate(p, env, depth + 1)? {
+                    match eval_predicate(pmml, p, env, depth + 1)? {
                         Truth::Unknown => return Ok(Truth::Unknown),
                         Truth::True => true_count += 1,
                         Truth::False => {}
@@ -549,7 +571,7 @@ pub(crate) fn eval_predicate(
             }
             BooleanOperator::Surrogate => {
                 for p in predicates {
-                    let t = eval_predicate(p, env, depth + 1)?;
+                    let t = eval_predicate(pmml, p, env, depth + 1)?;
                     if t != Truth::Unknown {
                         return Ok(t);
                     }

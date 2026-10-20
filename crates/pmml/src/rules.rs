@@ -94,9 +94,13 @@ fn parse_rule(
 
 /// Decision List (`algorithmName="DecisionList"`, `ibm-demos/pm_decisionlist`): the first rule
 /// whose predicate holds, disabled rules included, as its index; `None` when none holds.
-pub(crate) fn first_hit(model: &RuleSetModel, env: &Env<'_>) -> Result<Option<usize>, PmmlError> {
+pub(crate) fn first_hit(
+    pmml: &Pmml,
+    model: &RuleSetModel,
+    env: &Env<'_>,
+) -> Result<Option<usize>, PmmlError> {
     for (index, rule) in model.rules.iter().enumerate() {
-        if eval_predicate(&rule.predicate, env, 0)? == Truth::True {
+        if eval_predicate(pmml, &rule.predicate, env, 0)? == Truth::True {
             return Ok(Some(index));
         }
     }
@@ -119,7 +123,7 @@ pub(crate) fn score(
     }
     let mut fired = Vec::new();
     for rule in &model.rules {
-        if eval_predicate(&rule.predicate, env, 0)? == Truth::True {
+        if eval_predicate(pmml, &rule.predicate, env, 0)? == Truth::True {
             fired.push(rule);
         }
     }
