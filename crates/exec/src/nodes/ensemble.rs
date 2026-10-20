@@ -185,8 +185,13 @@ struct Side {
 
 /// Explicit component scores from Auto nuggets. They need no score-field discovery:
 /// several components share a family, and their temporary columns are never user output.
+///
+/// The Auto nugget's confidence-weighted voting differs from the Ensemble node's: each side
+/// sums only the confidences of the components that voted for it, the larger sum wins, and the
+/// score is that sum over the number of components that voted (`auto_train/ac_lift` grid record
+/// 10001: N votes 0.9180 and 0.6296, Y votes 0.5882 and 0.8421, score
+/// (0.9180 + 0.6296) / 4 = 0.386917350474215; a component without a prediction is not counted).
 pub(crate) struct FlagCombiner {
-    method: Method,
     tie: Tie,
 }
 
@@ -202,7 +207,6 @@ impl FlagCombiner {
             ));
         }
         Ok(Self {
-            method,
             tie: parse_tie(settings)?,
         })
     }
@@ -233,17 +237,44 @@ impl FlagCombiner {
         }
         let model =
             DataModel::new(fields).map_err(|error| OperatorError::Data(error.to_string()))?;
-        score_row(
-            &ScoreCtx {
-                model: &model,
-                true_value: &true_value,
-                false_value: &false_value,
-                target: &target.name,
-                tie: self.tie,
+        let ctx = ScoreCtx {
+            model: &model,
+            true_value: &true_value,
+            false_value: &false_value,
+            target: &target.name,
+            tie: self.tie,
+        };
+        let mut sum_true = 0.0;
+        let mut sum_false = 0.0;
+        let mut count: u32 = 0;
+        let mut best_true = None;
+        let mut best_false = None;
+        for component in &components {
+            let (Some(prediction), Some(confidence_index)) =
+                (component.prediction, component.confidence)
+            else {
+                continue;
+            };
+            let Some(is_true) = side_of(&ctx, &row, prediction)? else {
+                continue;
+            };
+            let Some(confidence) = finite_at(ctx.model, &row, confidence_index)? else {
+                continue;
+            };
+            count = count.checked_add(1).ok_or_else(too_many)?;
+            if is_true {
+                sum_true += confidence;
+                prefer(&mut best_true, confidence);
+            } else {
+                sum_false += confidence;
+                prefer(&mut best_false, confidence);
+            }
+        }
+        Ok(
+            match finish_weighted(&ctx, sum_true, sum_false, count, best_true, best_false)? {
+                Some((prediction, score)) => [prediction, score],
+                None => [Value::Null, Value::Null],
             },
-            self.method,
-            &row,
-            &components,
         )
     }
 }
@@ -1066,5 +1097,45 @@ impl Operator for Ensemble {
             .map_err(|error| OperatorError::Data(format!("Ensemble: {error}")))?;
         Table::new(data_model, rows)
             .map_err(|error| OperatorError::Data(format!("Ensemble: {error}")))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn auto_confidence_sums_only_each_sides_votes() {
+        let mut target = Field::new("buy", Storage::String);
+        target.measurement = Measurement::Flag;
+        target.values = ValueSpec::Flag {
+            true_value: Value::string("Y"),
+            false_value: Value::string("N"),
+        };
+        let combiner = FlagCombiner {
+            tie: Tie::HighestConfidence,
+        };
+        // auto_train/ac_lift grid record 10001: Modeler 0.386917350474215.
+        let votes = [
+            (Value::string("N"), Value::real(0.9180397722672304)),
+            (Value::string("Y"), Value::real(0.5882352941176471)),
+            (Value::string("N"), Value::real(0.6296296296296297)),
+            (Value::string("Y"), Value::real(0.8421052631578947)),
+        ];
+        let [prediction, score] = combiner.score(&target, &votes).unwrap();
+        assert_eq!(prediction, Value::string("N"));
+        let score = score.as_f64().unwrap();
+        assert!((score - 0.386917350474215).abs() < 1e-15, "{score}");
+        // A component without a prediction is not counted (record 10002: 0.875898463222009).
+        let votes = [
+            (Value::string("N"), Value::real(0.9761802381508758)),
+            (Value::string("N"), Value::real(0.8333333333333334)),
+            (Value::string("N"), Value::real(0.8181818181818182)),
+            (Value::Null, Value::real(0.24193548387096775)),
+        ];
+        let score = combiner.score(&target, &votes).unwrap()[1]
+            .as_f64()
+            .unwrap();
+        assert!((score - 0.875898463222009).abs() < 1e-15, "{score}");
     }
 }
