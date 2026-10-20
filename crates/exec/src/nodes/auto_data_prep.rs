@@ -73,8 +73,12 @@
 //! without one, `uiUnsupervisedMergeNominal` merges sparse categories ([`unsupervised_merge`]).
 //! Under objective `balance` the saved flags do not apply (`adp_balanced`).
 //!
-//! `GAP:` `uiSupervisedBinning` and `uiFeatureSelection` (no field is binned or dropped for
-//! predictive power; their p-values are validated and not applied).
+//! Feature selection (`uiFeatureSelection`, objective `custom`, continuous target): continuous
+//! inputs whose correlation p-value exceeds `featureSelectionPValue` are dropped
+//! ([`correlation_p`]); categorical inputs are screened as under supervised merging.
+//!
+//! `GAP:` `uiSupervisedBinning` (its p-value is validated and not applied), feature selection
+//! against a categorical target or with date fields.
 //! `GAP:` `uiReplaceNominalFeaturesMissingValue` true does not substitute the mode (see `flg`).
 //! false is rejected. `GAP:` timestamp `ts` is copied in all three cases while
 //! `uiComputeTimeDuration` is true. A time-of-day field with that flag is rejected.
@@ -245,6 +249,8 @@ struct Prep {
     supervised_merge: Option<f64>,
     /// `uiUnsupervisedMergeNominal` (objective `custom` only): `unsupervisedMergingMinNumberOfCases`.
     unsupervised_merge: Option<i64>,
+    /// `uiFeatureSelection` (objective `custom` only): the `featureSelectionPValue`.
+    feature_selection: Option<f64>,
     check_feature_level: bool,
     ordinal_to_scale: i64,
     scale_to_ordinal: i64,
@@ -338,9 +344,14 @@ impl Operator for Prep {
                     )));
                 }
                 Class::Pass => cols.push(pass_col(field, values, index)),
+                Class::Date if self.feature_selection.is_some() && target.is_some() => {
+                    return Err(OperatorError::Settings(
+                        "GAP: feature selection of date-derived fields has no oracle".into(),
+                    ));
+                }
                 Class::Date => prepare_date(self, field, index, &values, &mut cols)?,
                 Class::Continuous if self.prepare_features => {
-                    prepare_continuous(self, field, index, &values, &mut cols)?;
+                    prepare_continuous(self, field, index, &values, target.as_ref(), &mut cols)?;
                 }
                 Class::Categorical if self.prepare_features => {
                     prepare_categorical(self, field, index, &values, target.as_ref(), &mut cols)?;
@@ -421,6 +432,11 @@ fn parse(s: Option<&Element>) -> Result<Prep, OperatorError> {
         target_ext: text_or(s, "nameExtForTarget", "_transformed"),
         supervised_merge: if custom_steps(s)? && flag(s, "uiSupervisedMerging", true)? {
             Some(unit_interval(s, "supervisedMergingPValue", 0.05)?)
+        } else {
+            None
+        },
+        feature_selection: if custom_steps(s)? && flag(s, "uiFeatureSelection", true)? {
+            Some(unit_interval(s, "featureSelectionPValue", 0.05)?)
         } else {
             None
         },
@@ -539,13 +555,11 @@ fn reject_unsupported(s: Option<&Element>) -> Result<(), OperatorError> {
 /// Settings the three cases save that do not change the exported table. Malformed numbers still
 /// fail. `GAP:` the supervised steps are named in the module docs.
 fn acknowledge_unused(s: Option<&Element>) -> Result<(), OperatorError> {
-    let _ = flag(s, "uiFeatureSelection", true)?;
     let _ = flag(s, "uiSupervisedBinning", true)?;
     let _ = flag(s, "transConsSelectFeatures", true)?;
     let _ = flag(s, "uiCheckTargetMeasureLevel", true)?;
     let _ = flag(s, "modelExist", false)?;
     let _ = flag(s, "clearAnalysis", false)?;
-    let _ = unit_interval(s, "featureSelectionPValue", 0.05)?;
     let _ = unit_interval(s, "homogeneousSubsetsPValue", 0.05)?;
     let min_cases = int_or(s, "unsupervisedMergingMinNumberOfCases", 10)?;
     if min_cases < 1 {
@@ -772,6 +786,7 @@ fn prepare_continuous(
     field: &Field,
     index: usize,
     values: &[Value],
+    target: Option<&MergeTarget>,
     cols: &mut Vec<OutCol>,
 ) -> Result<(), OperatorError> {
     let series: Vec<Option<f64>> = values.iter().map(|value| as_number(field, value)).collect();
@@ -799,6 +814,17 @@ fn prepare_continuous(
         Some(rule) => handle_outliers(rule, series, &field.name)?,
         None => series,
     };
+    match (prep.feature_selection, target) {
+        (Some(alpha), Some(MergeTarget::Continuous(y))) if correlation_p(&series, y) > alpha => {
+            return Ok(());
+        }
+        (Some(_), Some(MergeTarget::Categorical(_))) => {
+            return Err(OperatorError::Settings(
+                "GAP: feature selection against a categorical target has no oracle".into(),
+            ));
+        }
+        _ => {}
+    }
     let missing = series.iter().filter(|value| value.is_none()).count();
     let name = extended(&field.name, &prep.name_ext)?;
     cols.push(OutCol {
@@ -893,11 +919,14 @@ enum MergeTarget {
     Categorical(Vec<Value>),
 }
 
-/// The single target of the input when a merge step needs one. Supervised merging without a
-/// target and unsupervised merging with one have no oracle (the guide merges by counts only
-/// "if there is no target").
+/// The single target of the input when a supervised step or a merge needs one. Supervised
+/// merging without a target and unsupervised merging with one have no oracle (the guide merges by
+/// counts only "if there is no target"); without a target the guide does no feature selection.
 fn merge_target(prep: &Prep, input: &Table) -> Result<Option<MergeTarget>, OperatorError> {
-    if prep.supervised_merge.is_none() && prep.unsupervised_merge.is_none() {
+    if prep.supervised_merge.is_none()
+        && prep.unsupervised_merge.is_none()
+        && prep.feature_selection.is_none()
+    {
         return Ok(None);
     }
     let gap = |what: &str| OperatorError::Settings(format!("GAP: Auto Data Prep merge: {what}"));
@@ -905,12 +934,14 @@ fn merge_target(prep: &Prep, input: &Table) -> Result<Option<MergeTarget>, Opera
         .filter(|&i| input.model().fields()[i].role == Role::Target)
         .collect();
     let index = match targets.as_slice() {
-        [] if prep.unsupervised_merge.is_some() => return Ok(None),
-        [] => return Err(gap("supervised merging without a target")),
+        [] if prep.supervised_merge.is_some() => {
+            return Err(gap("supervised merging without a target"));
+        }
+        [] => return Ok(None),
         [index] => *index,
         _ => return Err(gap("more than one target")),
     };
-    if prep.supervised_merge.is_none() {
+    if prep.unsupervised_merge.is_some() && prep.supervised_merge.is_none() {
         return Err(gap("unsupervised merging with a target"));
     }
     let field = &input.model().fields()[index];
@@ -991,15 +1022,33 @@ fn prepare_categorical(
         .iter()
         .map(|value| category_key(field, value, prep.trim_blanks))
         .collect();
-    let labeled = match (prep.supervised_merge, prep.unsupervised_merge, target) {
-        (Some(alpha), _, Some(target)) => {
-            match supervised_merge(&keys, target, alpha, &field.name)? {
-                Some(labeled) => labeled,
-                None => return Ok(()),
+    // Guide "Identify Highly Associated Categorical Features": with a target, a predictor whose
+    // association p-value is above alpha is dropped, under supervised merging
+    // (`adp_merge_supervised`) or feature selection (`adp_selection`) alike (`n_miss`, p .67); with
+    // neither (`adp_binning`) it stays.
+    let screen = prep.supervised_merge.or(prep.feature_selection);
+    let labeled = match (screen, target) {
+        (Some(alpha), Some(target)) => {
+            let (groups, continuous) = target_groups(&keys, target, &field.name)?;
+            let all: Vec<&MergeGroup> = groups.iter().collect();
+            if association_p(&all, continuous) > alpha {
+                return Ok(());
+            }
+            match prep.supervised_merge {
+                Some(_) if keys.iter().any(Value::is_null) => {
+                    return Err(OperatorError::Settings(format!(
+                        "GAP: supervised merge of {:?}, which has missing values",
+                        field.name
+                    )));
+                }
+                Some(alpha) => supervised_merge(groups, continuous, alpha),
+                None => assign_codes(counts),
             }
         }
-        (_, Some(percent), None) => unsupervised_merge(counts, n, percent),
-        _ => assign_codes(counts),
+        _ => match (prep.unsupervised_merge, target) {
+            (Some(percent), None) => unsupervised_merge(counts, n, percent),
+            _ => assign_codes(counts),
+        },
     };
     let name = extended(&field.name, &prep.name_ext)?;
     let out_values = values
@@ -1256,20 +1305,14 @@ fn association_p(groups: &[&MergeGroup], continuous: bool) -> f64 {
     }
 }
 
-/// Supervised merge (guide "Identify Highly Associated Categorical Features" and "Supervised
-/// Merge", `adp_next/adp_merge_supervised` and `adp_merge_flag`). Records missing the predictor or
-/// the target are left out (pairwise deletion). A predictor whose association p-value is above
-/// `alpha` is dropped (`n_miss`, p .67) and `None` returned. Otherwise the pair with the largest
-/// p-value (F with 1 and `n_i + n_j - 2` df, or chi-square of the 2-row table) merges while that
-/// p-value is above `alpha`; categories start in value order and a merged category goes last, and
-/// the final position is the code (`n_merge`: k1+k2 at p .976, then rare at .889, stop at 2e-11:
-/// k3 0, k4 1, k1/k2/rare 2). A kept predictor with missing values has no oracle.
-fn supervised_merge(
+/// A categorical predictor's categories with their target summaries, in value order, and whether
+/// the target is continuous. Records missing the predictor or the target are left out (the
+/// guide's pairwise deletion).
+fn target_groups(
     keys: &[Value],
     target: &MergeTarget,
-    alpha: f64,
     name: &str,
-) -> Result<Option<Vec<(Value, Value)>>, OperatorError> {
+) -> Result<(Vec<MergeGroup>, bool), OperatorError> {
     let continuous = matches!(target, MergeTarget::Continuous(_));
     let classes: Vec<Value> = match target {
         MergeTarget::Continuous(_) => Vec::new(),
@@ -1325,15 +1368,19 @@ fn supervised_merge(
         }
     }
     groups.sort_by(|a, b| a.keys[0].total_cmp(&b.keys[0]));
-    let all: Vec<&MergeGroup> = groups.iter().collect();
-    if association_p(&all, continuous) > alpha {
-        return Ok(None);
-    }
-    if keys.iter().any(Value::is_null) {
-        return Err(OperatorError::Settings(format!(
-            "GAP: supervised merge of {name:?}, which has missing values"
-        )));
-    }
+    Ok((groups, continuous))
+}
+
+/// Supervised merge (guide "Supervised Merge", `adp_next/adp_merge_supervised` and
+/// `adp_merge_flag`): the pair with the largest p-value (F with 1 and `n_i + n_j - 2` df, or
+/// chi-square of the 2-row table) merges while that p-value is above `alpha`; categories start in
+/// value order, a merged category goes last, and the final position is the code (`n_merge`: k1+k2
+/// at p .976, then rare at .889, stop at 2e-11: k3 0, k4 1, k1/k2/rare 2).
+fn supervised_merge(
+    mut groups: Vec<MergeGroup>,
+    continuous: bool,
+    alpha: f64,
+) -> Vec<(Value, Value)> {
     loop {
         let mut best: Option<(f64, usize, usize)> = None;
         for i in 0..groups.len() {
@@ -1364,7 +1411,45 @@ fn supervised_merge(
         })
         .collect();
     labeled.sort_by(|left, right| left.0.total_cmp(&right.0));
-    Ok(Some(labeled))
+    labeled
+}
+
+/// Two-sided p-value of the Pearson correlation of a continuous predictor with the continuous
+/// target over the records where both are present (guide "Correlation and P-value": t with
+/// `n - 2` df; `|r| = 1` gives 0). `adp_next/adp_selection`: `c_noise` r .066, p .25 is dropped;
+/// `c_out` and `c_skew` (p < 1e-12) stay.
+fn correlation_p(x: &[Option<f64>], y: &[Option<f64>]) -> f64 {
+    let pairs: Vec<(f64, f64)> = x
+        .iter()
+        .zip(y)
+        .filter_map(|(a, b)| match (a, b) {
+            (Some(a), Some(b)) if a.is_finite() && b.is_finite() => Some((*a, *b)),
+            _ => None,
+        })
+        .collect();
+    let n = pairs.len() as f64;
+    if n < 3.0 {
+        return 1.0;
+    }
+    let (mx, my) = (
+        pairs.iter().map(|p| p.0).sum::<f64>() / n,
+        pairs.iter().map(|p| p.1).sum::<f64>() / n,
+    );
+    let (mut sxy, mut sxx, mut syy) = (0.0, 0.0, 0.0);
+    for (a, b) in &pairs {
+        sxy += (a - mx) * (b - my);
+        sxx += (a - mx).powi(2);
+        syy += (b - my).powi(2);
+    }
+    if sxx <= 0.0 || syy <= 0.0 {
+        return 1.0;
+    }
+    let r = (sxy / (sxx * syy).sqrt()).clamp(-1.0, 1.0);
+    if r.abs() >= 1.0 {
+        return 0.0;
+    }
+    let t = r * ((n - 2.0) / (1.0 - r * r)).sqrt();
+    2.0 * (1.0 - dms_algo::stats::student_t_cdf(t.abs(), n - 2.0))
 }
 
 /// Unsupervised merge (guide "Unsupervised Merge", `adp_next/adp_merge_unsupervised`):
