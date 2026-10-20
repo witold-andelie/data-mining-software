@@ -32,6 +32,16 @@
 //! become the final mean when `uiReplaceScaleFeaturesMissingValue` is true (`iv`, `rv`, and the
 //! blank date's `dt_months` / `dt_days` / `dt_month` / `dt_day` are 0).
 //!
+//! Outliers (`uiDetectFeatureOutliers`, `adp_next/adp_outlier_replace` / `_delete`): before
+//! rescaling, a continuous input's values beyond the robust mean +/- `outlierIdentCutoff` robust
+//! standard deviations (guide pp.18-19, the trimmed moments shared with Linear's ADP) are coerced
+//! to the bound (`coerceToCutoffVal`) or set missing (`setToMissingVal`, then imputed and counted
+//! as missing for field order). `c_out`: 60 and -45 against bounds 0.00503 +/- 3 x 2.92449.
+//!
+//! Min-max (`scaleContinuousMode` `minMaxTransform`, `adp_next/adp_minmax`): `(x - min) /
+//! (max - min) * (minMax_max - minMax_min) + minMax_min` over the finite values. Date fields
+//! under min-max have no oracle and are a `GAP:` error.
+//!
 //! Dates (`prepareDatesAndTimes`, `uiComputeDateDuration`): a fixed unit of `month` divides the
 //! day number by 30.4375 (`adp_balanced`, suffix `_months`); `day` keeps the day number
 //! (`adp_dates`, suffix `_days`). The fixed reference (`referenceDateType` `fixedDate`) is a
@@ -65,7 +75,7 @@
 //! `GAP:` `uiReplaceNominalFeaturesMissingValue` true does not substitute the mode (see `flg`).
 //! false is rejected. `GAP:` timestamp `ts` is copied in all three cases while
 //! `uiComputeTimeDuration` is true. A time-of-day field with that flag is rejected.
-//! `GAP:` `uiDetectFeatureOutliers` true, min-max rescaling, target Box-Cox / target missing /
+//! `GAP:` target outliers, target Box-Cox / target missing /
 //! target reorder, unsupervised merge, feature construction, almost-constant category screening,
 //! frequency and analysis weights, `useCustomSettings`, a non-empty `inputFields` / `targetField`,
 //! automatic date or time units, `dateUnit` `year`, and `excludeNoUsedField` other than
@@ -220,8 +230,8 @@ struct Prep {
     reorder_nominal: bool,
     replace_scale_missing: bool,
     scale_continuous: bool,
-    z_mean: f64,
-    z_sd: f64,
+    scale: Scale,
+    outliers: Option<Outliers>,
     check_feature_level: bool,
     ordinal_to_scale: i64,
     scale_to_ordinal: i64,
@@ -240,6 +250,22 @@ struct Prep {
     trim_blanks: bool,
     prepare_features: bool,
     compute_time_duration: bool,
+}
+
+/// `scaleContinuousMode`.
+enum Scale {
+    /// `zScoreTransform`: `(x - mean) / sd * zScore_SD + zScore_mean`.
+    ZScore { mean: f64, sd: f64 },
+    /// `minMaxTransform`: `(x - min) / (max - min) * (minMax_max - minMax_min) + minMax_min`.
+    MinMax { min: f64, max: f64 },
+}
+
+/// `uiDetectFeatureOutliers`: values beyond the robust mean +/- `outlierIdentCutoff` robust
+/// standard deviations are coerced to that bound (`coerceToCutoffVal`) or become missing
+/// (`setToMissingVal`).
+struct Outliers {
+    cutoff: f64,
+    to_missing: bool,
 }
 
 enum Class {
@@ -343,8 +369,44 @@ fn parse(s: Option<&Element>) -> Result<Prep, OperatorError> {
         reorder_nominal: flag(s, "uiReorderNominalCatsPriorToMerging", true)?,
         replace_scale_missing: flag(s, "uiReplaceScaleFeaturesMissingValue", true)?,
         scale_continuous: flag(s, "uiScaleContinuousFeatures", true)?,
-        z_mean: finite(s, "zScore_mean", 0.0)?,
-        z_sd: positive(s, "zScore_SD", 1.0)?,
+        scale: match one_of(
+            s,
+            "scaleContinuousMode",
+            &["zScoreTransform", "minMaxTransform"],
+            "zScoreTransform",
+        )?
+        .as_str()
+        {
+            "minMaxTransform" => {
+                let (min, max) = (
+                    finite(s, "minMax_min", 0.0)?,
+                    finite(s, "minMax_max", 100.0)?,
+                );
+                if min >= max {
+                    return Err(OperatorError::Settings(
+                        "minMax_min must be less than minMax_max".into(),
+                    ));
+                }
+                Scale::MinMax { min, max }
+            }
+            _ => Scale::ZScore {
+                mean: finite(s, "zScore_mean", 0.0)?,
+                sd: positive(s, "zScore_SD", 1.0)?,
+            },
+        },
+        outliers: if flag(s, "uiDetectFeatureOutliers", false)? {
+            Some(Outliers {
+                cutoff: positive(s, "outlierIdentCutoff", 3.0)?,
+                to_missing: one_of(
+                    s,
+                    "outliersOperation",
+                    &["coerceToCutoffVal", "setToMissingVal"],
+                    "coerceToCutoffVal",
+                )? == "setToMissingVal",
+            })
+        } else {
+            None
+        },
         check_feature_level: flag(s, "uiCheckFeatureMeasureLevel", true)?,
         ordinal_to_scale: nonneg_int(s, "ordinalToScaleCategoriesNumThreshold", 10)?,
         scale_to_ordinal: nonneg_int(s, "scaleToOrdinalValuesNumThreshold", 5)?,
@@ -394,7 +456,6 @@ fn reject_unsupported(s: Option<&Element>) -> Result<(), OperatorError> {
         "uiUnsupervisedMergeOrdinal",
         "uiExcludeAlmostConstantCatFeature",
         "uiFeatureConstruction",
-        "uiDetectFeatureOutliers",
         "useWeight",
         "useFrequency",
         "useCustomSettings",
@@ -425,23 +486,11 @@ fn reject_unsupported(s: Option<&Element>) -> Result<(), OperatorError> {
     }
     one_of(s, "excludeNoUsedField", &["filterOut"], "filterOut")?;
     one_of(s, "keepOrClearAnalysis", &["stop"], "stop")?;
-    one_of(
-        s,
-        "scaleContinuousMode",
-        &["zScoreTransform"],
-        "zScoreTransform",
-    )?;
     one_of(s, "autoChooseDateFieldUnit", &["fixed"], "fixed")?;
     one_of(s, "referenceDateType", &["fixedDate"], "fixedDate")?;
     one_of(s, "autoChooseTimeFieldUnit", &["fixed"], "fixed")?;
     one_of(s, "referenceTimeType", &["fixedTime"], "fixedTime")?;
     one_of(s, "timeUnit", &["hour"], "hour")?;
-    one_of(
-        s,
-        "outliersOperation",
-        &["coerceToCutoffVal"],
-        "coerceToCutoffVal",
-    )?;
     let objective = text_or(s, "analysisObjective", "balance");
     if !matches!(
         objective.as_str(),
@@ -476,14 +525,15 @@ fn acknowledge_unused(s: Option<&Element>) -> Result<(), OperatorError> {
         )));
     }
     let _ = percent_int(s, "cateFeatureScreenNumber", 95)?;
+    let _ = one_of(
+        s,
+        "outliersOperation",
+        &["coerceToCutoffVal", "setToMissingVal"],
+        "coerceToCutoffVal",
+    )?;
     let _ = positive(s, "outlierIdentCutoff", 3.0)?;
-    let min_max_min = finite(s, "minMax_min", 0.0)?;
-    let min_max_max = finite(s, "minMax_max", 100.0)?;
-    if min_max_min >= min_max_max {
-        return Err(OperatorError::Settings(
-            "minMax_min must be less than minMax_max".into(),
-        ));
-    }
+    let _ = finite(s, "minMax_min", 0.0)?;
+    let _ = finite(s, "minMax_max", 100.0)?;
     let _ = settings::integer(s, "todaysDate")?;
     let _ = settings::integer(s, "currentTime")?;
     let _ = settings::integer(s, "fixedTime")?;
@@ -605,7 +655,7 @@ fn prepare_date(
             .collect();
         let name = extended(&field.name, &prep.date_suffix)?;
         let out_values = if prep.scale_continuous {
-            rescale(&series, prep.z_mean, prep.z_sd, prep.replace_scale_missing)
+            rescale(&series, date_scale(prep)?, prep.replace_scale_missing)
         } else {
             optional_reals(&series)
         };
@@ -643,7 +693,7 @@ fn push_element(
             .map(|value| value.map(|number| number as f64))
             .collect();
         let values = if prep.scale_continuous {
-            rescale(&series, prep.z_mean, prep.z_sd, prep.replace_scale_missing)
+            rescale(&series, date_scale(prep)?, prep.replace_scale_missing)
         } else {
             optional_reals(&series)
         };
@@ -700,11 +750,15 @@ fn prepare_continuous(
         cols.push(pass_col(field, values.to_vec(), index));
         return Ok(());
     }
+    let series = match &prep.outliers {
+        Some(rule) => handle_outliers(rule, series, &field.name)?,
+        None => series,
+    };
     let missing = series.iter().filter(|value| value.is_none()).count();
     let name = extended(&field.name, &prep.name_ext)?;
     cols.push(OutCol {
         field: continuous_field(name),
-        values: rescale(&series, prep.z_mean, prep.z_sd, prep.replace_scale_missing),
+        values: rescale(&series, &prep.scale, prep.replace_scale_missing),
         group: GROUP_CONTINUOUS,
         key_a: as_u32(missing)?,
         key_b: index,
@@ -790,9 +844,66 @@ fn screen_numeric(prep: &Prep, values: &[Option<f64>]) -> bool {
     prep.exclude_poor && distinct_f64(values) <= 1
 }
 
-/// Sample z-score. With imputation the divisor is `n_all - 1` (missing rows sit at the mean).
-/// Without it the divisor is `n_valid - 1` and missing rows stay null.
-fn rescale(values: &[Option<f64>], final_mean: f64, final_sd: f64, impute: bool) -> Vec<Value> {
+/// Date durations and recast date elements have z-score evidence only (`misc_next/adp_*`).
+fn date_scale(prep: &Prep) -> Result<&Scale, OperatorError> {
+    match prep.scale {
+        Scale::ZScore { .. } => Ok(&prep.scale),
+        Scale::MinMax { .. } => Err(OperatorError::Settings(
+            "GAP: min-max rescaling of date fields has no oracle".into(),
+        )),
+    }
+}
+
+/// Outliers of one continuous input (`adp_next/adp_outlier_*`): the bounds are the robust mean
+/// +/- `cutoff` robust standard deviations ([`dms_algo::adp::robust_moments`] from the sample
+/// mean and standard deviation of the finite values). `c_out`'s 60 and -45 become the bounds
+/// 0.00503 +/- 3 x 2.92449 with `coerceToCutoffVal`, and missing with `setToMissingVal`; the
+/// rescaling then sees the handled values (and counts the new missing values for field order).
+fn handle_outliers(
+    rule: &Outliers,
+    series: Vec<Option<f64>>,
+    name: &str,
+) -> Result<Vec<Option<f64>>, OperatorError> {
+    let finite: Vec<f64> = series
+        .iter()
+        .flatten()
+        .copied()
+        .filter(|x| x.is_finite())
+        .collect();
+    if finite.len() < 2 {
+        return Ok(series);
+    }
+    let n = finite.len() as f64;
+    let mean = finite.iter().sum::<f64>() / n;
+    let sd = (finite.iter().map(|x| (x - mean).powi(2)).sum::<f64>() / (n - 1.0)).sqrt();
+    if !(sd.is_finite() && sd > 0.0) {
+        return Ok(series);
+    }
+    let (robust_mean, robust_sd) = dms_algo::adp::robust_moments(&finite, mean, sd)
+        .map_err(|error| OperatorError::Data(format!("field {name:?}: {error}")))?;
+    let (low, high) = (
+        robust_mean - rule.cutoff * robust_sd,
+        robust_mean + rule.cutoff * robust_sd,
+    );
+    Ok(series
+        .into_iter()
+        .map(|value| match value {
+            Some(x) if x < low => (!rule.to_missing).then_some(low),
+            Some(x) if x > high => (!rule.to_missing).then_some(high),
+            other => other,
+        })
+        .collect())
+}
+
+/// Rescales a continuous series. Z-score: sample standard deviation; with imputation the divisor
+/// is `n_all - 1` (missing rows sit at the mean), without it `n_valid - 1` and missing rows stay
+/// null. Min-max (`adp_next/adp_minmax`): over the finite values' range; an imputed row takes
+/// the mean's position.
+fn rescale(values: &[Option<f64>], scale: &Scale, impute: bool) -> Vec<Value> {
+    let (final_mean, final_sd) = match *scale {
+        Scale::ZScore { mean, sd } => (mean, sd),
+        Scale::MinMax { min, max } => return min_max(values, min, max, impute),
+    };
     let n_all = values.len();
     let mut n_valid = 0usize;
     let mut sum = 0.0;
@@ -835,6 +946,38 @@ fn rescale(values: &[Option<f64>], final_mean: f64, final_sd: f64, impute: bool)
             }
             Some(x) if x.is_finite() => finite_real(final_mean),
             _ if impute => finite_real(final_mean),
+            _ => Value::Null,
+        })
+        .collect()
+}
+
+fn min_max(values: &[Option<f64>], low: f64, high: f64, impute: bool) -> Vec<Value> {
+    let finite: Vec<f64> = values
+        .iter()
+        .flatten()
+        .copied()
+        .filter(|x| x.is_finite())
+        .collect();
+    let (Some(min), Some(max)) = (
+        finite.iter().copied().reduce(f64::min),
+        finite.iter().copied().reduce(f64::max),
+    ) else {
+        return vec![Value::Null; values.len()];
+    };
+    let mean = finite.iter().sum::<f64>() / finite.len() as f64;
+    let span = max - min;
+    let scaled = |x: f64| {
+        if span > 0.0 {
+            finite_real((x - min) / span * (high - low) + low)
+        } else {
+            finite_real(low)
+        }
+    };
+    values
+        .iter()
+        .map(|value| match value {
+            Some(x) if x.is_finite() => scaled(*x),
+            _ if impute => scaled(mean),
             _ => Value::Null,
         })
         .collect()

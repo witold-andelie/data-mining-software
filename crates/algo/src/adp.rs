@@ -341,7 +341,11 @@ struct Group {
     ss: f64,
 }
 
-fn robust_moments(values: &[f64], mean: f64, sd: f64) -> Result<(f64, f64), AlgoError> {
+/// The guide's robust mean and sample standard deviation ("Outlier Identification and Handling",
+/// pp.18-19): eight bins of width `sd` around `mean`, the smaller tail bin is discarded while the
+/// discarded share stays below 5%, and the moments are taken over the retained values. Shared by
+/// Linear's ADP and the Auto Data Prep node's outlier cutoffs.
+pub fn robust_moments(values: &[f64], mean: f64, sd: f64) -> Result<(f64, f64), AlgoError> {
     // I_-3=(-inf,mean-3sd], I_i=(mean+(i-1)sd,mean+i*sd], I_4=(mean+3sd,inf).
     let bin = |x: f64| {
         (-3..=3)
@@ -377,7 +381,7 @@ fn robust_moments(values: &[f64], mean: f64, sd: f64) -> Result<(f64, f64), Algo
         .collect();
     if retained.len() < 2 {
         return Err(AlgoError::Data(
-            "Linear ADP has fewer than two retained values".into(),
+            "ADP robust moments: fewer than two retained values".into(),
         ));
     }
     let mean = retained.iter().sum::<f64>() / retained.len() as f64;
@@ -385,7 +389,7 @@ fn robust_moments(values: &[f64], mean: f64, sd: f64) -> Result<(f64, f64), Algo
         / (retained.len() - 1) as f64)
         .sqrt();
     if !mean.is_finite() || !sd.is_finite() {
-        return Err(AlgoError::Data("Linear ADP robust moments overflow".into()));
+        return Err(AlgoError::Data("ADP robust moments overflow".into()));
     }
     Ok((mean, sd))
 }
