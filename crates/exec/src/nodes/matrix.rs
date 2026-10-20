@@ -3,9 +3,17 @@
 //! exported CSV (`docs/oracle.md`, `docs/formats/nodes/matrix.md`).
 //!
 //! Implemented settings (saved names, from the `outputs` probes and `team/cluster_analysis`):
-//! - `matrixType`: `specified` only (the selected row and column fields); the flag and numeric
-//!   matrices are rejected.
-//! - `rowField`, `columnField`: categorical fields for the matrix rows and columns (required).
+//! - `matrixType`: `specified` (the selected row and column fields), `flags` or `numbers`
+//!   (`oracle/outputs_next/matrix_*`):
+//!   - `flags`: every flag field against every other, in field order; a cell counts the records
+//!     where both are true, the diagonal is empty, and `showTotals` adds row and column sums.
+//!   - `numbers`: every continuous numeric field against every other, in field order; a cell is
+//!     the sum of the products of the two fields over the records, printed as an integer when
+//!     both are integers and with 3 decimals otherwise; the diagonal is empty and there are no
+//!     totals. Row, column, cell-contents and function settings do not change it.
+//!   - Missing values in these matrices have no oracle and are a `GAP:` error.
+//! - `rowField`, `columnField`: categorical fields for the matrix rows and columns (required for
+//!   `specified`).
 //! - `cellContents`: `coincidences` (cross-tabulation) or `parameter` (a function of a field).
 //! - `parameterField`: numeric field summarized when `cellContents = parameter` (required then).
 //! - `parameterFunction`: `mean`, `sum`, `sdev`, `max`, or `min`.
@@ -28,7 +36,7 @@ use crate::output::{Document, DocumentTable, NodeOutput, format_real};
 use crate::settings;
 use dms_stream::StreamNode;
 use dms_strfmt::fastinfoset::Element;
-use dms_types::{Field, Table, Value, ValueSpec};
+use dms_types::{Field, Storage, Table, Value, ValueSpec};
 use std::cmp::Ordering;
 use std::sync::Arc;
 
@@ -71,8 +79,16 @@ const CROSSTAB_ORDER: &[(CrossTabItem, &str)] = &[
 /// Modeler's Matrix CSV export always formats floating-point cells to 3 decimal places.
 const MATRIX_DECIMALS: usize = 3;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MatrixKind {
+    Specified,
+    Flags,
+    Numbers,
+}
+
 #[derive(Debug, Clone)]
 struct MatrixOp {
+    kind: MatrixKind,
     row_field: String,
     col_field: String,
     cell_mode: CellMode,
@@ -100,23 +116,30 @@ pub fn build(node: &StreamNode) -> Result<Box<dyn Operator>, OperatorError> {
     let _ = settings::flag(s, "useHighlightBottom")?;
     let _ = settings::integer(s, "highlightBottom")?;
 
-    let row_field = settings::text(s, "rowField")
-        .map(|t| t.trim().to_string())
-        .filter(|t| !t.is_empty())
-        .ok_or_else(|| OperatorError::Settings("Matrix requires a rowField".into()))?;
-    let col_field = settings::text(s, "columnField")
-        .map(|t| t.trim().to_string())
-        .filter(|t| !t.is_empty())
-        .ok_or_else(|| OperatorError::Settings("Matrix requires a columnField".into()))?;
-
-    match settings::text(s, "matrixType").as_deref().map(str::trim) {
-        None | Some("") | Some("specified") => {}
+    let kind = match settings::text(s, "matrixType").as_deref().map(str::trim) {
+        None | Some("") | Some("specified") => MatrixKind::Specified,
+        Some("flags") => MatrixKind::Flags,
+        Some("numbers") => MatrixKind::Numbers,
         Some(other) => {
             return Err(OperatorError::Settings(format!(
-                "Matrix matrixType {other:?} is not supported yet"
+                "Matrix matrixType {other:?} is unknown"
             )));
         }
-    }
+    };
+    let field_setting = |key: &str| {
+        let value = settings::text(s, key)
+            .map(|t| t.trim().to_string())
+            .filter(|t| !t.is_empty());
+        match (value, kind) {
+            (Some(value), _) => Ok(value),
+            (None, MatrixKind::Specified) => {
+                Err(OperatorError::Settings(format!("Matrix requires a {key}")))
+            }
+            (None, _) => Ok(String::new()),
+        }
+    };
+    let row_field = field_setting("rowField")?;
+    let col_field = field_setting("columnField")?;
     match settings::text(s, "rowColumnSort").as_deref().map(str::trim) {
         None | Some("") | Some("unsorted") => {}
         Some(other) => {
@@ -172,6 +195,7 @@ pub fn build(node: &StreamNode) -> Result<Box<dyn Operator>, OperatorError> {
     let include_missing = settings::flag(s, "includeMissingValues")?.unwrap_or(true);
 
     Ok(Box::new(MatrixOp {
+        kind,
         row_field,
         col_field,
         cell_mode,
@@ -233,6 +257,17 @@ impl Operator for MatrixOp {
         let input = inputs
             .first()
             .ok_or_else(|| OperatorError::Inputs("Matrix needs one input".into()))?;
+        let table = match self.kind {
+            MatrixKind::Flags => Some(self.flags_table(input)?),
+            MatrixKind::Numbers => Some(numbers_table(input)?),
+            MatrixKind::Specified => None,
+        };
+        if let Some(table) = table {
+            return Ok(NodeOutput::Document(Arc::new(Document {
+                title: String::new(),
+                tables: vec![table],
+            })));
+        }
 
         let row_pos = position(input.model(), &self.row_field)?;
         let col_pos = position(input.model(), &self.col_field)?;
@@ -276,7 +311,141 @@ impl Operator for MatrixOp {
     }
 }
 
+/// A missing value in a flag or numeric matrix has no oracle.
+fn missing_gap(field: &Field) -> OperatorError {
+    OperatorError::Settings(format!(
+        "GAP: Matrix: missing values in {:?} have no oracle",
+        field.name
+    ))
+}
+
+/// The `numbers` matrix: sums of products of every pair of continuous numeric fields.
+fn numbers_table(input: &Table) -> Result<DocumentTable, OperatorError> {
+    let fields: Vec<(usize, &Field)> = input
+        .model()
+        .fields()
+        .iter()
+        .enumerate()
+        .filter(|(_, f)| {
+            f.measurement == dms_types::Measurement::Continuous
+                && matches!(f.storage, Storage::Integer | Storage::Real)
+        })
+        .collect();
+    let mut columns: Vec<Vec<f64>> = Vec::with_capacity(fields.len());
+    for (index, field) in &fields {
+        let mut column = Vec::with_capacity(input.row_count());
+        for row in input.rows() {
+            match row.get(*index).and_then(Value::as_f64) {
+                Some(x) if !field.is_missing(&row[*index]) => column.push(x),
+                _ => return Err(missing_gap(field)),
+            }
+        }
+        columns.push(column);
+    }
+    let names: Vec<String> = fields.iter().map(|(_, f)| f.name.clone()).collect();
+    let mut header = vec![String::new()];
+    header.extend(names.iter().cloned());
+    let rows = (0..fields.len())
+        .map(|i| {
+            let mut line = vec![names[i].clone()];
+            for j in 0..fields.len() {
+                if i == j {
+                    line.push(String::new());
+                    continue;
+                }
+                let sum: f64 = columns[i].iter().zip(&columns[j]).map(|(a, b)| a * b).sum();
+                let integers = fields[i].1.storage == Storage::Integer
+                    && fields[j].1.storage == Storage::Integer;
+                line.push(if integers {
+                    format!("{}", sum.round() as i64)
+                } else {
+                    format_real(sum, MATRIX_DECIMALS)
+                });
+            }
+            line
+        })
+        .collect();
+    Ok(DocumentTable {
+        title: None,
+        header,
+        rows,
+    })
+}
+
 impl MatrixOp {
+    /// The `flags` matrix: counts of records where two flag fields are both true.
+    fn flags_table(&self, input: &Table) -> Result<DocumentTable, OperatorError> {
+        let mut flags: Vec<(String, Vec<bool>)> = Vec::new();
+        for (index, field) in input.model().fields().iter().enumerate() {
+            let ValueSpec::Flag { true_value, .. } = &field.values else {
+                continue;
+            };
+            if field.measurement != dms_types::Measurement::Flag {
+                continue;
+            }
+            let mut column = Vec::with_capacity(input.row_count());
+            for row in input.rows() {
+                let value = &row[index];
+                if value.is_null() || field.is_missing(value) {
+                    return Err(missing_gap(field));
+                }
+                column.push(value.total_cmp(true_value) == Ordering::Equal);
+            }
+            flags.push((field.name.clone(), column));
+        }
+        let k = flags.len();
+        let counts: Vec<Vec<usize>> = (0..k)
+            .map(|i| {
+                (0..k)
+                    .map(|j| {
+                        if i == j {
+                            0
+                        } else {
+                            flags[i]
+                                .1
+                                .iter()
+                                .zip(&flags[j].1)
+                                .filter(|(a, b)| **a && **b)
+                                .count()
+                        }
+                    })
+                    .collect()
+            })
+            .collect();
+        let mut header = vec![String::new()];
+        header.extend(flags.iter().map(|(name, _)| name.clone()));
+        if self.show_totals {
+            header.push("Total".into());
+        }
+        let mut rows: Vec<Vec<String>> = (0..k)
+            .map(|i| {
+                let mut line = vec![flags[i].0.clone()];
+                line.extend((0..k).map(|j| {
+                    if i == j {
+                        String::new()
+                    } else {
+                        counts[i][j].to_string()
+                    }
+                }));
+                if self.show_totals {
+                    line.push(counts[i].iter().sum::<usize>().to_string());
+                }
+                line
+            })
+            .collect();
+        if self.show_totals {
+            let mut total = vec!["Total".to_string()];
+            total.extend((0..k).map(|j| (0..k).map(|i| counts[i][j]).sum::<usize>().to_string()));
+            total.push(counts.iter().flatten().sum::<usize>().to_string());
+            rows.push(total);
+        }
+        Ok(DocumentTable {
+            title: None,
+            header,
+            rows,
+        })
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn build_counts_table(
         &self,
