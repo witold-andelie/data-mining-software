@@ -540,3 +540,60 @@ fn saved_alm_interval_boundaries_and_outside_domain_scores() {
         );
     }
 }
+
+/// Imported PMML (`ApplyImportedNode`): outputs come from the saved model description; a role
+/// without an oracle is a GAP and a model without outputs is refused.
+#[test]
+fn imported_model_scores_saved_outputs_and_refuses_unknown_roles() {
+    let output = |role: &str| {
+        Node::Element(element(
+            "output",
+            vec![],
+            vec![
+                p("name", "$X-y"),
+                Node::Element(element("type", vec![], vec![p("storage", "real")])),
+                Node::Element(element("modelFieldInfo", vec![("role", role)], vec![])),
+            ],
+        ))
+    };
+    let model = |outputs: Vec<Node>| {
+        nugget(
+            "ApplyImportedNode",
+            vec![Node::Element(element(
+                "model",
+                vec![
+                    ("class", "com.spss.clementine.component.model.ImportedModel"),
+                    ("pmml", "data/0001.dat"),
+                ],
+                vec![Node::Element(element("outputs", vec![], outputs))],
+            ))],
+        )
+    };
+    let factory = dms_exec::registry::factory("pmml_model").unwrap();
+    let pmml = r#"<PMML version="4.2" xmlns="http://www.dmg.org/PMML-4_2"><DataDictionary><DataField name="x" optype="continuous" dataType="double"/><DataField name="y" optype="continuous" dataType="double"/></DataDictionary><TreeModel functionName="regression"><MiningSchema><MiningField name="x"/><MiningField name="y" usageType="predicted"/></MiningSchema><Node score="5"><True/><Node score="1"><SimplePredicate field="x" operator="lessOrEqual" value="2"/></Node><Node score="9"><SimplePredicate field="x" operator="greaterThan" value="2"/></Node></Node></TreeModel></PMML>"#;
+    let context = ExecContext {
+        attachments: Arc::new(HashMap::from([(
+            "data/0001.dat".to_string(),
+            Arc::from(pmml.as_bytes()),
+        )])),
+        ..ExecContext::default()
+    };
+    let input = Table::new(
+        DataModel::new(vec![Field::new("x", Storage::Real)]).unwrap(),
+        vec![vec![Value::Real(1.0)], vec![Value::Real(3.0)]],
+    )
+    .unwrap();
+    let scored = factory(&model(vec![output("predictedValue")]))
+        .unwrap()
+        .run(&[Arc::new(input)], &context)
+        .unwrap();
+    let values: Vec<_> = scored.rows().iter().map(|row| row[1].clone()).collect();
+    assert_eq!(values, [Value::Real(1.0), Value::Real(9.0)]);
+    let Err(dms_exec::OperatorError::Settings(message)) =
+        factory(&model(vec![output("probability")]))
+    else {
+        panic!("an unknown output role must fail")
+    };
+    assert!(message.starts_with("GAP:"), "{message}");
+    assert!(factory(&model(vec![])).is_err());
+}

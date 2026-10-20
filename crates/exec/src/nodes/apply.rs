@@ -426,40 +426,7 @@ impl Apply {
                 "the nugget saved no PMML model and its build node did not run".into(),
             )
         })?;
-        let bytes = context.attachments.get(member).ok_or_else(|| {
-            OperatorError::Io(format!("the stream file has no attachment {member}"))
-        })?;
-        let text = if bytes.starts_with(b"SCF\x01") {
-            dms_strfmt::read_model_xml(bytes).map_err(|error| {
-                OperatorError::Data(format!(
-                    "the model in {member} is not readable PMML: {error}"
-                ))
-            })?
-        } else if dms_strfmt::zip_payload(bytes).is_ok() {
-            // `models_as/*`: the AS PMML container is a length-prefixed ZIP with
-            // `.meta` and `PMML.xml`. Reuse the bounded reader used by Time Series.
-            let members =
-                dms_strfmt::read_length_prefixed_zip(bytes, &dms_strfmt::ArchiveLimits::default())
-                    .map_err(|error| OperatorError::Data(format!("{member}: {error}")))?;
-            let pmml = members
-                .iter()
-                .find(|m| m.name == "PMML.xml")
-                .ok_or_else(|| {
-                    OperatorError::Data(format!("{member}: GAP: AS container has no PMML.xml"))
-                })?;
-            std::str::from_utf8(&pmml.bytes)
-                .map_err(|error| OperatorError::Data(format!("{member}/PMML.xml: {error}")))?
-                .to_string()
-        } else {
-            std::str::from_utf8(bytes)
-                .map_err(|_| {
-                    OperatorError::Data(format!(
-                        "the model in {member} is not PMML (a format we cannot read)"
-                    ))
-                })?
-                .to_string()
-        };
-        Ok(text)
+        saved_model_xml(member, context)
     }
 
     /// Apriori nugget columns. Tabular baskets are one row each (`apriori_default`).
@@ -1240,7 +1207,7 @@ fn quest_category_fields(pmml: &Pmml, model: &dms_types::DataModel) -> Vec<(usiz
         .collect()
 }
 
-fn to_pmml(value: &Value) -> PmmlValue {
+pub(super) fn to_pmml(value: &Value) -> PmmlValue {
     match value {
         Value::Null => PmmlValue::Missing,
         Value::Integer(i) => PmmlValue::Number(*i as f64),
@@ -1260,7 +1227,7 @@ fn text(value: &PmmlValue) -> String {
 }
 
 /// A predicted value in the target's storage.
-fn typed(value: &PmmlValue, storage: Storage) -> Value {
+pub(super) fn typed(value: &PmmlValue, storage: Storage) -> Value {
     match (value, storage) {
         (PmmlValue::Missing, _) => Value::Null,
         (PmmlValue::Number(n), Storage::Real) => Value::Real(*n),
@@ -1733,4 +1700,47 @@ fn raw_propensity(
             })?
     };
     category_probability_of(target, &category)
+}
+
+/// The PMML text of a nugget's saved model attachment: a Modeler model file (`SCF` + 0x01), an
+/// Analytic Engine length-prefixed ZIP (`PMML.xml`), or plain PMML (an imported model).
+pub(super) fn saved_model_xml(
+    member: &str,
+    context: &ExecContext,
+) -> Result<String, OperatorError> {
+    let bytes = context
+        .attachments
+        .get(member)
+        .ok_or_else(|| OperatorError::Io(format!("the stream file has no attachment {member}")))?;
+    let text = if bytes.starts_with(b"SCF\x01") {
+        dms_strfmt::read_model_xml(bytes).map_err(|error| {
+            OperatorError::Data(format!(
+                "the model in {member} is not readable PMML: {error}"
+            ))
+        })?
+    } else if dms_strfmt::zip_payload(bytes).is_ok() {
+        // `models_as/*`: the AS PMML container is a length-prefixed ZIP with
+        // `.meta` and `PMML.xml`. Reuse the bounded reader used by Time Series.
+        let members =
+            dms_strfmt::read_length_prefixed_zip(bytes, &dms_strfmt::ArchiveLimits::default())
+                .map_err(|error| OperatorError::Data(format!("{member}: {error}")))?;
+        let pmml = members
+            .iter()
+            .find(|m| m.name == "PMML.xml")
+            .ok_or_else(|| {
+                OperatorError::Data(format!("{member}: GAP: AS container has no PMML.xml"))
+            })?;
+        std::str::from_utf8(&pmml.bytes)
+            .map_err(|error| OperatorError::Data(format!("{member}/PMML.xml: {error}")))?
+            .to_string()
+    } else {
+        std::str::from_utf8(bytes)
+            .map_err(|_| {
+                OperatorError::Data(format!(
+                    "the model in {member} is not PMML (a format we cannot read)"
+                ))
+            })?
+            .to_string()
+    };
+    Ok(text)
 }

@@ -6,7 +6,7 @@ Status `done (statistical)`: trained to statistical, not exact, parity with Mode
 
 | Scope | Implemented | Total |
 |---|---|---|
-| MVP | 83 | 85 |
+| MVP | 84 | 85 |
 | later | 3 | 25 |
 | license blocked | 0 | 5 |
 | out of scope | 0 | 34 |
@@ -127,7 +127,7 @@ Status `done (statistical)`: trained to statistical, not exact, parity with Mode
 | Feature Selection | `feature_selection` | MVP | done | `BuildFeatureSelectionNode`, `ApplyFeatureSelectionNode`, `FeatureSelectionModelNode` |
 | Anomaly | `anomaly` | MVP | done | `BuildAnomalyNode`, `ApplyAnomalyNode` |
 | Time Series | `time_series` | MVP | done (statistical) | `BuildTimeSeriesNode`, `ApplyTimeSeriesNode`, `spss.ts!ts_builder`, `spss.ts!ts_applier` |
-| Imported PMML model | `pmml_model` | MVP | missing | `ApplyImportedNode` |
+| Imported PMML model | `pmml_model` | MVP | done | `ApplyImportedNode` |
 | GLMM | `glmm` | later | missing | `GLMM!spss.glmm-extension` |
 | GLE | `gle` | later | missing | (unmapped) |
 | Cox | `cox` | later | missing | `spss.coxreg_id!buildcoxreg` |
