@@ -70,3 +70,4 @@ pub mod user_input;
 pub mod var_file;
 pub mod web;
 pub mod xml_export;
+pub mod xml_import;
