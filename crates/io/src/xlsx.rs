@@ -686,6 +686,1221 @@ const STYLES_XML: &str = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes
 const WORKBOOK_RELS: &str = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Target="styles.xml" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Id="rId3"/><Relationship Target="theme/theme1.xml" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/theme" Id="rId2"/><Relationship Target="worksheets/sheet1.xml" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Id="rId1"/></Relationships>"#;
 
+// Reader: Office Open XML (`.xlsx`) as tables, the way Modeler's Excel source node reads the
+// probe workbooks `corpus/sources/source_book.xlsx`, `source_book_1904.xlsx`
+// (`oracle/sources/excel_*`, `xtask/oracle/probes/source_streams.py`) and
+// `corpus/excel_more/excel_more.xlsx` (`oracle/excel_more/*`, `excel_more_streams.py`).
+//
+// Evidence (which oracle shows which rule):
+// - A sheet with a `<row>` element without cells is a `GAP:` error. Excel writes no such
+//   element for an empty row, and Modeler reads those sheets inconsistently: the same block
+//   at B3:I10 reads 7 typed records without them (`more_off_noempty`) but 5 all-string records
+//   with two empty `<row>`s above it (`more_offset`, `sources/excel_sheet_index`); explicit
+//   ranges there read nothing (`more_explicit_*`, `sources/excel_explicit_a1`); blank rows
+//   move to the end with the last row repeated (`more_blank2_return`,
+//   `sources/excel_blank_return`).
+// - Sheets, order and names from `xl/workbook.xml` (`excel_sheet_*` by 0-based index and by
+//   name). Day serials stay numbers (`excel_dates_1900`/`1904` read the same values), so
+//   `date1904` does not change table values.
+// - `FirstNonBlank` is the bounding box of non-blank cells, wherever it starts
+//   (`more_off5` C5, `more_offa3` A3, `more_offc1` C1, `more_off_noempty` B3).
+// - Shared and inline strings; numbers (`t="n"`), booleans (`t="b"` → 1/0), cached formula
+//   values, error cells (`t="e"` → null). An absent or empty cell is `""` in a string column
+//   and null otherwise (`excel_default` id 2).
+// - Every comma of a text cell reads as a period (`more_commas`: `a,b` → `a.b`, `1,5` → `1.5`,
+//   `3,000.5` → `3.000.5`; `excel_default` `comma,` → `comma.`). A field name with a comma
+//   has no oracle and is a `GAP:` error.
+// - Styles (`cellXfs` → `numFmtId`, built-in plus custom `numFmts`): Text `@` forces strings
+//   (`excel_text_format`: `12` → `"12"`, `0012` kept); time `hh:mm:ss` and timestamp
+//   `yyyy-mm-dd hh:mm:ss` read as times of day (`excel_dates_*`: `0.5` → `12:00:00`,
+//   `serial+.5` → `12:00:00`); date `yyyy-mm-dd` stays numeric (`43890`).
+// - Field names: the first row when `fieldNamesIncluded` (`excel_default`), else `C1…Cn` and
+//   the first row is data (`excel_no_headers`). Empty/absent names generate `C<relative
+//   column>` (`excel_header_names`: `C3`, `C7`); duplicates get ` (1)`, … (`dup (1)`); a
+//   numeric name prints with 6 decimals (`17` → `17.000000`, `more_explicit_numeric`
+//   `-10` → `-10.000000`).
+// - `ExplicitRange` in A1 or R1C1 notation reads that rectangle, also past the used range
+//   (`more_explicit_numeric` C4:E9, `more_explicit_a3_beyond` A3:C12).
+// - `blankRows`: `stopReading` ends at the first blank row (`more_blank_noempty_stop`,
+//   `more_blank2_noempty_stop`); `returnBlankRows` keeps blank rows in place, null in numeric
+//   columns and `""` in string ones (`more_blank_noempty_return`, `more_blank2_noempty_return`,
+//   `more_blank3_noempty_return`: a blank row right after the field names is kept).
+// - `scanLineCount` (default 200) is the string-vs-numeric horizon over data rows
+//   (`excel_scan_1` saved 200 vs `excel_scan_250`, 205 data rows: `late_text` numeric with
+//   null beyond 200 vs string; `late_real` real in both since `2.5` promotes the column;
+//   `late_numeric` all-null in the first 200 still numeric).
+// - Only `.xlsx` (`v2007`) is read; `.xls`, other `excel_file_type` values and named ranges
+//   stay `GAP:` errors (`excel_named_range` has no oracle: Modeler drops the connection).
+//
+// Limits (like the writer's): at most 16384 columns, 1048576 rows, 1000 sheets, 1000 zip
+// members, 32 MiB per XML part, 8M grid cells, 1M shared strings, 10k styles, 512 XML depth
+// (via `roxmltree`). Malformed packages fail closed with [`XlsxError`].
+use std::collections::{BTreeMap, HashMap};
+
+/// Worksheet limits (ECMA-376, same as the writer).
+const MAX_SHEETS: usize = 1000;
+/// Zip members in one package.
+const MAX_ZIP_MEMBERS: usize = 1000;
+/// Bytes of one decompressed XML part.
+const MAX_XML_BYTES: u64 = 32 * 1024 * 1024;
+/// Cells of one sheet grid or one read range.
+const MAX_GRID_CELLS: u64 = 8_000_000;
+/// Shared-string entries of one package.
+const MAX_SHARED_STRINGS: usize = 1_000_000;
+/// Style (`cellXfs`) entries of one package.
+const MAX_STYLES: usize = 10_000;
+
+/// How blank rows read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BlankRows {
+    /// Skip entirely blank rows (`blankRows` `stopReading`, `excel_blank_stop`).
+    StopReading,
+    /// Keep them as all-null rows (`blankRows` `returnBlankRows`, `excel_blank_return`).
+    ReturnBlankRows,
+}
+
+/// Which worksheet to read.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SheetSelector {
+    /// 0-based `worksheetIndex` (`excel_sheet_index` 1 → `Offset Data`).
+    Index(usize),
+    /// Exact `worksheetName` (`excel_sheet_name` `Offset Data`).
+    Name(String),
+}
+
+/// Which rectangle to read.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RangeSelector {
+    /// Bounding box of non-blank cells (`dataRange` `firstNonBlank`).
+    FirstNonBlank,
+    /// Inclusive `rangeStart`..`rangeEnd` in A1 or R1C1 (`dataRange` `explicitRange`,
+    /// `excel_explicit_a1` `B3:I12`, `excel_explicit_r1c1` `R3C2:R12C9`).
+    Explicit { start: (u32, u32), end: (u32, u32) },
+}
+
+/// What rectangle of which sheet becomes the table.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExcelOptions {
+    pub sheet: SheetSelector,
+    /// `fieldNamesIncluded`: first row are headers (`excel_default`) vs data with `C1…`
+    /// names (`excel_no_headers`).
+    pub field_names: bool,
+    pub range: RangeSelector,
+    pub blank_rows: BlankRows,
+    /// `scanLineCount` string-vs-numeric horizon (`excel_scan_1` 200 vs `excel_scan_250` 250).
+    pub scan_lines: usize,
+}
+
+impl Default for ExcelOptions {
+    fn default() -> Self {
+        ExcelOptions {
+            sheet: SheetSelector::Index(0),
+            field_names: true,
+            range: RangeSelector::FirstNonBlank,
+            blank_rows: BlankRows::StopReading,
+            scan_lines: 200,
+        }
+    }
+}
+
+/// 1-based `(column, row)`. Column `A` is 1, row 1 is the first row.
+pub fn parse_a1(text: &str) -> Result<(u32, u32), XlsxError> {
+    let invalid = || XlsxError::Grid(format!("{text:?} is not an A1 cell"));
+    let text = text.trim();
+    if text.is_empty() {
+        return Err(invalid());
+    }
+    // Optional `$` absolutes (`$B$3`, `B$3`, `$B3`), as in defined names.
+    let bytes = text.as_bytes();
+    let mut index = 0usize;
+    let mut column: u32 = 0;
+    let mut letters = 0usize;
+    while index < bytes.len() {
+        let byte = bytes[index];
+        if byte == b'$' {
+            index += 1;
+            continue;
+        }
+        if byte.is_ascii_alphabetic() {
+            if letters >= 3 {
+                return Err(invalid());
+            }
+            let value = u32::from(byte.to_ascii_uppercase().saturating_sub(b'A')).saturating_add(1);
+            column = column
+                .checked_mul(26)
+                .and_then(|next| next.checked_add(value))
+                .filter(|next| *next <= MAX_COLUMN)
+                .ok_or_else(invalid)?;
+            letters += 1;
+            index += 1;
+        } else {
+            break;
+        }
+    }
+    if letters == 0 || column == 0 {
+        return Err(invalid());
+    }
+    let Some(rest) = text.get(index..) else {
+        return Err(invalid());
+    };
+    let rest = rest.strip_prefix('$').unwrap_or(rest);
+    if rest.is_empty() || rest.len() > 7 || !rest.bytes().all(|b| b.is_ascii_digit()) {
+        return Err(invalid());
+    }
+    let row: u32 = rest.parse().map_err(|_| invalid())?;
+    if row == 0 || row > MAX_ROW {
+        return Err(invalid());
+    }
+    Ok((column, row))
+}
+
+/// 1-based `(column, row)` in `R<row>C<col>` notation (`R3C2` is `B3`).
+pub fn parse_r1c1(text: &str) -> Result<(u32, u32), XlsxError> {
+    let invalid = || XlsxError::Grid(format!("{text:?} is not an R1C1 cell"));
+    let text = text.trim();
+    if text.is_empty() {
+        return Err(invalid());
+    }
+    // Absolute only (`R3C2`); relative (`R[3]C[2]`) is rejected.
+    if text.contains('[') || text.contains(']') || text.contains('$') {
+        return Err(invalid());
+    }
+    let upper = text.to_ascii_uppercase();
+    let Some(after_r) = upper.strip_prefix('R') else {
+        return Err(invalid());
+    };
+    let Some((row_text, col_text)) = after_r.split_once('C') else {
+        return Err(invalid());
+    };
+    if row_text.is_empty() || col_text.is_empty() {
+        return Err(invalid());
+    }
+    if row_text.len() > 7 || col_text.len() > 5 {
+        return Err(invalid());
+    }
+    if !row_text.bytes().all(|b| b.is_ascii_digit())
+        || !col_text.bytes().all(|b| b.is_ascii_digit())
+    {
+        return Err(invalid());
+    }
+    let row: u32 = row_text.parse().map_err(|_| invalid())?;
+    let col: u32 = col_text.parse().map_err(|_| invalid())?;
+    if row == 0 || row > MAX_ROW || col == 0 || col > MAX_COLUMN {
+        return Err(invalid());
+    }
+    Ok((col, row))
+}
+
+/// Either notation (`B3` or `R3C2`).
+pub fn parse_range_bound(text: &str) -> Result<(u32, u32), XlsxError> {
+    if let Ok(cell) = parse_a1(text) {
+        return Ok(cell);
+    }
+    parse_r1c1(text)
+}
+
+/// Unix days of an Excel 1900-system serial day. `None` for serial 60 (the false 1900-02-29)
+/// and out-of-range serials.
+pub fn serial_1900_to_unix_days(serial: i64) -> Option<i64> {
+    if serial == 60 {
+        return None;
+    }
+    if !(0..=5_000_000).contains(&serial) {
+        return None;
+    }
+    if serial < 60 {
+        serial.checked_sub(25_569)?.checked_add(1)
+    } else {
+        serial.checked_sub(25_569)
+    }
+}
+
+/// Unix days of an Excel 1904-system serial day (`date1904`, epoch 1904-01-01).
+pub fn serial_1904_to_unix_days(serial: i64) -> Option<i64> {
+    if !(0..=5_000_000).contains(&serial) {
+        return None;
+    }
+    let base = dms_types::calendar::days_from_civil(1904, 1, 1)?;
+    base.checked_add(serial)
+}
+
+/// Microseconds since midnight of an Excel serial fraction (`0.5` → `12:00:00`,
+/// `excel_dates_1900/1904` clock/stamp columns). `None` for non-finite or out-of-range.
+pub fn serial_fraction_to_micros(serial: f64) -> Option<i64> {
+    if !serial.is_finite() {
+        return None;
+    }
+    let fraction = serial.rem_euclid(1.0);
+    let micros = (fraction * dms_types::calendar::MICROS_PER_DAY as f64).round();
+    if micros < 0.0 || micros >= dms_types::calendar::MICROS_PER_DAY as f64 {
+        return None;
+    }
+    let micros = micros as i64;
+    if (0..dms_types::calendar::MICROS_PER_DAY).contains(&micros) {
+        Some(micros)
+    } else {
+        None
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NumKind {
+    General,
+    Text,
+    Date,
+    Time,
+    Timestamp,
+}
+
+fn classify_builtin(num_fmt: u32) -> NumKind {
+    match num_fmt {
+        49 => NumKind::Text,
+        14 | 15 | 16 | 17 | 27 | 28 | 29 | 30 | 31 | 32 | 33 | 34 | 35 | 36 | 50 | 51 | 52 | 53
+        | 54 | 55 | 56 | 57 | 58 => NumKind::Date,
+        18 | 19 | 20 | 21 | 45 | 46 | 47 => NumKind::Time,
+        22 => NumKind::Timestamp,
+        _ => NumKind::General,
+    }
+}
+
+/// Custom `formatCode` (`yyyy-mm-dd`, `hh:mm:ss`, `yyyy-mm-dd hh:mm:ss`, `@`).
+fn classify_custom(code: &str) -> NumKind {
+    if code.contains('@') {
+        return NumKind::Text;
+    }
+    // Skip quoted literals (`"h"` etc.) so they do not fake date/time letters.
+    let mut plain = String::with_capacity(code.len());
+    let mut quoted = false;
+    for c in code.chars() {
+        match c {
+            '"' => quoted = !quoted,
+            _ if quoted => {}
+            _ => plain.push(c),
+        }
+    }
+    let lower = plain.to_ascii_lowercase();
+    let has_date = lower.contains('y') || lower.contains('d');
+    let has_time = lower.contains('h') || lower.contains('s');
+    match (has_date, has_time) {
+        (true, true) => NumKind::Timestamp,
+        (true, false) => NumKind::Date,
+        (false, true) => NumKind::Time,
+        (false, false) => NumKind::General,
+    }
+}
+
+#[derive(Debug, Clone)]
+struct RawCell {
+    style: u32,
+    kind: RawKind,
+}
+
+#[derive(Debug, Clone)]
+enum RawKind {
+    Number(String),
+    Shared(usize),
+    Inline(String),
+    Boolean(bool),
+    Error,
+    Empty,
+}
+
+fn child_text<'a>(parent: roxmltree::Node<'a, '_>, name: &str) -> Option<String> {
+    let mut out = String::new();
+    let mut found = false;
+    for child in parent
+        .children()
+        .filter(|n| n.is_element() && n.tag_name().name() == name)
+    {
+        found = true;
+        for text in child.descendants().filter(|n| n.is_text()) {
+            if let Some(text) = text.text() {
+                out.push_str(text);
+            }
+        }
+    }
+    if found { Some(out) } else { None }
+}
+
+fn inline_text(cell: roxmltree::Node<'_, '_>) -> Result<String, XlsxError> {
+    let mut out = String::new();
+    let mut seen = false;
+    for is in cell
+        .children()
+        .filter(|n| n.is_element() && n.tag_name().name() == "is")
+    {
+        seen = true;
+        for t in is
+            .descendants()
+            .filter(|n| n.is_element() && n.tag_name().name() == "t")
+        {
+            for text in t.children().filter(|n| n.is_text()) {
+                if let Some(text) = text.text() {
+                    out.push_str(text);
+                }
+            }
+        }
+    }
+    if seen {
+        Ok(out)
+    } else {
+        Err(XlsxError::Value("inlineStr cell without <is>".into()))
+    }
+}
+
+#[allow(
+    clippy::type_complexity,
+    reason = "grid positions are two small tuples"
+)]
+fn parse_cell(
+    node: roxmltree::Node<'_, '_>,
+    shared_len: usize,
+) -> Result<Option<((u32, u32), RawCell)>, XlsxError> {
+    let bad = |what: &str| XlsxError::Value(format!("sheet cell: {what}"));
+    let address = node.attribute("r").ok_or_else(|| bad("cell without r"))?;
+    let (col, row) = parse_a1(address).map_err(|_| bad("cell r is not a cell"))?;
+    let style = match node.attribute("s") {
+        None => 0,
+        Some(text) => text
+            .trim()
+            .parse::<u32>()
+            .map_err(|_| bad("cell s is not a style index"))?,
+    };
+    let kind_attr = node.attribute("t").unwrap_or("n");
+    // A formula keeps its cached `<v>`; the `<f>` itself is not evaluated.
+    let formula = node
+        .children()
+        .any(|n| n.is_element() && n.tag_name().name() == "f");
+    let value_text = child_text(node, "v");
+    let kind = match kind_attr {
+        "s" => {
+            let text = value_text.unwrap_or_default();
+            let trimmed = text.trim();
+            if trimmed.is_empty() && !formula {
+                RawKind::Empty
+            } else {
+                let index: usize = trimmed
+                    .parse()
+                    .map_err(|_| bad("shared string index is not a number"))?;
+                if index >= shared_len {
+                    return Err(bad("shared string index is out of range"));
+                }
+                RawKind::Shared(index)
+            }
+        }
+        "inlineStr" => {
+            let text = inline_text(node)?;
+            if text.is_empty() {
+                RawKind::Empty
+            } else {
+                RawKind::Inline(text)
+            }
+        }
+        "b" => {
+            let text = value_text.unwrap_or_default();
+            let trimmed = text.trim();
+            if trimmed.is_empty() && !formula {
+                RawKind::Empty
+            } else {
+                match trimmed {
+                    "1" | "true" | "TRUE" => RawKind::Boolean(true),
+                    "0" | "false" | "FALSE" => RawKind::Boolean(false),
+                    _ => return Err(bad("boolean cell is not 0 or 1")),
+                }
+            }
+        }
+        "e" => RawKind::Error,
+        "str" => match value_text {
+            None => RawKind::Empty,
+            Some(text) if text.is_empty() => RawKind::Empty,
+            Some(text) => RawKind::Inline(text),
+        },
+        "n" => {
+            // A formula without `t` reads its cached `<v>` as a number.
+            match value_text {
+                None => RawKind::Empty,
+                Some(text) if text.trim().is_empty() => RawKind::Empty,
+                Some(text) => RawKind::Number(text.trim().to_string()),
+            }
+        }
+        _ => return Err(bad("cell t is not supported")),
+    };
+    Ok(Some(((col, row), RawCell { style, kind })))
+}
+
+fn read_part(
+    zip: &mut zip::ZipArchive<std::io::Cursor<Vec<u8>>>,
+    name: &str,
+) -> Result<String, XlsxError> {
+    let file = zip
+        .by_name(name)
+        .map_err(|error| XlsxError::Zip(format!("{name}: {error}")))?;
+    if file.size() > MAX_XML_BYTES {
+        return Err(XlsxError::Zip(format!("{name} exceeds the size limit")));
+    }
+    let mut text = String::new();
+    use std::io::Read as _;
+    file.take(MAX_XML_BYTES + 1)
+        .read_to_string(&mut text)
+        .map_err(|error| XlsxError::Zip(format!("{name}: {error}")))?;
+    if text.len() as u64 > MAX_XML_BYTES {
+        return Err(XlsxError::Zip(format!("{name} exceeds the size limit")));
+    }
+    Ok(text)
+}
+
+fn parse_document<'a>(text: &'a str, name: &str) -> Result<roxmltree::Document<'a>, XlsxError> {
+    roxmltree::Document::parse(text).map_err(|error| XlsxError::Zip(format!("{name}: {error}")))
+}
+
+fn parse_styles(text: &str) -> Result<Vec<NumKind>, XlsxError> {
+    let bad = |what: &str| XlsxError::Value(format!("styles: {what}"));
+    let document = parse_document(text, "xl/styles.xml")?;
+    let root = document.root_element();
+    if root.tag_name().name() != "styleSheet" {
+        return Err(bad("root is not styleSheet"));
+    }
+    let mut customs: HashMap<u32, String> = HashMap::new();
+    for num_fmts in root
+        .children()
+        .filter(|n| n.is_element() && n.tag_name().name() == "numFmts")
+    {
+        for num_fmt in num_fmts
+            .children()
+            .filter(|n| n.is_element() && n.tag_name().name() == "numFmt")
+        {
+            let Some(id_text) = num_fmt.attribute("numFmtId") else {
+                continue;
+            };
+            let Some(code) = num_fmt.attribute("formatCode") else {
+                continue;
+            };
+            let Ok(id) = id_text.trim().parse::<u32>() else {
+                continue;
+            };
+            if customs.len() >= MAX_STYLES {
+                return Err(bad("too many number formats"));
+            }
+            customs.insert(id, code.to_string());
+        }
+    }
+    let mut kinds = Vec::new();
+    for cell_xfs in root
+        .children()
+        .filter(|n| n.is_element() && n.tag_name().name() == "cellXfs")
+    {
+        for xf in cell_xfs
+            .children()
+            .filter(|n| n.is_element() && n.tag_name().name() == "xf")
+        {
+            if kinds.len() >= MAX_STYLES {
+                return Err(bad("too many cell formats"));
+            }
+            let num_fmt = match xf.attribute("numFmtId") {
+                None => 0,
+                Some(text) => text
+                    .trim()
+                    .parse::<u32>()
+                    .map_err(|_| bad("xf numFmtId is not a number"))?,
+            };
+            let apply = xf.attribute("applyNumberFormat").unwrap_or("1");
+            if apply == "0" || apply.eq_ignore_ascii_case("false") {
+                kinds.push(NumKind::General);
+                continue;
+            }
+            if num_fmt < 164 {
+                kinds.push(classify_builtin(num_fmt));
+            } else if let Some(code) = customs.get(&num_fmt) {
+                kinds.push(classify_custom(code));
+            } else {
+                // Unknown custom id without a definition: treat as general, never guess dates.
+                kinds.push(NumKind::General);
+            }
+        }
+    }
+    Ok(kinds)
+}
+
+fn parse_shared_strings(text: &str) -> Result<Vec<String>, XlsxError> {
+    let bad = |what: &str| XlsxError::Value(format!("sharedStrings: {what}"));
+    let document = parse_document(text, "xl/sharedStrings.xml")?;
+    let root = document.root_element();
+    if root.tag_name().name() != "sst" {
+        return Err(bad("root is not sst"));
+    }
+    let mut out = Vec::new();
+    for si in root
+        .children()
+        .filter(|n| n.is_element() && n.tag_name().name() == "si")
+    {
+        if out.len() >= MAX_SHARED_STRINGS {
+            return Err(bad("too many shared strings"));
+        }
+        let mut text_out = String::new();
+        for t in si
+            .descendants()
+            .filter(|n| n.is_element() && n.tag_name().name() == "t")
+        {
+            for child in t.children().filter(|n| n.is_text()) {
+                if let Some(part) = child.text() {
+                    text_out.push_str(part);
+                }
+            }
+        }
+        out.push(text_out);
+    }
+    Ok(out)
+}
+
+struct SheetGrid {
+    name: String,
+    cells: BTreeMap<(u32, u32), RawCell>,
+    /// The sheet has a `<row>` element without cells. Excel writes none for empty rows, and
+    /// Modeler reads such sheets inconsistently (`excel_more/more_offset`: rows past the
+    /// dimension's height dropped and every column a string; `more_blank2_return`: blank rows
+    /// moved to the end and the last row repeated), so they are refused.
+    empty_row_elements: bool,
+}
+
+fn parse_dimension(text: &str) -> Option<((u32, u32), (u32, u32))> {
+    let text = text.trim();
+    if text.is_empty() {
+        return None;
+    }
+    if let Some((first, second)) = text.split_once(':') {
+        let start = parse_a1(first).ok()?;
+        let end = parse_a1(second).ok()?;
+        Some((start, end))
+    } else {
+        let cell = parse_a1(text).ok()?;
+        Some((cell, cell))
+    }
+}
+
+fn parse_sheet(name: String, text: &str, shared_len: usize) -> Result<SheetGrid, XlsxError> {
+    let bad = |what: String| XlsxError::Value(format!("sheet {name}: {what}"));
+    let document = parse_document(text, "sheet").map_err(|e| bad(e.to_string()))?;
+    let root = document.root_element();
+    if root.tag_name().name() != "worksheet" {
+        return Err(bad("root is not worksheet".into()));
+    }
+    // `<dimension>` is parsed to fail closed on malformed references; the data rectangle
+    // comes from the cells themselves (`FirstNonBlank` bounding box).
+    for child in root.children().filter(|n| n.is_element()) {
+        if child.tag_name().name() == "dimension"
+            && let Some(reference) = child.attribute("ref")
+        {
+            let _ = parse_dimension(reference);
+        }
+    }
+    let mut cells: BTreeMap<(u32, u32), RawCell> = BTreeMap::new();
+    let mut empty_row_elements = false;
+    for sheet_data in root
+        .children()
+        .filter(|n| n.is_element() && n.tag_name().name() == "sheetData")
+    {
+        for row in sheet_data
+            .children()
+            .filter(|n| n.is_element() && n.tag_name().name() == "row")
+        {
+            if let Some(r_text) = row.attribute("r") {
+                let parsed: u32 = r_text
+                    .trim()
+                    .parse()
+                    .map_err(|_| bad("row r is not a number".into()))?;
+                if parsed == 0 || parsed > MAX_ROW {
+                    return Err(bad("row r is outside the sheet".into()));
+                }
+            }
+            if !row
+                .children()
+                .any(|n| n.is_element() && n.tag_name().name() == "c")
+            {
+                empty_row_elements = true;
+            }
+            for cell in row
+                .children()
+                .filter(|n| n.is_element() && n.tag_name().name() == "c")
+            {
+                let Some(((col, row), raw)) = parse_cell(cell, shared_len)? else {
+                    continue;
+                };
+                if col == 0 || col > MAX_COLUMN || row == 0 || row > MAX_ROW {
+                    return Err(bad("cell r is outside the sheet".into()));
+                }
+                if cells.len() as u64 >= MAX_GRID_CELLS {
+                    return Err(bad("sheet exceeds the cell limit".into()));
+                }
+                cells.insert((col, row), raw);
+            }
+        }
+    }
+    Ok(SheetGrid {
+        name,
+        cells,
+        empty_row_elements,
+    })
+}
+
+#[derive(Debug, Clone, PartialEq)]
+enum Typed {
+    Integer(i64),
+    Real(f64),
+    Text(String),
+    Time(i64),
+}
+
+fn parse_integer_text(text: &str) -> Option<i64> {
+    let digits = text.strip_prefix(['-', '+']).unwrap_or(text);
+    if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    text.strip_prefix('+').unwrap_or(text).parse().ok()
+}
+
+fn parse_real_text(text: &str) -> Option<f64> {
+    if text.is_empty()
+        || !text
+            .bytes()
+            .all(|b| b.is_ascii_digit() || matches!(b, b'+' | b'-' | b'.' | b'e' | b'E'))
+        || !text.bytes().any(|b| b.is_ascii_digit())
+    {
+        return None;
+    }
+    text.parse::<f64>().ok().filter(|v| v.is_finite())
+}
+
+fn typed_of(
+    kind: &RawKind,
+    style_kind: NumKind,
+    shared: &[String],
+) -> Result<Option<Typed>, XlsxError> {
+    let bad = |what: &str| XlsxError::Value(format!("cell value: {what}"));
+    match kind {
+        RawKind::Empty | RawKind::Error => Ok(None),
+        RawKind::Boolean(flag) => {
+            if style_kind == NumKind::Text {
+                Ok(Some(Typed::Text(if *flag {
+                    "1".into()
+                } else {
+                    "0".into()
+                })))
+            } else {
+                Ok(Some(Typed::Integer(if *flag { 1 } else { 0 })))
+            }
+        }
+        RawKind::Shared(index) => {
+            let Some(text) = shared.get(*index) else {
+                return Err(bad("shared string index is out of range"));
+            };
+            if text.is_empty() {
+                Ok(None)
+            } else {
+                // A string with a time style stays a string (no oracle settles it).
+                Ok(Some(Typed::Text(text.clone())))
+            }
+        }
+        RawKind::Inline(text) => {
+            if text.is_empty() {
+                Ok(None)
+            } else {
+                // A string with a time style stays a string (no oracle settles it).
+                Ok(Some(Typed::Text(text.clone())))
+            }
+        }
+        RawKind::Number(raw) => {
+            if style_kind == NumKind::Text {
+                if raw.is_empty() {
+                    Ok(None)
+                } else {
+                    Ok(Some(Typed::Text(raw.clone())))
+                }
+            } else if style_kind == NumKind::Time || style_kind == NumKind::Timestamp {
+                let serial: f64 = raw
+                    .parse()
+                    .map_err(|_| bad("time serial is not a number"))?;
+                let Some(micros) = serial_fraction_to_micros(serial) else {
+                    return Err(bad("time serial is out of range"));
+                };
+                Ok(Some(Typed::Time(micros)))
+            } else if let Some(int) = parse_integer_text(raw) {
+                Ok(Some(Typed::Integer(int)))
+            } else if let Some(real) = parse_real_text(raw) {
+                Ok(Some(Typed::Real(real)))
+            } else {
+                Err(bad("numeric cell is not a number"))
+            }
+        }
+    }
+}
+
+#[allow(
+    clippy::type_complexity,
+    reason = "grid positions are two small tuples"
+)]
+fn bounding_box(
+    cells: &BTreeMap<(u32, u32), RawCell>,
+    shared: &[String],
+    styles: &[NumKind],
+) -> Result<Option<((u32, u32), (u32, u32))>, XlsxError> {
+    let mut min_col = u32::MAX;
+    let mut min_row = u32::MAX;
+    let mut max_col = 0u32;
+    let mut max_row = 0u32;
+    let mut any = false;
+    for ((col, row), cell) in cells {
+        let style_kind = styles
+            .get(cell.style as usize)
+            .copied()
+            .unwrap_or(NumKind::General);
+        let typed = typed_of(&cell.kind, style_kind, shared)?;
+        // Empty inline strings and empty numerics are blank for the origin.
+        if typed.is_none() {
+            continue;
+        }
+        any = true;
+        min_col = min_col.min(*col);
+        min_row = min_row.min(*row);
+        max_col = max_col.max(*col);
+        max_row = max_row.max(*row);
+    }
+    if any {
+        Ok(Some(((min_col, min_row), (max_col, max_row))))
+    } else {
+        Ok(None)
+    }
+}
+
+/// Reads `bytes` (an `.xlsx` package) as a [`Table`] following `options`.
+pub fn read_table(bytes: &[u8], options: &ExcelOptions) -> Result<Table, XlsxError> {
+    use dms_types::{DataModel, Field, Measurement, Table, Value};
+
+    if bytes.len() as u64 > MAX_XML_BYTES * 4 {
+        return Err(XlsxError::Zip("workbook exceeds the size limit".into()));
+    }
+    let mut zip = zip::ZipArchive::new(std::io::Cursor::new(bytes.to_vec()))
+        .map_err(|error| XlsxError::Zip(error.to_string()))?;
+    if zip.len() > MAX_ZIP_MEMBERS {
+        return Err(XlsxError::Zip("workbook has too many parts".into()));
+    }
+    // Collect member names first (bounded), so later borrows do not clash.
+    let mut names: Vec<String> = Vec::new();
+    for index in 0..zip.len() {
+        let file = zip
+            .by_index(index)
+            .map_err(|error| XlsxError::Zip(error.to_string()))?;
+        let name = file
+            .name()
+            .map_err(|error| XlsxError::Zip(error.to_string()))?
+            .to_string();
+        names.push(name);
+    }
+    let has = |suffix: &str| names.iter().any(|n| n == suffix);
+    if !has("xl/workbook.xml") {
+        return Err(XlsxError::Zip("xl/workbook.xml is missing".into()));
+    }
+    let workbook_text = read_part(&mut zip, "xl/workbook.xml")?;
+    let workbook_document = parse_document(&workbook_text, "xl/workbook.xml")?;
+    let workbook_root = workbook_document.root_element();
+    let mut sheet_names: Vec<String> = Vec::new();
+    let mut sheet_rids: Vec<Option<String>> = Vec::new();
+    if let Some(sheets) = workbook_root
+        .children()
+        .find(|n| n.is_element() && n.tag_name().name() == "sheets")
+    {
+        for sheet in sheets
+            .children()
+            .filter(|n| n.is_element() && n.tag_name().name() == "sheet")
+        {
+            if sheet_names.len() >= MAX_SHEETS {
+                return Err(XlsxError::Value("too many sheets".into()));
+            }
+            let Some(name) = sheet.attribute("name") else {
+                return Err(XlsxError::Value("sheet without a name".into()));
+            };
+            sheet_names.push(name.to_string());
+            sheet_rids.push(sheet.attribute("r:id").map(str::to_string));
+        }
+    }
+    if sheet_names.is_empty() {
+        return Err(XlsxError::Value("workbook has no sheets".into()));
+    }
+    // Relationship targets for sheet parts.
+    let mut rel_targets: HashMap<String, String> = HashMap::new();
+    if has("xl/_rels/workbook.xml.rels") {
+        let rels_text = read_part(&mut zip, "xl/_rels/workbook.xml.rels")?;
+        let rels_document = parse_document(&rels_text, "xl/_rels/workbook.xml.rels")?;
+        for node in rels_document
+            .root_element()
+            .children()
+            .filter(|n| n.is_element() && n.tag_name().name() == "Relationship")
+        {
+            if let (Some(id), Some(target)) = (node.attribute("Id"), node.attribute("Target")) {
+                rel_targets.insert(id.to_string(), target.to_string());
+            }
+        }
+    }
+    let styles = if has("xl/styles.xml") {
+        let styles_text = read_part(&mut zip, "xl/styles.xml")?;
+        parse_styles(&styles_text)?
+    } else {
+        Vec::new()
+    };
+    let shared: Vec<String> = if has("xl/sharedStrings.xml") {
+        let shared_text = read_part(&mut zip, "xl/sharedStrings.xml")?;
+        parse_shared_strings(&shared_text)?
+    } else {
+        Vec::new()
+    };
+    // Load every sheet grid (bounded).
+    let mut grids: Vec<SheetGrid> = Vec::new();
+    for (position, name) in sheet_names.iter().enumerate() {
+        let by_rid = sheet_rids
+            .get(position)
+            .and_then(|rid| rid.as_deref())
+            .and_then(|rid| rel_targets.get(rid))
+            .map(|target| {
+                if target.starts_with("worksheets/") {
+                    format!("xl/{target}")
+                } else if target.starts_with('/') {
+                    target.trim_start_matches('/').to_string()
+                } else if target.starts_with("xl/") {
+                    target.to_string()
+                } else {
+                    format!("xl/{target}")
+                }
+            });
+        let mut candidates = Vec::new();
+        if let Some(path) = by_rid {
+            candidates.push(path);
+        }
+        candidates.push(format!("xl/worksheets/sheet{}.xml", position + 1));
+        let mut loaded: Option<SheetGrid> = None;
+        let mut missing = true;
+        for candidate in candidates {
+            if !has(&candidate) {
+                continue;
+            }
+            missing = false;
+            let sheet_text = read_part(&mut zip, &candidate)?;
+            loaded = Some(parse_sheet(name.clone(), &sheet_text, shared.len())?);
+            break;
+        }
+        if missing {
+            return Err(XlsxError::Value(format!("sheet {name:?} part is missing")));
+        }
+        if let Some(grid) = loaded {
+            grids.push(grid);
+        }
+    }
+    // Select the worksheet.
+    let grid: &SheetGrid = match &options.sheet {
+        SheetSelector::Index(index) => grids.get(*index).ok_or_else(|| {
+            XlsxError::Sheet(format!("worksheet index {index} is outside the workbook"))
+        })?,
+        SheetSelector::Name(wanted) => grids
+            .iter()
+            .find(|grid| grid.name == *wanted)
+            .ok_or_else(|| XlsxError::Sheet(format!("worksheet {wanted:?} was not found")))?,
+    };
+    if grid.empty_row_elements {
+        return Err(XlsxError::Value(format!(
+            "GAP: worksheet {:?} has <row> elements without cells, which Modeler reads              inconsistently",
+            grid.name
+        )));
+    }
+    // Determine the rectangle.
+    let ((first_col, first_row), (last_col, last_row)) = match &options.range {
+        RangeSelector::FirstNonBlank => match bounding_box(&grid.cells, &shared, &styles)? {
+            Some(corners) => corners,
+            None => {
+                let model =
+                    DataModel::new(Vec::new()).map_err(|e| XlsxError::Value(e.to_string()))?;
+                return Table::new(model, Vec::new()).map_err(|e| XlsxError::Value(e.to_string()));
+            }
+        },
+        RangeSelector::Explicit { start, end } => {
+            let (start_col, start_row) = *start;
+            let (end_col, end_row) = *end;
+            if start_col == 0
+                || start_row == 0
+                || end_col == 0
+                || end_row == 0
+                || start_col > MAX_COLUMN
+                || end_col > MAX_COLUMN
+                || start_row > MAX_ROW
+                || end_row > MAX_ROW
+            {
+                return Err(XlsxError::Grid(
+                    "explicit range is outside the sheet".into(),
+                ));
+            }
+            if start_col > end_col || start_row > end_row {
+                return Err(XlsxError::Grid(
+                    "explicit range start is after its end".into(),
+                ));
+            }
+            let width = (end_col as u64)
+                .checked_sub(start_col as u64)
+                .and_then(|w| w.checked_add(1))
+                .ok_or_else(|| XlsxError::Grid("explicit range is too large".into()))?;
+            let height = (end_row as u64)
+                .checked_sub(start_row as u64)
+                .and_then(|h| h.checked_add(1))
+                .ok_or_else(|| XlsxError::Grid("explicit range is too large".into()))?;
+            let cells = width
+                .checked_mul(height)
+                .ok_or_else(|| XlsxError::Grid("explicit range is too large".into()))?;
+            if cells > MAX_GRID_CELLS {
+                return Err(XlsxError::Grid("explicit range is too large".into()));
+            }
+            ((start_col, start_row), (end_col, end_row))
+        }
+    };
+    let width = (last_col as usize)
+        .checked_sub(first_col as usize)
+        .and_then(|w| w.checked_add(1))
+        .ok_or_else(|| XlsxError::Grid("range is too large".into()))?;
+    let height = (last_row as usize)
+        .checked_sub(first_row as usize)
+        .and_then(|h| h.checked_add(1))
+        .ok_or_else(|| XlsxError::Grid("range is too large".into()))?;
+    if (width as u64)
+        .checked_mul(height as u64)
+        .is_some_and(|n| n > MAX_GRID_CELLS)
+    {
+        return Err(XlsxError::Grid("range is too large".into()));
+    }
+    if width == 0 || height == 0 {
+        let model = DataModel::new(Vec::new()).map_err(|e| XlsxError::Value(e.to_string()))?;
+        return Table::new(model, Vec::new()).map_err(|e| XlsxError::Value(e.to_string()));
+    }
+    // Materialize the rectangle: `None` is an absent/blank cell.
+    let mut rectangle: Vec<Vec<Option<Typed>>> = Vec::with_capacity(height);
+    for row in first_row..=last_row {
+        let mut line = Vec::with_capacity(width);
+        for col in first_col..=last_col {
+            let typed = match grid.cells.get(&(col, row)) {
+                None => None,
+                Some(cell) => {
+                    let style_kind = styles
+                        .get(cell.style as usize)
+                        .copied()
+                        .unwrap_or(NumKind::General);
+                    typed_of(&cell.kind, style_kind, &shared)?
+                }
+            };
+            // An empty string counts as blank for the grid, like an absent cell.
+            let typed = match typed {
+                Some(Typed::Text(text)) if text.is_empty() => None,
+                other => other,
+            };
+            line.push(typed);
+        }
+        rectangle.push(line);
+    }
+    // Header row vs data rows.
+    let (header_line, data_lines) = if options.field_names {
+        if rectangle.is_empty() {
+            (Vec::new(), Vec::new())
+        } else {
+            let mut lines = rectangle;
+            let header = lines.remove(0);
+            (header, lines)
+        }
+    } else {
+        (Vec::new(), rectangle)
+    };
+    // Blank rows: entirely `None`.
+    let mut records: Vec<Vec<Option<Typed>>> = Vec::with_capacity(data_lines.len());
+    for line in data_lines {
+        let blank = line.iter().all(|cell| cell.is_none());
+        if blank {
+            match options.blank_rows {
+                // `excel_more/more_blank2_noempty_stop`: reading ends at the first blank row.
+                BlankRows::StopReading => break,
+                BlankRows::ReturnBlankRows => records.push(line),
+            }
+        } else {
+            records.push(line);
+        }
+    }
+    // Field names.
+    let mut names: Vec<String> = Vec::with_capacity(width);
+    if options.field_names {
+        for (offset, cell) in header_line.iter().enumerate() {
+            let relative = offset.checked_add(1).unwrap_or(1);
+            let name = match cell {
+                None => format!("C{relative}"),
+                Some(Typed::Text(text)) if text.trim().is_empty() => {
+                    format!("C{relative}")
+                }
+                Some(Typed::Text(text)) if text.contains(',') => {
+                    return Err(XlsxError::Value(format!(
+                        "GAP: field name {text:?} has a comma; only data cells have an oracle"
+                    )));
+                }
+                Some(Typed::Text(text)) => text.clone(),
+                Some(Typed::Integer(number)) => format!("{number}.000000"),
+                Some(Typed::Real(number)) => format!("{number:.6}"),
+                Some(Typed::Time(_)) => format!("C{relative}"),
+            };
+            names.push(name);
+        }
+        // A header shorter than the range cannot happen here (rectangle is full width),
+        // but keep the width stable.
+        while names.len() < width {
+            let relative = names.len().checked_add(1).unwrap_or(1);
+            names.push(format!("C{relative}"));
+        }
+    } else {
+        for relative in 1..=width {
+            names.push(format!("C{relative}"));
+        }
+    }
+    // Duplicate headers gain ` (1)`, ` (2)`, … (second `dup` → `dup (1)`).
+    {
+        let mut counts: HashMap<String, usize> = HashMap::new();
+        for name in names.iter_mut() {
+            let base = name.clone();
+            let entry = counts.get(&base).copied().unwrap_or(0);
+            if entry > 0 {
+                *name = format!("{base} ({entry})");
+            }
+            counts
+                .entry(base)
+                .and_modify(|n| *n = n.saturating_add(1))
+                .or_insert(1);
+        }
+    }
+    // Storage inference over the scan horizon (first `scan_lines` data rows).
+    let horizon = options.scan_lines.max(1);
+    let scanned = records
+        .get(..records.len().min(horizon))
+        .unwrap_or(&records);
+    let mut storages: Vec<dms_types::Storage> = Vec::with_capacity(width);
+    for col in 0..width {
+        let mut has_string = false;
+        let mut has_time = false;
+        for row in scanned.iter() {
+            match row.get(col).and_then(|c| c.as_ref()) {
+                Some(Typed::Text(_)) => has_string = true,
+                Some(Typed::Time(_)) => has_time = true,
+                _ => {}
+            }
+            if has_string {
+                break;
+            }
+        }
+        if has_string {
+            storages.push(dms_types::Storage::String);
+            continue;
+        }
+        // No strings in the horizon: the column stays numeric or time; a late string
+        // beyond a short horizon becomes null.
+        if has_time {
+            storages.push(dms_types::Storage::Time);
+            continue;
+        }
+        // Any time beyond the horizon also makes a numeric column a time column only
+        // when the horizon already saw time (here it did not, since `has_time` is false),
+        // unless the scanned rows are all time-or-null; otherwise the late times become
+        // null. Check the whole column for time.
+        let mut any_time = false;
+        for row in records.iter() {
+            if matches!(row.get(col).and_then(|c| c.as_ref()), Some(Typed::Time(_))) {
+                any_time = true;
+                break;
+            }
+        }
+        if any_time && scanned_all_time_or_null(scanned, col) {
+            storages.push(dms_types::Storage::Time);
+            continue;
+        }
+        // Numeric columns are real, whole numbers included (every numeric column of the
+        // `excel_more` tables, e.g. `more_off5` id 1..6 reads `1.0`). A column with no number
+        // reads as a string when strings come later, else as an all-null real.
+        let any_number = records.iter().any(|row| {
+            matches!(
+                row.get(col).and_then(|c| c.as_ref()),
+                Some(Typed::Integer(_) | Typed::Real(_))
+            )
+        });
+        let any_late_string = records
+            .iter()
+            .any(|row| matches!(row.get(col).and_then(|c| c.as_ref()), Some(Typed::Text(_))));
+        storages.push(if !any_number && any_late_string {
+            dms_types::Storage::String
+        } else {
+            dms_types::Storage::Real
+        });
+    }
+    // Rows: an absent/empty cell is `""` in a string column (`excel_default` id 2 text, blank
+    // rows in `excel_more/more_blank_noempty_return`) and null elsewhere; late strings beyond
+    // a numeric horizon are null (`excel_scan_1`).
+    let mut fields = Vec::with_capacity(width);
+    for (name, storage) in names.iter().zip(storages.iter()) {
+        let mut field = Field::new(name.clone(), *storage);
+        field.measurement = match storage {
+            dms_types::Storage::String => Measurement::Categorical,
+            _ => Measurement::Continuous,
+        };
+        fields.push(field);
+    }
+    let model = DataModel::new(fields).map_err(|e| XlsxError::Value(e.to_string()))?;
+    let mut rows: Vec<Vec<Value>> = Vec::with_capacity(records.len());
+    for record in records.iter() {
+        let mut out = Vec::with_capacity(width);
+        for (col, storage) in storages.iter().enumerate() {
+            let cell = record.get(col).and_then(|c| c.as_ref());
+            match (cell, storage) {
+                (None, dms_types::Storage::String) => out.push(Value::string("")),
+                (None, _) => out.push(Value::Null),
+                // Modeler turns every comma of a text cell into a period
+                // (`excel_more/more_commas`: `a,b` -> `a.b`, `1,5` -> `1.5`, `x,y,z` -> `x.y.z`).
+                (Some(Typed::Text(text)), dms_types::Storage::String) => {
+                    out.push(Value::string(text.replace(',', ".")));
+                }
+                (Some(Typed::Text(_)), _) => out.push(Value::Null),
+                (Some(Typed::Time(micros)), dms_types::Storage::Time) => {
+                    out.push(Value::Time(*micros));
+                }
+                (Some(Typed::Time(micros)), dms_types::Storage::String) => {
+                    out.push(Value::string(Value::Time(*micros).to_string()));
+                }
+                (Some(Typed::Time(_)), _) => out.push(Value::Null),
+                (Some(Typed::Integer(number)), dms_types::Storage::Real) => {
+                    out.push(Value::real(*number as f64));
+                }
+                (Some(Typed::Integer(number)), dms_types::Storage::String) => {
+                    out.push(Value::string(number.to_string()));
+                }
+                (Some(Typed::Integer(_)), _) => out.push(Value::Null),
+                (Some(Typed::Real(number)), dms_types::Storage::Real) => {
+                    out.push(Value::real(*number));
+                }
+                (Some(Typed::Real(number)), dms_types::Storage::String) => {
+                    out.push(Value::string(number.to_string()));
+                }
+                (Some(Typed::Real(_)), _) => out.push(Value::Null),
+            }
+        }
+        rows.push(out);
+    }
+    Table::new(model, rows).map_err(|e| XlsxError::Value(e.to_string()))
+}
+
+fn scanned_all_time_or_null(scanned: &[Vec<Option<Typed>>], col: usize) -> bool {
+    for row in scanned {
+        match row.get(col).and_then(|c| c.as_ref()) {
+            None => {}
+            Some(Typed::Time(_)) => {}
+            _ => return false,
+        }
+    }
+    true
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -794,5 +2009,262 @@ mod tests {
         assert!(sheet.contains("<t>tabhere</t>"), "{sheet}");
         assert!(sheet.contains("s=\"2\"><v></v>"), "{sheet}");
         assert!(sheet.contains("dimension ref=\"A1:C2\""), "{sheet}");
+    }
+
+    #[test]
+    fn a1_and_r1c1_cells_parse_and_reject_bad_refs() {
+        assert_eq!(parse_a1("A1"), Ok((1, 1)));
+        assert_eq!(parse_a1("b3"), Ok((2, 3)));
+        assert_eq!(parse_a1("$B$3"), Ok((2, 3)));
+        assert_eq!(parse_a1("B$3"), Ok((2, 3)));
+        assert_eq!(parse_a1("$B3"), Ok((2, 3)));
+        assert_eq!(parse_a1("XFD1048576"), Ok((16_384, 1_048_576)));
+        assert!(parse_a1("").is_err());
+        assert!(parse_a1("A0").is_err());
+        assert!(parse_a1("A1048577").is_err());
+        assert!(parse_a1("XFE1").is_err());
+        assert!(parse_a1("R3C2").is_err());
+        assert_eq!(parse_r1c1("R3C2"), Ok((2, 3)));
+        assert_eq!(parse_r1c1("r12c9"), Ok((9, 12)));
+        assert_eq!(parse_r1c1("R1C16384"), Ok((16384, 1)));
+        assert!(parse_r1c1("R0C1").is_err());
+        assert!(parse_r1c1("R1C0").is_err());
+        assert!(parse_r1c1("R[3]C[2]").is_err());
+        assert!(parse_r1c1("B3").is_err());
+        assert_eq!(parse_range_bound("B3"), Ok((2, 3)));
+        assert_eq!(parse_range_bound("R3C2"), Ok((2, 3)));
+        assert!(parse_range_bound("").is_err());
+    }
+
+    #[test]
+    fn serial_dates_cover_the_1900_bug_and_1904() {
+        use dms_types::calendar;
+        // 1900 system: 1 = 1900-01-01, 59 = 1900-02-28, 60 is the false leap day.
+        assert_eq!(
+            serial_1900_to_unix_days(1),
+            calendar::days_from_civil(1900, 1, 1)
+        );
+        assert_eq!(
+            serial_1900_to_unix_days(59),
+            calendar::days_from_civil(1900, 2, 28)
+        );
+        assert_eq!(serial_1900_to_unix_days(60), None);
+        assert_eq!(
+            serial_1900_to_unix_days(61),
+            calendar::days_from_civil(1900, 3, 1)
+        );
+        assert_eq!(
+            serial_1900_to_unix_days(43_890),
+            calendar::days_from_civil(2020, 2, 29)
+        );
+        // 1904 system: 0 = 1904-01-01.
+        assert_eq!(
+            serial_1904_to_unix_days(0),
+            calendar::days_from_civil(1904, 1, 1)
+        );
+        assert_eq!(
+            serial_1904_to_unix_days(1),
+            calendar::days_from_civil(1904, 1, 2)
+        );
+        // Fractions are times of day, independent of the epoch.
+        assert_eq!(
+            serial_fraction_to_micros(0.5),
+            calendar::micros_from_time(12, 0, 0, 0)
+        );
+        assert_eq!(
+            serial_fraction_to_micros(0.25),
+            calendar::micros_from_time(6, 0, 0, 0)
+        );
+        assert_eq!(
+            serial_fraction_to_micros(4_3890.5),
+            calendar::micros_from_time(12, 0, 0, 0)
+        );
+        assert!(serial_fraction_to_micros(f64::NAN).is_none());
+    }
+
+    fn minimal_workbook(
+        sheets: &[(&str, &str)],
+        styles: &str,
+        shared: Option<&str>,
+        date1904: bool,
+    ) -> Vec<u8> {
+        use std::io::Write as _;
+        let mut writer = zip::ZipWriter::new(Cursor::new(Vec::new()));
+        let opts: zip::write::SimpleFileOptions = zip::write::SimpleFileOptions::default();
+        let mut write = |name: &str, data: &str| {
+            writer.start_file(name, opts).unwrap();
+            writer.write_all(data.as_bytes()).unwrap();
+        };
+        let mut content_types = String::from(
+            r#"<?xml version="1.0" encoding="UTF-8"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>"#,
+        );
+        let main_ns = "http://schemas.openxmlformats.org/spreadsheetml/2006/main";
+        let rel_ns = "http://schemas.openxmlformats.org/officeDocument/2006/relationships";
+        let pkg_ns = "http://schemas.openxmlformats.org/package/2006/relationships";
+        let mut workbook = format!(
+            r#"<?xml version="1.0" encoding="UTF-8"?><workbook xmlns="{main_ns}" xmlns:r="{rel_ns}"><workbookPr date1904="{date}"/><sheets>"#,
+            date = if date1904 { "1" } else { "0" }
+        );
+        let mut rels =
+            format!(r#"<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="{pkg_ns}">"#);
+        for (index, (name, sheet_xml)) in sheets.iter().enumerate() {
+            let id = index + 1;
+            content_types.push_str(&format!(
+                r#"<Override PartName="/xl/worksheets/sheet{id}.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>"#
+            ));
+            workbook.push_str(&format!(
+                r#"<sheet name="{name}" sheetId="{id}" r:id="rId{id}"/>"#
+            ));
+            rels.push_str(&format!(
+                r#"<Relationship Id="rId{id}" Type="{rel_ns}/worksheet" Target="worksheets/sheet{id}.xml"/>"#
+            ));
+            write(&format!("xl/worksheets/sheet{id}.xml"), sheet_xml);
+        }
+        workbook.push_str("</sheets></workbook>");
+        rels.push_str(&format!(
+            r#"<Relationship Id="rIdStyles" Type="{rel_ns}/styles" Target="styles.xml"/></Relationships>"#
+        ));
+        content_types.push_str("</Types>");
+        write("[Content_Types].xml", &content_types);
+        write(
+            "_rels/.rels",
+            &format!(
+                r#"<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="{pkg_ns}"><Relationship Id="rId1" Type="{rel_ns}/officeDocument" Target="xl/workbook.xml"/></Relationships>"#
+            ),
+        );
+        write("xl/workbook.xml", &workbook);
+        write("xl/_rels/workbook.xml.rels", &rels);
+        write("xl/styles.xml", styles);
+        if let Some(sst) = shared {
+            write("xl/sharedStrings.xml", sst);
+        }
+        writer.finish().unwrap().into_inner()
+    }
+
+    fn probe_styles() -> String {
+        let ns = "http://schemas.openxmlformats.org/spreadsheetml/2006/main";
+        format!(
+            r#"<?xml version="1.0" encoding="UTF-8"?><styleSheet xmlns="{ns}"><numFmts count="3"><numFmt numFmtId="164" formatCode="yyyy-mm-dd"/><numFmt numFmtId="165" formatCode="hh:mm:ss"/><numFmt numFmtId="166" formatCode="yyyy-mm-dd hh:mm:ss"/></numFmts><fonts count="1"><font><sz val="11"/><name val="Calibri"/></font></fonts><fills count="1"><fill><patternFill patternType="none"/></fill></fills><borders count="1"><border/></borders><cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs><cellXfs count="5"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/><xf numFmtId="49" fontId="0" fillId="0" borderId="0" xfId="0" applyNumberFormat="1"/><xf numFmtId="164" fontId="0" fillId="0" borderId="0" xfId="0" applyNumberFormat="1"/><xf numFmtId="165" fontId="0" fillId="0" borderId="0" xfId="0" applyNumberFormat="1"/><xf numFmtId="166" fontId="0" fillId="0" borderId="0" xfId="0" applyNumberFormat="1"/></cellXfs></styleSheet>"#
+        )
+    }
+
+    #[test]
+    fn shared_inline_numbers_booleans_formulas_and_styles_read() {
+        let sheet = r#"<?xml version="1.0" encoding="UTF-8"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData><row r="1"><c r="A1" t="inlineStr"><is><t>id</t></is></c><c r="B1" t="inlineStr"><is><t>when</t></is></c><c r="C1" t="inlineStr"><is><t>as_text</t></is></c><c r="D1" t="inlineStr"><is><t>flag</t></is></c><c r="E1" t="inlineStr"><is><t>calc</t></is></c></row><row r="2"><c r="A2" t="n"><v>3</v></c><c r="B2" s="3" t="n"><v>0.5</v></c><c r="C2" s="1" t="n"><v>12</v></c><c r="D2" t="b"><v>1</v></c><c r="E2"><f>1+2</f><v>3</v></c></row><row r="3"><c r="A3" t="s"><v>0</v></c><c r="B3" s="4" t="n"><v>1.5</v></c><c r="C3" s="1" t="inlineStr"><is><t>oops</t></is></c><c r="D3" t="b"><v>0</v></c><c r="E3" t="n"><v></v></c></row></sheetData></worksheet>"#;
+        let shared = r#"<?xml version="1.0" encoding="UTF-8"?><sst xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" count="1" uniqueCount="1"><si><t>banana</t></si></sst>"#;
+        let bytes = minimal_workbook(&[("S", sheet)], &probe_styles(), Some(shared), false);
+        let table = read_table(&bytes, &ExcelOptions::default()).unwrap();
+        let names: Vec<&str> = table
+            .model()
+            .fields()
+            .iter()
+            .map(|f| f.name.as_str())
+            .collect();
+        assert_eq!(names, ["id", "when", "as_text", "flag", "calc"]);
+        let col = |name: &str| table.column(name).unwrap().cloned().collect::<Vec<_>>();
+        assert_eq!(col("id"), [Value::string("3"), Value::string("banana")]);
+        assert_eq!(
+            col("when"),
+            [
+                Value::Time(calendar::micros_from_time(12, 0, 0, 0).unwrap()),
+                Value::Time(calendar::micros_from_time(12, 0, 0, 0).unwrap())
+            ]
+        );
+        assert_eq!(col("as_text"), [Value::string("12"), Value::string("oops")]);
+        assert_eq!(col("flag"), [Value::real(1.0), Value::real(0.0)]);
+        assert_eq!(col("calc"), [Value::real(3.0), Value::Null]);
+        // Shared-string out of range, bad numbers and bad refs fail closed.
+        assert!(read_table(b"not a zip", &ExcelOptions::default()).is_err());
+        assert!(read_table(&bytes[..bytes.len() / 2], &ExcelOptions::default()).is_err());
+    }
+
+    /// A sheet of `<row>` elements, each a list of inline-string or numeric cells in columns A..
+    fn rows_sheet(rows: &[&[&str]]) -> String {
+        let mut xml = String::from(
+            r#"<?xml version="1.0" encoding="UTF-8"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData>"#,
+        );
+        for (index, row) in rows.iter().enumerate() {
+            let number = index + 1;
+            if row.is_empty() {
+                continue; // Excel writes no element for an empty row
+            }
+            xml.push_str(&format!(r#"<row r="{number}">"#));
+            for (column, text) in row.iter().enumerate() {
+                let column = char::from(b'A' + u8::try_from(column).unwrap());
+                if text.parse::<f64>().is_ok() {
+                    xml.push_str(&format!(r#"<c r="{column}{number}"><v>{text}</v></c>"#));
+                } else {
+                    xml.push_str(&format!(
+                        r#"<c r="{column}{number}" t="inlineStr"><is><t>{text}</t></is></c>"#
+                    ));
+                }
+            }
+            xml.push_str("</row>");
+        }
+        xml.push_str("</sheetData></worksheet>");
+        xml
+    }
+
+    /// `excel_more` rules: numeric columns are real, commas in text read as periods, blank rows
+    /// stop reading or stay in place (`""` in string columns), and a sheet with a cell-less
+    /// `<row>` element is refused.
+    #[test]
+    fn blank_rows_commas_and_empty_row_elements_follow_the_oracles() {
+        let sheet = rows_sheet(&[&["id", "s"], &["1", "a,b"], &[], &["2", "x,y,z"]]);
+        let bytes = minimal_workbook(&[("S", &sheet)], &probe_styles(), None, false);
+        let read = |blank_rows| {
+            let options = ExcelOptions {
+                blank_rows,
+                ..Default::default()
+            };
+            read_table(&bytes, &options).unwrap()
+        };
+        let all = read(BlankRows::ReturnBlankRows);
+        assert_eq!(all.model().fields()[0].storage, dms_types::Storage::Real);
+        let rows: Vec<Vec<Value>> = all.rows().to_vec();
+        assert_eq!(
+            rows,
+            [
+                vec![Value::real(1.0), Value::string("a.b")],
+                vec![Value::Null, Value::string("")],
+                vec![Value::real(2.0), Value::string("x.y.z")],
+            ]
+        );
+        assert_eq!(read(BlankRows::StopReading).row_count(), 1);
+
+        let with_empty_row = sheet.replace(r#"<row r="4">"#, r#"<row r="3"/><row r="4">"#);
+        let bytes = minimal_workbook(&[("S", &with_empty_row)], &probe_styles(), None, false);
+        let error = read_table(&bytes, &ExcelOptions::default()).unwrap_err();
+        assert!(error.to_string().starts_with("GAP:"), "{error}");
+    }
+
+    #[test]
+    fn malformed_packages_fail_closed() {
+        let good_sheet = r#"<?xml version="1.0" encoding="UTF-8"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData><row r="1"><c r="A1" t="inlineStr"><is><t>id</t></is></c></row><row r="2"><c r="A2" t="n"><v>1</v></c></row></sheetData></worksheet>"#;
+        let bytes = minimal_workbook(&[("S", good_sheet)], &probe_styles(), None, false);
+        assert!(read_table(&bytes, &ExcelOptions::default()).is_ok());
+        // Truncated zip, non-XML sheet, missing workbook, bad shared index, bad style.
+        assert!(read_table(&bytes[..20], &ExcelOptions::default()).is_err());
+        let bad_sheet = good_sheet.replace("A1", "ZZZ9");
+        let bad = minimal_workbook(&[("S", &bad_sheet)], &probe_styles(), None, false);
+        assert!(read_table(&bad, &ExcelOptions::default()).is_err());
+        let bad_shared = r#"<?xml version="1.0" encoding="UTF-8"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData><row r="1"><c r="A1" t="inlineStr"><is><t>id</t></is></c></row><row r="2"><c r="A2" t="s"><v>9</v></c></row></sheetData></worksheet>"#;
+        let bad = minimal_workbook(&[("S", bad_shared)], &probe_styles(), None, false);
+        assert!(read_table(&bad, &ExcelOptions::default()).is_err());
+        // Bad range bounds fail closed.
+        let out_of_range = ExcelOptions {
+            range: RangeSelector::Explicit {
+                start: (1, 1),
+                end: (16_385, 1),
+            },
+            ..Default::default()
+        };
+        assert!(read_table(&bytes, &out_of_range).is_err());
+        // Unknown sheet fails closed.
+        let missing = ExcelOptions {
+            sheet: SheetSelector::Name("Nope".into()),
+            ..Default::default()
+        };
+        assert!(read_table(&bytes, &missing).is_err());
     }
 }
