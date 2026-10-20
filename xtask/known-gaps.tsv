@@ -49,4 +49,3 @@ adp_next	adp_merge_flag	Auto Data Prep step not implemented yet (supervised/unsu
 adp_next	adp_merge_supervised	Auto Data Prep step not implemented yet (supervised/unsupervised merge, binning, feature selection/construction, target rescaling); see crates/exec/src/nodes/auto_data_prep.rs
 adp_next	adp_merge_unsupervised	Auto Data Prep step not implemented yet (supervised/unsupervised merge, binning, feature selection/construction, target rescaling); see crates/exec/src/nodes/auto_data_prep.rs
 adp_next	adp_selection	Auto Data Prep step not implemented yet (supervised/unsupervised merge, binning, feature selection/construction, target rescaling); see crates/exec/src/nodes/auto_data_prep.rs
-adp_next	adp_target_rescale	Auto Data Prep step not implemented yet (supervised/unsupervised merge, binning, feature selection/construction, target rescaling); see crates/exec/src/nodes/auto_data_prep.rs

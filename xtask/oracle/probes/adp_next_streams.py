@@ -245,6 +245,10 @@ try:
     build("adp_target_rescale", CONT, CUSTOM + [("rescale_continuous_target", True),
           ("target_final_mean", 0), ("target_final_sd", 1)],
           "Continuous target z-scored")
+    build("adp_target_boxcox", {"id": "None", "ycont": "None", "ycat": "None", "c_skew": "Target"},
+          CUSTOM + [("rescale_continuous_target", True), ("target_final_mean", 5),
+                    ("target_final_sd", 2)],
+          "Skewed target c_skew: Box-Cox lambda other than 1, final mean 5 and SD 2")
     build("adp_construction", CONT, CUSTOM + [("transform_select_input_fields", True),
           ("perform_feature_construction", True)],
           "Feature construction (PCA)")

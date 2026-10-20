@@ -75,7 +75,10 @@
 //! `GAP:` `uiReplaceNominalFeaturesMissingValue` true does not substitute the mode (see `flg`).
 //! false is rejected. `GAP:` timestamp `ts` is copied in all three cases while
 //! `uiComputeTimeDuration` is true. A time-of-day field with that flag is rejected.
-//! `GAP:` target outliers, target Box-Cox / target missing /
+//! Target (`uiRescaleScaleTargetUsingBoxCox`): a continuous target is Box-Cox transformed and
+//! rescaled to `targetMean` / `targetSD`, see [`prepare_target`].
+//!
+//! `GAP:` target outliers, a target with missing values, target missing /
 //! target reorder, unsupervised merge, feature construction, almost-constant category screening,
 //! frequency and analysis weights, `useCustomSettings`, a non-empty `inputFields` / `targetField`,
 //! automatic date or time units, `dateUnit` `year`, and `excludeNoUsedField` other than
@@ -232,6 +235,9 @@ struct Prep {
     scale_continuous: bool,
     scale: Scale,
     outliers: Option<Outliers>,
+    /// `uiRescaleScaleTargetUsingBoxCox`: the final `targetMean` and `targetSD`.
+    box_cox_target: Option<(f64, f64)>,
+    target_ext: String,
     check_feature_level: bool,
     ordinal_to_scale: i64,
     scale_to_ordinal: i64,
@@ -274,6 +280,8 @@ enum Class {
     Date,
     Continuous,
     Categorical,
+    /// A continuous target rescaled with Box-Cox.
+    Target,
 }
 
 struct OutCol {
@@ -329,7 +337,10 @@ impl Operator for Prep {
                 Class::Categorical if self.prepare_features => {
                     prepare_categorical(self, field, index, &values, &mut cols)?;
                 }
-                Class::Continuous | Class::Categorical => {
+                Class::Target if self.prepare_features => {
+                    cols.push(prepare_target(self, field, index, &values)?);
+                }
+                Class::Continuous | Class::Categorical | Class::Target => {
                     cols.push(pass_col(field, values, index));
                 }
             }
@@ -394,6 +405,12 @@ fn parse(s: Option<&Element>) -> Result<Prep, OperatorError> {
                 sd: positive(s, "zScore_SD", 1.0)?,
             },
         },
+        box_cox_target: if flag(s, "uiRescaleScaleTargetUsingBoxCox", false)? {
+            Some((finite(s, "targetMean", 0.0)?, positive(s, "targetSD", 1.0)?))
+        } else {
+            None
+        },
+        target_ext: text_or(s, "nameExtForTarget", "_transformed"),
         outliers: if flag(s, "uiDetectFeatureOutliers", false)? {
             Some(Outliers {
                 cutoff: positive(s, "outlierIdentCutoff", 3.0)?,
@@ -447,7 +464,6 @@ fn reject_unsupported(s: Option<&Element>) -> Result<(), OperatorError> {
         "uiReplaceScaleTargetMissingValue",
         "uiReplaceOrdinalTargetMissingValue",
         "uiReplaceNominalTargetMissingValue",
-        "uiRescaleScaleTargetUsingBoxCox",
         "uiDetectTargetOutliers",
         "uiExtractHourFromTime",
         "uiExtractMinuteFromTime",
@@ -516,8 +532,6 @@ fn acknowledge_unused(s: Option<&Element>) -> Result<(), OperatorError> {
     let _ = unit_interval(s, "supervisedMergingPValue", 0.05)?;
     let _ = unit_interval(s, "featureSelectionPValue", 0.05)?;
     let _ = unit_interval(s, "homogeneousSubsetsPValue", 0.05)?;
-    let _ = finite(s, "targetMean", 0.0)?;
-    let _ = positive(s, "targetSD", 1.0)?;
     let min_cases = int_or(s, "unsupervisedMergingMinNumberOfCases", 10)?;
     if min_cases < 1 {
         return Err(OperatorError::Settings(format!(
@@ -538,7 +552,6 @@ fn acknowledge_unused(s: Option<&Element>) -> Result<(), OperatorError> {
     let _ = settings::integer(s, "currentTime")?;
     let _ = settings::integer(s, "fixedTime")?;
     let _ = text_or(s, "rootNameForConsturctedFeature", "feature");
-    let _ = text_or(s, "nameExtForTarget", "_transformed");
     let _ = text_or(s, "suffixElapsedSeconds", "_seconds");
     let _ = text_or(s, "suffixElapsedMinutes", "_minutes");
     let _ = text_or(s, "suffixElapsedHours", "_hours");
@@ -561,6 +574,13 @@ fn classify(prep: &Prep, field: &Field) -> Class {
         Storage::Time | Storage::Timestamp | Storage::List | Storage::Unknown
     ) {
         return Class::Pass;
+    }
+    if field.role == Role::Target
+        && prep.box_cox_target.is_some()
+        && field.measurement == Measurement::Continuous
+        && matches!(field.storage, Storage::Integer | Storage::Real)
+    {
+        return Class::Target;
     }
     if field.role != Role::Input {
         return Class::Pass;
@@ -764,6 +784,82 @@ fn prepare_continuous(
         key_b: index,
     });
     Ok(())
+}
+
+/// Box-Cox grid of the guide ("Target Handling"): lambda from -3 to 3 in steps of 0.5.
+const BOX_COX_GRID: (f64, f64, usize) = (-3.0, 0.5, 13);
+
+/// The continuous target (`uiRescaleScaleTargetUsingBoxCox`, guide "Target Handling",
+/// `adp_next/adp_target_rescale` and `adp_target_boxcox`): `c = min(y) - 1`; the lambda of the
+/// grid with the largest log-likelihood `-n/2 ln((n-1)/n sd(g)^2) + (lambda-1) sum ln(y-c)`
+/// (ties: the smallest lambda) gives `g = ((y-c)^lambda - 1)/lambda` (`ln(y-c)` at 0), then
+/// `targetSD * (g - mean(g)) / sd(g) + targetMean` with the sample standard deviation.
+/// `ycont` picks lambda 1, the skewed `c_skew` lambda 0. The new field follows every continuous
+/// input and replaces the target.
+fn prepare_target(
+    prep: &Prep,
+    field: &Field,
+    index: usize,
+    values: &[Value],
+) -> Result<OutCol, OperatorError> {
+    let Some((final_mean, final_sd)) = prep.box_cox_target else {
+        return Ok(pass_col(field, values.to_vec(), index));
+    };
+    let gap = |what: &str| {
+        OperatorError::Settings(format!("GAP: Box-Cox target {:?}: {what}", field.name))
+    };
+    let y: Vec<f64> = values
+        .iter()
+        .map(|value| as_number(field, value).filter(|x| x.is_finite()))
+        .collect::<Option<_>>()
+        .ok_or_else(|| gap("missing target values have no oracle"))?;
+    if y.len() < 2 {
+        return Err(gap("fewer than two records"));
+    }
+    let n = y.len() as f64;
+    let c = y.iter().copied().fold(f64::INFINITY, f64::min) - 1.0;
+    let transform = |v: f64, lambda: f64| {
+        if lambda == 0.0 {
+            (v - c).ln()
+        } else {
+            ((v - c).powf(lambda) - 1.0) / lambda
+        }
+    };
+    let moments = |lambda: f64| {
+        let g: Vec<f64> = y.iter().map(|&v| transform(v, lambda)).collect();
+        let mean = g.iter().sum::<f64>() / n;
+        let variance = g.iter().map(|x| (x - mean).powi(2)).sum::<f64>() / (n - 1.0);
+        (mean, variance)
+    };
+    let sum_log: f64 = y.iter().map(|&v| (v - c).ln()).sum();
+    let (start, step, count) = BOX_COX_GRID;
+    let mut best: Option<(f64, f64)> = None;
+    for j in 0..count {
+        let lambda = start + step * j as f64;
+        let (_, variance) = moments(lambda);
+        let likelihood = -n / 2.0 * ((n - 1.0) / n * variance).ln() + (lambda - 1.0) * sum_log;
+        if likelihood.is_finite() && best.is_none_or(|(_, top)| likelihood > top) {
+            best = Some((lambda, likelihood));
+        }
+    }
+    let lambda = best.ok_or_else(|| gap("no finite log-likelihood"))?.0;
+    let (mean, variance) = moments(lambda);
+    let sd = variance.sqrt();
+    if !(sd.is_finite() && sd > 0.0) {
+        return Err(gap("constant after the transformation"));
+    }
+    let mut out = continuous_field(extended(&field.name, &prep.target_ext)?);
+    out.role = Role::Target;
+    Ok(OutCol {
+        field: out,
+        values: y
+            .iter()
+            .map(|&v| finite_real(final_sd * (transform(v, lambda) - mean) / sd + final_mean))
+            .collect(),
+        group: GROUP_CONTINUOUS,
+        key_a: u32::MAX,
+        key_b: index,
+    })
 }
 
 fn prepare_categorical(
