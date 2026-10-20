@@ -9,11 +9,10 @@
 
 mod support;
 
-use dms_exec::{ExecContext, FileResolver, NodeOutput, Plan};
-use dms_pmml::{Model, Pmml, RuleSetModel};
+use dms_exec::{ExecContext, FileResolver, NodeOutput, Plan, registry};
+use dms_pmml::{BooleanOperator, Model, Operator, Pmml, Predicate, RuleSetModel};
 use dms_stream::Stream;
 use dms_strfmt::ArchiveLimits;
-use std::collections::HashMap;
 use std::sync::Arc;
 
 fn rules(pmml: &Pmml) -> &RuleSetModel {
@@ -28,17 +27,51 @@ fn train(label: &str, case: &str) -> Result<(Pmml, Pmml), String> {
     let bytes = std::fs::read(root.join(format!("corpus/{label}/{case}.str"))).unwrap();
     let archive = dms_strfmt::container::read_archive(&bytes, &ArchiveLimits::default()).unwrap();
     let stream = Stream::from_document(&archive.document).unwrap();
-    let builder = stream
+    let auto = label == "auto_train";
+    let kind = if auto {
+        "BuildBinaryClassifierNode"
+    } else {
+        "BuildDecisionListNode"
+    };
+    let node = stream
         .diagram
         .nodes
         .iter()
-        .find(|n| n.type_identifier() == "BuildDecisionListNode")
+        .find(|n| n.type_identifier() == kind)
         .unwrap();
-    let attachments: HashMap<String, Arc<[u8]>> = archive
-        .attachments
-        .into_iter()
-        .map(|a| (a.name, a.bytes.into()))
-        .collect();
+    let mut builder = node.clone();
+    let oracle = if auto {
+        // Exercise the actual Decision List factory with ac_lift's saved component
+        // settings, not an imitation of Auto Classifier defaults or a saved-nugget fallback.
+        let saved = stream
+            .diagram
+            .nodes
+            .iter()
+            .flat_map(|n| &n.result_items)
+            .filter_map(|item| item.child("buildModelNode"))
+            .find(|n| {
+                n.attribute("class")
+                    .is_some_and(|c| c.ends_with(".BuildDecisionListNode"))
+            })
+            .unwrap();
+        builder.class = saved.attribute("class").unwrap().into();
+        builder.settings = saved.child("properties").cloned();
+        archive
+            .attachments
+            .iter()
+            .filter_map(|a| std::str::from_utf8(&a.bytes).ok())
+            .filter_map(|xml| Pmml::parse(xml).ok())
+            .find(|p| matches!(p.model, Model::RuleSet(_)))
+            .unwrap()
+    } else {
+        let path = std::fs::read_dir(root.join(format!("oracle/{label}/{case}/models")))
+            .unwrap()
+            .map(|e| e.unwrap().path())
+            .find(|p| p.extension().is_some_and(|e| e == "xml"))
+            .unwrap();
+        Pmml::parse(&std::fs::read_to_string(path).unwrap()).unwrap()
+    };
+    builder.result_items.clear();
     let context = ExecContext {
         files: FileResolver {
             data_dirs: vec![
@@ -47,28 +80,49 @@ fn train(label: &str, case: &str) -> Result<(Pmml, Pmml), String> {
             ],
         },
         stream_properties: stream.properties.clone().map(Arc::new),
-        attachments: Arc::new(attachments),
         decimal_places: Some(15),
-        export_dir: None,
+        ..ExecContext::default()
     };
-    let result = Plan::new(&stream).evaluate(&[builder.uid.as_str()], &context);
-    let ours = match result.get(builder.uid.as_str()).unwrap() {
-        Ok(NodeOutput::Model(pmml)) => (**pmml).clone(),
+    let plan = Plan::new(&stream);
+    let upstream = plan.inputs_of(&node.uid)[0];
+    let result = plan.evaluate(&[upstream], &context);
+    let input = match result.get(upstream).unwrap().as_ref().unwrap() {
+        NodeOutput::Data(table) => Arc::clone(table),
+        other => panic!("{label}/{case}: {other:?}"),
+    };
+    if auto {
+        assert_eq!(input.row_count(), 360);
+    }
+    let operator = registry::factory("decision_list").unwrap()(&builder).unwrap();
+    let ours = match operator.produce(&[input], None, &context) {
+        Ok(NodeOutput::Model(pmml)) => (*pmml).clone(),
         Err(error) => return Err(format!("{error:?}")),
         other => panic!("{label}/{case}: {other:?}"),
     };
-    let path = std::fs::read_dir(root.join(format!("oracle/{label}/{case}/models")))
-        .unwrap()
-        .map(|e| e.unwrap().path())
-        .find(|p| p.extension().is_some_and(|e| e == "xml"))
-        .unwrap();
-    let oracle = Pmml::parse(&std::fs::read_to_string(path).unwrap()).unwrap();
     Ok((ours, oracle))
 }
 
 #[test]
-fn trained_lists_match_modeler_and_refuse_unsettled_ties() {
+fn trained_lists_match_twenty_oracles_in_full_ir() {
+    let mut models = 0;
+    let mut rule_count = 0;
     for (label, cases) in [
+        (
+            "dl_discriminate",
+            &[
+                "dl01_duplicates",
+                "dl02_final_prefix",
+                "dl03_canonical",
+                "dl04_coverage",
+                "dl06_preprune",
+                "dl07_interaction",
+                "dl08_completed",
+                "dl09_prefix_canonical",
+                "dl10_tie_sizes",
+                "dl11_tie_equal",
+                "dl12_tie_reorder",
+            ][..],
+        ),
         (
             "train_next",
             &[
@@ -82,24 +136,82 @@ fn trained_lists_match_modeler_and_refuse_unsettled_ties() {
             ][..],
         ),
         ("models_next2", &["dl_min_group"][..]),
+        ("auto_train", &["ac_lift"][..]),
     ] {
         for case in cases {
             let (ours, oracle) = train(label, case).unwrap();
             assert_eq!(rules(&ours), rules(&oracle), "{label}/{case}");
+            models += 1;
+            rule_count += rules(&ours).rules.len();
             println!(
                 "{label}/{case}: {} rules equal (including remainder)",
                 rules(&ours).rules.len()
             );
         }
     }
-    // Pure segments: every candidate list ties on rate and coverage, in different rule
-    // orders, and Modeler's pick (north, web, gold; web, gold) is not settled: the builder
-    // refuses (GAP) so the nugget keeps its saved model.
-    for case in ["dl_default", "dl_max_rules"] {
-        let error = train("models_next2", case).unwrap_err();
-        assert!(error.contains("GAP"), "models_next2/{case}: {error}");
-        println!("models_next2/{case}: refused as a GAP");
-    }
+    assert_eq!(models, 20);
+    println!("{models} exact RuleSet models, {rule_count} rules including remainders");
+}
+
+#[test]
+fn completed_support_tie_is_refused_but_capped_tie_is_resolved() {
+    let error = train("models_next2", "dl_default").unwrap_err();
+    assert!(
+        error.contains("GAP: Decision List unresolved final list tie"),
+        "{error}"
+    );
+    let (ours, oracle) = train("models_next2", "dl_max_rules").unwrap();
+    assert_eq!(rules(&ours), rules(&oracle));
+}
+
+#[test]
+fn dl05_retains_the_documented_partition_counterexample() {
+    let (ours, oracle) = train("dl_discriminate", "dl05_carry").unwrap();
+    let conjunction = |fields: &[(&str, &str)]| Predicate::Compound {
+        operator: BooleanOperator::And,
+        predicates: fields
+            .iter()
+            .map(|(field, value)| Predicate::Simple {
+                field: (*field).into(),
+                operator: Operator::Equal,
+                value: Some((*value).into()),
+            })
+            .collect(),
+    };
+    let actual: Vec<_> = rules(&ours)
+        .rules
+        .iter()
+        .map(|r| (r.predicate.clone(), r.record_count, r.correct, r.disabled))
+        .collect();
+    assert_eq!(
+        actual,
+        vec![
+            (
+                conjunction(&[("b", "v0"), ("c", "v0")]),
+                Some(140.0),
+                Some(118.0),
+                false
+            ),
+            (
+                conjunction(&[("a", "v1"), ("b", "v1")]),
+                Some(180.0),
+                Some(120.0),
+                false
+            ),
+            (
+                conjunction(&[("b", "v0"), ("a", "v0")]),
+                Some(40.0),
+                Some(36.0),
+                false
+            ),
+            (Predicate::True, Some(300.0), Some(10.0), true),
+        ]
+    );
+    assert_eq!(
+        rules(&oracle).rules[0].predicate,
+        conjunction(&[("a", "v1"), ("c", "v0")])
+    );
+    assert_ne!(rules(&ours), rules(&oracle));
 }
 
 #[test]

@@ -1,5 +1,6 @@
-//! Decision List, a faithful port of the verified `dl-lab/dl.py` prototype.
-//! Sources: IBM SPSS Modeler 19 Algorithms Guide pp.105–111 (split pp.108–110),
+//! Decision List, with an empirically selected two-stage beam search.
+//! Sources: IBM SPSS Modeler 19.0 Algorithms Guide, PDF pp.109–115 (the same chapter
+//! as 18.0 printed pp.105–111; sea-level split pp.108–110 in that edition),
 //! PMML 4.3 RuleSet, and differential oracle cases listed below. No IBM implementation used.
 //!
 //! - `train_next/dl_default`: equal-frequency edges average sorted values at positions
@@ -14,26 +15,41 @@
 //!   bound > the LOCAL covered population's upper bound, and both neighbours lower.
 //!   It removes containing results of size <= growth*size, then extends toward the
 //!   higher adjacent rate, larger adjacent count, or right on ties (`dl_default`).
-//! - Rule beam returns selected rules from all levels, plus terminal rules; list beam
-//!   ranks union coverage rates on the remaining records and returns the best list of
-//!   the deepest available level (`dl_max_rules2`, `dl_max_rules4`, `dl_search`). Both
-//!   sorts are stable, preserving input-field order. A disabled True remainder follows.
+//! - Rule search stably selects the best response-rate extensions at each depth and
+//!   returns distinct terminal rules plus the last depth's selected rules. Lists grow
+//!   on their own remaining records. Canonical list identity sorts conditions within
+//!   each rule, preserving rule order and the first generated representation.
+//! - The list beam stably ranks the arithmetic mean of its rules' first-hit response
+//!   rates. Completed lists compete with extensions at subsequent depths. Final
+//!   selection uses union response rate, fewer covered records, fewer rules, descending
+//!   first-hit rate vector, then field-name predicate order. A disabled True remainder
+//!   follows. Widths, depths and all other saved settings still apply as below.
+//! - The mean beam score is an EMPIRICAL FIT, departing from the guide's union estimate.
+//!   Phase 3 `estimates-01822` and phase 4 fit 20/21 frozen cases semantically; the Rust
+//!   builder is checked for full RuleSet IR equality in `exec/tests/decision_list.rs`.
+//!   `dl_discriminate/dl05_carry` remains a counterexample: first rule b=v0 & c=v0
+//!   (118/140), whereas the oracle chooses a=v1 & c=v0 (116/160). Both cover the same
+//!   final union, but their ordered first-hit partitions differ. See
+//!   `docs/decision-list-validation.md` and local `target/dl6/REPORT.md` for evidence.
 //! - Non-expert mode ignores confidence, rule width/depth, list width, binning and growth:
 //!   defaults 95%, 5, 5, 5, equalFreq/10, 2 (`dl_confidence80` equals `dl_default`).
 //!   List depth and minimum group size always apply. Expert settings: `dl_search`, `dl_numeric`.
-//! - Lists of equal rate prefer the one covering fewer records (`train_next/dl_max_rules2`:
-//!   126 of 180 over 140 of 200); equivalent rules covering the same records keep the
-//!   stable order (`train_next/dl_default`: `region = east` before `spend > 40`).
-//! - GAP: lists tying on rate and coverage with different per-rule splits (permutations of
-//!   pure segments) are refused, so the nugget keeps its saved model:
-//!   `models_next2/dl_default` (Modeler: north, web, gold) and `dl_max_rules` (web, gold).
+//! - Open: dl05's partition, the rationale/generalization of the empirical beam and final
+//!   tie order, and completed lists tying on every numeric final key with different
+//!   first-hit supports (`models_next2/dl_default`). The lexical key does not settle that
+//!   remaining ambiguity; such ties, or full-key ties with different counts, are refused.
+//!   PMML emission intersects repeated field restrictions, retains the first condition's
+//!   field and orders subsequent fields by name. This empirical serialization convention
+//!   supplies exact predicates/schema without changing search identities or beam order.
 //!   No oracle for searchDirection down, reuseFields=false, weights/frequencies, missing
-//!   inputs; these are rejected.
+//!   inputs; these are rejected. This is a strict oracle improvement, not a claim that
+//!   the proprietary search has been recovered.
 
 use crate::stats::f_quantile;
 use crate::{AlgoError, Dataset};
 use dms_pmml::Pmml;
 use dms_types::{Measurement, Role, Storage, ValueSpec};
+use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
 
 #[derive(Debug, Clone)]
@@ -87,9 +103,61 @@ impl Attribute {
 
 type Rule = Vec<(usize, Vec<usize>)>;
 type RuleList = Vec<Rule>;
-/// A candidate list, its response rate, the records it covers and, per rule, the records and
-/// responses it claims.
-type RankedList = (RuleList, f64, usize, Vec<(usize, usize)>);
+struct RankedList {
+    rules: RuleList,
+    /// Per-rule first-hit (records, responses), excluding the disabled remainder.
+    signature: Vec<(usize, usize)>,
+    remaining: Vec<usize>,
+    mean: f64,
+    union_rate: f64,
+    covered: usize,
+    completed: bool,
+    /// Parent beam index; remaining rows are materialized only after width pruning.
+    parent: usize,
+}
+
+impl RankedList {
+    fn identity(&self) -> RuleList {
+        self.rules
+            .iter()
+            .map(|rule| {
+                let mut key = rule.clone();
+                key.sort();
+                key
+            })
+            .collect()
+    }
+
+    fn rank_cmp(&self, other: &Self) -> Ordering {
+        other
+            .union_rate
+            .total_cmp(&self.union_rate)
+            .then(self.covered.cmp(&other.covered))
+            .then(self.rules.len().cmp(&other.rules.len()))
+            .then_with(|| {
+                self.signature
+                    .iter()
+                    .map(|&(n, y)| response_rate(y, n))
+                    .zip(&other.signature)
+                    .map(|(a, &(n, y))| response_rate(y, n).total_cmp(&a))
+                    .find(|order| *order != Ordering::Equal)
+                    .unwrap_or(Ordering::Equal)
+            })
+    }
+
+    fn final_cmp(&self, other: &Self, attrs: &[Attribute]) -> Ordering {
+        self.rank_cmp(other).then_with(|| {
+            self.rules
+                .iter()
+                .map(|rule| predicate_key(rule, attrs))
+                .cmp(other.rules.iter().map(|rule| predicate_key(rule, attrs)))
+        })
+    }
+}
+
+fn response_rate(y: usize, n: usize) -> f64 {
+    if n == 0 { 0.0 } else { y as f64 / n as f64 }
+}
 
 struct Search<'a> {
     y: Vec<bool>,
@@ -264,7 +332,7 @@ impl Search<'_> {
     fn rules(&mut self, records: &[usize]) -> Result<Vec<Rule>, AlgoError> {
         let mut beam = vec![Vec::new()];
         let mut result = Vec::new();
-        for _ in 0..self.settings.rule_depth {
+        for depth in 0..self.settings.rule_depth {
             let mut candidates = Vec::new();
             for rule in beam {
                 let xr = self.covered(records, &rule)?;
@@ -295,88 +363,144 @@ impl Search<'_> {
                 .take(self.settings.rule_width)
                 .map(|(r, _)| r)
                 .collect();
-            result.extend(beam.iter().cloned());
+            if depth + 1 == self.settings.rule_depth {
+                result.extend(beam.iter().cloned());
+            }
         }
+        // A terminal may also have been selected at the depth limit. Preserve its first
+        // representation, without merging distinct conjunctions that cover the same rows.
+        let mut seen = HashSet::new();
+        result.retain(|rule| seen.insert(rule.clone()));
         Ok(result)
     }
 
     fn lists(&mut self) -> Result<RuleList, AlgoError> {
         let all: Vec<usize> = (0..self.y.len()).collect();
-        let mut kept: Vec<RankedList> = vec![(Vec::new(), 0.0, 0, Vec::new())];
-        let mut last_level: Vec<RankedList> = Vec::new();
+        let mut kept = vec![RankedList {
+            rules: Vec::new(),
+            signature: Vec::new(),
+            remaining: all,
+            mean: 0.0,
+            union_rate: 0.0,
+            covered: 0,
+            completed: false,
+            parent: 0,
+        }];
+        let mut last_level = Vec::new();
         for _ in 0..self.settings.list_depth {
-            let beam: Vec<RuleList> = kept.iter().map(|(l, ..)| l.clone()).collect();
             let mut candidates = Vec::new();
-            for list in &beam {
-                let mut rest = all.clone();
-                for rule in list {
-                    let cov: HashSet<usize> = self.covered(&rest, rule)?.into_iter().collect();
-                    rest.retain(|i| !cov.contains(i));
-                }
-                for rule in self.rules(&rest)? {
-                    let mut next = list.clone();
-                    next.push(rule);
-                    let mut cov = HashSet::new();
-                    for r in &next {
-                        cov.extend(self.covered(&all, r)?);
+            let mut seen = HashSet::new();
+            for (parent, list) in kept.iter().enumerate() {
+                let rules = if list.completed {
+                    Vec::new()
+                } else {
+                    self.rules(&list.remaining)?
+                };
+                if rules.is_empty() && !list.rules.is_empty() {
+                    if seen.insert(list.identity()) {
+                        candidates.push(RankedList {
+                            rules: list.rules.clone(),
+                            signature: list.signature.clone(),
+                            remaining: Vec::new(),
+                            mean: list.mean,
+                            union_rate: list.union_rate,
+                            covered: list.covered,
+                            completed: true,
+                            parent,
+                        });
+                        candidate_limit(candidates.len())?;
                     }
-                    let records: Vec<usize> = cov.into_iter().collect();
-                    candidates.push((next, self.rate(&records)));
+                    continue;
+                }
+                for rule in rules {
+                    let cov = self.covered(&list.remaining, &rule)?;
+                    if cov.is_empty() {
+                        continue;
+                    }
+                    let mut next_rules = list.rules.clone();
+                    next_rules.push(rule);
+                    let mut signature = list.signature.clone();
+                    signature.push((cov.len(), self.positives(&cov)));
+                    let covered = list.covered.saturating_add(cov.len());
+                    let responses = signature.iter().map(|(_, y)| y).sum();
+                    let mean = signature
+                        .iter()
+                        .map(|&(n, y)| response_rate(y, n))
+                        .sum::<f64>()
+                        / signature.len() as f64;
+                    let next = RankedList {
+                        rules: next_rules,
+                        signature,
+                        remaining: Vec::new(),
+                        mean,
+                        union_rate: response_rate(responses, covered),
+                        covered,
+                        completed: false,
+                        parent,
+                    };
+                    if seen.insert(next.identity()) {
+                        candidates.push(next);
+                    }
                     candidate_limit(candidates.len())?;
                 }
             }
             if candidates.is_empty() {
                 break;
             }
-            // Equal rates prefer the list covering fewer records (`train_next/dl_max_rules2`:
-            // 126 of 180 over 140 of 200, both 0.7); the sort is stable otherwise.
-            let mut keyed = Vec::with_capacity(candidates.len());
-            for (list, rate) in candidates {
-                let signature = self.signature(&all, &list)?;
-                let total: usize = signature.iter().map(|(n, _)| n).sum();
-                keyed.push((list, rate, total, signature));
+            // Only beam pruning uses the empirical mean. Keep generation order on ties.
+            candidates.sort_by(|a, b| b.mean.total_cmp(&a.mean));
+            // The final selection includes the entire final candidate level, before pruning.
+            // Move it out rather than cloning candidates and their remaining populations.
+            last_level = candidates.split_off(self.settings.list_width.min(candidates.len()));
+            // Candidate count can be much larger than beam width. Retaining every
+            // candidate's row population would allocate candidates * rows before the work
+            // limit is reached. Only selected beam members need populations at all.
+            for candidate in &mut candidates {
+                let parent = kept
+                    .get(candidate.parent)
+                    .ok_or_else(|| AlgoError::Data("Decision List parent beam index".into()))?;
+                candidate.remaining = if candidate.completed {
+                    parent.remaining.clone()
+                } else {
+                    let rule = candidate.rules.last().ok_or_else(|| {
+                        AlgoError::Data("Decision List extension has no rule".into())
+                    })?;
+                    let cov: HashSet<usize> =
+                        self.covered(&parent.remaining, rule)?.into_iter().collect();
+                    parent
+                        .remaining
+                        .iter()
+                        .copied()
+                        .filter(|i| !cov.contains(i))
+                        .collect()
+                };
             }
-            keyed.sort_by(|a, b| b.1.total_cmp(&a.1).then(a.2.cmp(&b.2)));
-            last_level = keyed.clone();
-            keyed.truncate(self.settings.list_width);
-            kept = keyed;
+            kept = candidates;
         }
-        // GAP: lists that tie on rate and coverage but split the records differently rule by
-        // rule (permutations of pure segments, `models_next2/dl_default` and `dl_max_rules`:
-        // Modeler keeps north, web, gold and web, gold) are not settled. Equivalent rules
-        // that cover the same records keep the stable order (`train_next/dl_default`:
-        // `region = east` before `spend > 40`).
-        if let Some((_, top, total, signature)) = last_level.first()
-            && last_level
-                .iter()
-                .skip(1)
-                .any(|(_, rate, t, sig)| rate == top && t == total && sig != signature)
+        last_level.extend(kept);
+        last_level.sort_by(|a, b| a.final_cmp(b, &self.attrs));
+        // Names settle capped-list ties (`dl10_tie_sizes`), but completed lists with equal
+        // numeric ranks and different first-hit supports remain unverified
+        // (`models_next2/dl_default`). Equal union rates alone no longer trigger a GAP.
+        if let Some(top) = last_level.first()
+            && last_level.iter().skip(1).any(|list| {
+                top.signature != list.signature
+                    && (top.final_cmp(list, &self.attrs) == Ordering::Equal
+                        || (top.completed
+                            && list.completed
+                            && top.rank_cmp(list) == Ordering::Equal))
+            })
         {
             return Err(AlgoError::Unsupported(
-                "GAP: Decision List lists tie on rate and coverage in different orders".into(),
+                "GAP: Decision List unresolved final list tie with different first-hit counts"
+                    .into(),
             ));
         }
-        Ok(kept.into_iter().next().map(|(l, ..)| l).unwrap_or_default())
-    }
-
-    /// Records and responses each rule of a list claims, in list order.
-    fn signature(
-        &mut self,
-        all: &[usize],
-        list: &RuleList,
-    ) -> Result<Vec<(usize, usize)>, AlgoError> {
-        let mut rest = all.to_vec();
-        let mut out = Vec::with_capacity(list.len());
-        for rule in list {
-            let cov: HashSet<usize> = self.covered(&rest, rule)?.into_iter().collect();
-            let responses = cov
-                .iter()
-                .filter(|&&i| self.y.get(i) == Some(&true))
-                .count();
-            out.push((cov.len(), responses));
-            rest.retain(|i| !cov.contains(i));
-        }
-        Ok(out)
+        Ok(last_level
+            .into_iter()
+            .next()
+            .map(|l| l.rules)
+            .unwrap_or_default())
     }
 }
 
@@ -644,6 +768,77 @@ fn compound(parts: &[String], op: &str) -> String {
     }
 }
 
+/// Name-based ordered predicate syntax, including `and`/`or` structure and repeated
+/// restrictions, as in the phase-3 harness. Field-index or XML-tag order is different.
+fn predicate_key(rule: &Rule, attrs: &[Attribute]) -> String {
+    fn compound_key(parts: &[String], op: &str) -> String {
+        match parts {
+            [] => "()".into(),
+            [one] => one.clone(),
+            _ => format!("({op:?}, ({}))", parts.join(", ")),
+        }
+    }
+    let mut parts = Vec::new();
+    for (f, cats) in rule {
+        let Some(attr) = attrs.get(*f) else { continue };
+        if let Some(edges) = &attr.edges {
+            if let Some(lo) = cats
+                .first()
+                .and_then(|c| c.checked_sub(1))
+                .and_then(|c| edges.get(c))
+            {
+                parts.push(format!("({:?}, \"greaterThan\", {lo:?})", attr.name));
+            }
+            if let Some(hi) = cats.last().and_then(|c| edges.get(*c)) {
+                parts.push(format!("({:?}, \"lessOrEqual\", {hi:?})", attr.name));
+            }
+        } else {
+            let alternatives: Vec<_> = cats
+                .iter()
+                .filter_map(|c| attr.labels.get(*c))
+                .map(|value| format!("({:?}, \"equal\", {value:?})", attr.name))
+                .collect();
+            parts.push(compound_key(&alternatives, "or"));
+        }
+    }
+    compound_key(&parts, "and")
+}
+
+/// Emit an effective conjunction once per field, preserving the seed field. Search retains
+/// its ordered, unmerged conditions: normalizing before beam selection changes the search.
+fn emission_rule(rule: &Rule, attrs: &[Attribute]) -> Result<Rule, AlgoError> {
+    let mut out: Rule = Vec::new();
+    for (f, cats) in rule {
+        let attr = attrs
+            .get(*f)
+            .ok_or_else(|| AlgoError::Data("Decision List predicate field index".into()))?;
+        if let Some((_, previous)) = out.iter_mut().find(|(field, _)| field == f) {
+            if attr.edges.is_some() {
+                let lo = previous.first().copied().zip(cats.first().copied());
+                let hi = previous.last().copied().zip(cats.last().copied());
+                if let (Some((a, b)), Some((c, d))) = (lo, hi) {
+                    *previous = (a.max(b)..=c.min(d)).collect();
+                } else {
+                    previous.clear();
+                }
+            } else {
+                previous.retain(|c| cats.contains(c));
+            }
+            if previous.is_empty() {
+                return Err(AlgoError::Data(
+                    "Decision List empty predicate intersection".into(),
+                ));
+            }
+        } else {
+            out.push((*f, cats.clone()));
+        }
+    }
+    if let Some(tail) = out.get_mut(1..) {
+        tail.sort_by_key(|(f, _)| attrs.get(*f).map(|a| a.name.as_str()));
+    }
+    Ok(out)
+}
+
 fn predicate(rule: &Rule, attrs: &[Attribute]) -> String {
     let mut parts = Vec::new();
     for (f, cats) in rule {
@@ -685,7 +880,11 @@ pub fn train_xml(
     settings: &DecisionListSettings,
 ) -> Result<String, AlgoError> {
     let (mut search, response) = prepare(dataset, settings)?;
-    let list = search.lists()?;
+    let list = search
+        .lists()?
+        .iter()
+        .map(|rule| emission_rule(rule, &search.attrs))
+        .collect::<Result<RuleList, _>>()?;
     let target = dataset
         .table
         .model()

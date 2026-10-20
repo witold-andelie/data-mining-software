@@ -104,7 +104,7 @@
 ## 7. Decision List 训练
 
 `BuildDecisionListNode` 通过 `dms-algo::decision_list` 原生训练并替换链接的 nugget，已移出
-`SCORING_ONLY`。实现逐项移植已验证的 `dl-lab/dl.py`，分箱、sea-level split、局部
+`SCORING_ONLY`。搜索采用 phase-3 `estimates-01822`；分箱、sea-level split、局部
 Clopper–Pearson 界和两层 beam search 的规则均在模块文档逐例列明。F 分位数通过逆正则化
 不完全 beta 求解；SciPy 1.14.1 的 5 个 F 分位数（相对容差 1e-12）及 9 组置信区间
 （绝对容差 1e-12，含百万样本）为数值基准，不需要 Python 运行时。
@@ -114,10 +114,11 @@ Clopper–Pearson 界和两层 beam search 的规则均在模块文档逐例列�
 以及 `isDisabled`、`searchDirection=up`、`label=remainder`。`train` 解析为现有评分 IR；
 IR 保留禁用状态，不保留未建模的 label/searchDirection 扩展，完整 XML 可由 `train_xml` 获取。
 
-8 个 oracle 模型（`train_next` 的 7 例和 `models_next2/dl_min_group`）严格比较 RuleSet
-（规则顺序、谓词、计数、禁用状态、模型头和 schema）全部一致。响应率相同时取覆盖更少的列表；
-纯分段数据上按不同顺序拆分记录的平票（`models_next2/dl_default`、`dl_max_rules`）拒绝为 GAP，
-nugget 保留已保存的模型。11 个流比较全部 3/3。完整案例、设置映射、拒绝范围和验证输出见
+固定 21 例中 20 例严格比较 RuleSet（规则顺序、谓词、计数、禁用状态、模型头和 schema）
+全部一致，保留原先全部 10 个精确用例。list beam 按规则首命中率均值排名（偏离指南 union
+estimate 的经验拟合），完成列表继续竞争，最终按 union rate、覆盖量、长度、rate vector 和
+谓词名称排名。`dl05_carry` 分区仍不同；`models_next2/dl_default` 完成列表的支持数平票仍拒绝
+为 GAP，nugget 保留保存模型；`dl_max_rules` 现已完整 IR 匹配。完整案例、设置映射、拒绝范围和验证输出见
 [`decision-list-validation.md`](decision-list-validation.md)。
 
 ## 7. Tree-AS 训练及 Linear-AS 剩余差异（2026-10-18）

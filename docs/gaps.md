@@ -1,10 +1,10 @@
 # 待办（按优先级排序）
 
-> 更新：2026-10-18
+> 更新：2026-10-20
 
 2026-10-20 C5.0：P（仅正的局部修正增益进入均值，以该增益比较并计算增益比）与 R5（先按固定最大分支结构重估，选中后重长后代）已落地。15 个 `c50_discriminate` 与 `c50_wn_expert` 的完整 PMML 树、分布及评分精确匹配，7 条回归 GAP 已关闭。剩余：wn100 两个额外子树，训练误差 16 vs Modeler 22；16 个相同的 Auto Classifier C5.0 组件，39 vs 43。精确二项上界、重剪枝、raising 时序及全局预算候选均未同时解释全部见证，未额外修改生产剪枝；拟议的 6 流 `c50_prune_streams.py` 及冻结预测见 `target/c50d3/REPORT.md`。winnowing、加权分布及 boosting 原有 GAP 保留。
 
-Decision List 已支持训练（MVP 69/85）。9/10 指定模型的规则顺序、谓词、计数和 mining schema 一致；剩余 GAP：`models_next2/dl_max_rules` 响应率平票时，原型及 Rust 保留 north+web（80+60 个响应），Modeler 选 web+gold（60+55）。该流比较 1/3，其余 10 个流各 3/3。保留原型稳定顺序，未猜测新的平票规则。显式拒绝 down 搜索、`reuseFields=false`、频率/权重、缺失输入/目标、事件、交互状态、Split 字段；未知存储和资源上限返回错误。见 `docs/decision-list-validation.md`。
+Decision List 采用 phase-3 `estimates-01822`，固定 21 例中 20 例完整 RuleSet IR 一致（原 10 例，全部保留）；平均首命中率 beam 是偏离指南 union estimate 的经验拟合。`dl_discriminate/dl05_carry` 的首命中分区仍不同；`models_next2/dl_default` 的完成列表支持数平票仍显式 GAP。`models_next2/dl_max_rules` 已严格匹配。移除 5 个已匹配的 dl_discriminate GAP；9 个 auto_train/ac_* GAP 仍由 C5.0 组件导致。显式拒绝 down 搜索、`reuseFields=false`、频率/权重、缺失输入/目标、事件、交互状态、Split 字段；未知存储和资源上限返回错误。见 `docs/decision-list-validation.md`。
 
 1. **P2：类型系统和 CLEM**：存储类型、测量级别、缺失值、日期基准（流属性 `dateBaseline`、`date2DigitBaseline`）；CLEM 解析与求值的子集。
 2. **P2：节点设置映射**：每个节点的脚本属性名 ↔ 文件元素名 ↔ 取值形式，用探针逐个确定（`docs/formats/str.md` 第 5 节），按团队流的使用频率排序（Type、Statistics File、Table、Var. File、Derive、Filter、Select、Data Audit……）。

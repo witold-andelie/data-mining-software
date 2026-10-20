@@ -1,145 +1,107 @@
-# Decision List training validation — 2026-10-18
+# Decision List training validation — 2026-10-20
 
-`BuildDecisionListNode` now trains through `dms-algo::decision_list` and `decision_list`
-is registered as implemented, outside `SCORING_ONLY`. MVP parity is **69/85**.
-No Modeler execution, installation, oracle/probe command, shared corpus/oracle writes,
-or git state changes were used.
+The native learner now adopts phase 3's `estimates-01822`: **20/21 full RuleSet IR
+matches**, up from 10/21, with none of the ten previously exact cases lost.
+`dl_discriminate/dl05_carry` remains the sole counterexample on the frozen bench.
+This is an empirical strict improvement, not a recovery of Modeler's proprietary search.
 
-## Implementation and boundaries
+## Mechanism and public sources
 
-The implementation ports the verified clean-room `dl-lab/dl.py` prototype. Sources and
-case-specific rules are recorded in the module docs and `crates/algo/README.md`:
-Modeler 19 Algorithms Guide pp.105–111, PMML 4.3 RuleSetModel. Rust uses the existing
-regularized incomplete beta function, bounded inverse bisection and exact boundary-shape
-forms for F quantiles. Python 3.13 / SciPy 1.14.1 was used only to calculate test values.
-Five F quantiles use 1e-12 relative tolerance; nine Clopper–Pearson intervals use 1e-12
-absolute tolerance, including n=1,000,000.
+The public IBM SPSS Modeler **19.0 Algorithms Guide**, Decision List chapter
+(PDF pp.109–115), supplies binning, local sea-level splitting and Clopper–Pearson
+confidence tests. The corresponding 18.0 chapter is printed pp.105–111
+(PDF pp.125–131); phase 4 found no algorithmic difference between these chapters.
+The 19.0 PDF is available from
+[IBM](https://www.ibm.com/docs/en/SS3RA7_19.0.0/pdf/AlgorithmsGuide.pdf).
+PMML representation follows DMG PMML 4.3 RuleSetModel. No IBM implementation is used.
 
-Always read `minGroupSize` and `maxListDepth`. With `expertMode=false`, use confidence 95%,
-rule width/depth and list width 5, equalFreq/10 bins, growth 2. Expert mode reads
-`confidenceLevel`, `maxRuleWidth`, `maxRuleDepth`, `maxListWidth`, `binningMethod`,
-`binCount`, `segmentGrowth`. Resolve custom target/inputs when automatic field selection
-is disabled; the default response is the target flag's true value, overridden by
-`modelTargetValue`. Filter training partitions through the existing builder path.
+1. At each rule depth, stably retain the highest response-rate extensions up to
+   `maxRuleWidth`. Return distinct terminal rules and the final depth's selected
+   rules, rather than returning selected rules from every intermediate level.
+2. Extend each list using only its remaining records. De-duplicate lists by ordered
+   rules, sorting conditions within each rule for identity only; retain the first
+   generated representation. Coverage equality is not list identity.
+3. Rank the list beam by the arithmetic **mean of its rules' first-hit response
+   rates**, preserving generation order on ties. Carry genuinely completed lists
+   into subsequent candidate levels, still subject to beam pruning.
+4. Select the final result from the entire last candidate level, before width
+   pruning, by union response rate, fewer covered records, fewer rules, descending
+   first-hit rate vector, then name-based ordered predicate syntax (including
+   `and`/`or` structure). Do not substitute field indices or XML tag order.
+5. Before emission, intersect repeated restrictions on a field; retain the seed
+   field and order subsequent fields by name. This empirical serialization
+   convention removes redundant bounds and supplies exact predicates/mining schema
+   without changing the search's identities or traversal.
 
-`train_xml` writes rule ids, response score, correct/record counts, equal categorical
-predicates, six-decimal numeric bounds, mining fields in first-use order, `RuleSet0`,
-`isDisabled`, `searchDirection=up`, and the disabled True `remainder` label.
-`train` parses this into the existing scoring IR. Label and search-direction extensions
-remain available in XML; the existing IR retains disabled state.
+The **mean beam score is an empirical fit and departs from the guide's union
+estimate**. Phase 3's 21,844 configurations and phase 4's 5,832 configurations
+found no 21-case fit. Their selected family matched 20/21 semantically and 14/21
+in predicate representation; production adds the uniform emission convention
+above and verifies full RuleSet equality. Local evidence: `target/dl4/REPORT.md`,
+`target/dl5/REPORT.md`, and this adoption's `target/dl6/REPORT.md`.
 
-Explicit rejection: down search, reuseFields=false, frequency/weight use, missing
-input/target values, events, interactive states, Split fields, unknown/non-scalar storage.
-Finite settings and data indices are checked before use. Limits: beam widths 1..64,
-depths 1..32, bins 2..256, 256 categories per input, 128 inputs, 1,000,000 rows,
-8,000,000 input cells, 32 MiB input text, 10,000 candidates per level and 200,000,000
-coverage checks. Exceeding these returns an error.
+## Exact training comparisons
 
-## Direct training test output
+`crates/exec/tests/decision_list.rs` evaluates the upstream data, clears saved
+builder results, and calls `registry::factory("decision_list")` directly.
+Saved-nugget fallback cannot make a training assertion pass. Equality includes
+the model header, mining schema, selection method, rule ids, ordered predicate
+trees, scores/confidences/weights, counts and disabled state.
 
-Command: `cargo test -p dms-exec --features corpus --test decision_list -- --nocapture`.
-This evaluates the builder itself, independently of saved-nugget fallback, and compares
-the full RuleSet IR, including header/schema and ordered predicates/counts.
+| Cases | Exact models | Rules including remainder |
+|---|---:|---:|
+| `dl_discriminate` 01–04 and 06–12 | 11 | 36 |
+| `train_next`: default, max_rules2, max_rules4, search, min_group, confidence80, numeric | 7 | 35 |
+| `models_next2/dl_min_group` | 1 | 2 |
+| `auto_train/ac_lift`, saved Decision List component settings | 1 | 4 |
+| **Frozen bench exact total** | **20** | **77** |
 
-```text
-train_next/dl_default: 6 rules equal (including remainder)
-train_next/dl_max_rules2: 3 rules equal (including remainder)
-train_next/dl_max_rules4: 5 rules equal (including remainder)
-train_next/dl_search: 6 rules equal (including remainder)
-train_next/dl_min_group: 4 rules equal (including remainder)
-train_next/dl_confidence80: 6 rules equal (including remainder)
-train_next/dl_numeric: 5 rules equal (including remainder)
-models_next2/dl_default: 4 rules equal (including remainder)
-models_next2/dl_min_group: 2 rules equal (including remainder)
-models_next2/dl_max_rules: documented GAP (equal-rate list tie: north+web vs web+gold)
-test trained_lists_match_modeler_nine_cases_and_document_tie_gap ... ok
-test unverified_search_and_weight_settings_are_rejected ... ok
-```
+The `ac_lift` comparison extracts the saved Decision List build node and embedded
+RuleSet PMML, trains on its actual 360 upstream records, and compares the full IR.
+It does not assume Auto Classifier's component settings.
 
-Result: **2 passed; 0 failed**. Nine matching models contain 41 rules including remainders.
-Four algorithm unit tests also pass: SciPy numerical values, strict group-size acceptance,
-bin boundaries/six-decimal PMML, XML escaping/extensions, and invalid settings/indices/missing data.
+Outside this bench, `models_next2/dl_max_rules` now also matches full IR. The
+completed-list support tie in `models_next2/dl_default` remains explicitly refused:
+equal union rate, coverage, length and first-hit rate vector but different
+per-rule supports. The lexical key is not established for that completed-list
+ambiguity. A corpus test asserts both the remaining refusal and the newly
+resolved capped-list case. The old blanket rate/coverage tie refusal is removed.
 
-## Every requested stream comparison
+## Remaining counterexample and limits
 
-Each line below is the exact summary from `cargo xtask compare <label> <file.str>`.
-Every run reported `3 exported, 0 failed (0 root causes)`.
+For `dl05_carry`, the oracle's ordered rules claim 116/160, 80/100 and 78/100
+responses/records. The learner claims 118/140, 120/180 and 36/40. Both leave the
+disabled remainder at 10/300; equality of their final union does not imply
+equality of the trained lists. The exact predicates and counts of this gap are
+fixed by a separate corpus test, rather than accepting arbitrary inequality.
 
-```text
-xtask compare: train_next/dl_confidence80.str: 3/3 terminal inputs match Modeler
-xtask compare: train_next/dl_default.str: 3/3 terminal inputs match Modeler
-xtask compare: train_next/dl_max_rules2.str: 3/3 terminal inputs match Modeler
-xtask compare: train_next/dl_max_rules4.str: 3/3 terminal inputs match Modeler
-xtask compare: train_next/dl_min_group.str: 3/3 terminal inputs match Modeler
-xtask compare: train_next/dl_numeric.str: 3/3 terminal inputs match Modeler
-xtask compare: train_next/dl_search.str: 3/3 terminal inputs match Modeler
-xtask compare: models_next2/dl_default.str: 3/3 terminal inputs match Modeler
-  mismatch       id12L11N87JTTL   applydecisionlist row 1 field $D-respond: Modeler $null$, ours "Y"
-  mismatch       id1SV11TBBJDGH   applydecisionlist row 1 field $D-respond: Modeler $null$, ours "Y"
-xtask compare: models_next2/dl_max_rules.str: 1/3 terminal inputs match Modeler
-xtask compare: models_next2/dl_min_group.str: 3/3 terminal inputs match Modeler
-xtask compare: ibm-demos/pm_decisionlist.str: 3/3 terminal inputs match Modeler
-```
+Still open: that partition, a source-grounded rationale for the empirical beam
+score and final ties, generalization beyond these oracles, and the completed
+support tie above. Down search, reuseFields=false, frequency/weight use, missing
+inputs/targets, events, interactive state, Split fields and unknown/non-scalar
+storage remain explicitly unsupported.
 
-Total: **31/33**. Known GAP: equal response-rate lists in `models_next2/dl_max_rules`.
-The prototype/Rust choose north (80/80) then web (60/60), remainder 55/379.
-Modeler chooses web (60/60) then gold (55/55), remainder 80/404.
-Both selected lists have response rate 1.0. Stable prototype generation order is preserved;
-the oracle's additional tie rule is unknown. The regression test asserts both precise rule
-predicates and counts; it does not treat arbitrary inequality as the expected GAP.
+Settings mapping is unchanged: always read `minGroupSize` and `maxListDepth`;
+non-expert mode uses confidence 95%, rule width/depth and list width 5,
+equalFreq/10 bins and growth 2. Expert mode reads the saved confidence, rule/list
+width/depth, binning and growth. Custom target/input selection, response value
+and training partition filtering follow the existing builder path.
 
-## Quality gates
+Limits remain widths 1..64, depths 1..32, bins 2..256, 256 categories/input,
+128 inputs, 1,000,000 rows, 8,000,000 input cells, 32 MiB input text,
+10,000 candidates/level and 200,000,000 coverage checks. No Python runtime is
+needed. Incomplete-beta/F quantiles retain five SciPy numerical references and
+nine Clopper–Pearson references, including million-record counts.
 
-| Command | Final result |
-|---|---|
-| `cargo test --workspace` | exit 0; 418 passed, 0 failed, 0 ignored (sum of test summaries) |
-| `cargo clippy --workspace --all-targets --features dms-exec/corpus -- -D warnings` | exit 0, no warnings |
-| `cargo fmt --all --check` | exit 0, no output |
-| `cargo xtask ci` | exit 0, final output below |
+## Regression scope and evidence
 
-```text
-xtask layers: 13 packages ok
-xtask parity: docs/parity-checklist.md up to date
-xtask ci: all gates passed
-```
+The required regression labels are `dl_discriminate`, `train_next`,
+`models_next2`, `auto_train`, `models_next`. No unfiltered or database regression
+is run. Workspace corpus tests skip only `live::database_oracles`.
+Final commands, results, per-case before/after build timings and read-only input
+integrity checks are recorded in `target/dl6/REPORT.md` and its adjacent logs.
 
-Full local logs: `target/decision-list-validation/` (`workspace-tests.log`,
-`clippy-corpus.log`, `fmt.log`, `ci.log`, `trained-lists.log`, and one `compare-*.log`
-per stream). These are generated process files, not committed artifacts.
-
-## Discriminating experiments (2026-10-20, open)
-
-`auto_train/ac_lift` trains a different list from Modeler's (third rule `region = north` 35/57
-instead of `age > 54.5` 36/59). `xtask/oracle/probes/dl_discriminate_streams.py` builds twelve
-small nominal-input streams (label `dl_discriminate`), each designed to separate one candidate
-search policy: rule-result de-duplication (original, dedup, final, prefix), list identity
-(none, syntax, canonical, coverage), completed-list handling (deepest, finished, carry,
-pre-pruning detection) and five tie orders. Against Modeler's twelve lists, all
-80 × 5 = 400 policy/tie combinations die (also 2,000 with separate rule and list ties):
-`dl09_prefix_canonical` kills the last eight survivors of cases 1-8, and `dl04_coverage` with
-`dl10_tie_sizes` alone is contradictory. The learner is unchanged; the eight exact learners
-stay exact; the unchanged builder trains only `dl01` and `dl03` exactly and refuses three as
-unresolved ties. Clues for the missing mechanism: `dl08_completed` keeps a one-rule list
-(`b = v1`, 120/280) over deeper lists; `dl09` splits the same 220/280 union into different
-rules; `dl11`/`dl12` choose the same ordered rules whatever the physical column order.
-
-Phase 3 (same day) re-derived the search from the Algorithms Guide chapter (the local PDF's
-cover says Modeler 18.0) and ran 21,844 configurations over all 21 cases (the twelve above,
-the eight exact learners, `ac_lift`): segment generation and growth, conditional populations,
-rule and list widths, mixed-length frontiers, list estimates and intervals, and final-result
-ordering separate from the beam. None fits all 21. The best fit 20 of 21 by ranking the beam
-with the mean of the rules' first-hit rates (not the guide's union estimate), missing either
-`train_next/dl_max_rules4` or `dl_discriminate/dl05_carry`. It keeps a completed list
-(`ac_lift`'s three-rule `age > 54.5` list, `dl08`'s one-rule list) competing with deeper
-lists, and orders final results by names, not column order (`dl11`/`dl12`). No mechanism is
-grounded well enough to implement; the learner is unchanged.
-
-Phase 4 (same day) compared the Decision List chapter of the official 19.0 Algorithms Guide
-(downloaded from IBM's 19.0 documentation page) page by page with the 18.0 copy: no formula,
-pseudocode step or stopping test differs. It then tested 5,832 configurations drawn from the
-public Data Surveyor / CWI literature (Holsheimer & Siebes CS-R9406; Kersten & Holsheimer
-CS-R9521: response-probability rule beam, n best extensions per level; Siebes 1994:
-non-overlapping confidence intervals; CN2's best-complex memory; gain/WRAcc quality;
-cover-identity duplicates; bounded lookahead). None fits all 21 cases; the best stays 20 of 21
-and still needs the mean-of-rule-rates beam score (19 of 21 without it). The learner is
-unchanged.
+Five resolved `dl_discriminate` known-gap entries are removed; `dl05` remains.
+All nine listed `auto_train/ac_*` streams still differ because of the C5.0
+component, so their entries remain with corrected reasons. The Decision List
+component no longer explains those ensemble differences.

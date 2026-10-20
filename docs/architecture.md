@@ -27,7 +27,7 @@
 
 - **流文件**：原生格式是文本（TOML 或 JSON），可以进 git 和做代码评审。`.str` 只导入；导入时识别不了的节点和参数原样保留，界面上提示。
 - **两套执行器**：参考执行器写得简单直接，作为优化执行器的对照；两者在测试里必须给出相同结果。
-- **Decision List 原生训练**：L2 `dms-algo::decision_list` 完成分箱、局部 Clopper–Pearson 检验、规则/列表 beam search，原生逆不完全 beta 求 F 分位数；无 Python 运行时依赖。`train_xml` 写完整 PMML 扩展，`train` 解析成已有 `RuleSetModel` 供 L3 builder/nugget 使用，无新增分层依赖。9/10 模型严格匹配，列表平票限制见 `docs/decision-list-validation.md`。
+- **Decision List 原生训练**：L2 `dms-algo::decision_list` 完成分箱、局部 Clopper–Pearson 检验、规则/列表 beam search，原生逆不完全 beta 求 F 分位数；无 Python 运行时依赖。`train_xml` 写完整 PMML 扩展，`train` 解析成已有 `RuleSetModel` 供 L3 builder/nugget 使用，无新增分层依赖。固定 21 例中 20 例完整 RuleSet IR 匹配（原 10 例），采用经验平均首命中率 beam、union rate 最终排名及完成列表保留；dl05 分区及完成列表支持数平票仍开放，见 `docs/decision-list-validation.md`。
 - **Python 节点**（2026-10-16 起移出 MVP、归入“以后”：团队的流一个都没用到；`dms-python` 随之推后）：Modeler 自带的 Python 3.10 里是 scikit-learn 1.1.1、xgboost 0.82、imbalanced-learn 0.8.0、hdbscan 0.8.29。我们的 Python 节点用同样的库，在用户自己的 Python 环境里以子进程运行。与 Modeler 对比的差分测试在 Windows 上用同版本环境；Apple 芯片 Mac 上没有 xgboost 0.82，用新版本，允许细微差异。
 - **跨平台**：Windows x64 和 macOS aarch64。不依赖 BLAS（faer 是纯 Rust），便于在 Mac 上直接编译。
 - **AS 模型**：Tree-AS 的 builder 通过 `dms-algo::tree_as` 分箱后复用 CHAID，输出相同 PMML 表示，沿用模型替换与评分路径。Random Trees、Linear-AS、LSVM 保留在 `SCORING_ONLY`，builder 返回显式 `GAP:`，nugget 读取保存 PMML。`dms-exec` 用有界 ZIP 读取器解开 AS 附件；未增加分层依赖。16 例、48 个终端输入已对齐，另有直接 builder PMML 对照测试，防止保存模型掩盖训练失败。
