@@ -25,6 +25,7 @@
 //! methods, pairwise deletion) is rejected.
 
 use crate::AlgoError;
+use crate::stats::jacobi_eigen;
 use dms_pmml::{
     GeneralModelType, GeneralRegressionModel, MiningFunction, MiningModel, MiningSegment, Model,
     ModelHeader, PCell, PPCell, Pmml, Predicate,
@@ -238,63 +239,6 @@ fn identity(k: usize) -> Vec<Vec<f64>> {
     (0..k)
         .map(|i| (0..k).map(|j| if i == j { 1.0 } else { 0.0 }).collect())
         .collect()
-}
-
-/// Eigenvalues (decreasing) and eigenvectors (columns) of a symmetric matrix, cyclic Jacobi.
-fn jacobi_eigen(mut a: Vec<Vec<f64>>) -> Result<(Vec<f64>, Vec<Vec<f64>>), AlgoError> {
-    let n = a.len();
-    let mut v = identity(n);
-    for _ in 0..100 {
-        let off: f64 = (0..n)
-            .flat_map(|i| (0..n).filter(move |&j| j != i).map(move |j| (i, j)))
-            .map(|(i, j)| a[i][j] * a[i][j])
-            .sum();
-        if off < 1e-30 {
-            break;
-        }
-        for i in 0..n {
-            for j in i + 1..n {
-                if a[i][j].abs() < 1e-300 {
-                    continue;
-                }
-                let theta = (a[j][j] - a[i][i]) / (2.0 * a[i][j]);
-                let t = theta.signum() / (theta.abs() + (theta * theta + 1.0).sqrt());
-                let t = if theta == 0.0 { 1.0 } else { t };
-                let c = 1.0 / (t * t + 1.0).sqrt();
-                let s = t * c;
-                for row in a.iter_mut() {
-                    let (ari, arj) = (row[i], row[j]);
-                    row[i] = c * ari - s * arj;
-                    row[j] = s * ari + c * arj;
-                }
-                let (low, high) = a.split_at_mut(j);
-                if let (Some(row_i), Some(row_j)) = (low.get_mut(i), high.first_mut()) {
-                    for (x, y) in row_i.iter_mut().zip(row_j.iter_mut()) {
-                        let (air, ajr) = (*x, *y);
-                        *x = c * air - s * ajr;
-                        *y = s * air + c * ajr;
-                    }
-                }
-                for row in v.iter_mut() {
-                    let (vri, vrj) = (row[i], row[j]);
-                    row[i] = c * vri - s * vrj;
-                    row[j] = s * vri + c * vrj;
-                }
-            }
-        }
-    }
-    let mut order: Vec<usize> = (0..n).collect();
-    order.sort_by(|&x, &y| a[y][y].total_cmp(&a[x][x]));
-    let values: Vec<f64> = order.iter().map(|&i| a[i][i]).collect();
-    if values.iter().any(|v| !v.is_finite()) {
-        return Err(AlgoError::Data(
-            "PCA/Factor eigen decomposition failed".into(),
-        ));
-    }
-    let vectors = (0..n)
-        .map(|r| order.iter().map(|&c| v[r][c]).collect())
-        .collect();
-    Ok((values, vectors))
 }
 
 /// Kaiser-normalized varimax by pairwise rotations; returns the k x k rotation matrix.
