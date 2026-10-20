@@ -620,8 +620,8 @@ fn unsupported_settings_name_the_property() {
             "uiReplaceNominalFeaturesMissingValue",
         ),
         (
-            vec![p("uiFeatureConstruction", "true")],
-            "uiFeatureConstruction",
+            vec![p("uiUnsupervisedMergeOrdinal", "true")],
+            "uiUnsupervisedMergeOrdinal",
         ),
         (
             vec![p("uiReplaceScaleTargetMissingValue", "true")],

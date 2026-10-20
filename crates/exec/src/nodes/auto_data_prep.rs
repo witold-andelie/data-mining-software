@@ -80,6 +80,9 @@
 //! Supervised binning (`uiSupervisedBinning`, objective `custom`, categorical target): continuous
 //! inputs become ordinal bins of homogeneous subsets ([`homogeneous_cuts`]).
 //!
+//! Feature construction (`uiFeatureConstruction`, objective `custom`): correlated continuous
+//! inputs are replaced by principal components ([`construct_features`]).
+//!
 //! `GAP:` feature selection against a categorical target or with date fields, binning a field
 //! with missing values.
 //! `GAP:` `uiReplaceNominalFeaturesMissingValue` true does not substitute the mode (see `flg`).
@@ -259,6 +262,8 @@ struct Prep {
     feature_selection: Option<f64>,
     /// `uiSupervisedBinning` (objective `custom` only): the `homogeneousSubsetsPValue`.
     supervised_binning: Option<f64>,
+    /// `uiFeatureConstruction` (objective `custom` only): `rootNameForConsturctedFeature`.
+    feature_construction: Option<String>,
     check_feature_level: bool,
     ordinal_to_scale: i64,
     scale_to_ordinal: i64,
@@ -342,6 +347,8 @@ impl Operator for Prep {
         }
         let target = merge_target(self, input)?;
         let mut cols = Vec::new();
+        // Positions in `cols` of the continuous inputs feature construction may group.
+        let mut candidates = Vec::new();
         for (index, field) in input.model().fields().iter().enumerate() {
             let values = column(input, index);
             match classify(self, field) {
@@ -359,7 +366,14 @@ impl Operator for Prep {
                 }
                 Class::Date => prepare_date(self, field, index, &values, &mut cols)?,
                 Class::Continuous if self.prepare_features => {
+                    let before = cols.len();
                     prepare_continuous(self, field, index, &values, target.as_ref(), &mut cols)?;
+                    if let Some(col) = cols.get(before).filter(|_| cols.len() == before + 1)
+                        && col.field.measurement == Measurement::Continuous
+                        && matches!(col.group, GROUP_CONTINUOUS | GROUP_PASS)
+                    {
+                        candidates.push(before);
+                    }
                 }
                 Class::Categorical if self.prepare_features => {
                     prepare_categorical(self, field, index, &values, target.as_ref(), &mut cols)?;
@@ -371,6 +385,9 @@ impl Operator for Prep {
                     cols.push(pass_col(field, values, index));
                 }
             }
+        }
+        if let Some(root) = &self.feature_construction {
+            construct_features(self, root, target.as_ref(), &candidates, &mut cols)?;
         }
         assemble(n_rows, cols)
     }
@@ -448,6 +465,11 @@ fn parse(s: Option<&Element>) -> Result<Prep, OperatorError> {
         } else {
             None
         },
+        feature_construction: if custom_steps(s)? && flag(s, "uiFeatureConstruction", false)? {
+            Some(text_or(s, "rootNameForConsturctedFeature", "feature"))
+        } else {
+            None
+        },
         supervised_binning: if custom_steps(s)? && flag(s, "uiSupervisedBinning", true)? {
             Some(unit_interval(s, "homogeneousSubsetsPValue", 0.05)?)
         } else {
@@ -517,7 +539,6 @@ fn reject_unsupported(s: Option<&Element>) -> Result<(), OperatorError> {
         "uiExtractSecondFromTime",
         "uiUnsupervisedMergeOrdinal",
         "uiExcludeAlmostConstantCatFeature",
-        "uiFeatureConstruction",
         "useWeight",
         "useFrequency",
         "useCustomSettings",
@@ -591,7 +612,6 @@ fn acknowledge_unused(s: Option<&Element>) -> Result<(), OperatorError> {
     let _ = settings::integer(s, "todaysDate")?;
     let _ = settings::integer(s, "currentTime")?;
     let _ = settings::integer(s, "fixedTime")?;
-    let _ = text_or(s, "rootNameForConsturctedFeature", "feature");
     let _ = text_or(s, "suffixElapsedSeconds", "_seconds");
     let _ = text_or(s, "suffixElapsedMinutes", "_minutes");
     let _ = text_or(s, "suffixElapsedHours", "_hours");
@@ -876,6 +896,225 @@ fn prepare_continuous(
         key_b: index,
     });
     Ok(())
+}
+
+/// Feature construction (guide "Feature Selection and Construction" and "Principal Component
+/// Analysis", `adp_corr/corr_construct*`). Over the continuous inputs as prepared (z-scores, or
+/// raw values without rescaling), for the correlation levels .9, .8, ..., .2 (exact decimals:
+/// `x5`/`x6` at r .191 stay apart): the most correlated pair above the level starts a group, which
+/// takes the input whose smallest absolute correlation with the members is largest and above the
+/// level until it holds more than 5 (ties: dataset order); the group's first principal component
+/// of the covariance matrix, `e'x / sqrt(lambda_1)` without centering, becomes `<root><k>` and its
+/// members leave. `{x1, x2, x8}` and the anti-correlated `{x4, x7}` give `feature1` and
+/// `feature2`. The loading signs make the last loading positive; the oracles fit that as well as
+/// "largest loading positive" and "loadings sum positive", so a group where those disagree is a
+/// `GAP:`. With feature selection, an input whose partial correlation with the target given a new
+/// feature has p above `featureSelectionPValue` is dropped (guide step 7). Constructed features
+/// follow the continuous inputs; next to categorical, binned, date or Box-Cox fields their place
+/// has no oracle.
+fn construct_features(
+    prep: &Prep,
+    root: &str,
+    target: Option<&MergeTarget>,
+    candidates: &[usize],
+    cols: &mut Vec<OutCol>,
+) -> Result<(), OperatorError> {
+    let gap = |what: String| OperatorError::Settings(format!("GAP: feature construction: {what}"));
+    let mut data: Vec<Vec<f64>> = Vec::with_capacity(candidates.len());
+    for &position in candidates {
+        let column: Option<Vec<f64>> = cols[position]
+            .values
+            .iter()
+            .map(|value| match value {
+                Value::Real(x) => Some(*x),
+                Value::Integer(x) => Some(*x as f64),
+                _ => None,
+            })
+            .collect();
+        data.push(column.ok_or_else(|| {
+            gap(format!(
+                "{:?} has missing values",
+                cols[position].field.name
+            ))
+        })?);
+    }
+    let selection_y = match (prep.feature_selection, target) {
+        (Some(alpha), Some(MergeTarget::Continuous(y))) => {
+            let y: Option<Vec<f64>> = y.iter().copied().collect();
+            Some((
+                alpha,
+                y.ok_or_else(|| gap("the target has missing values".into()))?,
+            ))
+        }
+        _ => None,
+    };
+    let m = data.len();
+    let r: Vec<Vec<f64>> = (0..m)
+        .map(|i| (0..m).map(|j| pearson(&data[i], &data[j])).collect())
+        .collect();
+    let mut remaining: Vec<usize> = (0..m).collect();
+    let mut dropped: Vec<usize> = Vec::new();
+    let mut features: Vec<(Vec<usize>, Vec<f64>)> = Vec::new();
+    for level in (2..=9).rev().map(|k| k as f64 / 10.0) {
+        loop {
+            let mut best: Option<(f64, usize, usize)> = None;
+            for (a, &i) in remaining.iter().enumerate() {
+                for &j in &remaining[a + 1..] {
+                    let value = r[i][j].abs();
+                    if value > level && best.is_none_or(|(top, _, _)| value > top) {
+                        best = Some((value, i, j));
+                    }
+                }
+            }
+            let Some((_, i, j)) = best else { break };
+            let mut group = vec![i, j];
+            while group.len() <= 5 {
+                let mut next: Option<(f64, usize)> = None;
+                for &k in remaining.iter().filter(|k| !group.contains(k)) {
+                    let to_group = group
+                        .iter()
+                        .map(|&g| r[k][g].abs())
+                        .fold(f64::INFINITY, f64::min);
+                    if to_group > level && next.is_none_or(|(top, _)| to_group > top) {
+                        next = Some((to_group, k));
+                    }
+                }
+                match next {
+                    Some((_, k)) => group.push(k),
+                    None => break,
+                }
+            }
+            let feature =
+                principal_component(&group.iter().map(|&k| &data[k][..]).collect::<Vec<_>>())
+                    .map_err(|what| gap(what.to_string()))?;
+            remaining.retain(|k| !group.contains(k));
+            if let Some((alpha, y)) = &selection_y {
+                let r_yf = pearson(y, &feature);
+                remaining.retain(|&k| {
+                    let keep = partial_correlation_p(&data[k], y, &feature, r_yf) <= *alpha;
+                    if !keep {
+                        dropped.push(k);
+                    }
+                    keep
+                });
+            }
+            features.push((group, feature));
+        }
+    }
+    if features.is_empty() {
+        return Ok(());
+    }
+    if cols.iter().any(|col| {
+        matches!(
+            col.group,
+            GROUP_CATEGORICAL | GROUP_BINNED | GROUP_DATE_SCALE | GROUP_DATE_ORDINAL
+        ) || (col.group == GROUP_CONTINUOUS && col.key_a == u32::MAX)
+    }) {
+        return Err(gap(
+            "the place of constructed features next to categorical, binned, date or target fields \
+             has no oracle"
+                .into(),
+        ));
+    }
+    let mut gone: Vec<usize> = features
+        .iter()
+        .flat_map(|(group, _)| group.iter().map(|&k| candidates[k]))
+        .chain(dropped.iter().map(|&k| candidates[k]))
+        .collect();
+    gone.sort_unstable();
+    for position in gone.into_iter().rev() {
+        cols.remove(position);
+    }
+    for (number, (_, values)) in features.into_iter().enumerate() {
+        cols.push(OutCol {
+            field: continuous_field(format!("{root}{}", number + 1)),
+            values: values.into_iter().map(finite_real).collect(),
+            group: GROUP_CONTINUOUS,
+            key_a: u32::MAX - 1,
+            key_b: number,
+        });
+    }
+    Ok(())
+}
+
+/// Pearson correlation of two complete columns (0 when either is constant).
+fn pearson(a: &[f64], b: &[f64]) -> f64 {
+    let n = a.len() as f64;
+    let (ma, mb) = (a.iter().sum::<f64>() / n, b.iter().sum::<f64>() / n);
+    let (mut sab, mut saa, mut sbb) = (0.0, 0.0, 0.0);
+    for (x, y) in a.iter().zip(b) {
+        sab += (x - ma) * (y - mb);
+        saa += (x - ma).powi(2);
+        sbb += (y - mb).powi(2);
+    }
+    if saa <= 0.0 || sbb <= 0.0 {
+        0.0
+    } else {
+        (sab / (saa * sbb).sqrt()).clamp(-1.0, 1.0)
+    }
+}
+
+/// p-value of the partial correlation of input `x` with the target given a constructed feature
+/// (guide "Partial correlation and P-value": t with `n - 3` df, clamped correlations).
+fn partial_correlation_p(x: &[f64], y: &[f64], feature: &[f64], r_yf: f64) -> f64 {
+    let (r_xy, r_xf) = (pearson(x, y), pearson(x, feature));
+    let denominator = ((1.0 - r_xf * r_xf) * (1.0 - r_yf * r_yf)).sqrt();
+    if denominator <= 0.0 {
+        return 1.0;
+    }
+    let partial = ((r_xy - r_xf * r_yf) / denominator).clamp(-1.0, 1.0);
+    let df = x.len() as f64 - 3.0;
+    if df <= 0.0 {
+        return 1.0;
+    }
+    if partial.abs() >= 1.0 {
+        return 0.0;
+    }
+    let t = partial * (df / (1.0 - partial * partial)).sqrt();
+    2.0 * (1.0 - dms_algo::stats::student_t_cdf(t.abs(), df))
+}
+
+/// The first principal component of `columns` (sample covariance), as `e'x / sqrt(lambda_1)`.
+fn principal_component(columns: &[&[f64]]) -> Result<Vec<f64>, String> {
+    let k = columns.len();
+    let n = columns[0].len() as f64;
+    let means: Vec<f64> = columns.iter().map(|c| c.iter().sum::<f64>() / n).collect();
+    let covariance: Vec<Vec<f64>> = (0..k)
+        .map(|i| {
+            (0..k)
+                .map(|j| {
+                    columns[i]
+                        .iter()
+                        .zip(columns[j])
+                        .map(|(a, b)| (a - means[i]) * (b - means[j]))
+                        .sum::<f64>()
+                        / (n - 1.0)
+                })
+                .collect()
+        })
+        .collect();
+    let (values, vectors) =
+        dms_algo::stats::jacobi_eigen(covariance).map_err(|error| error.to_string())?;
+    let lambda = values[0];
+    if !(lambda.is_finite() && lambda > 0.0) {
+        return Err("the first eigenvalue is not positive".into());
+    }
+    let mut e: Vec<f64> = (0..k).map(|i| vectors[i][0]).collect();
+    if e[k - 1] < 0.0 {
+        e.iter_mut().for_each(|x| *x = -*x);
+    }
+    let largest = e.iter().copied().fold(0.0_f64, |a, b| a.max(b.abs()));
+    let ambiguous = 1e-9 * largest;
+    let largest_negative = e.iter().any(|x| *x < 0.0 && x.abs() > largest - ambiguous)
+        && !e.iter().any(|x| *x > 0.0 && x.abs() > largest - ambiguous);
+    let sum: f64 = e.iter().sum();
+    if largest_negative || sum < -ambiguous {
+        return Err("the loading sign conventions disagree".into());
+    }
+    let scale = lambda.sqrt();
+    Ok((0..columns[0].len())
+        .map(|row| (0..k).map(|i| e[i] * columns[i][row]).sum::<f64>() / scale)
+        .collect())
 }
 
 /// Box-Cox grid of the guide ("Target Handling"): lambda from -3 to 3 in steps of 0.5.
