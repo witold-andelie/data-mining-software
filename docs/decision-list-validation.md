@@ -133,3 +133,13 @@ with the mean of the rules' first-hit rates (not the guide's union estimate), mi
 (`ac_lift`'s three-rule `age > 54.5` list, `dl08`'s one-rule list) competing with deeper
 lists, and orders final results by names, not column order (`dl11`/`dl12`). No mechanism is
 grounded well enough to implement; the learner is unchanged.
+
+Phase 4 (same day) compared the Decision List chapter of the official 19.0 Algorithms Guide
+(downloaded from IBM's 19.0 documentation page) page by page with the 18.0 copy: no formula,
+pseudocode step or stopping test differs. It then tested 5,832 configurations drawn from the
+public Data Surveyor / CWI literature (Holsheimer & Siebes CS-R9406; Kersten & Holsheimer
+CS-R9521: response-probability rule beam, n best extensions per level; Siebes 1994:
+non-overlapping confidence intervals; CN2's best-complex memory; gain/WRAcc quality;
+cover-identity duplicates; bounded lookahead). None fits all 21 cases; the best stays 20 of 21
+and still needs the mean-of-rule-rates beam score (19 of 21 without it). The learner is
+unchanged.
