@@ -86,20 +86,26 @@
 //! `GAP:` feature selection against a categorical target or with date fields, binning a field
 //! with missing values.
 //! `GAP:` `uiReplaceNominalFeaturesMissingValue` true does not substitute the mode (see `flg`).
-//! false is rejected. `GAP:` timestamp `ts` is copied in all three cases while
-//! `uiComputeTimeDuration` is true. A time-of-day field with that flag is rejected.
+//! false is rejected. Timestamps are copied (`misc_next/adp_*`, `adp_time/*`).
+//!
+//! Times and date units (`adp_time/*`): a time-of-day input gets a signed duration from
+//! `fixedTime` or hour/minute/second elements ([`prepare_time`]); date durations also take years,
+//! and automatic units follow the largest elapsed value ([`choose_unit`]). A date or time input
+//! with no duration and no element is excluded; when every input is excluded the node fails as
+//! Modeler does.
+//!
 //! Target (`uiRescaleScaleTargetUsingBoxCox`): a continuous target is Box-Cox transformed and
-//! rescaled to `targetMean` / `targetSD`, see [`prepare_target`].
+//! rescaled to `targetMean` / `targetSD`, see [`box_cox_target`].
 //!
 //! Ordinal inputs ([`prepare_ordinal`]) and target steps ([`prepare_target`]) follow
 //! `adp_more/*`.
 //!
-//! `GAP:` target outliers set to missing, combined target steps, ordinal targets /
-//! target reorder, ordinal merging, feature construction, almost-constant category screening,
-//! frequency and analysis weights, `useCustomSettings`, a non-empty `inputFields` / `targetField`,
-//! automatic date or time units, `dateUnit` `year`, and `excludeNoUsedField` other than
-//! `filterOut` are rejected. `GAP:` string ordinal inputs are copied. `GAP:` a zero-row input is
-//! copied unchanged.
+//! `GAP:` target outliers set to missing, combined target steps, ordinal targets,
+//! almost-constant category screening, frequency and analysis weights, `useCustomSettings`, a
+//! non-empty `inputFields` / `targetField`, a reference of the current date or time,
+//! a time duration together with time elements, and `excludeNoUsedField` other than `filterOut`
+//! are rejected. `GAP:` string ordinal inputs are copied. `GAP:` a zero-row input is copied
+//! unchanged.
 
 use crate::context::ExecContext;
 use crate::error::OperatorError;
@@ -285,8 +291,18 @@ struct Prep {
     scale_to_ordinal: i64,
     prepare_dates: bool,
     compute_date_duration: bool,
-    date_divisor: f64,
-    date_suffix: String,
+    /// Date duration units: a fixed `dateUnit`, or chosen from the data
+    /// (`autoChooseDateFieldUnit` `automatic`).
+    date_units: Units,
+    /// Time durations (`uiComputeTimeDuration`): the units and the reference second of the day.
+    time_units: Units,
+    ref_seconds: f64,
+    extract_hour: bool,
+    extract_minute: bool,
+    extract_second: bool,
+    suffix_hour: String,
+    suffix_minute: String,
+    suffix_second: String,
     ref_days: f64,
     extract_year: bool,
     extract_month: bool,
@@ -298,6 +314,13 @@ struct Prep {
     trim_blanks: bool,
     prepare_features: bool,
     compute_time_duration: bool,
+}
+
+/// Duration units: `(divisor, suffix)` from the smallest unit up; `fixed` picks one, otherwise the
+/// largest elapsed value chooses (see [`choose_unit`]).
+struct Units {
+    units: Vec<(f64, String)>,
+    fixed: Option<usize>,
 }
 
 /// `scaleContinuousMode`.
@@ -318,7 +341,8 @@ struct Outliers {
 
 enum Class {
     Pass,
-    UnsupportedTime,
+    /// A time-of-day input (`adp_time/time_*`).
+    Time,
     Date,
     Continuous,
     Categorical,
@@ -367,15 +391,19 @@ impl Operator for Prep {
         let mut cols = Vec::new();
         // Positions in `cols` of the continuous inputs feature construction may group.
         let mut candidates = Vec::new();
+        // Inputs the preparation looked at, and the fields it produced from them.
+        let (mut prepared, mut produced) = (0usize, 0usize);
         for (index, field) in input.model().fields().iter().enumerate() {
             let values = column(input, index);
-            match classify(self, field) {
-                Class::UnsupportedTime => {
-                    return Err(OperatorError::Settings(format!(
-                        "uiComputeTimeDuration: time field {:?} is not supported yet",
-                        field.name
-                    )));
-                }
+            let class = classify(self, field);
+            let before = cols.len();
+            let examined = match class {
+                Class::Time | Class::Date => true,
+                Class::Continuous | Class::Categorical | Class::Ordinal => self.prepare_features,
+                Class::Pass | Class::Target => false,
+            };
+            match class {
+                Class::Time => prepare_time(self, field, index, &values, &mut cols)?,
                 Class::Pass => cols.push(pass_col(field, values, index)),
                 Class::Date if self.feature_selection.is_some() && target.is_some() => {
                     return Err(OperatorError::Settings(
@@ -421,6 +449,17 @@ impl Operator for Prep {
                     cols.push(pass_col(field, values, index));
                 }
             }
+            if examined {
+                prepared += 1;
+                produced += cols.len() - before;
+            }
+        }
+        // `adp_time/datetime_off`: with every input excluded Modeler stops with this error.
+        if prepared > 0 && produced == 0 {
+            return Err(OperatorError::Data(
+                "All features have been excluded. No inputs will be provided for model building."
+                    .into(),
+            ));
         }
         if let Some(root) = &self.feature_construction {
             construct_features(self, root, target.as_ref(), &candidates, &mut cols)?;
@@ -433,19 +472,53 @@ fn parse(s: Option<&Element>) -> Result<Prep, OperatorError> {
     reject_unknown(s)?;
     reject_unsupported(s)?;
     acknowledge_unused(s)?;
-    let date_unit = match text_or(s, "dateUnit", "month").as_str() {
-        "month" => ("suffixElapsedMonths", "_months", 30.4375),
-        "day" => ("suffixElapsedDays", "_days", 1.0),
-        "year" => {
-            return Err(OperatorError::Settings(
-                "dateUnit: year is not supported yet".into(),
-            ));
-        }
-        other => {
-            return Err(OperatorError::Settings(format!(
-                "dateUnit: unsupported value {other:?}"
-            )));
-        }
+    let date_units = Units {
+        units: vec![
+            (1.0, text_or(s, "suffixElapsedDays", "_days")),
+            (30.4375, text_or(s, "suffixElapsedMonths", "_months")),
+            (365.25, text_or(s, "suffixElapsedYears", "_years")),
+        ],
+        fixed: match one_of(
+            s,
+            "autoChooseDateFieldUnit",
+            &["fixed", "automatic"],
+            "fixed",
+        )?
+        .as_str()
+        {
+            "automatic" => None,
+            _ => Some(
+                match one_of(s, "dateUnit", &["day", "month", "year"], "month")?.as_str() {
+                    "day" => 0,
+                    "month" => 1,
+                    _ => 2,
+                },
+            ),
+        },
+    };
+    let time_units = Units {
+        units: vec![
+            (1.0, text_or(s, "suffixElapsedSeconds", "_seconds")),
+            (60.0, text_or(s, "suffixElapsedMinutes", "_minutes")),
+            (3600.0, text_or(s, "suffixElapsedHours", "_hours")),
+        ],
+        fixed: match one_of(
+            s,
+            "autoChooseTimeFieldUnit",
+            &["fixed", "automatic"],
+            "fixed",
+        )?
+        .as_str()
+        {
+            "automatic" => None,
+            _ => Some(
+                match one_of(s, "timeUnit", &["second", "minute", "hour"], "hour")?.as_str() {
+                    "second" => 0,
+                    "minute" => 1,
+                    _ => 2,
+                },
+            ),
+        },
     };
     Ok(Prep {
         exclude_high_missing: flag(
@@ -552,8 +625,24 @@ fn parse(s: Option<&Element>) -> Result<Prep, OperatorError> {
         scale_to_ordinal: nonneg_int(s, "scaleToOrdinalValuesNumThreshold", 5)?,
         prepare_dates: flag(s, "prepareDatesAndTimes", true)?,
         compute_date_duration: flag(s, "uiComputeDateDuration", true)?,
-        date_divisor: date_unit.2,
-        date_suffix: text_or(s, date_unit.0, date_unit.1),
+        date_units,
+        time_units,
+        ref_seconds: {
+            let seconds = settings::integer(s, "fixedTime")?.unwrap_or(0);
+            // 86400 (the end of the day) is what an unused reference saves.
+            if !(0..=86_400).contains(&seconds) {
+                return Err(OperatorError::Settings(format!(
+                    "fixedTime: {seconds} is not a second of the day"
+                )));
+            }
+            seconds as f64
+        },
+        extract_hour: flag(s, "uiExtractHourFromTime", false)?,
+        extract_minute: flag(s, "uiExtractMinuteFromTime", false)?,
+        extract_second: flag(s, "uiExtractSecondFromTime", false)?,
+        suffix_hour: text_or(s, "suffixHour", "_hour"),
+        suffix_minute: text_or(s, "suffixMinute", "_minute"),
+        suffix_second: text_or(s, "suffixSecond", "_second"),
         ref_days: reference_days(s)?,
         extract_year: flag(s, "uiExtractYearFromDate", false)?,
         extract_month: flag(s, "uiExtractMonthFromDate", false)?,
@@ -584,9 +673,6 @@ fn reject_unknown(s: Option<&Element>) -> Result<(), OperatorError> {
 fn reject_unsupported(s: Option<&Element>) -> Result<(), OperatorError> {
     for key in [
         "uiReplaceOrdinalTargetMissingValue",
-        "uiExtractHourFromTime",
-        "uiExtractMinuteFromTime",
-        "uiExtractSecondFromTime",
         "uiExcludeAlmostConstantCatFeature",
         "useWeight",
         "useFrequency",
@@ -617,11 +703,8 @@ fn reject_unsupported(s: Option<&Element>) -> Result<(), OperatorError> {
     }
     one_of(s, "excludeNoUsedField", &["filterOut"], "filterOut")?;
     one_of(s, "keepOrClearAnalysis", &["stop"], "stop")?;
-    one_of(s, "autoChooseDateFieldUnit", &["fixed"], "fixed")?;
     one_of(s, "referenceDateType", &["fixedDate"], "fixedDate")?;
-    one_of(s, "autoChooseTimeFieldUnit", &["fixed"], "fixed")?;
     one_of(s, "referenceTimeType", &["fixedTime"], "fixedTime")?;
-    one_of(s, "timeUnit", &["hour"], "hour")?;
     let objective = text_or(s, "analysisObjective", "balance");
     if !matches!(
         objective.as_str(),
@@ -656,17 +739,6 @@ fn acknowledge_unused(s: Option<&Element>) -> Result<(), OperatorError> {
     let _ = finite(s, "minMax_max", 100.0)?;
     let _ = settings::integer(s, "todaysDate")?;
     let _ = settings::integer(s, "currentTime")?;
-    let _ = settings::integer(s, "fixedTime")?;
-    let _ = text_or(s, "suffixElapsedSeconds", "_seconds");
-    let _ = text_or(s, "suffixElapsedMinutes", "_minutes");
-    let _ = text_or(s, "suffixElapsedHours", "_hours");
-    let _ = text_or(s, "suffixElapsedYears", "_years");
-    let _ = text_or(s, "suffixHour", "_hour");
-    let _ = text_or(s, "suffixMinute", "_minute");
-    let _ = text_or(s, "suffixSecond", "_second");
-    // The duration suffix that this unit does not use is still a saved string.
-    let _ = text_or(s, "suffixElapsedMonths", "_months");
-    let _ = text_or(s, "suffixElapsedDays", "_days");
     Ok(())
 }
 
@@ -681,8 +753,9 @@ fn custom_steps(s: Option<&Element>) -> Result<bool, OperatorError> {
 }
 
 fn classify(prep: &Prep, field: &Field) -> Class {
-    if field.storage == Storage::Time && prep.compute_time_duration {
-        return Class::UnsupportedTime;
+    // A time input without a duration or element is still excluded (`adp_time/date_*`: `t`).
+    if field.storage == Storage::Time && field.role == Role::Input && prep.prepare_dates {
+        return Class::Time;
     }
     if matches!(
         field.storage,
@@ -773,30 +846,23 @@ fn prepare_date(
             }
         }
     }
-    let mut produced = false;
     if prep.extract_year {
         push_element(prep, field, index, 1, &prep.suffix_year, &years, cols)?;
-        produced = true;
     }
     if prep.extract_month {
         push_element(prep, field, index, 2, &prep.suffix_month, &months, cols)?;
-        produced = true;
     }
     if prep.extract_day {
         push_element(prep, field, index, 3, &prep.suffix_day, &day_of_month, cols)?;
-        produced = true;
     }
     if prep.compute_date_duration {
-        if prep.date_divisor == 0.0 {
-            return Err(OperatorError::Settings(
-                "dateUnit: duration divisor is 0".into(),
-            ));
-        }
-        let series: Vec<Option<f64>> = days
+        let elapsed: Vec<Option<f64>> = days
             .iter()
-            .map(|day| day.map(|value| (value - prep.ref_days) / prep.date_divisor))
+            .map(|day| day.map(|value| value - prep.ref_days))
             .collect();
-        let name = extended(&field.name, &prep.date_suffix)?;
+        let (divisor, suffix) = choose_unit(&prep.date_units, &elapsed, &[31.0, 366.0]);
+        let series: Vec<Option<f64>> = elapsed.iter().map(|x| x.map(|x| x / divisor)).collect();
+        let name = extended(&field.name, suffix)?;
         let out_values = if prep.scale_continuous {
             rescale(&series, date_scale(prep)?, prep.replace_scale_missing)
         } else {
@@ -809,10 +875,93 @@ fn prepare_date(
             key_a: as_u32(index)?,
             key_b: 0,
         });
-        produced = true;
     }
-    if !produced {
-        cols.push(pass_col(field, values.to_vec(), index));
+    // With no duration and no element the date is still excluded (`adp_time/time_*`: `d`).
+    Ok(())
+}
+
+/// The duration unit: the fixed one, or (guide "Date/Time Handling", with the largest elapsed
+/// value where the guide says the smallest) the first unit whose upper bound in `limits` exceeds
+/// the largest signed elapsed value. Dates: days below 31, months below 366, else years
+/// (`adp_time/date_auto` largest -3 days: days; `date_auto_after` 1461: years, where the smallest,
+/// 366, would give months). Times: seconds below 60, minutes below 3600, else hours
+/// (`time_auto_midnight` 86087 s: hours, the smallest, 307, would give minutes).
+fn choose_unit<'a>(units: &'a Units, elapsed: &[Option<f64>], limits: &[f64]) -> (f64, &'a str) {
+    let index = units.fixed.unwrap_or_else(|| {
+        let largest = elapsed
+            .iter()
+            .flatten()
+            .copied()
+            .fold(f64::NEG_INFINITY, f64::max);
+        limits
+            .iter()
+            .position(|limit| largest < *limit)
+            .unwrap_or(limits.len())
+    });
+    let (divisor, suffix) = &units.units[index];
+    (*divisor, suffix)
+}
+
+/// A time-of-day input (`adp_time/time_*`): with `uiComputeTimeDuration` the signed elapsed
+/// seconds from `fixedTime` in the chosen unit (`time_hours_raw`: 00:05:07 against 12:00:00 is
+/// -11.9147 hours), rescaled like a date duration; with the extraction flags its hour, minute and
+/// second as date elements are (`time_extract`: 24 and 60 levels, recast and z-scored). The time
+/// field itself is dropped. Both a duration and elements of one field have no oracle.
+fn prepare_time(
+    prep: &Prep,
+    field: &Field,
+    index: usize,
+    values: &[Value],
+    cols: &mut Vec<OutCol>,
+) -> Result<(), OperatorError> {
+    let extract = prep.extract_hour || prep.extract_minute || prep.extract_second;
+    if extract && prep.compute_time_duration {
+        return Err(OperatorError::Settings(
+            "GAP: a time duration with time elements has no oracle".into(),
+        ));
+    }
+    let seconds: Vec<Option<i64>> = values
+        .iter()
+        .map(|value| match value {
+            Value::Time(micros) if !field.is_missing(value) => Some(micros.div_euclid(1_000_000)),
+            _ => None,
+        })
+        .collect();
+    let as_f64: Vec<Option<f64>> = seconds.iter().map(|x| x.map(|x| x as f64)).collect();
+    if screen_numeric(prep, &as_f64) {
+        return Ok(());
+    }
+    if prep.compute_time_duration {
+        let elapsed: Vec<Option<f64>> = as_f64
+            .iter()
+            .map(|x| x.map(|x| x - prep.ref_seconds))
+            .collect();
+        let (divisor, suffix) = choose_unit(&prep.time_units, &elapsed, &[60.0, 3600.0]);
+        let series: Vec<Option<f64>> = elapsed.iter().map(|x| x.map(|x| x / divisor)).collect();
+        cols.push(OutCol {
+            field: continuous_field(extended(&field.name, suffix)?),
+            values: if prep.scale_continuous {
+                rescale(&series, date_scale(prep)?, prep.replace_scale_missing)
+            } else {
+                optional_reals(&series)
+            },
+            group: GROUP_DATE_SCALE,
+            key_a: as_u32(index)?,
+            key_b: 0,
+        });
+        return Ok(());
+    }
+    type Part<'a> = (bool, &'a str, fn(i64) -> i64);
+    let parts: [Part<'_>; 3] = [
+        (prep.extract_hour, &prep.suffix_hour, |s| s / 3600),
+        (prep.extract_minute, &prep.suffix_minute, |s| s % 3600 / 60),
+        (prep.extract_second, &prep.suffix_second, |s| s % 60),
+    ];
+    for (position, (wanted, suffix, part)) in parts.into_iter().enumerate() {
+        if wanted {
+            let components: Vec<Option<i64>> = seconds.iter().map(|x| x.map(part)).collect();
+            push_element(prep, field, index, position + 1, suffix, &components, cols)?;
+        }
     }
     Ok(())
 }
@@ -2400,12 +2549,15 @@ fn reference_days(s: Option<&Element>) -> Result<f64, OperatorError> {
     }
 }
 
+/// The day number of a saved reference date. Modeler saves the picked date as the instant of
+/// local midnight and counts whole UTC days from it (`adp_time/date_years_raw`: 2022-01-01 picked
+/// at UTC+1 counts from 2021-12-31, so 2019-01-01 is -1095 days, -2.99795 years).
 fn epoch_days(raw: i64) -> f64 {
     let abs = raw.unsigned_abs();
     if abs > 1_000_000_000_000 {
-        (raw as f64) / 86_400_000.0
+        raw.div_euclid(86_400_000) as f64
     } else if abs > 1_000_000_000 {
-        (raw as f64) / 86_400.0
+        raw.div_euclid(86_400) as f64
     } else {
         raw as f64
     }
