@@ -106,3 +106,19 @@ xtask ci: all gates passed
 Full local logs: `target/decision-list-validation/` (`workspace-tests.log`,
 `clippy-corpus.log`, `fmt.log`, `ci.log`, `trained-lists.log`, and one `compare-*.log`
 per stream). These are generated process files, not committed artifacts.
+
+## Discriminating experiments (2026-10-20, open)
+
+`auto_train/ac_lift` trains a different list from Modeler's (third rule `region = north` 35/57
+instead of `age > 54.5` 36/59). `xtask/oracle/probes/dl_discriminate_streams.py` builds twelve
+small nominal-input streams (label `dl_discriminate`), each designed to separate one candidate
+search policy: rule-result de-duplication (original, dedup, final, prefix), list identity
+(none, syntax, canonical, coverage), completed-list handling (deepest, finished, carry,
+pre-pruning detection) and five tie orders. Against Modeler's twelve lists, all
+80 × 5 = 400 policy/tie combinations die (also 2,000 with separate rule and list ties):
+`dl09_prefix_canonical` kills the last eight survivors of cases 1-8, and `dl04_coverage` with
+`dl10_tie_sizes` alone is contradictory. The learner is unchanged; the eight exact learners
+stay exact; the unchanged builder trains only `dl01` and `dl03` exactly and refuses three as
+unresolved ties. Clues for the missing mechanism: `dl08_completed` keeps a one-rule list
+(`b = v1`, 120/280) over deeper lists; `dl09` splits the same 220/280 union into different
+rules; `dl11`/`dl12` choose the same ordered rules whatever the physical column order.
