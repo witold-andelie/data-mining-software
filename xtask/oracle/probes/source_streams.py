@@ -269,9 +269,28 @@ def cell(kind, value, style=0):
     return (kind, value, style)
 
 
+# Modeler 19's Excel reader needs two things Excel always writes (found 2026-10-20 by swapping
+# parts with Demos/bank_customer_data.xlsx): an XML declaration on xl/_rels/workbook.xml.rels
+# (without it every read fails with the misleading E3341 "Insufficient memory for JVM") and a
+# <dimension> on each worksheet (without it "The data source defines no fields"). Every part
+# gets the declaration; the dimension spans the cells present.
+XML_DECLARATION = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+
+
+def sheet_dimension(rows):
+    cells = [(row_num, column) for row_num, row in enumerate(rows, 1)
+             for column, value in enumerate(row) if value is not None]
+    if not cells:
+        return u"A1"
+    first = (min(r for r, _ in cells), min(c for _, c in cells))
+    last = (max(r for r, _ in cells), max(c for _, c in cells))
+    return u"%s%d:%s%d" % (chr(65 + first[1]), first[0], chr(65 + last[1]), last[0])
+
+
 def sheet_xml(rows):
     parts = [u'<?xml version="1.0" encoding="UTF-8"?>',
-             u'<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData>']
+             u'<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">',
+             u'<dimension ref="%s"/><sheetData>' % sheet_dimension(rows)]
     for row_num, row in enumerate(rows, 1):
         parts.append(u'<row r="%d">' % row_num)
         for column, value in enumerate(row):
@@ -355,6 +374,8 @@ def write_xlsx(name, sheets, date1904=False):
     try:
         for part_name, text in parts:
             info = zipfile.ZipInfo(part_name, (2000, 1, 1, 0, 0, 0))
+            if not text.startswith("<?xml"):
+                text = XML_DECLARATION + text
             archive.writestr(info, unicode(text).encode("utf-8"))
     finally:
         archive.close()
