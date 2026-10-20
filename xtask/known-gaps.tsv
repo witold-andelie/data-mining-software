@@ -45,5 +45,4 @@ dl_discriminate	dl11_tie_equal	Decision List search mechanism unresolved: our tr
 dl_discriminate	dl12_tie_reorder	Decision List search mechanism unresolved: our trained list differs from Modeler's (all 400 policy cells rejected); see docs/decision-list-validation.md
 adp_next	adp_binning	Auto Data Prep step not implemented yet (supervised/unsupervised merge, binning, feature selection/construction, target rescaling); see crates/exec/src/nodes/auto_data_prep.rs
 adp_next	adp_construction	Auto Data Prep step not implemented yet (supervised/unsupervised merge, binning, feature selection/construction, target rescaling); see crates/exec/src/nodes/auto_data_prep.rs
-adp_next	adp_selection	Auto Data Prep step not implemented yet (supervised/unsupervised merge, binning, feature selection/construction, target rescaling); see crates/exec/src/nodes/auto_data_prep.rs
 linas_discriminate	x_shift	Linear-AS forward selection: entry decision for a numerically degenerate term differs (models_as/linearas_default x4*x4); under investigation
