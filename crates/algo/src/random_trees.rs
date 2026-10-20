@@ -1546,6 +1546,7 @@ fn pmml(
             .collect();
         let root = pmml_node(data, tree, 0, Predicate::True)?;
         segments.push(MiningSegment {
+            id: None,
             predicate: Predicate::True,
             model: Box::new(Model::Tree(TreeModel {
                 header: ModelHeader {

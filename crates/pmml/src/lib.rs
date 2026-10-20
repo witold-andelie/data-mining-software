@@ -294,6 +294,13 @@ pub struct SimpleRule {
 }
 
 /// PMML `MiningModel`: one nested model per `Segment`.
+impl Model {
+    /// The model's header (name, function, mining schema), when the model type has one.
+    pub fn header(&self) -> Option<&ModelHeader> {
+        crate::score::model_header(self)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct MiningModel {
     pub header: ModelHeader,
@@ -304,6 +311,9 @@ pub struct MiningModel {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct MiningSegment {
+    /// `Segment@id`. The Auto Classifier / Numeric builders name each component's builder
+    /// here, so their nugget scores the segment with that component's nugget.
+    pub id: Option<String>,
     pub predicate: Predicate,
     pub model: Box<Model>,
 }

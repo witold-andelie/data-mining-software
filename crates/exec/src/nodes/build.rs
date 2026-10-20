@@ -98,6 +98,33 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 pub fn build(node: &StreamNode) -> Result<Box<dyn Operator>, OperatorError> {
+    build_with(
+        node,
+        ParameterSource::Attachment(node.properties_attachment.clone()),
+    )
+}
+
+/// A builder whose extension parameters are given directly, as an Auto Classifier / Numeric
+/// component saves them (`AlgorithmParameter` entries), instead of in a stream attachment.
+pub(crate) fn build_component(
+    node: &StreamNode,
+    parameters: Vec<(String, String)>,
+) -> Result<Box<dyn Operator>, OperatorError> {
+    build_with(
+        node,
+        ParameterSource::Inline(Parameters {
+            values: parameters
+                .into_iter()
+                .map(|(name, value)| (name, Parameter::Value(value)))
+                .collect(),
+        }),
+    )
+}
+
+fn build_with(
+    node: &StreamNode,
+    parameters: ParameterSource,
+) -> Result<Box<dyn Operator>, OperatorError> {
     if node.type_identifier() == "spss.ts!ts_builder" {
         return super::time_series::build(node);
     }
@@ -109,6 +136,9 @@ pub fn build(node: &StreamNode) -> Result<Box<dyn Operator>, OperatorError> {
     }
     if node.type_identifier() == "BuildAutoClusteringModelNode" {
         return super::auto_cluster::build(node);
+    }
+    if node.type_identifier() == "BuildBinaryClassifierNode" {
+        return super::auto_build::build(node);
     }
     let s = node.settings.as_ref();
     let algorithm = match node.type_identifier().as_str() {
@@ -150,7 +180,7 @@ pub fn build(node: &StreamNode) -> Result<Box<dyn Operator>, OperatorError> {
     }
     Ok(Box::new(Build {
         algorithm,
-        parameters_member: node.properties_attachment.clone(),
+        parameters,
         use_partition: settings::flag(s, "usePartitionedData")?.unwrap_or(true),
     }))
 }
@@ -199,9 +229,16 @@ type DecisionListSpec = (DecisionListSettings, Option<String>, Option<Vec<String
 
 struct Build {
     algorithm: Algorithm,
-    /// The attachment holding the extension parameters.
-    parameters_member: Option<String>,
+    parameters: ParameterSource,
     use_partition: bool,
+}
+
+/// Where an extension builder's parameters come from.
+enum ParameterSource {
+    /// The stream attachment holding them (`None`: the node has none).
+    Attachment(Option<String>),
+    /// Given directly (an Auto component).
+    Inline(Parameters),
 }
 
 impl Operator for Build {
@@ -582,6 +619,7 @@ fn train_linear(
             m.header.local_transformations = pmml.transformations;
         }
         segments.push(MiningSegment {
+            id: None,
             predicate: Predicate::Simple {
                 field: field.name.clone(),
                 operator: dms_pmml::Operator::Equal,
@@ -623,9 +661,12 @@ fn train_linear(
 
 impl Build {
     fn parameters(&self, context: &ExecContext) -> Result<Parameters, OperatorError> {
-        let member = self.parameters_member.as_deref().ok_or_else(|| {
-            OperatorError::Settings("the build node has no parameters attachment".into())
-        })?;
+        let member = match &self.parameters {
+            ParameterSource::Inline(parameters) => return Ok(parameters.clone()),
+            ParameterSource::Attachment(member) => member.as_deref().ok_or_else(|| {
+                OperatorError::Settings("the build node has no parameters attachment".into())
+            })?,
+        };
         let bytes = context.attachments.get(member).ok_or_else(|| {
             OperatorError::Io(format!("the stream file has no attachment {member}"))
         })?;
@@ -2173,22 +2214,29 @@ fn chaid_settings(p: &Parameters) -> Result<ChaidSettings, OperatorError> {
     })
 }
 
-fn quest_settings(p: &Parameters) -> Result<dms_algo::quest::QuestSettings, OperatorError> {
-    let gap = |what: &str| OperatorError::Settings(format!("GAP: QUEST {what}"));
+/// The share of records held out as the overfit prevention set (C&R Tree, QUEST). The set is
+/// used when `tree.UseOverFitPreventionSet` is true or absent: Auto components save only
+/// `tree.OverFitPreventionSetPct` (30, or 0 when switched off, `auto_train/ac_trees_nofs`).
+fn overfit_share(p: &Parameters, algorithm: &str) -> Result<f64, OperatorError> {
     let pct = p.real("tree.OverFitPreventionSetPct")?.unwrap_or(0.0);
     let enabled = match p.text("tree.UseOverFitPreventionSet").as_deref() {
         None => true,
         Some(_) => p.flag("tree.UseOverFitPreventionSet")?,
     };
-    let overfit_share = if enabled {
-        if (0.0..=100.0).contains(&pct) {
-            pct / 100.0
-        } else {
-            return Err(gap(&format!("OverFitPreventionSetPct={pct}")));
-        }
+    if !enabled {
+        Ok(0.0)
+    } else if (0.0..=100.0).contains(&pct) {
+        Ok(pct / 100.0)
     } else {
-        0.0
-    };
+        Err(OperatorError::Settings(format!(
+            "GAP: {algorithm} OverFitPreventionSetPct={pct}"
+        )))
+    }
+}
+
+fn quest_settings(p: &Parameters) -> Result<dms_algo::quest::QuestSettings, OperatorError> {
+    let gap = |what: &str| OperatorError::Settings(format!("GAP: QUEST {what}"));
+    let overfit_share = overfit_share(p, "QUEST")?;
     let seed = match p.real("Quest_RandomSeed")? {
         Some(v) if v.is_finite() && v >= 0.0 && v.fract() == 0.0 => v as u64,
         None => 12345,
@@ -2224,16 +2272,7 @@ fn cart_settings(p: &Parameters) -> Result<CartSettings, OperatorError> {
     if p.text("tree.Priors").is_some_and(|priors| priors != "Data") {
         return Err(unsupported("equal or custom priors"));
     }
-    let overfit_share = if p.flag("tree.UseOverFitPreventionSet")? {
-        let pct = p.real("tree.OverFitPreventionSetPct")?.unwrap_or(0.0);
-        if (0.0..=100.0).contains(&pct) {
-            pct / 100.0
-        } else {
-            return Err(unsupported(&format!("OverFitPreventionSetPct={pct}")));
-        }
-    } else {
-        0.0
-    };
+    let overfit_share = overfit_share(p, "C&R Tree")?;
     let seed = match p.real("Cart_RandomSeed")? {
         Some(v) if v.is_finite() && v >= 0.0 && v.fract() == 0.0 => v as u64,
         None => 12345,
@@ -2273,10 +2312,12 @@ fn cart_settings(p: &Parameters) -> Result<CartSettings, OperatorError> {
 }
 
 /// The `Parameter` entries of an extension node's attachment: a value or a list of values.
+#[derive(Clone)]
 struct Parameters {
     values: HashMap<String, Parameter>,
 }
 
+#[derive(Clone)]
 enum Parameter {
     Value(String),
     List(Vec<String>),

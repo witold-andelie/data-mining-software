@@ -6,7 +6,7 @@ Status `done (statistical)`: trained to statistical, not exact, parity with Mode
 
 | Scope | Implemented | Total |
 |---|---|---|
-| MVP | 80 | 85 |
+| MVP | 81 | 85 |
 | later | 3 | 25 |
 | license blocked | 0 | 5 |
 | out of scope | 0 | 34 |
@@ -103,7 +103,7 @@ Status `done (statistical)`: trained to statistical, not exact, parity with Mode
 
 | Node | Id | Scope | Status | Modeler identifiers |
 |---|---|---|---|---|
-| Auto Classifier | `auto_classifier` | MVP | missing | `BuildBinaryClassifierNode`, `ApplyBinaryClassifierNode`, `ApplyAutoClassifierNode` |
+| Auto Classifier | `auto_classifier` | MVP | done (statistical) | `BuildBinaryClassifierNode`, `ApplyBinaryClassifierNode`, `ApplyAutoClassifierNode` |
 | Auto Numeric | `auto_numeric` | MVP | missing | `BuildNumericClassifierNode`, `ApplyNumericPredictorNode` |
 | Auto Cluster | `auto_cluster` | MVP | done (statistical) | `BuildAutoClusteringModelNode`, `ApplyAutoClusterNode` |
 | C5.0 | `c50` | MVP | done | `BuildC5RuleNode`, `ApplyC5RuleNode`, `ApplyC5SplitModelNode` |

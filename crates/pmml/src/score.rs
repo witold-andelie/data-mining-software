@@ -43,6 +43,18 @@ impl<'a> Env<'a> {
     }
 }
 
+impl Pmml {
+    /// The fields the model's own predicates, equations or network refer to, without the
+    /// MiningSchema's unused inputs (a CHAID tree lists every input but may split on fewer).
+    pub fn referenced_fields(&self) -> Result<Vec<String>, PmmlError> {
+        let mut fields = HashSet::new();
+        collect_model_fields(&self.model, &mut fields, &self.functions, 0)?;
+        let mut fields: Vec<String> = fields.into_iter().map(str::to_string).collect();
+        fields.sort();
+        Ok(fields)
+    }
+}
+
 pub(crate) fn bind<'a>(pmml: &'a Pmml, inputs: &[&str]) -> Result<Scorer<'a>, PmmlError> {
     let header = model_header(&pmml.model);
     let mut all_derived: Vec<&'a DerivedField> = Vec::new();
