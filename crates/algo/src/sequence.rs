@@ -1,16 +1,21 @@
 //! Sequence (`BuildSequenceNode`): sequential pattern mining, Algorithms Guide "Sequence
 //! Algorithm" (Agrawal and Srikant 1995; Hidber 1999 for the lattice).
 //!
-//! **Statistical parity (tie order free)** (`docs/statistical-parity.md`, acceptance rule 4):
-//! the rules and their statistics are exactly Modeler's; only the order of rules tied on
-//! confidence, antecedent length and antecedent support is free, because Modeler orders those
-//! by no recoverable key (`target/sequence/rules.py`, `disc.py`).
+//! **Statistical parity (order within a confidence and length block free)**
+//! (`docs/statistical-parity.md`, acceptance rule 4): the rules and their statistics are exactly
+//! Modeler's, and so is the order by confidence (descending) and antecedent length (ascending).
+//! Inside one such block Modeler's order is no function of the rules: `seq_ties/
+//! sequence_noise_domain` has the transactions, rules and statistics of `sequence_baseline` and
+//! only one unused Type value more, yet orders the block differently, interleaving antecedent
+//! counts 12,12,8,12,12; and `models_next/sequence_default` lists `butter => jam` (4 of 12)
+//! before `milk => eggs` (8 of 12). Two Codex investigations (8,640 lattice-generation orders
+//! from the guide and Hidber 1999, then 19 oracles) found no key.
 //!
-//! Evidence: `crates/exec/tests/sequence.rs` reproduces all eight oracles
-//! (`train_next/sequence_*`, `models_next/sequence_*`: 95 rules, 64 or 12 transactions) at 15
-//! significant digits, the precision Modeler stores, and all 1608 scored records. Rule order
-//! differs only inside 12 tie groups (29 rules); predictions differ only inside
-//! equal-confidence groups.
+//! Evidence: `crates/exec/tests/sequence.rs` reproduces the 8 `train_next/sequence_*` and
+//! `models_next/sequence_*` oracles (95 rules, 64 or 12 transactions) at 15 significant digits,
+//! the precision Modeler stores, and all 1608 scored records, and checks at every position that
+//! our rule has the confidence and antecedent length of Modeler's; the 11 `seq_ties` oracles
+//! (280 rules) agree likewise. Predictions differ only inside equal-confidence groups.
 //!
 //! # Data
 //!
@@ -55,11 +60,10 @@
 //!
 //! # Order
 //!
-//! Confidence descending, then antecedent length (itemsets) ascending, then antecedent support
-//! descending, then the antecedent's itemsets and the consequent in item order — a
-//! deterministic tie break of our own, since Modeler's order inside such a group is not
-//! recoverable (`target/sequence/rules.py`). Item ids are numbered by first mention in rule
-//! order.
+//! Confidence descending, then antecedent length (itemsets) ascending, as Modeler orders them;
+//! then antecedent support descending, then the antecedent's itemsets and the consequent in item
+//! order — a deterministic order of our own inside the block, where Modeler's is not recoverable
+//! (see above). Item ids are numbered by first mention in rule order.
 //!
 //! # GAPs
 //!

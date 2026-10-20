@@ -73,13 +73,11 @@ fn rule_text(rule: &SequenceRule) -> String {
     )
 }
 
-/// The key Modeler's order is free on: confidence, antecedent length, antecedent support.
-fn tie_key(rule: &SequenceRule) -> (String, usize, String) {
-    (
-        sig(rule.confidence),
-        rule.antecedent.len(),
-        sig(rule.support),
-    )
+/// The order key Modeler is held to: confidence descending, then antecedent length. Within one
+/// key the order is free: it changes when an unused Type value is added (`seq_ties`), so it is no
+/// function of the rules and their statistics (statistical-parity rule 4).
+fn tie_key(rule: &SequenceRule) -> (String, usize) {
+    (sig(rule.confidence), rule.antecedent.len())
 }
 
 fn tie_groups(rules: &[SequenceRule]) -> (usize, usize) {
@@ -226,12 +224,13 @@ fn rules_and_statistics_match_modeler() {
                     matched[other] = true;
                     if other != index {
                         order_differences += 1;
-                        if tie_key(&theirs.rules[other]) != tie_key(rule) {
+                        // Compare with Modeler's rule at this position, not with the same rule.
+                        if tie_key(&theirs.rules[index]) != tie_key(rule) {
                             failures.push(format!(
                                 "{label}/{case}: rule {} moved across a key group: {:?} vs {:?}",
                                 index + 1,
                                 tie_key(rule),
-                                tie_key(&theirs.rules[other])
+                                tie_key(&theirs.rules[index])
                             ));
                         }
                     }
