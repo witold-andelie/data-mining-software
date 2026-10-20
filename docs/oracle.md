@@ -121,6 +121,27 @@ Modeler 导出 CSV 时不转义字段里的双引号（值 `a"b` 写成 `"a"b"`�
 | `neuralnet_default` | `neuralnetwork` / `applyneuralnetwork` | `DRUG1n` | `Drug` (`Set`) | `Age, Sex, BP, Cholesterol, Na, K` | 默认 MLP，`use_random_seed=True`, `random_seed=12345` |
 | `twostep_default` | `twostep` / `applytwostep` | `DRUG1n` | — | `Age, Sex, BP, Cholesterol, Na, K` | `standardize=True`, `cluster_num_auto=True` (2..15), `distance_measure=Loglikelihood`, `clustering_criterion=BIC` |
 
+## 全量回归（`cargo xtask regress`）
+
+`cargo xtask compare` 一次只跑一个流。`cargo xtask regress` 跑 `oracle/` 下所有有对应语料流的导出（每个 `oracle/<label>/<stem>/manifest.json`；`<stem>` 是语料路径去掉 `.str`、把 `/` 换成 `__`，找不到语料流的目录如 `oracle/probes/` 跳过），并给每个流一个分类：
+
+| 分类 | 含义 |
+|---|---|
+| `match` | 所有终端节点的输入都与 Modeler 一致 |
+| `statistical` | 不一致，但流里有按统计对等（`docs/statistical-parity.md`，`crates/exec/src/registry.rs` 的 `STATISTICAL`）训练的建模节点；这类训练结果本来就不会逐位一致 |
+| `known-gap` | 不一致，且列在 `xtask/known-gaps.tsv`（每行 `label<TAB>stem<TAB>原因`）里；登记的原因优先于 `statistical`（例如 `team/decision_trees_heart` 的差异在 C&R Tree 之前的无种子 Balance 节点就已出现） |
+| `regression` | 其余的不一致，或流根本跑不起来 |
+
+```sh
+cargo xtask regress                        # 全部语料，默认 2 个并发 dms-cli
+cargo xtask regress --label records        # 只跑若干标签（--label 可重复）
+cargo xtask regress --jobs 8 --out target/regress.tsv
+```
+
+每个不一致的流打印一行（分类、`label/stem`、匹配的终端输入数或错误），以及前几条终端节点差异；最后汇总一行 `N streams: a match, b statistical, c known GAPs, d regressions`。`--out` 把每个流写成一 TSV 行（`label`、`stem`、`class`、`detail`、`problems`，相对路径按仓库根目录解析）。
+
+存在 `regression`，或 `known-gaps.tsv` 里的条目已经不再不一致（缺口修好了、条目过期）时，命令以非零状态退出；修好一个已知缺口后删掉对应的行。`--label` 同时限制过期检查的范围。
+
 ## 已知限制
 
 - 只遍历顶层节点；超节点内部的源节点和终端节点还没处理。

@@ -1,0 +1,15 @@
+# Streams whose oracle comparison is expected to differ. Update by hand; `cargo xtask regress`
+# fails on an entry that no longer mismatches, so delete fixed entries instead of leaving them.
+# label	stem	reason
+c50_presets	c50_wn_expert	C5.0 wn baseline learner: subtree raising/re-estimation unresolved, class confidences differ (0.862 vs 0.896); see crates/algo/src/c50.rs
+c50_presets	c50_wn100_expert	C5.0 wn100 pruning/raising unresolved, class confidences differ (0.6364 vs 0.6); see crates/algo/src/c50.rs
+ibm-demos	bayes_bankloan	Bayes Net is license-blocked in Modeler 19 and not implemented, so the downstream filter cannot be compared
+ibm-demos	bayes_churn_retrain	Bayes Net is license-blocked in Modeler 19 and not implemented, so the downstream filter cannot be compared
+ibm-demos	pm_binaryclassifier	Auto Classifier nugget: legacy Auto model scoring is unverified; the oracle retrains a replacement-linked model, which is out of scope
+ibm-demos	svm_cancer	SVM is license-blocked in Modeler 19 and not implemented
+ibm-demos	telco_coxreg	Cox regression is not implemented (planned after the MVP)
+ibm-demos	telco_custcat_discriminant	Discriminant is license-blocked in Modeler 19 and not implemented
+random	balance_boost	Balance has no seed: Modeler's own runs keep different records; row count 1155 vs 1156
+random	balance_reduce	Balance has no seed: Modeler's own runs keep different records; row count 356 vs 379
+team	decision_trees_heart	Team stream: unseeded Balance duplicates records; Select 206 vs Modeler 210
+team	logistic_regression	Team stream: unseeded Balance changes the row count (7774 vs 7797) and therefore the logistic fit

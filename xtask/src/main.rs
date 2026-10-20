@@ -5,6 +5,7 @@ mod corpus;
 mod layers;
 mod oracle;
 mod parity;
+mod regress;
 
 use std::path::PathBuf;
 use std::process::{Command, ExitCode};
@@ -29,7 +30,12 @@ commands:
   test-corpus                verify corpus/ and run the corpus-gated tests
   compare <label> <path> [--strict]
                              run a corpus stream with dms-cli and compare the data reaching
-                             each terminal node with the Modeler oracle export";
+                             each terminal node with the Modeler oracle export
+  regress [--label <label>]... [--jobs <n>] [--out <file>]
+                             compare every stream that has an oracle export: match,
+                             statistical (a statistical-parity builder trains), known GAP
+                             (xtask/known-gaps.tsv) or regression; fails on a regression or
+                             a stale known-gap entry (--out: per-stream TSV)";
 
 /// Crates with real-file and oracle tests behind their `corpus` feature.
 const CORPUS_CRATES: &[&str] = &[
@@ -71,6 +77,7 @@ fn main() -> ExitCode {
         Some("oracle") => oracle::run(rest),
         Some("probe") => oracle::probe(rest),
         Some("compare") => compare::run(rest),
+        Some("regress") => regress::run(rest),
         Some("test-corpus") => test_corpus(),
         _ => Err(USAGE.to_string()),
     };
@@ -105,17 +112,44 @@ fn cargo_program() -> String {
 }
 
 fn cargo(args: &[&str]) -> Result<()> {
-    println!("$ cargo {}", args.join(" "));
-    let status = Command::new(cargo_program())
-        .args(args)
-        .current_dir(workspace_root()?)
-        .status()
-        .map_err(|e| format!("cannot run cargo {}: {e}", args.join(" ")))?;
-    if status.success() {
-        Ok(())
-    } else {
-        Err(format!("cargo {} failed ({status})", args.join(" ")))
+    run_cargo(args, true)
+}
+
+/// Like `cargo`, without echoing the command: `regress` runs hundreds of them.
+fn cargo_quiet(args: &[&str]) -> Result<()> {
+    run_cargo(args, false)
+}
+
+fn run_cargo(args: &[&str], echo: bool) -> Result<()> {
+    let mut command = Command::new(cargo_program());
+    command.args(args).current_dir(workspace_root()?);
+    if echo {
+        println!("$ cargo {}", args.join(" "));
+        let status = command
+            .status()
+            .map_err(|e| format!("cannot run cargo {}: {e}", args.join(" ")))?;
+        return if status.success() {
+            Ok(())
+        } else {
+            Err(format!("cargo {} failed ({status})", args.join(" ")))
+        };
     }
+    let output = command
+        .output()
+        .map_err(|e| format!("cannot run cargo {}: {e}", args.join(" ")))?;
+    if output.status.success() {
+        return Ok(());
+    }
+    // Keep the child's own report: `regress` prints one line per stream, not a wall of text.
+    let mut message = format!("cargo {} failed ({})", args.join(" "), output.status);
+    for (name, bytes) in [("stdout", &output.stdout), ("stderr", &output.stderr)] {
+        let text = String::from_utf8_lossy(bytes);
+        let text = text.trim();
+        if !text.is_empty() {
+            message.push_str(&format!("; {name}: {text}"));
+        }
+    }
+    Err(message)
 }
 
 fn workspace_root() -> Result<PathBuf> {

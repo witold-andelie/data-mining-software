@@ -9,6 +9,7 @@
 use crate::corpus::{sha256_file, verified_file};
 use crate::{Result, workspace_root};
 use serde_json::{Value, json};
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -19,6 +20,8 @@ const MODELER_HOME_VAR: &str = "DMS_MODELER_HOME";
 const DEFAULT_TIMEOUT_SECS: u64 = 600;
 const DATA_DIRS_VAR: &str = "DMS_ORACLE_DATA_DIRS";
 const OUTPUT_SUBDIRS: [&str; 3] = ["models", "data", "exports"];
+/// Corpus labels hold a flat list of streams; a few level of subdirectories are allowed.
+const MAX_CORPUS_DEPTH: usize = 8;
 
 pub fn run(args: &[String]) -> Result<()> {
     let (label, path, timeout) = match args {
@@ -136,11 +139,113 @@ fn modeler_home() -> Result<PathBuf> {
 
 /// `oracle/<label>/<path without extension, '/' replaced by "__">`.
 pub(crate) fn output_dir(label: &str, path: &str) -> Result<PathBuf> {
-    let stem = path.strip_suffix(".str").unwrap_or(path).replace('/', "__");
-    if stem.is_empty() || stem.contains("..") {
-        return Err(format!("unusable corpus path {path:?}"));
-    }
+    let stem = stem_of(path).ok_or_else(|| format!("unusable corpus path {path:?}"))?;
     Ok(workspace_root()?.join("oracle").join(label).join(stem))
+}
+
+/// The oracle directory name of a corpus path (`output_dir` without root and label): the path
+/// without `.str`, `/` replaced by `__`. `None` when the name would escape the oracle directory.
+pub(crate) fn stem_of(path: &str) -> Option<String> {
+    let stem = path.strip_suffix(".str").unwrap_or(path).replace('/', "__");
+    (!stem.is_empty() && !stem.contains("..")).then_some(stem)
+}
+
+/// One corpus stream with a Modeler oracle export.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OracleStream {
+    pub label: String,
+    /// Corpus path, as pinned in `xtask/corpus.tsv` (forward slashes).
+    pub path: String,
+    /// Oracle directory name: the path without `.str`, `/` replaced by `__`.
+    pub stem: String,
+    /// `oracle/<label>/<stem>/`.
+    pub dir: PathBuf,
+}
+
+/// Every `oracle/<label>/<stem>/manifest.json` whose corpus stream exists, sorted by label and
+/// stem. `labels` limits the search (empty: every label). Directories without a corpus stream are
+/// skipped, which also drops probe outputs (`oracle/probes/<name>/`).
+pub fn streams(labels: &[String]) -> Result<Vec<OracleStream>> {
+    let root = workspace_root()?;
+    let mut out = Vec::new();
+    for (label, dir) in label_dirs(&root.join("oracle"))? {
+        if !labels.is_empty() && !labels.iter().any(|wanted| wanted == &label) {
+            continue;
+        }
+        for (stem, path) in corpus_streams(&root.join("corpus").join(&label))? {
+            let dir = dir.join(&stem);
+            if !dir.join("manifest.json").is_file() {
+                continue;
+            }
+            out.push(OracleStream {
+                label: label.clone(),
+                path,
+                stem,
+                dir,
+            });
+        }
+    }
+    Ok(out)
+}
+
+/// `oracle/` subdirectories, sorted by name.
+fn label_dirs(oracle_root: &Path) -> Result<Vec<(String, PathBuf)>> {
+    let mut dirs = Vec::new();
+    let entries = fs::read_dir(oracle_root)
+        .map_err(|e| format!("cannot read {}: {e}", oracle_root.display()))?;
+    for entry in entries {
+        let entry = entry.map_err(|e| format!("cannot read {}: {e}", oracle_root.display()))?;
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+        if let Some(name) = entry.file_name().to_str() {
+            dirs.push((name.to_string(), path));
+        }
+    }
+    dirs.sort();
+    Ok(dirs)
+}
+
+/// Corpus streams under one label, keyed by the oracle directory name that encodes their path.
+/// A missing directory means the label has no streams (for example `oracle/probes/`).
+fn corpus_streams(dir: &Path) -> Result<BTreeMap<String, String>> {
+    let mut streams = BTreeMap::new();
+    if !dir.is_dir() {
+        return Ok(streams);
+    }
+    let mut pending = vec![(dir.to_path_buf(), String::new(), 0usize)];
+    while let Some((current, prefix, depth)) = pending.pop() {
+        let entries = fs::read_dir(&current)
+            .map_err(|e| format!("cannot read {}: {e}", current.display()))?;
+        for entry in entries {
+            let entry = entry.map_err(|e| format!("cannot read {}: {e}", current.display()))?;
+            let name = entry.file_name();
+            let Some(name) = name.to_str() else {
+                continue;
+            };
+            let path = entry.path();
+            if path.is_dir() {
+                if depth < MAX_CORPUS_DEPTH {
+                    pending.push((path, format!("{prefix}{name}/"), depth + 1));
+                }
+                continue;
+            }
+            if !name.ends_with(".str") {
+                continue;
+            }
+            let relative = format!("{prefix}{name}");
+            let Some(stem) = stem_of(&relative) else {
+                continue;
+            };
+            if let Some(other) = streams.insert(stem.clone(), relative.clone()) {
+                return Err(format!(
+                    "corpus streams {other} and {relative} share the oracle directory {stem}"
+                ));
+            }
+        }
+    }
+    Ok(streams)
 }
 
 fn prepare_output_dir(out: &Path) -> Result<()> {
@@ -324,4 +429,33 @@ fn modeler_version(home: &Path) -> Value {
         .ok()
         .and_then(|text| text.lines().next().map(|line| Value::from(line.trim())))
         .unwrap_or(Value::Null)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn stems_reverse_corpus_paths() {
+        assert_eq!(
+            stem_of("sort_multi_keys.str").as_deref(),
+            Some("sort_multi_keys")
+        );
+        assert_eq!(stem_of("sub/dir/x.str").as_deref(), Some("sub__dir__x"));
+        // A stream without the extension keeps its name, as `output_dir` always did.
+        assert_eq!(stem_of("x").as_deref(), Some("x"));
+        assert_eq!(stem_of(".str"), None);
+        assert_eq!(stem_of("../x.str"), None);
+        let dir = output_dir("records", "sort_multi_keys.str").expect("oracle directory");
+        assert_eq!(
+            dir.file_name().and_then(|name| name.to_str()),
+            Some("sort_multi_keys")
+        );
+        assert_eq!(
+            dir.parent()
+                .and_then(Path::file_name)
+                .and_then(|name| name.to_str()),
+            Some("records")
+        );
+    }
 }
