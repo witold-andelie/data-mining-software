@@ -177,8 +177,11 @@ pub(super) fn lsvm(node: &StreamNode) -> Result<LsvmSettings, OperatorError> {
     })
 }
 
-/// The custom field list and defaults saved by all three Linear-AS oracles.
-pub(super) fn linear(node: &StreamNode) -> Result<(String, Vec<String>), OperatorError> {
+/// The custom field list and defaults saved by all three Linear-AS oracles, plus the Auto
+/// Numeric Type-role case (`autoModelFieldSelection=true` with no custom fields,
+/// `auto_train/an_*`, which trains on the Type roles).
+/// The custom target and inputs; `None` when the node trains on the Type roles.
+pub(super) fn linear(node: &StreamNode) -> Result<LinearFields, OperatorError> {
     defaults(
         node,
         &[
@@ -208,13 +211,19 @@ pub(super) fn linear(node: &StreamNode) -> Result<(String, Vec<String>), Operato
         true,
     )?;
     let s = node.settings.as_ref();
+    // Auto Numeric components save `autoModelFieldSelection=true` with no custom fields and
+    // train on the Type roles (`auto_train/an_*`); standalone Linear-AS oracles save custom
+    // fields. An empty custom list with automatic selection means the Type roles.
     if settings::flag(s, "autoModelFieldSelection")
         .map_err(gap)?
         .unwrap_or(true)
     {
-        return Err(gap(
-            "autoModelFieldSelection: only saved custom fields verified",
-        ));
+        if settings::text(s, "_targetField").is_some_and(|v| !v.is_empty())
+            || !settings::children(s, "_inputFieldList", "field").is_empty()
+        {
+            return Err(gap("autoModelFieldSelection with custom fields"));
+        }
+        return Ok(None);
     }
     let target = settings::text(s, "_targetField")
         .filter(|s| !s.is_empty())
@@ -226,5 +235,8 @@ pub(super) fn linear(node: &StreamNode) -> Result<(String, Vec<String>), Operato
     if inputs.is_empty() || inputs.len() > 50 || inputs.iter().any(String::is_empty) {
         return Err(gap("_inputFieldList requires 1..50 custom fields"));
     }
-    Ok((target, inputs))
+    Ok(Some((target, inputs)))
 }
+
+/// Linear-AS custom fields: the target and the inputs.
+pub(super) type LinearFields = Option<(String, Vec<String>)>;

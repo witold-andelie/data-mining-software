@@ -106,17 +106,17 @@ fn measures_and_ranking_match_modelers_saved_components() {
     for ((builder, measured), (name, accuracy, auc)) in all.iter().zip(&stats) {
         println!(
             "{builder} ({name}): accuracy {:.7} (Modeler {accuracy}), AUC {:.7} (Modeler {auc}), lift {:.6}, profit {}",
-            measured.accuracy,
-            measured.auc,
+            measured.accuracy.unwrap(),
+            measured.auc.unwrap(),
             measured.lift.unwrap(),
-            measured.profit
+            measured.profit.unwrap()
         );
         // Modeler saves seven decimals.
         assert!(
-            (measured.accuracy - accuracy).abs() < 5e-8,
+            (measured.accuracy.unwrap() - accuracy).abs() < 5e-8,
             "{builder} accuracy"
         );
-        assert!((measured.auc - auc).abs() < 5e-8, "{builder} AUC");
+        assert!((measured.auc.unwrap() - auc).abs() < 5e-8, "{builder} AUC");
     }
     // ac_lift lists the components by descending lift.
     let lifts: Vec<f64> = all.iter().map(|(_, c)| c.lift.unwrap()).collect();
@@ -125,9 +125,12 @@ fn measures_and_ranking_match_modelers_saved_components() {
         "lift order {lifts:?}"
     );
     // The other rankings, on the same training records and the same component models.
-    assert_eq!(top2(&all, |c| c.accuracy), builders("ac_accuracy_n2"));
-    assert_eq!(top2(&all, |c| c.auc), builders("ac_auc_n2"));
-    assert_eq!(top2(&all, |c| c.profit), builders("ac_profit_n2"));
+    assert_eq!(
+        top2(&all, |c| c.accuracy.unwrap()),
+        builders("ac_accuracy_n2")
+    );
+    assert_eq!(top2(&all, |c| c.auc.unwrap()), builders("ac_auc_n2"));
+    assert_eq!(top2(&all, |c| c.profit.unwrap()), builders("ac_profit_n2"));
     assert_eq!(top2(&all, |c| c.lift.unwrap()), builders("ac_lift_n2"));
 }
 
