@@ -1,10 +1,15 @@
 //! Means (Output palette): compares means across groups of a categorical field (one-way ANOVA
-//! F-test), returning a [`Document`] with one table matching Modeler's exported CSV
-//! (`docs/oracle.md`).
+//! F-test), or between paired fields (paired-samples t-test), returning a [`Document`] with one
+//! table matching Modeler's exported CSV (`docs/oracle.md`).
 //!
 //! Implemented settings (`ModelerScriptingAutomation-19.0.txt` "means properties"):
-//! - `method`: `betweenGroups` (default); `withinRecords` (paired samples t-test) is rejected with
-//!   [`OperatorError::Settings`].
+//! - `method`: `betweenGroups` (default) or `betweenFields` (`oracle/outputs_next/means_fields*`):
+//!   `meansPairedFields` lists the pairs' fields in turn; one row per pair with each field's
+//!   mean, standard deviation, standard error and count, their Pearson correlation, the
+//!   difference (first minus second: mean, standard deviation, standard error, count, 95%
+//!   t interval), `T-Test`, `df` (n - 1) and `Importance` (1 - two-sided p). The simple and
+//!   advanced views export the same columns. Missing values in a pair have no oracle and are a
+//!   `GAP:` error.
 //! - `groupingField`: categorical grouping field (required in `betweenGroups` mode).
 //! - `meansGroupedFields/field`: continuous test fields to compare across groups (required).
 //! - `viewMode` (`simple` | `advanced`), `importanceShowLabels`, `importanceLowThreshold`,
@@ -32,6 +37,8 @@ use std::sync::Arc;
 struct MeansOp {
     grouping_field: String,
     test_fields: Vec<String>,
+    /// `betweenFields`: the field pairs.
+    pairs: Vec<(String, String)>,
 }
 
 pub fn build(node: &StreamNode) -> Result<Box<dyn Operator>, OperatorError> {
@@ -46,14 +53,15 @@ pub fn build(node: &StreamNode) -> Result<Box<dyn Operator>, OperatorError> {
         }
     }
 
-    match settings::text(s, "method").as_deref().map(str::trim) {
-        None | Some("") | Some("betweenGroups") => {}
+    let between_fields = match settings::text(s, "method").as_deref().map(str::trim) {
+        None | Some("") | Some("betweenGroups") => false,
+        Some("betweenFields") => true,
         Some(other) => {
             return Err(OperatorError::Settings(format!(
                 "Means method {other:?} is not supported yet"
             )));
         }
-    }
+    };
 
     match settings::text(s, "viewMode").as_deref().map(str::trim) {
         None | Some("") | Some("simple") | Some("advanced") => {}
@@ -72,6 +80,29 @@ pub fn build(node: &StreamNode) -> Result<Box<dyn Operator>, OperatorError> {
         )));
     }
     let _ = settings::flag(s, "importanceShowLabels")?;
+    if between_fields {
+        let fields: Vec<String> = settings::children(s, "meansPairedFields", "field")
+            .into_iter()
+            .map(Element::text)
+            .collect();
+        if fields.is_empty()
+            || !fields.len().is_multiple_of(2)
+            || fields.iter().any(String::is_empty)
+        {
+            return Err(OperatorError::Settings(
+                "Means betweenFields needs meansPairedFields in pairs".into(),
+            ));
+        }
+        let pairs = fields
+            .chunks(2)
+            .map(|pair| (pair[0].clone(), pair[1].clone()))
+            .collect();
+        return Ok(Box::new(MeansOp {
+            grouping_field: String::new(),
+            test_fields: Vec::new(),
+            pairs,
+        }));
+    }
 
     let grouping_field = settings::text(s, "groupingField")
         .map(|t| t.trim().to_string())
@@ -92,6 +123,7 @@ pub fn build(node: &StreamNode) -> Result<Box<dyn Operator>, OperatorError> {
     Ok(Box::new(MeansOp {
         grouping_field,
         test_fields,
+        pairs: Vec::new(),
     }))
 }
 
@@ -116,6 +148,9 @@ impl Operator for MeansOp {
             .first()
             .ok_or_else(|| OperatorError::Inputs("Means needs one input".into()))?;
         let decimals = context.decimal_places();
+        if !self.pairs.is_empty() {
+            return paired_document(input, &self.pairs, decimals);
+        }
 
         let group_col = position(input.model(), &self.grouping_field)?;
         let group_field = input.model().fields().get(group_col).ok_or_else(|| {
@@ -158,6 +193,118 @@ impl Operator for MeansOp {
             tables: vec![table],
         })))
     }
+}
+
+/// The `betweenFields` table: one paired-samples t-test per field pair.
+fn paired_document(
+    input: &Table,
+    pairs: &[(String, String)],
+    decimals: usize,
+) -> Result<NodeOutput, OperatorError> {
+    let header: Vec<String> = [
+        "Field One",
+        "Field Two",
+        "Mean (Field One)",
+        "Std. Dev. (Field One)",
+        "Std. Err. (Field One)",
+        "Count (Field One)",
+        "Mean (Field Two)",
+        "Std. Dev. (Field Two)",
+        "Std. Err. (Field Two)",
+        "Count (Field Two)",
+        "Correlation",
+        "Mean (Difference)",
+        "Std. Dev. (Difference)",
+        "Std. Err. (Difference)",
+        "Count (Difference)",
+        "95% Conf. Lower",
+        "95% Conf. Upper",
+        "T-Test",
+        "df",
+        "Importance",
+    ]
+    .iter()
+    .map(|h| h.to_string())
+    .collect();
+    let column = |name: &str| -> Result<Vec<f64>, OperatorError> {
+        let index = position(input.model(), name)?;
+        let field = &input.model().fields()[index];
+        input
+            .rows()
+            .iter()
+            .map(|row| {
+                let value = &row[index];
+                match value.as_f64() {
+                    Some(x) if x.is_finite() && !field.is_missing(value) => Ok(x),
+                    _ => Err(OperatorError::Settings(format!(
+                        "GAP: Means betweenFields: missing values in {name:?} have no oracle"
+                    ))),
+                }
+            })
+            .collect()
+    };
+    let real = |x: f64| format_real(x, decimals);
+    let mut rows = Vec::with_capacity(pairs.len());
+    for (first, second) in pairs {
+        let (a, b) = (column(first)?, column(second)?);
+        let n = a.len();
+        if n < 2 {
+            return Err(OperatorError::Settings(
+                "GAP: Means betweenFields with fewer than two records has no oracle".into(),
+            ));
+        }
+        let nf = n as f64;
+        let moments = |x: &[f64]| {
+            let mean = x.iter().sum::<f64>() / nf;
+            let sd = (x.iter().map(|v| (v - mean).powi(2)).sum::<f64>() / (nf - 1.0)).sqrt();
+            (mean, sd, sd / nf.sqrt())
+        };
+        let difference: Vec<f64> = a.iter().zip(&b).map(|(x, y)| x - y).collect();
+        let ((ma, sa, ea), (mb, sb, eb), (md, sd, ed)) =
+            (moments(&a), moments(&b), moments(&difference));
+        let covariance = a
+            .iter()
+            .zip(&b)
+            .map(|(x, y)| (x - ma) * (y - mb))
+            .sum::<f64>();
+        let correlation = covariance / ((nf - 1.0) * sa * sb);
+        let df = nf - 1.0;
+        let t = md / ed;
+        let p = 2.0 * (1.0 - dms_algo::stats::student_t_cdf(t.abs(), df));
+        let quantile = dms_algo::stats::student_t_quantile(0.975, df).ok_or_else(|| {
+            OperatorError::Data(format!("no t quantile for {df} degrees of freedom"))
+        })?;
+        rows.push(vec![
+            first.clone(),
+            second.clone(),
+            real(ma),
+            real(sa),
+            real(ea),
+            n.to_string(),
+            real(mb),
+            real(sb),
+            real(eb),
+            n.to_string(),
+            real(correlation),
+            real(md),
+            real(sd),
+            real(ed),
+            n.to_string(),
+            real(md - quantile * ed),
+            real(md + quantile * ed),
+            real(t),
+            n.saturating_sub(1).to_string(),
+            real((1.0 - p).clamp(0.0, 1.0)),
+        ]);
+    }
+    Ok(NodeOutput::Document(Arc::new(Document {
+        title: String::new(),
+        tables: vec![DocumentTable {
+            title: None,
+            header,
+            rows,
+        }],
+    })))
 }
 
 /// Group categories in Modeler order: declared `ValueSpec::Categories` / `Flag` values if

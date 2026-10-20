@@ -2,11 +2,13 @@
 //! the data behind the chart, as Modeler's VIZML export holds it (`nodes::graph_data`;
 //! `oracle/graphs/eval_*`).
 //!
-//! Settings: `chartType` (`gains`, `lift`, `response`), `cumulativePlot` (default true),
-//! `plotNTiles` (`percentiles` default, `quartiles`, `quintiles`, `deciles`, `vingtiles`,
-//! `1000-tiles`), `fieldDetectionMethod` (`name`). Rejected: profit and ROI charts, user-defined
-//! hits or scores, business rules, metadata detection, and a partition field in the data
-//! (`splitByPartition` draws one chart per partition). Baselines and best lines only draw.
+//! Settings: `chartType` (`gains`, `lift`, `response`, `profit`, `roi`), `cumulativePlot` (default
+//! true), `plotNTiles` (`percentiles` default, `quartiles`, `quintiles`, `deciles`, `vingtiles`,
+//! `1000-tiles`), `fieldDetectionMethod` (`name`), `fixedCost` / `fixedRevenue` (profit and ROI).
+//! Rejected: user-defined hits or scores, business rules, metadata detection, a partition field
+//! in the data (`splitByPartition` draws one chart per partition), and for profit and ROI cost,
+//! revenue or weight fields, a weight other than 1 and non-cumulative plots (no oracle).
+//! Baselines and best lines only draw.
 //!
 //! Rules (`eval_gains`, `eval_lift`, `eval_gains_noncumulative`: all 300 values to the last bit):
 //! - The target is the Type's target, a flag; a hit is its true value.
@@ -19,6 +21,9 @@
 //!   7.000000000000001, so percentile 8).
 //! - Gains: hits up to (cumulative) or in the n-tile, as a percentage of all hits. Response: hits
 //!   as a percentage of the records there. Lift: `(hits / records) / (all hits / n)` there.
+//!   Profit: `hits * fixedRevenue - records * fixedCost`; ROI: that profit as a percentage of
+//!   `records * fixedCost` (`oracle/outputs_next/evaluation_profit`, `evaluation_roi`: decile 1
+//!   has 4 records and 2 hits, profit 6, ROI 150).
 //! - Rows: the n-tile number (1.0, 2.0, ...) and each model's value.
 //!
 //! GAP: set targets and n-tiles without records (no probe) print 0.
@@ -38,10 +43,15 @@ enum Chart {
     Gains,
     Lift,
     Response,
+    Profit,
+    Roi,
 }
 
 struct Evaluation {
     chart: Chart,
+    /// `fixedCost` and `fixedRevenue` for profit and ROI.
+    cost: f64,
+    revenue: f64,
     cumulative: bool,
     tiles: usize,
 }
@@ -54,8 +64,24 @@ pub fn build(node: &StreamNode) -> Result<Box<dyn Operator>, OperatorError> {
         None | Some("") | Some("gains") => Chart::Gains,
         Some("lift") => Chart::Lift,
         Some("response") => Chart::Response,
+        Some("profit") => Chart::Profit,
+        Some("roi") => Chart::Roi,
         Some(other) => return Err(unsupported(&format!("chart type {other}"))),
     };
+    let money = matches!(chart, Chart::Profit | Chart::Roi);
+    if money {
+        for key in ["useFixedCosts", "useFixedRevenue", "useFixedWeight"] {
+            if !settings::flag(s, key)?.unwrap_or(true) {
+                return Err(unsupported(&format!("{key} false")));
+            }
+        }
+        if settings::real(s, "fixedWeight")?.unwrap_or(1.0) != 1.0 {
+            return Err(unsupported("a fixedWeight other than 1"));
+        }
+        if !settings::flag(s, "cumulativePlot")?.unwrap_or(true) {
+            return Err(unsupported("a non-cumulative profit or ROI plot"));
+        }
+    }
     for flag in [
         "userDefinedHit",
         "userDefinedScore",
@@ -84,6 +110,8 @@ pub fn build(node: &StreamNode) -> Result<Box<dyn Operator>, OperatorError> {
     };
     Ok(Box::new(Evaluation {
         chart,
+        cost: settings::real(s, "fixedCost")?.unwrap_or(0.0),
+        revenue: settings::real(s, "fixedRevenue")?.unwrap_or(0.0),
         cumulative: settings::flag(s, "cumulativePlot")?.unwrap_or(true),
         tiles,
     }))
@@ -191,6 +219,12 @@ impl Operator for Evaluation {
                         Chart::Response if cum_counts > 0.0 => cum_hits / cum_counts * 100.0,
                         Chart::Lift if cum_counts > 0.0 && all_hits > 0.0 => {
                             (cum_hits / cum_counts) / (all_hits / n as f64)
+                        }
+                        Chart::Profit => cum_hits * self.revenue - cum_counts * self.cost,
+                        Chart::Roi if cum_counts * self.cost != 0.0 => {
+                            (cum_hits * self.revenue - cum_counts * self.cost)
+                                / (cum_counts * self.cost)
+                                * 100.0
                         }
                         _ => 0.0,
                     };
