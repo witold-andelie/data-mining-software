@@ -33,22 +33,16 @@
 //! - An ordinal field splits in two at a cut over its values in sorted order, costing
 //!   log2(cuts)/total of gain like a numeric threshold (`c50_weighted`: `ord in {high,
 //!   low}` versus `{middle}`; `c50_costs`: `code` beats the uncorrected `ord` cut).
-//! - A split's gain must reach the average gain of the tests examined at the node.
-//!   The ratio still uses the local corrected gain. A numeric or ordinal test whose
-//!   local trial count is above one is examined at the textbook gain
-//!   `raw − log2(N−1)/N` while that gain is positive; otherwise the examined gain is
-//!   the local corrected gain. A test with a non-positive examined gain and under one
-//!   bit of raw gain in total (`raw × N < 1`) is not examined. Examined non-positive
-//!   gains still count as zero (`c50_weighted/c50_w2_loose`: `x > 11` fails, `code`
-//!   wins). On `models_next2/ens_voting` this omits root `spend` and `visits`
-//!   (`raw × 519` ≈ 0.010 and 0.095), so the average of region/channel/tier is 0.200
-//!   and `region` wins; at east (147 rows) `spend`'s textbook gain 0.276 is under the
-//!   average 0.292, so `channel` wins. A wiped-out local gain stays in the average:
-//!   `drugtwice` node 31 keeps `K` because Age's `raw × 28` ≈ 2.59 counts as zero, and
-//!   a weighted node whose textbook gain is negative keeps its local gain so `code`
-//!   still beats `cat`. GAP: under misclassification costs the test is skipped, since
-//!   `c50_costs` grows `x` at the 18-record `amber, flag = T, x <= 9` node although
-//!   it fails it.
+//! - P (positive-gain gate): average only tests with positive local corrected
+//!   gain (numerical positivity tolerance 1e-10), require that same gain to reach
+//!   the average, then maximize gain / split information. Zero/negative gains do
+//!   not dilute the average; there is no separate "examined gain". Costs retain
+//!   the recorded gate bypass (`c50_costs` node 5).
+//!   Public basis: Quinlan, "Improved Use of Continuous Attributes in C4.5",
+//!   JAIR 4 (1996), pp.78–80: average-gain restriction (p.79), selecting numeric
+//!   thresholds by gain and charging description length (p.80). Its literal
+//!   distinct-value correction differs from our recorded local range/gap rule;
+//!   positive-only membership is fixture evidence, not specified there.
 //! - `c50_costs` (B->C 8, C->B 2): minimize sum(count[actual]*cost[actual][predicted]),
 //!   retaining the parent's class on ties. Counts stay raw. Bound the number of
 //!   misclassified cases, then multiply by their mean cost; for zero observed
@@ -119,7 +113,25 @@
 //!
 //! - `c50_group_symbols`: greedy gain-ratio grouping of symbolic categories.
 //! - `c50_prune90`: pruning confidence is (100 - severity)/100.
-//! - `c50_no_global_prune`: local pruning alone. Subtree raising is not established.
+//! - `c50_no_global_prune`: local pruning, including R5, without global pruning.
+//! - R5: recursively prune children; if the largest original branch's pruned
+//!   child is nonleaf, route all current cases through its fixed tests and
+//!   recompute scores/distributions.
+//!   Compare leaf L, kept subtree S, and fixed candidate R: choose the leaf if
+//!   L<=S+0.1 and L<=R+0.1, otherwise raise if R<=S+0.1. Only after selection,
+//!   retain the promoted test and regrow its descendants, then apply replacement
+//!   pruning without more raising on that candidate. The phase-1 scope is the
+//!   first twelve levels; growth and regrowth share the depth/node resource cap.
+//!   Public basis for comparing leaf/subtree/largest branch and summing binomial
+//!   upper estimates: Esposito, Malerba & Semeraro, "A Comparative Analysis of
+//!   Methods for Pruning Decision Trees", IEEE TPAMI 19 (1997), pp.481–482.
+//!   The precise R5 selection/regrowth schedule is an empirical convention.
+//! - `c50_discriminate` (15 complete trees): g01–g04 isolate positive-only gate
+//!   membership, g05–g07 gain comparison across numeric/flag tests, g08/g09 local
+//!   penalty scope; r02/r03 require descendants to regrow (cut 2.5 -> 2.75).
+//!   P+R5 matches every node attribute and score, including g02_zero's b-then-a
+//!   structure, which scores alone cannot distinguish from a-then-b. Previously
+//!   exact contracts and `c50_presets/c50_wn_expert` stay exact.
 //! - Tree confidence is (class_count+1)/(node_count+target_categories), with zero
 //!   for absent classes in the exported distribution; raw binary propensity uses
 //!   confidence and its complement, including absent classes (`c50_partition`).
@@ -142,32 +154,24 @@
 //!   the Na/K subtree. Dividing by removed leaves reverses that ranking (2 vs
 //!   1.5), wrongly rejects both under the 5 + sqrt(5*95/100) = 7.179449 budget.
 //!   Ranking by added errors collapses Age alone, ending at seven errors.
-//! - GAP baseline learner: wn and wn100 remain unresolved. With the current
-//!   examined-gain gate wn100 has 18 training errors after local and 19 after global
-//!   pruning (the 11 / 12 recorded earlier belong to a gate that compared local
-//!   corrected gains on both sides, which breaks `ens_voting`); its oracle has 22.
-//!   The oracle wn100 tree is not a fixed point of CF = .25 leaf-versus-subtree
-//!   pruning: at c3=T / b>2.1 (46 records, 36/10) the leaf bound 12.536923 is below
-//!   the retained subtree's 13.788497. No data-specific budget or pruning exception
-//!   is used. Codex investigation 2026-10-20 (gate variants G0-G7, pruning order,
-//!   largest-branch raising, each with its regressions):
-//!   `D:/spss-modeler/rea-work/clones/c50wn/target/c50wn/REPORT.md`.
-//! - `auto_train/ac_*` (C5.0 as an Auto Classifier component): at income<=46.5 /
-//!   age>37.5 / member=Y / region=east (6 records) Modeler splits on income<=28 while
-//!   the average-gain gate keeps visits<=6.5 (income's examined gain 0.0722 is under
-//!   the average 0.0769). Gates that admit income break `ens_voting` or `drugtwice`
-//!   unless restricted to nodes whose candidate tests are all numeric, which no
-//!   source supports; not adopted.
-//! - Rejected/ambiguous hypotheses (2026-10-18): wn's root c1 gain ratio is
-//!   0.0909106225, whereas b's best direct cut is 3.95, ratio 0.0645687711.
-//!   The oracle's b=3.85 exists below c1=T, with endpoints 3.7/4.0. Promoting
-//!   that largest child's test and regrowing its descendants on all rows makes
-//!   wn exact (800 scores), preserving the existing exact fixtures. Merely
-//!   redistributing counts keeps b=5.6 with 17 rows instead of the oracle's
-//!   5.94999999 with 21. However, several different raising estimates all fit
-//!   wn, none fits wn100, whose differing-line count grows from two in the old
-//!   learner to six with raising/regrowth and the new numeric penalty. Raising
-//!   remains unimplemented until the selection/re-estimation rule is established.
+//! - GAP baseline learner after P+R5 (2026-10-20): wn100 has 16 training errors
+//!   versus Modeler's 22. Two extra subtrees remain: b<=7.3 at c3=T / b>2.1 /
+//!   c1=F / c2=F, and c4 (with d<=47.605 below it) at c3=F / c2=T.
+//!   The oracle is not a fixed point of CF=.25 leaf-versus-subtree pruning: at
+//!   c3=T / b>2.1 (46 records, 36/10), leaf bound 12.536923 is below the retained
+//!   subtree's 13.788497. No data-specific budget or pruning exception is used.
+//! - `auto_train/ac_*`: P repairs the six-record income<=28 decision. All 16 saved
+//!   C5.0 component trees still differ: 39/360 errors here versus Modeler's 43/360.
+//!   Modeler replaces the 44-record member=Y region subtree with age<=32 / income<=90
+//!   and collapses the eight-record member=N region subtree. Further raising as
+//!   well as pruning remains a GAP.
+//! - Raising evidence: wn's root c1 gain ratio is 0.0909106225, whereas b's best
+//!   direct cut is 3.95, ratio 0.0645687711. The oracle's b=3.85 exists below c1=T
+//!   with endpoints 3.7/4.0. R5 promotes this test and regrows its descendants on
+//!   all rows (800 exact scores). Redistributing counts alone keeps b=5.6 with 17
+//!   rows instead of 5.94999999 with 21. The 15 discriminating trees select P+R5
+//!   from the frozen 70-cell family; wn100 and Auto Classifier still need more.
+//!   Earlier investigations: `target/c50wn/REPORT.md`, `target/c50d2/REPORT.md`.
 //! - A global budget based on summed leaf error bounds (27.754211 before global
 //!   pruning in the raising experiment, oracle 32.059979) overprunes wn100 and
 //!   breaks `c50_globalprune/c50_gf16_58a`, `models_ml/c50_min_child`, and drug.
@@ -213,7 +217,7 @@
 //! (`c50_boost_tree`, `c50_boost_rules`: reweighting settled, weighted trees GAP; see `c50_boost`),
 //! costs combined with weights/rules/boosting (no combined oracle), case/frequency
 //! weights (`c50_weight`: GAP pruning and internal distributions), winnowing
-//! (`c50_presets`: GAP elimination criterion and four unwinnowed baselines),
+//! (`c50_presets`: GAP elimination criterion and wn100 baseline),
 //! unrecorded Simple presets/combinations (scope above), adjusted-propensity
 //! training (the nugget scores its saved test-partition tree, `exec::nodes::c50`;
 //! the builder does not yet write one), cross-validation, split-field training
@@ -555,7 +559,7 @@ fn entropy(counts: &[f64]) -> f64 {
 /// Binary64 scaling matters: drugtwice's midpoint 0.040038 exports 0.04003799.
 /// Of 312 numeric predicates in the five recorded tree families, this reproduces
 /// 308 from the final node's endpoints. Candidate endpoints 3.7/4.0 also explain
-/// the four wn roots (final endpoints 3.8/3.9); see the unresolved raising GAP.
+/// the four wn roots (final endpoints 3.8/3.9); the unwinnowed root is raised by R5.
 /// Overflow when scaling and closely spaced inputs must not change the partition.
 fn numeric_cut(lower: f64, upper: f64) -> f64 {
     let midpoint = lower / 2.0 + upper / 2.0;
@@ -573,28 +577,10 @@ fn numeric_cut(lower: f64, upper: f64) -> f64 {
 }
 
 struct Split {
-    /// Local corrected gain. The gain ratio uses this, not [`Self::gate`].
+    /// Local corrected gain, used by both the average-gain gate and gain ratio.
     gain: f64,
-    /// Gain before the local threshold penalty. Discrete tests store `gain`.
-    raw: f64,
-    /// Gain compared with the average. See the average-gain rule on [`grow`].
-    gate: f64,
     ratio: f64,
     groups: Vec<(Predicate, Vec<usize>)>,
-}
-
-/// Gain used by the average test. Several plausible thresholds pay the textbook
-/// `log2(N−1)/N` penalty while that still leaves a positive gain. A penalty that
-/// wipes the gain out leaves the local corrected gain in place, and the ratio is
-/// untouched either way (`drugtwice` node 31 versus `ens_voting` east `spend`).
-fn examined_gain(raw: f64, local: f64, trials: f64, total: f64) -> f64 {
-    if trials > 1.0 && total > 1.0 {
-        let classical = raw - (total - 1.0).log2() / total;
-        if classical > 0.0 {
-            return classical;
-        }
-    }
-    local
 }
 
 fn candidate(
@@ -664,8 +650,6 @@ fn candidate(
                 .partition(|&r| values.get(r).is_some_and(|v| *v <= cut));
             Some(Split {
                 gain,
-                raw,
-                gate: examined_gain(raw, gain, trials, total),
                 ratio: gain / split_info,
                 groups: vec![
                     (
@@ -758,8 +742,6 @@ fn candidate(
                 .collect();
             Some(Split {
                 gain,
-                raw: gain,
-                gate: gain,
                 ratio,
                 groups,
             })
@@ -837,8 +819,6 @@ fn ordinal_cut(
     };
     Some(Split {
         gain,
-        raw,
-        gate: examined_gain(raw, gain, trials, total),
         ratio: gain / info,
         groups: vec![branch(low), branch(high)],
     })
@@ -1021,36 +1001,30 @@ fn grow(
             )
         })
         .collect();
-    // Average over examined tests. A non-positive gate with under one bit of raw
-    // gain is not a test (`ens_voting` root spend/visits). Other non-positive gates
-    // count as zero (`c50_w2_loose`, `drugtwice` node 31). Costs skip the test
-    // (`c50_costs` node 5 grows `x`).
+    // P: only positive corrected gains enter the mean; compare that same gain
+    // with the mean before maximizing gain ratio. Costs retain their recorded
+    // bypass (`c50_costs` node 5 grows `x`).
     let average = if data.costs.is_some() {
         f64::NEG_INFINITY
     } else {
-        let mut examined = 0usize;
+        let mut positive = 0usize;
         let mut sum = 0.0;
         for split in &candidates {
-            if split.gate >= 0.0 || split.raw * total >= 1.0 {
-                examined = examined.saturating_add(1);
-                sum += split.gate.max(0.0);
+            if split.gain > 1e-10 {
+                positive = positive.saturating_add(1);
+                sum += split.gain;
             }
         }
-        if examined == 0 {
+        if positive == 0 {
             f64::INFINITY
         } else {
-            sum / examined as f64
+            sum / positive as f64
         }
     };
     let mut best: Option<Split> = None;
     for split in candidates {
-        let value = if data.costs.is_some() {
-            split.gain
-        } else {
-            split.gate
-        };
-        if value > 1e-10
-            && value >= average - 1e-9
+        if split.gain > 1e-10
+            && split.gain >= average - 1e-9
             && best.as_ref().is_none_or(|s| split.ratio > s.ratio + 1e-12)
         {
             best = Some(split);
@@ -1097,8 +1071,9 @@ pub(crate) fn rule_tree(dataset: &Dataset<'_>, settings: &C50Settings) -> Result
     validate_settings(dataset, settings)?;
     let data = Data::read(dataset, settings.weight_field)?;
     let rows: Vec<usize> = (0..data.targets.len()).collect();
-    let mut root = grow(&data, &rows, settings, 0, 0, &mut 0)?;
-    prune(&mut root, settings, None);
+    let mut budget = 0;
+    let mut root = grow(&data, &rows, settings, 0, 0, &mut budget)?;
+    prune(&data, &rows, &mut root, settings, 0, &mut budget)?;
     Ok(root)
 }
 
@@ -1142,7 +1117,7 @@ fn normal_cdf(z: f64) -> f64 {
     if z >= 0.0 { 1.0 - tail } else { tail }
 }
 
-fn prune(node: &mut Node, settings: &C50Settings, costs: Option<&[Vec<f64>]>) -> f64 {
+fn leaf_estimate(node: &Node, settings: &C50Settings, costs: Option<&[Vec<f64>]>) -> f64 {
     let total = node.record_count.unwrap_or(0.0);
     let correct = node
         .distribution
@@ -1177,13 +1152,32 @@ fn prune(node: &mut Node, settings: &C50Settings, costs: Option<&[Vec<f64>]>) ->
             leaf *= loss / (total - correct);
         }
     }
+    leaf
+}
+
+/// Estimate a fixed structure without pruning it (R5's selection estimate).
+fn subtree_estimate(node: &Node, settings: &C50Settings, costs: Option<&[Vec<f64>]>) -> f64 {
+    if node.children.is_empty() {
+        leaf_estimate(node, settings, costs)
+    } else {
+        node.children
+            .iter()
+            .map(|child| subtree_estimate(child, settings, costs))
+            .sum()
+    }
+}
+
+/// The selected regrown candidate receives replacement pruning, without another
+/// raising/regrowth pass. Iterating raising here can recreate the removed tests.
+fn prune_regrown(node: &mut Node, settings: &C50Settings, costs: Option<&[Vec<f64>]>) -> f64 {
+    let leaf = leaf_estimate(node, settings, costs);
     if node.children.is_empty() {
         return leaf;
     }
     let subtree: f64 = node
         .children
         .iter_mut()
-        .map(|c| prune(c, settings, costs))
+        .map(|c| prune_regrown(c, settings, costs))
         .sum();
     if leaf <= subtree + LOCAL_SLACK {
         node.children.clear();
@@ -1191,6 +1185,134 @@ fn prune(node: &mut Node, settings: &C50Settings, costs: Option<&[Vec<f64>]>) ->
     } else {
         subtree
     }
+}
+
+fn branch_rows(data: &Data, rows: &[usize], node: &Node) -> Vec<Vec<usize>> {
+    node.children
+        .iter()
+        .map(|child| {
+            rows.iter()
+                .copied()
+                .filter(|&r| row_matches(data, &child.predicate, r))
+                .collect()
+        })
+        .collect()
+}
+
+/// Route all cases through inherited tests and recompute every node's prediction
+/// and distribution. Ties retain the re-estimated parent's prediction.
+fn redistribute(
+    data: &Data,
+    rows: &[usize],
+    node: &mut Node,
+    parent: usize,
+    depth: usize,
+) -> Result<(), AlgoError> {
+    if depth > MAX_DEPTH {
+        return Err(AlgoError::Unsupported(
+            "C5.0 redistribution depth limit".into(),
+        ));
+    }
+    let counts = data.counts(rows);
+    let class = cost_winner(&counts, parent, data.costs.as_deref());
+    node.score = data.classes.get(class).cloned();
+    node.record_count = Some(data.weight(rows));
+    for (distribution, count) in node.distribution.iter_mut().zip(counts) {
+        distribution.record_count = count;
+    }
+    refresh_distribution(node);
+    let groups = branch_rows(data, rows, node);
+    for (child, group) in node.children.iter_mut().zip(groups) {
+        redistribute(data, &group, child, class, depth.saturating_add(1))?;
+    }
+    Ok(())
+}
+
+/// Phase-1 R5 is bounded to the first twelve levels. This is a conservative
+/// experiment scope limit, not a published claim about Modeler's maximum depth.
+const RAISING_DEPTH: usize = 12;
+
+fn prune(
+    data: &Data,
+    rows: &[usize],
+    node: &mut Node,
+    settings: &C50Settings,
+    depth: usize,
+    budget: &mut usize,
+) -> Result<f64, AlgoError> {
+    if depth > MAX_DEPTH {
+        return Err(AlgoError::Unsupported("C5.0 pruning depth limit".into()));
+    }
+    let leaf = leaf_estimate(node, settings, data.costs.as_deref());
+    if node.children.is_empty() {
+        return Ok(leaf);
+    }
+    let groups = branch_rows(data, rows, node);
+    let mut subtree = 0.0;
+    for (child, group) in node.children.iter_mut().zip(&groups) {
+        subtree += prune(
+            data,
+            group,
+            child,
+            settings,
+            depth.saturating_add(1),
+            budget,
+        )?;
+    }
+    // Largest original branch by case count, first on ties; a child pruned to a
+    // leaf supplies no raising candidate.
+    let mut largest = 0;
+    for index in 1..groups.len() {
+        if groups.get(index).map_or(0, Vec::len) > groups.get(largest).map_or(0, Vec::len) {
+            largest = index;
+        }
+    }
+    let mut raised = node
+        .children
+        .get(largest)
+        .filter(|child| !child.children.is_empty() && depth < RAISING_DEPTH)
+        .cloned();
+    let parent = data
+        .classes
+        .iter()
+        .position(|c| Some(c) == node.score.as_ref())
+        .unwrap_or(0);
+    let mut estimate = f64::INFINITY;
+    if let Some(candidate) = &mut raised {
+        redistribute(data, rows, candidate, parent, depth)?;
+        estimate = subtree_estimate(candidate, settings, data.costs.as_deref());
+    }
+    if leaf <= subtree + LOCAL_SLACK && leaf <= estimate + LOCAL_SLACK {
+        node.children.clear();
+        return Ok(leaf);
+    }
+    if estimate <= subtree + LOCAL_SLACK
+        && let Some(mut candidate) = raised
+    {
+        let class = data
+            .classes
+            .iter()
+            .position(|c| Some(c) == candidate.score.as_ref())
+            .unwrap_or(parent);
+        let promoted = branch_rows(data, rows, &candidate);
+        for (child, group) in candidate.children.iter_mut().zip(promoted) {
+            let predicate = child.predicate.clone();
+            *child = grow(
+                data,
+                &group,
+                settings,
+                class,
+                depth.saturating_add(1),
+                budget,
+            )?;
+            child.predicate = predicate;
+        }
+        let result = prune_regrown(&mut candidate, settings, data.costs.as_deref());
+        candidate.predicate = node.predicate.clone();
+        *node = candidate;
+        return Ok(result);
+    }
+    Ok(subtree)
 }
 
 /// A plain nominal field with more declared values than 0.3 x (training records - 4) is
@@ -1511,8 +1633,9 @@ pub fn train_tree(dataset: &Dataset<'_>, settings: &C50Settings) -> Result<Pmml,
         .map(|c| c.matrix(&data.classes))
         .transpose()?;
     let rows: Vec<usize> = (0..data.targets.len()).collect();
-    let mut root = grow(&data, &rows, settings, 0, 0, &mut 0)?;
-    prune(&mut root, settings, data.costs.as_deref());
+    let mut budget = 0;
+    let mut root = grow(&data, &rows, settings, 0, 0, &mut budget)?;
+    prune(&data, &rows, &mut root, settings, 0, &mut budget)?;
     if settings.global_pruning {
         global_prune(&data, &mut root);
     }

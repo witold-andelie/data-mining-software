@@ -159,6 +159,8 @@ fn c50_builders_match_every_split_count_and_distribution() {
     .map(|c| ("models_ml", *c))
     .chain([
         ("models", "c50_default"),
+        // P alone changes this tree; R5 is required to keep its exact contract.
+        ("models_next2", "ens_voting"),
         ("c50_weighted", "c50_x4_unit"),
         ("c50_weighted", "c50_x8t_unit"),
         ("c50_weighted", "c50_w2_unit_loose"),
@@ -206,7 +208,32 @@ fn recorded_preset_cases() -> Vec<String> {
     cases
 }
 
-const PRESET_BASELINE_GAPS: &[&str] = &["c50_wn_expert", "c50_wn100_expert"];
+const PRESET_BASELINE_GAPS: &[&str] = &["c50_wn100_expert"];
+
+/// Scores alone miss g02_zero: the two trees agree on the scoring grid but test
+/// a/b in opposite orders. Keep the complete PMML contract for all 15 witnesses.
+#[test]
+fn c50_discriminate_trees_match_every_split_count_and_distribution() {
+    for case in [
+        "g01_nominal",
+        "g02_zero",
+        "g03_constant",
+        "g04_negative",
+        "g05_six_numeric",
+        "g06_six_flag",
+        "g07_six_no_c",
+        "g08_penalty_m2",
+        "g09_penalty_m4",
+        "r01_relabel",
+        "r02_regrow",
+        "r03_move_value",
+        "r04_selection",
+        "r05_reprune",
+        "r06_unpruned",
+    ] {
+        Fixture::load("c50_discriminate", case).compare();
+    }
+}
 
 #[test]
 fn c50_simple_presets_and_expert_controls_match_exactly() {
@@ -226,7 +253,7 @@ fn c50_simple_presets_and_expert_controls_match_exactly() {
             }
         }
     }
-    assert_eq!(count, 28);
+    assert_eq!(count, 29);
     println!("PRESETS {count} Simple trees and Expert controls exact");
     // Explicitly train Expert defaults on the three Simple baseline datasets too.
     for tag in ["grid", "noisy", "drug"] {
@@ -236,10 +263,9 @@ fn c50_simple_presets_and_expert_controls_match_exactly() {
     }
 }
 
-/// Raising/regrowth can reproduce wn, but its selection rule and wn100 pruning
-/// remain unresolved. Keep the full contract without endorsing a partial heuristic.
+/// P+R5 reproduces wn; wn100 still retains two subtrees absent from Modeler.
 #[test]
-#[ignore = "GAP: wn subtree raising/re-estimation and wn100 pruning"]
+#[ignore = "GAP: wn100 extra pruning beyond P+R5"]
 fn c50_remaining_preset_expert_controls_match_exactly() {
     let mut mismatches = Vec::new();
     for case in PRESET_BASELINE_GAPS {
