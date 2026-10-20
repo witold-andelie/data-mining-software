@@ -8,12 +8,18 @@
 //!   value, sorted by descending `p̂`; with cumulative false and true positive counts `f_i`, `t_i`
 //!   the area is `Σ |f_i - f_(i-1)| (t_i + t_(i-1)) / 2`, here divided by `N·P` so that it is the
 //!   unit-square area the builder saves (`auc`);
-//! - lift at `q` %: the response rate among the `k = q % · n` records with the highest `p̂`, over
+//! - lift at `q` %: the expected response rate among the top `k = q % · n` records by `p̂`, over
 //!   the overall response rate. The Guide prints the mean `p̂` of those records as the numerator;
 //!   Modeler ranks by hits: on `auto_train/ac_lift`'s saved components the mean-`p̂` lift puts
 //!   Decision List (1.7506) above C5.0 (1.7334), Modeler's order and the hit rate (1.7598) the
-//!   other way. Records tied on `p̂` at the cut count with their segment's hit share (record
-//!   order gives the same ranking there);
+//!   other way. Records tied on `p̂` count with their segment's hit share, and `k` stays
+//!   fractional: the expected hits under a random order within ties (McSherry & Najork, ECIR
+//!   2008), i.e. linear interpolation of the cumulative gains curve. `auto_lift` decides it with
+//!   Modeler's own `ac_lift` components at q = 48..80 of 360 records: floor, ceiling and rounding
+//!   of `k` each contradict at least one ranking, interpolation reproduces eight of nine, five of
+//!   them predicted before the run (`ac_lift_q58`, `q61`, `q63`, `q78`, `q80`). The exception,
+//!   `ac_lift_q57`, is a near tie: C5.0 1.622011 versus Logistic 1.622088 (Modeler keeps C5.0
+//!   first); no simple rule explains it, and it is left unfitted;
 //! - maximum profit: the largest cumulative `Σ (h(x_i)·r - c)` over prefixes of the records by
 //!   descending `p̂`, ending at segment boundaries (0 for the empty prefix). The Guide's stop at
 //!   `p̂·r - c ≤ 0` gives Logistic 685 and C5.0 700 on `ac_lift`, where Modeler ranks Logistic
@@ -96,8 +102,8 @@ pub fn auc(scores: &[FlagScore]) -> Result<f64, AlgoError> {
     Ok(area / (count(positives) * count(negatives)))
 }
 
-/// Lift at `percentile` % (1..=100). `k = percentile · n / 100` must be a whole number of
-/// records: how Modeler rounds a fractional cut is not recorded, so it is a `GAP`.
+/// Lift at `percentile` % (1..=100) with `k = percentile · n / 100` records, fractional `k`
+/// and ties shared by their segment's hit rate (module docs).
 pub fn lift(scores: &[FlagScore], percentile: u32) -> Result<f64, AlgoError> {
     check_flag(scores)?;
     if !(1..=100).contains(&percentile) {
@@ -105,33 +111,26 @@ pub fn lift(scores: &[FlagScore], percentile: u32) -> Result<f64, AlgoError> {
             "lift percentile {percentile} is outside 1..=100"
         )));
     }
-    let scaled = u64::try_from(scores.len())
-        .ok()
-        .and_then(|n| n.checked_mul(u64::from(percentile)))
-        .ok_or_else(|| AlgoError::Data("too many records".into()))?;
-    if scaled % 100 != 0 {
-        return Err(AlgoError::Unsupported(format!(
-            "GAP: lift at {percentile} % of {} records is not a whole number of records",
-            scores.len()
-        )));
-    }
-    let k =
-        usize::try_from(scaled / 100).map_err(|_| AlgoError::Data("too many records".into()))?;
+    let n = count(scores.len());
+    let k = f64::from(percentile) * n / 100.0;
     let positives = scores.iter().filter(|s| s.hit).count();
-    if positives == 0 || k == 0 {
+    if positives == 0 || k <= 0.0 {
         return Err(AlgoError::Data("lift needs a true target value".into()));
     }
     let sorted = by_propensity(scores);
-    let cut = sorted
-        .get(k - 1)
-        .ok_or_else(|| AlgoError::Data("lift cut beyond the records".into()))?
-        .propensity;
-    let above: Vec<_> = sorted.iter().filter(|s| s.propensity > cut).collect();
-    let tied: Vec<_> = sorted.iter().filter(|s| s.propensity == cut).collect();
-    let tied_hits = count(tied.iter().filter(|s| s.hit).count());
-    let hits = count(above.iter().filter(|s| s.hit).count())
-        + count(k - above.len()) * tied_hits / count(tied.len());
-    Ok((hits / count(k)) / (count(positives) / count(scores.len())))
+    let (mut taken, mut hits, mut i) = (0.0, 0.0, 0);
+    while let Some(first) = sorted.get(i).filter(|_| taken < k) {
+        let (mut size, mut segment_hits) = (0usize, 0usize);
+        while let Some(s) = sorted.get(i).filter(|s| s.propensity == first.propensity) {
+            size += 1;
+            segment_hits += usize::from(s.hit);
+            i += 1;
+        }
+        let take = count(size).min(k - taken);
+        hits += take * count(segment_hits) / count(size);
+        taken += take;
+    }
+    Ok((hits / k) / (count(positives) / n))
 }
 
 /// Maximum profit for `revenue` per hit and `cost` per record.
@@ -237,7 +236,8 @@ mod tests {
         ];
         // Top 40 % = 2 records, both hits, response rate 3/5.
         assert!((lift(&scores, 40).unwrap() - 1.0 / 0.6).abs() < 1e-15);
-        assert!(lift(&scores, 30).is_err());
+        // 30 % of 5 = 1.5 records: the 0.9 hit and half of the 0.7 hit.
+        assert!((lift(&scores, 30).unwrap() - (1.5 / 1.5) / 0.6).abs() < 1e-15);
         // r = 10, c = 5: cumulative +5 +10 +5 0 +5, best 10.
         assert_eq!(max_profit(&scores, 10.0, 5.0).unwrap(), 10.0);
         // A tie at the cut counts its share: top 50 % of four, the last two tied 1 hit of 2.
