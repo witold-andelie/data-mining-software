@@ -97,6 +97,9 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 pub fn build(node: &StreamNode) -> Result<Box<dyn Operator>, OperatorError> {
+    if node.type_identifier() == "spss.ts!ts_builder" {
+        return super::time_series::build(node);
+    }
     if node.type_identifier() == "BuildFeatureSelectionNode" {
         return super::feature_selection::build(node);
     }

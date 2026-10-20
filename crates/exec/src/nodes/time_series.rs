@@ -1,5 +1,10 @@
 //! Time Series nugget (`spss.ts!ts_applier`, catalog `time_series`): score the model saved
-//! in the stream. Training (`spss.ts!ts_builder`) stays a GAP.
+//! in the stream. Training is statistical parity (optimizer): `dms_algo::time_series`.
+//! Simple/Holt and explicit ARIMA(1,1,1) are estimated from input observations.
+//! Expert supports refitting its recorded log ARIMA(0,1,0) specification only;
+//! automatic transformation/order selection remains GAP (Guide p.394 gives no thresholds).
+//! The four streams store inline extension properties (no Parameter attachment).
+//! Builder PMML is used only as Expert selection evidence, never for coefficients.
 //!
 //! The applier's PMML container (`contentContainers/.../container[@name=PMML]/content`,
 //! `ts_arima.str` `data/0003.dat`, and the same layout in `ts_simple.str` / `ts_holt.str`)
@@ -30,6 +35,7 @@ use crate::output::NodeOutput;
 use crate::settings;
 use dms_algo::arima::{self, ArimaSpec, Forecast, Transform};
 use dms_algo::smooth::{self, SmoothSpec};
+use dms_algo::time_series::{self as estimation, FittedSpec as SavedModel, Method};
 use dms_pmml::Pmml;
 use dms_stream::StreamNode;
 use dms_strfmt::{ArchiveLimits, read_length_prefixed_zip};
@@ -37,6 +43,417 @@ use dms_types::{DataModel, Field, Measurement, Storage, Table, Value};
 use std::sync::Arc;
 
 const MAX_TARGETS: usize = 64;
+
+/// Statistical parity (optimizer). Unrecorded Expert selection is explicitly GAP.
+pub fn build(node: &StreamNode) -> Result<Box<dyn Operator>, OperatorError> {
+    let s = node.settings.as_ref();
+    let gap = |what: &str| OperatorError::Settings(format!("GAP: Time Series {what}"));
+    if node.properties_attachment.is_some() {
+        return Err(gap(
+            "external training parameters have no oracle; these four streams use inline extension properties",
+        ));
+    }
+    for key in [
+        "autoModelFieldSelection",
+        "useFrequency",
+        "useEvents",
+        "_useFrequency",
+        "_useWeight",
+        "_specifyEstimationPeriod",
+        "_continueEstimation",
+        "_buildScoreModelOnly",
+        "_arimaDetectOutliersAutomatically",
+        "_esDetectOutliersAutomatically",
+        "_expertOutlierDetectMethod",
+        "_isConsiderNewESModels",
+    ] {
+        if settings::flag(s, key)?.unwrap_or(false) {
+            return Err(gap(key));
+        }
+    }
+    for key in [
+        "_candidateInputs",
+        "_inputFieldList",
+        "_eventFields",
+        "eventFields",
+        "_splitFields",
+        "modelSplitFieldSelection",
+        "_dimFieldList",
+    ] {
+        if !field_list(s, key).is_empty() {
+            return Err(gap(key));
+        }
+    }
+    for key in [
+        "weightField",
+        "frequencyField",
+        "partitionField",
+        "_regressionWeightField",
+        "_frequencyWeightField",
+        "_dateTimeField",
+    ] {
+        if settings::text(s, key).is_some_and(|v| !v.trim().is_empty()) {
+            return Err(gap(key));
+        }
+    }
+    for key in [
+        "_cyclic_periods",
+        "_arimaTransformType",
+        "_arimaTfOrders",
+        "_periodEstimation",
+        "_aggAndDistSetting",
+        "_metricDefinitions",
+        "_metricDefinitionsForScore",
+        "_extendMetricVal",
+    ] {
+        if !settings::children(s, &format!("{key}/rows"), "row").is_empty() {
+            return Err(gap(key));
+        }
+    }
+    for (key, expected) in [
+        ("_dataStructure", "single"),
+        ("_esTransformType", "None"),
+        ("_futureValueTypeList", "compute"),
+    ] {
+        if settings::text(s, key).is_some_and(|v| v != expected) {
+            return Err(gap(key));
+        }
+    }
+    for key in ["_observationsExclude", "_arimaTfDelay"] {
+        if settings::integer(s, key)?.unwrap_or(0) != 0 {
+            return Err(gap(key));
+        }
+    }
+    if !settings::flag(s, "_usePeriod")?.unwrap_or(true)
+        || !settings::flag(s, "_isSameInterval")?.unwrap_or(true)
+    {
+        return Err(gap("period preparation without a regular period field"));
+    }
+    let period = settings::text(s, "_periodField")
+        .filter(|v| !v.is_empty())
+        .ok_or_else(|| gap("missing period field"))?;
+    let targets = field_list(s, "_targetField");
+    if targets.is_empty() || targets.len() > MAX_TARGETS {
+        return Err(gap("requires 1..=64 explicit target fields"));
+    }
+    if targets.iter().any(|name| name.len() > 4096) {
+        return Err(gap("target name exceeds 4096 bytes"));
+    }
+    if targets
+        .iter()
+        .collect::<std::collections::HashSet<_>>()
+        .len()
+        != targets.len()
+    {
+        return Err(gap("duplicate targets"));
+    }
+    let method = match settings::text(s, "_method").as_deref() {
+        Some("Exsmooth") => Some(match settings::text(s, "_esModelType").as_deref() {
+            Some("Simple") => Method::Simple,
+            Some("HoltsLinearTrend") => Method::Holt,
+            _ => return Err(gap("smoothing model outside Simple/Holt")),
+        }),
+        Some("Arima") => {
+            if !settings::flag(s, "_arimaIncludeConst")?.unwrap_or(true) {
+                return Err(gap("ARIMA without constant"));
+            }
+            let order = |name: &str| -> Result<usize, OperatorError> {
+                let v = settings::integer(s, &format!("_arimaSeasonOrder/struct/{name}"))?
+                    .ok_or_else(|| gap("missing ARIMA order"))?;
+                usize::try_from(v).map_err(|_| gap("negative ARIMA order"))
+            };
+            let (p, d, q) = (order("p")?, order("d")?, order("q")?);
+            if (p, d, q) != (1, 1, 1) {
+                return Err(gap("explicit ARIMA orders outside (1,1,1)"));
+            }
+            // No cyclic periods means seasonLength=1. The oracle retains dormant
+            // seasonal controls sp=0,sd=1,sq=1; they are not additional differences.
+            if (order("sp")?, order("sd")?, order("sq")?) != (0, 1, 1) {
+                return Err(gap("unrecorded seasonal controls"));
+            }
+            Some(Method::Arima {
+                p,
+                d,
+                q,
+                transform: Transform::None,
+            })
+        }
+        Some("ExpertModeler") => {
+            if settings::text(s, "_expertModelTypeList").as_deref() != Some("AllModels") {
+                return Err(gap("Expert model family"));
+            }
+            None
+        }
+        _ => return Err(gap("estimation method")),
+    };
+    let selected_member = node
+        .containers
+        .iter()
+        .find(|c| c.name.as_deref() == Some("PMML"))
+        .map(|c| c.member.clone());
+    if method.is_none() && selected_member.is_none() {
+        return Err(gap(
+            "Expert automatic transformation/order selection; no recorded specification to refit",
+        ));
+    }
+    Ok(Box::new(TimeSeriesBuild {
+        method,
+        targets,
+        period,
+        selected_member,
+    }))
+}
+
+struct TimeSeriesBuild {
+    method: Option<Method>,
+    targets: Vec<String>,
+    period: String,
+    selected_member: Option<String>,
+}
+
+impl Operator for TimeSeriesBuild {
+    fn arity(&self) -> Arity {
+        Arity::Exactly(1)
+    }
+    fn run(&self, _inputs: &[Arc<Table>], _context: &ExecContext) -> Result<Table, OperatorError> {
+        Err(OperatorError::Inputs(
+            "Time Series builder produces a model".into(),
+        ))
+    }
+    fn produce(
+        &self,
+        inputs: &[Arc<Table>],
+        _model: Option<Arc<Pmml>>,
+        context: &ExecContext,
+    ) -> Result<NodeOutput, OperatorError> {
+        let input = inputs
+            .first()
+            .ok_or_else(|| OperatorError::Inputs("Time Series needs one training input".into()))?;
+        if !(5..=512).contains(&input.row_count()) {
+            return Err(OperatorError::Data(
+                "Time Series estimation requires 5..=512 records".into(),
+            ));
+        }
+        if input.model().fields().iter().any(|f| {
+            matches!(
+                f.role,
+                dms_types::Role::Split | dms_types::Role::Partition | dms_types::Role::Frequency
+            )
+        }) {
+            return Err(OperatorError::Settings(
+                "GAP: Time Series partition/split/frequency role".into(),
+            ));
+        }
+        let period = input
+            .model()
+            .position(&self.period)
+            .ok_or_else(|| OperatorError::Data("Time Series period absent".into()))?;
+        let mut previous = None;
+        for row in input.rows() {
+            let value = row
+                .get(period)
+                .and_then(Value::as_f64)
+                .filter(|v| v.is_finite())
+                .ok_or_else(|| {
+                    OperatorError::Data("Time Series period must be finite numeric".into())
+                })?;
+            if previous.is_some_and(|p| value - p != 1.0) {
+                return Err(OperatorError::Settings(
+                    "GAP: Time Series requires consecutive unit periods".into(),
+                ));
+            }
+            previous = Some(value);
+        }
+        let selected = if self.method.is_none() {
+            let member = self
+                .selected_member
+                .as_deref()
+                .ok_or_else(|| OperatorError::Settings("GAP: Expert automatic selection".into()))?;
+            expert_specifications(member, context)?
+        } else {
+            Vec::new()
+        };
+        let mut segments = String::new();
+        for target in &self.targets {
+            let method = match self.method {
+                Some(method) => method,
+                None => selected
+                    .iter()
+                    .find(|(name, _)| name == target)
+                    .map(|(_, method)| *method)
+                    .ok_or_else(|| {
+                        OperatorError::Settings(format!(
+                            "GAP: Expert has no selected specification for {target}"
+                        ))
+                    })?,
+            };
+            let at = input.model().position(target).ok_or_else(|| {
+                OperatorError::Data(format!("Time Series target {target:?} absent"))
+            })?;
+            let field =
+                input.model().fields().get(at).ok_or_else(|| {
+                    OperatorError::Data("Time Series target metadata absent".into())
+                })?;
+            let y: Result<Vec<_>, _> = input
+                .rows()
+                .iter()
+                .map(|row| {
+                    row.get(at)
+                        .filter(|v| !field.is_missing(v))
+                        .and_then(Value::as_f64)
+                        .filter(|v| v.is_finite())
+                        .ok_or_else(|| {
+                            OperatorError::Data(format!(
+                                "GAP: Time Series missing/nonfinite target {target}"
+                            ))
+                        })
+                })
+                .collect();
+            let fit = estimation::fit(&y?, method).map_err(score_message)?;
+            segments.push_str(&format!(
+                "<Segment><True/>{}</Segment>",
+                fit.to_xml(target, input.row_count())
+            ));
+        }
+        let xml = format!(
+            "<PMML version=\"4.3\"><DataDictionary/><MiningModel functionName=\"timeSeries\"><MiningSchema/><Segmentation multipleModelMethod=\"selectAll\">{segments}</Segmentation></MiningModel></PMML>"
+        );
+        let mut pmml = Pmml::parse(&xml).map_err(|e| OperatorError::Data(e.to_string()))?;
+        pmml.data_dictionary = std::iter::once(&self.period)
+            .chain(&self.targets)
+            .filter_map(|name| {
+                input
+                    .model()
+                    .position(name)
+                    .and_then(|at| dms_algo::data_field(input, at))
+            })
+            .collect();
+        if let dms_pmml::Model::Mining(model) = &mut pmml.model {
+            model.header.mining_schema =
+                self.targets
+                    .iter()
+                    .filter_map(|name| {
+                        input.model().position(name).and_then(|at| {
+                            dms_algo::mining_field(input, at, dms_pmml::Usage::Target)
+                        })
+                    })
+                    .collect();
+        }
+        Ok(NodeOutput::Model(Arc::new(pmml)))
+    }
+}
+
+/// Read only selected structure, not parameters, variance or initial states.
+fn expert_specifications(
+    member: &str,
+    context: &ExecContext,
+) -> Result<Vec<(String, Method)>, OperatorError> {
+    let bytes = context
+        .attachments
+        .get(member)
+        .ok_or_else(|| OperatorError::Io(format!("missing {member}")))?;
+    let entries = read_length_prefixed_zip(bytes, &ArchiveLimits::default())
+        .map_err(|e| OperatorError::Data(e.to_string()))?;
+    let names = datamodel_targets(&entries)?;
+    let mut selected = Vec::new();
+    if names.is_empty() || names.len() > MAX_TARGETS {
+        return Err(OperatorError::Settings(
+            "GAP: Expert requires 1..=64 recorded series specifications".into(),
+        ));
+    }
+    for (index, name) in names.iter().enumerate() {
+        let entry = entries
+            .iter()
+            .find(|e| e.name == format!("{index}.xml"))
+            .ok_or_else(|| OperatorError::Data("Expert PMML missing series".into()))?;
+        let text =
+            std::str::from_utf8(&entry.bytes).map_err(|e| OperatorError::Data(e.to_string()))?;
+        if text.len() > 16 * 1024 * 1024 {
+            return Err(OperatorError::Data("Expert PMML exceeds 16 MiB".into()));
+        }
+        let doc =
+            roxmltree::Document::parse(text).map_err(|e| OperatorError::Data(e.to_string()))?;
+        let arima = doc
+            .descendants()
+            .find(|n| n.has_tag_name("ARIMA"))
+            .ok_or_else(|| {
+                OperatorError::Settings("GAP: Expert selected model outside ARIMA".into())
+            })?;
+        let order = arima
+            .descendants()
+            .find(|n| n.has_tag_name("NonseasonalComponent"))
+            .ok_or_else(|| OperatorError::Data("Expert order missing".into()))?;
+        if arima.attribute("transformation") != Some("logarithmic")
+            || arima.attribute("seasonLength") != Some("1")
+            || (
+                attr_usize(order, "p")?,
+                attr_usize(order, "d")?,
+                attr_usize(order, "q")?,
+            ) != (0, 1, 0)
+        {
+            return Err(OperatorError::Settings(
+                "GAP: Expert selected specification outside log ARIMA(0,1,0)".into(),
+            ));
+        }
+        for season in arima
+            .descendants()
+            .filter(|n| n.has_tag_name("SeasonalComponent"))
+        {
+            if (
+                attr_usize(season, "p")?,
+                attr_usize(season, "d")?,
+                attr_usize(season, "q")?,
+            ) != (0, 0, 0)
+            {
+                return Err(OperatorError::Settings(
+                    "GAP: Expert seasonal specification".into(),
+                ));
+            }
+        }
+        selected.push((
+            name.clone(),
+            Method::Arima {
+                p: 0,
+                d: 1,
+                q: 0,
+                transform: Transform::Log,
+            },
+        ));
+    }
+    Ok(selected)
+}
+
+fn trained_models(pmml: &Pmml) -> Result<Vec<(String, SavedModel)>, OperatorError> {
+    let models: Vec<&dms_pmml::Model> = match &pmml.model {
+        dms_pmml::Model::TimeSeries { .. } => vec![&pmml.model],
+        dms_pmml::Model::Mining(m)
+            if m.method == "selectAll" && m.segments.len() <= MAX_TARGETS =>
+        {
+            m.segments.iter().map(|s| s.model.as_ref()).collect()
+        }
+        _ => {
+            return Err(OperatorError::Data(
+                "Time Series nugget received a different model type".into(),
+            ));
+        }
+    };
+    models
+        .iter()
+        .map(|model| match model {
+            dms_pmml::Model::TimeSeries { header, xml } => {
+                let target = header
+                    .mining_schema
+                    .iter()
+                    .find(|f| f.usage == dms_pmml::Usage::Target)
+                    .ok_or_else(|| OperatorError::Data("TimeSeriesModel has no target".into()))?;
+                Ok((target.name.clone(), parse_saved_model(xml)?))
+            }
+            _ => Err(OperatorError::Data(
+                "Time Series segment has a different model type".into(),
+            )),
+        })
+        .collect()
+}
 
 pub fn apply(node: &StreamNode) -> Result<Box<dyn Operator>, OperatorError> {
     let s = node.settings.as_ref();
@@ -151,38 +568,40 @@ struct TimeSeriesApply {
     conf_percent: f64,
 }
 
-#[derive(Debug)]
-enum SavedModel {
-    Arima(ArimaSpec),
-    Smooth(SmoothSpec),
-}
-
 impl Operator for TimeSeriesApply {
     fn arity(&self) -> Arity {
         Arity::Exactly(1)
     }
 
     fn run(&self, inputs: &[Arc<Table>], context: &ExecContext) -> Result<Table, OperatorError> {
-        self.score(inputs, context)
+        self.score(inputs, None, context)
     }
 
     fn produce(
         &self,
         inputs: &[Arc<Table>],
-        _model: Option<Arc<Pmml>>,
+        model: Option<Arc<Pmml>>,
         context: &ExecContext,
     ) -> Result<NodeOutput, OperatorError> {
-        self.score(inputs, context)
+        self.score(inputs, model.as_deref(), context)
             .map(|table| NodeOutput::Data(Arc::new(table)))
     }
 }
 
 impl TimeSeriesApply {
-    fn score(&self, inputs: &[Arc<Table>], context: &ExecContext) -> Result<Table, OperatorError> {
+    fn score(
+        &self,
+        inputs: &[Arc<Table>],
+        trained: Option<&Pmml>,
+        context: &ExecContext,
+    ) -> Result<Table, OperatorError> {
         let input = inputs
             .first()
             .ok_or_else(|| OperatorError::Inputs("a Time Series nugget needs one input".into()))?;
-        let models = load_saved_models(&self.pmml_member, context)?;
+        let models = match trained {
+            Some(pmml) => trained_models(pmml)?,
+            None => load_saved_models(&self.pmml_member, context)?,
+        };
         let targets = resolve_targets(&self.targets, &models)?;
         if targets.len() != models.len() {
             return Err(OperatorError::Data(format!(
@@ -190,6 +609,16 @@ impl TimeSeriesApply {
                 targets.len(),
                 models.len()
             )));
+        }
+        if trained.is_some()
+            && targets
+                .iter()
+                .zip(&models)
+                .any(|(target, (name, _))| target != name)
+        {
+            return Err(OperatorError::Settings(
+                "GAP: Time Series trained targets differ from the nugget's target order".into(),
+            ));
         }
         let period_at = input.model().position(&self.period_field).ok_or_else(|| {
             OperatorError::Data(format!(
@@ -362,7 +791,7 @@ fn datamodel_targets(entries: &[dms_strfmt::ZipMember]) -> Result<Vec<String>, O
     Ok(names)
 }
 
-fn parse_saved_model(xml: &str) -> Result<SavedModel, OperatorError> {
+pub fn parse_saved_model(xml: &str) -> Result<SavedModel, OperatorError> {
     if xml.len() > 16 * 1024 * 1024 {
         return Err(OperatorError::Data(
             "Time Series PMML exceeds 16 MiB".into(),

@@ -74,6 +74,7 @@ const BUILT_IN: &[(&str, Factory)] = &[
     ("feature_selection", model_node),
     ("decision_list", model_node),
     ("sequence", model_node),
+    ("time_series", model_node),
     ("binning", nodes::binning::build),
     ("auto_data_prep", nodes::auto_data_prep::build),
     ("set_to_flag", nodes::set_to_flag::build),
@@ -94,7 +95,15 @@ const PENDING: &[&str] = &[];
 /// Implemented builders held to statistical rather than exact parity
 /// (`docs/statistical-parity.md`): their training draws from our own generator or converges
 /// where Modeler stops early, so they match Modeler's metrics, not its bits.
-const STATISTICAL: &[&str] = &["cart", "kohonen", "lsvm", "neural_net", "quest", "sequence"];
+const STATISTICAL: &[&str] = &[
+    "cart",
+    "kohonen",
+    "lsvm",
+    "neural_net",
+    "quest",
+    "sequence",
+    "time_series",
+];
 
 /// Model nodes whose nuggets score (`nodes::apply`) while their build nodes cannot train yet;
 /// they do not count as implemented.
@@ -102,15 +111,11 @@ const STATISTICAL: &[&str] = &["cart", "kohonen", "lsvm", "neural_net", "quest",
 /// training (`BuildAutoClusteringModelNode`) is not implemented.
 /// Auto Classifier / Numeric: saved components and Ensemble scoring (`nodes::auto_models`);
 /// their builders remain explicit GAPs and do not count toward implemented coverage.
-/// Time Series (`corpus/models_next/ts_arima.str`, `ts_expert.str`,
-/// `corpus/models_next2/ts_simple.str`, `ts_holt.str`): the nugget scores the saved ARIMA
-/// or exponential smoothing model; estimation (`spss.ts!ts_builder`) is a GAP.
 /// Analytic Engine Random Trees scores its saved PMML.
 /// Tree-AS trains through the shared CHAID learner; Linear-AS trains with its
 /// correlation/sweep selection (`linearas/lin_default`, `lin_factor`); LSVM trains the
 /// documented objective to convergence (statistical parity, `dms_algo::lsvm`).
 const SCORING_ONLY: &[&str] = &[
-    "time_series",
     "auto_cluster",
     "auto_classifier",
     "auto_numeric",
@@ -141,10 +146,6 @@ fn model_node(node: &StreamNode) -> Result<Box<dyn Operator>, OperatorError> {
 /// Why each scoring-only builder cannot train, by builder type. The evidence for each reason is
 /// in `plan/STATUS.md` (2026-10-19 training review) and the nugget modules.
 const TRAINING_GAPS: &[(&str, &str)] = &[
-    (
-        "spss.ts!ts_builder",
-        "Time Series estimation is not reproduced: the saved smoothing parameters are the optimizer's stopping point (ts_simple alpha 0.9999889 on a series whose optimum is alpha = 1), which the 1e-9 comparison cannot meet without Modeler's optimizer",
-    ),
     (
         "spss.randomTrees!RT",
         "Random Trees training is not reproduced: bootstrap counts are binomial draws and predictor subsets are seeded by a hash of tree and node id, with an undocumented generator and hash; the PMML trees carry no record counts to identify them",

@@ -259,6 +259,12 @@ pub enum Model {
     /// PMML `SequenceModel` (Sequence): sequential association rules. Scored by the
     /// executor's Sequence nugget, not as one [`Prediction`].
     Sequence(SequenceModel),
+    /// TimeSeriesModel XML retained for the batch scorer in dms-exec. The
+    /// chronological recursion cannot be evaluated by a single-record scorer.
+    TimeSeries {
+        header: ModelHeader,
+        xml: String,
+    },
     /// A model element we read but cannot score: its element name.
     Unsupported(String),
 }

@@ -183,7 +183,7 @@ impl ArimaSpec {
     }
 }
 
-fn transform(kind: Transform, y: &[f64]) -> Result<Vec<f64>, ArimaError> {
+pub(crate) fn transform(kind: Transform, y: &[f64]) -> Result<Vec<f64>, ArimaError> {
     match kind {
         Transform::None => Ok(y.to_vec()),
         Transform::Log => y
@@ -201,7 +201,7 @@ fn transform(kind: Transform, y: &[f64]) -> Result<Vec<f64>, ArimaError> {
     }
 }
 
-fn difference(z: &[f64], d: usize) -> Vec<f64> {
+pub(crate) fn difference(z: &[f64], d: usize) -> Vec<f64> {
     let mut series = z.to_vec();
     for _ in 0..d {
         if series.len() < 2 {
@@ -279,6 +279,25 @@ fn arma_psi(phi: &[f64], theta: &[f64], n: usize) -> Result<Vec<f64>, ArimaError
 }
 
 fn arma_gamma(phi: &[f64], theta: &[f64], lags: usize) -> Result<Vec<f64>, ArimaError> {
+    // Exact stationary covariance for the estimation subset, including roots
+    // close to the unit circle where truncating psi weights is inappropriate.
+    if phi.len() <= 1 && theta.len() <= 1 {
+        let p = phi.first().copied().unwrap_or(0.0);
+        let t = theta.first().copied().unwrap_or(0.0);
+        if p.abs() >= 1.0 {
+            return Err(ArimaError::Settings("AR root is not stationary".into()));
+        }
+        let g0 = 1.0 + (p + t).powi(2) / (1.0 - p * p);
+        let mut gamma = Vec::with_capacity(lags);
+        let mut g = p * g0 + t;
+        for k in 0..lags {
+            gamma.push(if k == 0 { g0 } else { g });
+            if k > 0 {
+                g *= p;
+            }
+        }
+        return Ok(gamma);
+    }
     let extra = 400usize;
     let psi_len = lags
         .saturating_add(extra)
@@ -300,6 +319,41 @@ fn arma_gamma(phi: &[f64], theta: &[f64], lags: usize) -> Result<Vec<f64>, Arima
         gamma.push(g);
     }
     Ok(gamma)
+}
+
+/// Exact concentrated Gaussian likelihood ingredients using the scoring recursion.
+/// Returns standardized innovations and log determinant (innovation variance at sigma²=1).
+pub fn likelihood_residuals(spec: &ArimaSpec, y: &[f64]) -> Result<(Vec<f64>, f64), ArimaError> {
+    spec.check()?;
+    if y.len() < 5 || y.len() > 512 || y.iter().any(|v| !v.is_finite()) {
+        return Err(ArimaError::Data(
+            "ARIMA estimation requires 5..=512 finite observations".into(),
+        ));
+    }
+    if spec.d != 1 || spec.ar.len() > 1 || spec.ma.len() > 1 {
+        return Err(ArimaError::Settings(
+            "GAP: estimation supports d=1, p/q <= 1".into(),
+        ));
+    }
+    let z = transform(spec.transform, y)?;
+    let w: Vec<f64> = difference(&z, spec.d)
+        .iter()
+        .map(|v| v - spec.constant)
+        .collect();
+    let gamma = arma_gamma(&spec.ar, &spec.ma, w.len().saturating_add(2))?;
+    let (hats, variances) = innovations(&w, &gamma)?;
+    let mut residuals = Vec::with_capacity(w.len());
+    let mut log_det = 0.0;
+    for ((value, hat), variance) in w.iter().zip(hats).zip(variances) {
+        if variance <= 0.0 || !variance.is_finite() {
+            return Err(ArimaError::Data(
+                "ARIMA innovation variance is not positive".into(),
+            ));
+        }
+        residuals.push((value - hat) / variance.sqrt());
+        log_det += variance.ln();
+    }
+    Ok((residuals, log_det))
 }
 
 /// Innovations algorithm. `hats[i]` predicts `w[i]` (`hats[0] = 0`); `hats[n]`

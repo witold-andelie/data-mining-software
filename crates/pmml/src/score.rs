@@ -133,6 +133,10 @@ impl<'p> Scorer<'p> {
             Model::Association(_) => Err(PmmlError::Unsupported(
                 "AssociationModel is scored as a rule list, not one prediction".into(),
             )),
+            Model::TimeSeries { .. } => Err(PmmlError::Unsupported(
+                "TimeSeriesModel requires chronological batch scoring by the Time Series nugget"
+                    .into(),
+            )),
             Model::Sequence(_) => Err(PmmlError::Unsupported(
                 "SequenceModel is scored by the Sequence nugget, not one prediction".into(),
             )),
@@ -461,7 +465,8 @@ fn score_mining(pmml: &Pmml, mining: &MiningModel, env: &Env<'_>) -> Result<Pred
             | Model::Mining(_)
             | Model::Clustering(_)
             | Model::Association(_)
-            | Model::Sequence(_) => Err(PmmlError::Unsupported(
+            | Model::Sequence(_)
+            | Model::TimeSeries { .. } => Err(PmmlError::Unsupported(
                 "nested MiningModel segment type".into(),
             )),
         }?;
@@ -564,6 +569,7 @@ pub(crate) fn model_header(model: &Model) -> Option<&ModelHeader> {
         Model::Mining(m) => Some(&m.header),
         Model::Association(m) => Some(&m.header),
         Model::Sequence(m) => Some(&m.header),
+        Model::TimeSeries { header, .. } => Some(header),
         Model::Unsupported(_) => None,
     }
 }
@@ -683,7 +689,7 @@ fn collect_model_fields<'a>(
                 }
             }
         }
-        Model::Unsupported(_) => {}
+        Model::Unsupported(_) | Model::TimeSeries { .. } => {}
     }
     Ok(())
 }

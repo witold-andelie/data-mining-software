@@ -619,6 +619,15 @@ fn parse_model(
         "MiningModel" => Ok(Model::Mining(parse_mining_model(node, dictionary)?)),
         "AssociationModel" => Ok(Model::Association(crate::association::parse(node)?)),
         "SequenceModel" => Ok(Model::Sequence(crate::sequence::parse(node)?)),
+        "TimeSeriesModel" => Ok(Model::TimeSeries {
+            header: parse_model_header(node)?,
+            xml: node
+                .document()
+                .input_text()
+                .get(node.range())
+                .ok_or_else(|| PmmlError::Parse("TimeSeriesModel XML range".into()))?
+                .to_owned(),
+        }),
         other => Ok(Model::Unsupported(other.to_string())),
     }
 }
