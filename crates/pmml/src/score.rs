@@ -183,7 +183,7 @@ impl<'p> Scorer<'p> {
     pub fn first_rule(&self, record: &[Value]) -> Result<Option<usize>, PmmlError> {
         let env = self.prepare(record)?;
         match &self.pmml.model {
-            Model::RuleSet(model) => crate::rules::first_hit(model, &env),
+            Model::RuleSet(model) => crate::rules::first_hit(self.pmml, model, &env),
             _ => Err(PmmlError::Score("the model is not a rule set".into())),
         }
     }

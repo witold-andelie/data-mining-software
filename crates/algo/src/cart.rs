@@ -404,7 +404,7 @@ fn gini(counts: &[f64], priors: &[f64], root: &[f64]) -> f64 {
 }
 
 /// The improvement of a classification split with the given child counts.
-fn class_improvement(
+pub(crate) fn class_improvement(
     impurity: Impurity,
     left: &[f64],
     right: &[f64],

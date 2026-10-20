@@ -30,6 +30,7 @@ pub mod logistic;
 pub mod lsvm;
 pub mod neural_net;
 pub mod quest;
+pub mod random_trees;
 pub mod sequence;
 pub mod smooth;
 pub mod stats;

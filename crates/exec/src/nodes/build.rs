@@ -88,6 +88,7 @@ use dms_algo::kohonen::{self, KohonenSettings, Phase as KohonenPhase};
 use dms_algo::linear::{self, LinearSettings, Selection, Style};
 use dms_algo::logistic::{self, LogisticSettings, Method as LogisticMethod, Procedure};
 use dms_algo::lsvm::{self, LsvmSettings};
+use dms_algo::random_trees::{self, RandomTreesSettings};
 use dms_algo::sequence::{self, SequenceSettings};
 use dms_algo::twostep::{self, Criterion, TwoStepSettings};
 use dms_pmml::Pmml;
@@ -119,6 +120,7 @@ pub fn build(node: &StreamNode) -> Result<Box<dyn Operator>, OperatorError> {
             Algorithm::LinearAs(super::analytic_build::linear(node)?)
         }
         "spss.linearSVM!linearSVM" => Algorithm::Lsvm(super::analytic_build::lsvm(node)?),
+        "spss.randomTrees!RT" => Algorithm::RandomTrees(random_trees_settings(node)?),
         "BuildKMeansNode" => Algorithm::KMeans(kmeans_settings(node)?),
         "TrainKohonenNode" => Algorithm::Kohonen(kohonen_settings(node)?),
         "BuildAprioriNode" => Algorithm::Apriori(apriori_settings(node)?),
@@ -162,6 +164,8 @@ enum Algorithm {
     LinearAs((String, Vec<String>)),
     /// Linear SVM (`spss.linearSVM!linearSVM`), statistical parity (`dms_algo::lsvm`).
     Lsvm(LsvmSettings),
+    /// Random Trees (`spss.randomTrees!RT`), statistical parity (`dms_algo::random_trees`).
+    RandomTrees(RandomTreesSettings),
     /// The settings, and the custom input fields (`None`: the Type roles).
     KMeans((KMeansSettings, Option<Vec<String>>)),
     /// Kohonen map (`TrainKohonenNode`), statistical parity (`dms_algo::kohonen`).
@@ -323,6 +327,32 @@ impl Operator for Build {
             })?;
             return Ok(NodeOutput::Model(Arc::new(pmml)));
         }
+        if let Algorithm::RandomTrees(settings) = &self.algorithm {
+            if table
+                .model()
+                .fields()
+                .iter()
+                .any(|field| matches!(field.role, Role::Split | Role::Frequency | Role::Partition))
+            {
+                return Err(OperatorError::Settings(
+                    "GAP: Random Trees with split, frequency or partition fields".into(),
+                ));
+            }
+            let (target, fields) = supervised_fields(&table, None, None)?;
+            let dataset = Dataset {
+                table: &table,
+                target,
+                inputs: &fields,
+                frequency: None,
+            };
+            let pmml = random_trees::train(&dataset, settings).map_err(|error| match error {
+                dms_algo::AlgoError::Unsupported(_) | dms_algo::AlgoError::Settings(_) => {
+                    OperatorError::Settings(format!("GAP: {error}"))
+                }
+                _ => OperatorError::Data(format!("Random Trees: {error}")),
+            })?;
+            return Ok(NodeOutput::Model(Arc::new(pmml)));
+        }
         if let Algorithm::Apriori(settings) = &self.algorithm {
             let pmml = apriori::train(&table, settings).map_err(apriori_error)?;
             return Ok(NodeOutput::Model(Arc::new(pmml)));
@@ -454,6 +484,7 @@ impl Operator for Build {
             | Algorithm::TreeAs(_)
             | Algorithm::LinearAs(_)
             | Algorithm::Lsvm(_)
+            | Algorithm::RandomTrees(_)
             | Algorithm::TwoStep(_)
             | Algorithm::Logistic(_)
             | Algorithm::Regression(_)
@@ -792,6 +823,65 @@ fn carma_settings(node: &StreamNode) -> Result<CarmaSettings, OperatorError> {
         max_size,
         inputs,
         model_name,
+    })
+}
+
+/// Random Trees settings from the node's inline `_...` properties (`spss.randomTrees!RT`).
+/// Statistical parity (`dms_algo::random_trees`): Modeler's bootstrap generator and its
+/// tree/node hash are undisclosed, so `_seed` (ours, default 1) chooses the draws. Every setting
+/// the oracles cover is read; the expert, weighted-sampling, imbalance and sub-sampling paths
+/// have no oracle and are `GAP:`.
+fn random_trees_settings(node: &StreamNode) -> Result<RandomTreesSettings, OperatorError> {
+    let s = node.settings.as_ref();
+    let gap = |what: &str| OperatorError::Settings(format!("GAP: Random Trees {what}"));
+    for flag in [
+        "expertMode",
+        "_handleImbalancedData",
+        "_useWeightedSampling",
+        "_useNumVar",
+        "useEvents",
+        "useCosts",
+        "useFrequency",
+        "useWeight",
+    ] {
+        if settings::flag(s, flag)?.unwrap_or(false) {
+            return Err(gap(&format!("{flag} has no oracle")));
+        }
+    }
+    if settings::flag(s, "autoModelFieldSelection")? == Some(false) {
+        return Err(gap("custom field selection"));
+    }
+    let sample = settings::real(s, "_samplesize")?.unwrap_or(1.0);
+    if (sample - 1.0).abs() > 1e-12 {
+        return Err(gap(&format!("_samplesize={sample} (under-bagging)")));
+    }
+    let count = |name: &str, default: i64| -> Result<usize, OperatorError> {
+        let value = settings::integer(s, name)?.unwrap_or(default);
+        usize::try_from(value).map_err(|_| {
+            OperatorError::Settings(format!("Random Trees {name} must not be negative"))
+        })
+    };
+    let real = |name: &str, default: f64| -> Result<f64, OperatorError> {
+        Ok(settings::real(s, name)?.unwrap_or(default))
+    };
+    let seed = settings::integer(s, "_seed")?.unwrap_or(1);
+    let seed = u64::try_from(seed)
+        .map_err(|_| OperatorError::Settings("Random Trees _seed must not be negative".into()))?;
+    Ok(RandomTreesSettings {
+        max_trees: count("_numOfModels", 100)?,
+        max_depth: count("_maxDepth", 10)?,
+        min_child: real("_minChildnodeSize", 5.0)?,
+        max_nodes: count("_maxNodenum", 10_000)?,
+        accuracy_stop: settings::flag(s, "_useStopRuleForAccuracy")?.unwrap_or(true),
+        accuracy_delta: 0.01,
+        accuracy_trials: 10,
+        max_missing_percent: real("_maxPCTmissing", 70.0)?,
+        single_category_percent: real("_excludeSingleCatPCT", 95.0)?,
+        max_categories: count("_maxCategorynum", 49)?,
+        min_cv: real("_minFieldVariation", 0.05)?,
+        max_predictors: count("_max_num_predictors", 10_000)?,
+        num_bins: count("_numOfBins", 10)?,
+        seed,
     })
 }
 

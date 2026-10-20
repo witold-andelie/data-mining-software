@@ -138,19 +138,23 @@ fn analytic_confidence_flags_and_replacement_link_schema() {
     }
 }
 
+/// Random Trees trains (statistical parity, `docs/statistical-parity.md`) and its nugget scores.
 #[test]
-fn random_trees_builder_is_scoring_only_and_fails_with_gap() {
-    let (id, extension, builder, applier) =
-        ("random_trees", "spss.randomTrees", "RT", "applyRandomTrees");
-    assert!(!dms_exec::registry::is_implemented(id));
-    let factory = dms_exec::registry::factory(id).unwrap();
-    let mut node = analytic_nugget(extension, builder, vec![]);
+fn random_trees_builder_is_registered_for_training() {
+    assert!(dms_exec::registry::is_implemented("random_trees"));
+    assert!(dms_exec::registry::is_statistical("random_trees"));
+    let factory = dms_exec::registry::factory("random_trees").unwrap();
+    let mut node = analytic_nugget("spss.randomTrees", "RT", vec![]);
     node.class = "com.spss.clementine.component.node.ExtensionBuildModelNode".into();
-    let Err(dms_exec::OperatorError::Settings(message)) = factory(&node) else {
-        panic!("{id} builder must fail");
-    };
-    assert!(message.starts_with("GAP:"));
-    assert!(factory(&analytic_nugget(extension, applier, vec![])).is_ok());
+    assert!(factory(&node).is_ok());
+    assert!(
+        factory(&analytic_nugget(
+            "spss.randomTrees",
+            "applyRandomTrees",
+            vec![]
+        ))
+        .is_ok()
+    );
 }
 
 /// Linear SVM trains (statistical parity, `docs/statistical-parity.md`) and its nugget scores.

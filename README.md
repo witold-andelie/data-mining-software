@@ -17,9 +17,9 @@
 | 档次 | 含义 | 模型 |
 |---|---|---|
 | 精确 | 训练出的模型和打分结果与 Modeler 逐位一致 | C5.0、CHAID、C&R Tree 与 QUEST（不设过拟合防止集）、Tree-AS、Linear、Linear-AS、Regression、Logistic、Decision List、K-Means、TwoStep、Apriori、CARMA、PCA/Factor、Anomaly、Feature Selection、RBF 神经网络 |
-| 统计 | Modeler 用了不公开的随机数发生器或优化器停止规则，无法逐位复现；我们实现文档里的算法，用自己的可设种子发生器或收敛的优化器训练，并检验 Modeler 的结果落在我们多次运行的统计范围内 | MLP 神经网络、Kohonen、LSVM、Time Series、Sequence、Auto Cluster，以及带过拟合防止集的 C&R Tree / QUEST |
+| 统计 | Modeler 用了不公开的随机数发生器或优化器停止规则，无法逐位复现；我们实现文档里的算法，用自己的可设种子发生器或收敛的优化器训练，并检验 Modeler 的结果落在我们多次运行的统计范围内 | MLP 神经网络、Kohonen、LSVM、Random Trees、Time Series、Sequence、Auto Cluster，以及带过拟合防止集的 C&R Tree / QUEST |
 
-Random Trees、Auto Classifier 和 Auto Numeric 的训练正在实现中。
+Auto Classifier 和 Auto Numeric 的训练正在实现中。
 
 ## 状态
 
