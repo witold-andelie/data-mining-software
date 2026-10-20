@@ -602,8 +602,8 @@ fn unsupported_settings_name_the_property() {
             "scaleContinuousMode",
         ),
         (
-            vec![p("uiDetectFeatureOutliers", "true")],
-            "uiDetectFeatureOutliers",
+            vec![p("uiDetectTargetOutliers", "true")],
+            "uiDetectTargetOutliers",
         ),
         (vec![p("useCustomSettings", "true")], "useCustomSettings"),
         (vec![p("useFrequency", "true")], "useFrequency"),
