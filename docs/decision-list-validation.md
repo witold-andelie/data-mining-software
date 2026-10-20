@@ -122,3 +122,14 @@ stay exact; the unchanged builder trains only `dl01` and `dl03` exactly and refu
 unresolved ties. Clues for the missing mechanism: `dl08_completed` keeps a one-rule list
 (`b = v1`, 120/280) over deeper lists; `dl09` splits the same 220/280 union into different
 rules; `dl11`/`dl12` choose the same ordered rules whatever the physical column order.
+
+Phase 3 (same day) re-derived the search from the Algorithms Guide chapter (the local PDF's
+cover says Modeler 18.0) and ran 21,844 configurations over all 21 cases (the twelve above,
+the eight exact learners, `ac_lift`): segment generation and growth, conditional populations,
+rule and list widths, mixed-length frontiers, list estimates and intervals, and final-result
+ordering separate from the beam. None fits all 21. The best fit 20 of 21 by ranking the beam
+with the mean of the rules' first-hit rates (not the guide's union estimate), missing either
+`train_next/dl_max_rules4` or `dl_discriminate/dl05_carry`. It keeps a completed list
+(`ac_lift`'s three-rule `age > 54.5` list, `dl08`'s one-rule list) competing with deeper
+lists, and orders final results by names, not column order (`dl11`/`dl12`). No mechanism is
+grounded well enough to implement; the learner is unchanged.
