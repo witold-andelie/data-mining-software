@@ -17,6 +17,7 @@ pub mod c50_rules;
 pub mod carma;
 pub mod cart;
 pub mod chaid;
+pub mod cluster_evaluation;
 mod common;
 pub mod decision_list;
 pub mod factor;
