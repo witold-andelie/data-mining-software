@@ -68,10 +68,13 @@
 //! not change the math; the saved flags do. `adp_balanced` and `adp_rescale` export the same
 //! table.
 //!
-//! `GAP:` `uiSupervisedMerging`, `uiSupervisedBinning`, `uiFeatureSelection` and
-//! `transConsSelectFeatures` are true in `adp_balanced` and false in `adp_rescale` / `adp_dates`.
-//! The exports match, so categories are not merged, continuous fields stay z-scores rather than
-//! bins, and no field is dropped for predictive power. The p-values are validated and not applied.
+//! Merging (objective `custom` with `transConsSelectFeatures`, see [`custom_steps`]): with a
+//! target, `uiSupervisedMerging` screens and merges categorical inputs ([`supervised_merge`]);
+//! without one, `uiUnsupervisedMergeNominal` merges sparse categories ([`unsupervised_merge`]).
+//! Under objective `balance` the saved flags do not apply (`adp_balanced`).
+//!
+//! `GAP:` `uiSupervisedBinning` and `uiFeatureSelection` (no field is binned or dropped for
+//! predictive power; their p-values are validated and not applied).
 //! `GAP:` `uiReplaceNominalFeaturesMissingValue` true does not substitute the mode (see `flg`).
 //! false is rejected. `GAP:` timestamp `ts` is copied in all three cases while
 //! `uiComputeTimeDuration` is true. A time-of-day field with that flag is rejected.
@@ -79,7 +82,7 @@
 //! rescaled to `targetMean` / `targetSD`, see [`prepare_target`].
 //!
 //! `GAP:` target outliers, a target with missing values, target missing /
-//! target reorder, unsupervised merge, feature construction, almost-constant category screening,
+//! target reorder, ordinal merging, feature construction, almost-constant category screening,
 //! frequency and analysis weights, `useCustomSettings`, a non-empty `inputFields` / `targetField`,
 //! automatic date or time units, `dateUnit` `year`, and `excludeNoUsedField` other than
 //! `filterOut` are rejected. `GAP:` original ordinal inputs are copied, not recoded (no corpus
@@ -238,6 +241,10 @@ struct Prep {
     /// `uiRescaleScaleTargetUsingBoxCox`: the final `targetMean` and `targetSD`.
     box_cox_target: Option<(f64, f64)>,
     target_ext: String,
+    /// `uiSupervisedMerging` (objective `custom` only): the `supervisedMergingPValue`.
+    supervised_merge: Option<f64>,
+    /// `uiUnsupervisedMergeNominal` (objective `custom` only): `unsupervisedMergingMinNumberOfCases`.
+    unsupervised_merge: Option<i64>,
     check_feature_level: bool,
     ordinal_to_scale: i64,
     scale_to_ordinal: i64,
@@ -319,6 +326,7 @@ impl Operator for Prep {
         if n_rows == 0 {
             return Ok(input.as_ref().clone());
         }
+        let target = merge_target(self, input)?;
         let mut cols = Vec::new();
         for (index, field) in input.model().fields().iter().enumerate() {
             let values = column(input, index);
@@ -335,7 +343,7 @@ impl Operator for Prep {
                     prepare_continuous(self, field, index, &values, &mut cols)?;
                 }
                 Class::Categorical if self.prepare_features => {
-                    prepare_categorical(self, field, index, &values, &mut cols)?;
+                    prepare_categorical(self, field, index, &values, target.as_ref(), &mut cols)?;
                 }
                 Class::Target if self.prepare_features => {
                     cols.push(prepare_target(self, field, index, &values)?);
@@ -411,6 +419,16 @@ fn parse(s: Option<&Element>) -> Result<Prep, OperatorError> {
             None
         },
         target_ext: text_or(s, "nameExtForTarget", "_transformed"),
+        supervised_merge: if custom_steps(s)? && flag(s, "uiSupervisedMerging", true)? {
+            Some(unit_interval(s, "supervisedMergingPValue", 0.05)?)
+        } else {
+            None
+        },
+        unsupervised_merge: if custom_steps(s)? && flag(s, "uiUnsupervisedMergeNominal", false)? {
+            Some(int_or(s, "unsupervisedMergingMinNumberOfCases", 10)?)
+        } else {
+            None
+        },
         outliers: if flag(s, "uiDetectFeatureOutliers", false)? {
             Some(Outliers {
                 cutoff: positive(s, "outlierIdentCutoff", 3.0)?,
@@ -468,7 +486,6 @@ fn reject_unsupported(s: Option<&Element>) -> Result<(), OperatorError> {
         "uiExtractHourFromTime",
         "uiExtractMinuteFromTime",
         "uiExtractSecondFromTime",
-        "uiUnsupervisedMergeNominal",
         "uiUnsupervisedMergeOrdinal",
         "uiExcludeAlmostConstantCatFeature",
         "uiFeatureConstruction",
@@ -522,14 +539,12 @@ fn reject_unsupported(s: Option<&Element>) -> Result<(), OperatorError> {
 /// Settings the three cases save that do not change the exported table. Malformed numbers still
 /// fail. `GAP:` the supervised steps are named in the module docs.
 fn acknowledge_unused(s: Option<&Element>) -> Result<(), OperatorError> {
-    let _ = flag(s, "uiSupervisedMerging", true)?;
     let _ = flag(s, "uiFeatureSelection", true)?;
     let _ = flag(s, "uiSupervisedBinning", true)?;
     let _ = flag(s, "transConsSelectFeatures", true)?;
     let _ = flag(s, "uiCheckTargetMeasureLevel", true)?;
     let _ = flag(s, "modelExist", false)?;
     let _ = flag(s, "clearAnalysis", false)?;
-    let _ = unit_interval(s, "supervisedMergingPValue", 0.05)?;
     let _ = unit_interval(s, "featureSelectionPValue", 0.05)?;
     let _ = unit_interval(s, "homogeneousSubsetsPValue", 0.05)?;
     let min_cases = int_or(s, "unsupervisedMergingMinNumberOfCases", 10)?;
@@ -563,6 +578,16 @@ fn acknowledge_unused(s: Option<&Element>) -> Result<(), OperatorError> {
     let _ = text_or(s, "suffixElapsedMonths", "_months");
     let _ = text_or(s, "suffixElapsedDays", "_days");
     Ok(())
+}
+
+/// Whether the transform-and-select steps apply. `misc_next/adp_balanced` saves them on under
+/// objective `balance` with `transConsSelectFeatures` true, yet keeps `grp` (chi-square p .37
+/// against `y`) unmerged and unscreened: only objective `custom` (`adp_next/*`) runs them.
+fn custom_steps(s: Option<&Element>) -> Result<bool, OperatorError> {
+    Ok(matches!(
+        text_or(s, "analysisObjective", "balance").as_str(),
+        "custom" | "Custom"
+    ) && flag(s, "transConsSelectFeatures", true)?)
 }
 
 fn classify(prep: &Prep, field: &Field) -> Class {
@@ -862,11 +887,57 @@ fn prepare_target(
     })
 }
 
+/// The target the supervised merge tests categories against.
+enum MergeTarget {
+    Continuous(Vec<Option<f64>>),
+    Categorical(Vec<Value>),
+}
+
+/// The single target of the input when a merge step needs one. Supervised merging without a
+/// target and unsupervised merging with one have no oracle (the guide merges by counts only
+/// "if there is no target").
+fn merge_target(prep: &Prep, input: &Table) -> Result<Option<MergeTarget>, OperatorError> {
+    if prep.supervised_merge.is_none() && prep.unsupervised_merge.is_none() {
+        return Ok(None);
+    }
+    let gap = |what: &str| OperatorError::Settings(format!("GAP: Auto Data Prep merge: {what}"));
+    let targets: Vec<usize> = (0..input.model().len())
+        .filter(|&i| input.model().fields()[i].role == Role::Target)
+        .collect();
+    let index = match targets.as_slice() {
+        [] if prep.unsupervised_merge.is_some() => return Ok(None),
+        [] => return Err(gap("supervised merging without a target")),
+        [index] => *index,
+        _ => return Err(gap("more than one target")),
+    };
+    if prep.supervised_merge.is_none() {
+        return Err(gap("unsupervised merging with a target"));
+    }
+    let field = &input.model().fields()[index];
+    let values = column(input, index);
+    Ok(Some(match field.measurement {
+        Measurement::Continuous => MergeTarget::Continuous(
+            values
+                .iter()
+                .map(|value| as_number(field, value).filter(|x| x.is_finite()))
+                .collect(),
+        ),
+        Measurement::Flag | Measurement::Nominal => MergeTarget::Categorical(
+            values
+                .iter()
+                .map(|value| category_key(field, value, prep.trim_blanks))
+                .collect(),
+        ),
+        _ => return Err(gap("the target is neither continuous nor flag/nominal")),
+    }))
+}
+
 fn prepare_categorical(
     prep: &Prep,
     field: &Field,
     index: usize,
     values: &[Value],
+    target: Option<&MergeTarget>,
     cols: &mut Vec<OutCol>,
 ) -> Result<(), OperatorError> {
     let mut counts: Vec<(Value, usize)> = Vec::new();
@@ -905,11 +976,31 @@ fn prepare_categorical(
     if prep.exclude_poor && non_null <= 1 {
         return Ok(());
     }
+    if (prep.supervised_merge.is_some() || prep.unsupervised_merge.is_some())
+        && !prep.reorder_nominal
+    {
+        return Err(OperatorError::Settings(
+            "GAP: merging without uiReorderNominalCatsPriorToMerging has no oracle".into(),
+        ));
+    }
     if !prep.reorder_nominal {
         cols.push(pass_col(field, values.to_vec(), index));
         return Ok(());
     }
-    let labeled = assign_codes(counts);
+    let keys: Vec<Value> = values
+        .iter()
+        .map(|value| category_key(field, value, prep.trim_blanks))
+        .collect();
+    let labeled = match (prep.supervised_merge, prep.unsupervised_merge, target) {
+        (Some(alpha), _, Some(target)) => {
+            match supervised_merge(&keys, target, alpha, &field.name)? {
+                Some(labeled) => labeled,
+                None => return Ok(()),
+            }
+        }
+        (_, Some(percent), None) => unsupervised_merge(counts, n, percent),
+        _ => assign_codes(counts),
+    };
     let name = extended(&field.name, &prep.name_ext)?;
     let out_values = values
         .iter()
@@ -1077,6 +1168,253 @@ fn min_max(values: &[Option<f64>], low: f64, high: f64, impute: bool) -> Vec<Val
             _ => Value::Null,
         })
         .collect()
+}
+
+/// One category's target summary during the supervised merge.
+struct MergeGroup {
+    keys: Vec<Value>,
+    n: f64,
+    sum: f64,
+    sum_sq: f64,
+    classes: Vec<f64>,
+}
+
+impl MergeGroup {
+    fn ss(&self) -> f64 {
+        (self.sum_sq - self.sum * self.sum / self.n).max(0.0)
+    }
+
+    fn join(self, other: MergeGroup) -> MergeGroup {
+        let mut keys = self.keys;
+        keys.extend(other.keys);
+        MergeGroup {
+            keys,
+            n: self.n + other.n,
+            sum: self.sum + other.sum,
+            sum_sq: self.sum_sq + other.sum_sq,
+            classes: self
+                .classes
+                .iter()
+                .zip(&other.classes)
+                .map(|(a, b)| a + b)
+                .collect(),
+        }
+    }
+}
+
+/// Pearson chi-square of a groups-by-classes count table over the classes with a positive total.
+fn chi_square(groups: &[&MergeGroup]) -> f64 {
+    let total: f64 = groups.iter().map(|g| g.n).sum();
+    let classes = groups.first().map_or(0, |g| g.classes.len());
+    let mut statistic = 0.0;
+    let mut used = 0usize;
+    for j in 0..classes {
+        let column: f64 = groups.iter().map(|g| g.classes[j]).sum();
+        if column <= 0.0 {
+            continue;
+        }
+        used += 1;
+        for group in groups {
+            let expected = group.n * column / total;
+            if expected > 0.0 {
+                statistic += (group.classes[j] - expected).powi(2) / expected;
+            }
+        }
+    }
+    let df = (groups.len().saturating_sub(1) * used.saturating_sub(1)) as f64;
+    if df <= 0.0 {
+        1.0
+    } else {
+        dms_algo::stats::chi_square_p(statistic, df)
+    }
+}
+
+/// p-value of the association between `groups` and the target (guide "P-value Calculations"):
+/// the one-way F test for a continuous target, Pearson chi-square for a categorical one. A
+/// single group has p 1.
+fn association_p(groups: &[&MergeGroup], continuous: bool) -> f64 {
+    if groups.len() < 2 {
+        return 1.0;
+    }
+    if !continuous {
+        return chi_square(groups);
+    }
+    let n: f64 = groups.iter().map(|g| g.n).sum();
+    let mean = groups.iter().map(|g| g.sum).sum::<f64>() / n;
+    let between: f64 = groups
+        .iter()
+        .map(|g| g.n * (g.sum / g.n - mean).powi(2))
+        .sum();
+    let within: f64 = groups.iter().map(|g| g.ss()).sum();
+    let (d1, d2) = ((groups.len() - 1) as f64, n - groups.len() as f64);
+    if between == 0.0 {
+        1.0
+    } else if within <= 0.0 || d2 <= 0.0 {
+        0.0
+    } else {
+        dms_algo::stats::f_p(between / d1 / (within / d2), d1, d2)
+    }
+}
+
+/// Supervised merge (guide "Identify Highly Associated Categorical Features" and "Supervised
+/// Merge", `adp_next/adp_merge_supervised` and `adp_merge_flag`). Records missing the predictor or
+/// the target are left out (pairwise deletion). A predictor whose association p-value is above
+/// `alpha` is dropped (`n_miss`, p .67) and `None` returned. Otherwise the pair with the largest
+/// p-value (F with 1 and `n_i + n_j - 2` df, or chi-square of the 2-row table) merges while that
+/// p-value is above `alpha`; categories start in value order and a merged category goes last, and
+/// the final position is the code (`n_merge`: k1+k2 at p .976, then rare at .889, stop at 2e-11:
+/// k3 0, k4 1, k1/k2/rare 2). A kept predictor with missing values has no oracle.
+fn supervised_merge(
+    keys: &[Value],
+    target: &MergeTarget,
+    alpha: f64,
+    name: &str,
+) -> Result<Option<Vec<(Value, Value)>>, OperatorError> {
+    let continuous = matches!(target, MergeTarget::Continuous(_));
+    let classes: Vec<Value> = match target {
+        MergeTarget::Continuous(_) => Vec::new(),
+        MergeTarget::Categorical(values) => {
+            let mut seen: Vec<Value> = values.iter().filter(|v| !v.is_null()).cloned().collect();
+            seen.sort_by(Value::total_cmp);
+            seen.dedup_by(|a, b| a.total_cmp(b) == Ordering::Equal);
+            seen
+        }
+    };
+    let mut groups: Vec<MergeGroup> = Vec::new();
+    for (row, key) in keys.iter().enumerate() {
+        if key.is_null() {
+            continue;
+        }
+        let (y, class) = match target {
+            MergeTarget::Continuous(values) => match values.get(row).copied().flatten() {
+                Some(y) => (y, None),
+                None => continue,
+            },
+            MergeTarget::Categorical(values) => match values.get(row).filter(|v| !v.is_null()) {
+                Some(value) => (0.0, classes.binary_search_by(|c| c.total_cmp(value)).ok()),
+                None => continue,
+            },
+        };
+        let position = match groups
+            .iter()
+            .position(|g| g.keys[0].total_cmp(key) == Ordering::Equal)
+        {
+            Some(position) => position,
+            None => {
+                if groups.len() >= MAX_CATEGORIES {
+                    return Err(OperatorError::Data(format!(
+                        "field {name:?} has more than {MAX_CATEGORIES} categories"
+                    )));
+                }
+                groups.push(MergeGroup {
+                    keys: vec![key.clone()],
+                    n: 0.0,
+                    sum: 0.0,
+                    sum_sq: 0.0,
+                    classes: vec![0.0; classes.len()],
+                });
+                groups.len() - 1
+            }
+        };
+        let group = &mut groups[position];
+        group.n += 1.0;
+        group.sum += y;
+        group.sum_sq += y * y;
+        if let Some(class) = class {
+            group.classes[class] += 1.0;
+        }
+    }
+    groups.sort_by(|a, b| a.keys[0].total_cmp(&b.keys[0]));
+    let all: Vec<&MergeGroup> = groups.iter().collect();
+    if association_p(&all, continuous) > alpha {
+        return Ok(None);
+    }
+    if keys.iter().any(Value::is_null) {
+        return Err(OperatorError::Settings(format!(
+            "GAP: supervised merge of {name:?}, which has missing values"
+        )));
+    }
+    loop {
+        let mut best: Option<(f64, usize, usize)> = None;
+        for i in 0..groups.len() {
+            for j in i + 1..groups.len() {
+                let p = association_p(&[&groups[i], &groups[j]], continuous);
+                if best.is_none_or(|(top, _, _)| p > top) {
+                    best = Some((p, i, j));
+                }
+            }
+        }
+        match best {
+            Some((p, i, j)) if p > alpha => {
+                let second = groups.remove(j);
+                let first = groups.remove(i);
+                groups.push(first.join(second));
+            }
+            _ => break,
+        }
+    }
+    let mut labeled: Vec<(Value, Value)> = groups
+        .into_iter()
+        .enumerate()
+        .flat_map(|(code, group)| {
+            group
+                .keys
+                .into_iter()
+                .map(move |key| (key, Value::string(code.to_string())))
+        })
+        .collect();
+    labeled.sort_by(|left, right| left.0.total_cmp(&right.0));
+    Ok(Some(labeled))
+}
+
+/// Unsupervised merge (guide "Unsupervised Merge", `adp_next/adp_merge_unsupervised`):
+/// categories, the missing value included, from lowest to highest count (ties in value order)
+/// are joined while a group holds fewer than `[percent% x N]` records; a short tail joins per the
+/// guide's step 4. Codes follow the groups (`n_merge`: rare(3)+k2 0, k4 1, k3 2, k1 3 at 30 of
+/// 300; `n_miss`: missing(12)+q 0, r 1, p 2).
+fn unsupervised_merge(
+    mut counts: Vec<(Value, usize)>,
+    n: usize,
+    percent: i64,
+) -> Vec<(Value, Value)> {
+    counts.sort_by(|left, right| {
+        left.1
+            .cmp(&right.1)
+            .then_with(|| left.0.total_cmp(&right.0))
+    });
+    let threshold = (percent as f64 * n as f64 / 100.0).round() as usize;
+    let count = counts.len();
+    let mut group_of = vec![0usize; count];
+    let (mut j1, mut j2, mut g) = (0usize, 0usize, 0usize);
+    while j1 < count {
+        let sum: usize = counts[j1..=j2].iter().map(|(_, c)| c).sum();
+        if sum >= threshold {
+            group_of[j1..=j2].iter_mut().for_each(|slot| *slot = g);
+            g += 1;
+            j1 = j2 + 1;
+            j2 = j1;
+        } else if j2 + 1 < count {
+            j2 += 1;
+        } else {
+            // Step 4: the tail j1.. never reaches the threshold.
+            if g == 0 {
+                group_of[..count - 1].iter_mut().for_each(|slot| *slot = 0);
+                group_of[count - 1] = 1;
+            } else if g == 1 {
+                group_of[j1..].iter_mut().for_each(|slot| *slot = 1);
+            } else {
+                group_of[j1..].iter_mut().for_each(|slot| *slot = g - 1);
+            }
+            break;
+        }
+    }
+    let mut labeled: Vec<(Value, Value)> = counts
+        .into_iter()
+        .zip(group_of)
+        .map(|((key, _), group)| (key, Value::string(group.to_string())))
+        .collect();
+    labeled.sort_by(|left, right| left.0.total_cmp(&right.0));
+    labeled
 }
 
 fn assign_codes(mut counts: Vec<(Value, usize)>) -> Vec<(Value, Value)> {
@@ -1383,5 +1721,37 @@ fn one_of(
         Err(OperatorError::Settings(format!(
             "{key}: unsupported value {value:?}"
         )))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn groups(counts: &[usize], n: usize) -> Vec<String> {
+        let keyed = counts
+            .iter()
+            .enumerate()
+            .map(|(i, &c)| (Value::string(format!("c{i}")), c))
+            .collect();
+        unsupervised_merge(keyed, n, 10)
+            .into_iter()
+            .map(|(_, code)| code.to_string())
+            .collect()
+    }
+
+    /// The guide's step 4 for a tail that never reaches `[10% x N]` (30 of 300 here). Counts are
+    /// given in ascending order, the order the merge walks them.
+    #[test]
+    fn unsupervised_merge_tail_rules_follow_the_guide() {
+        // g = 1 (no group yet): all but the last category form group 1, the last stays alone.
+        assert_eq!(groups(&[5, 6, 7], 300), ["0", "0", "1"]);
+        // g = 2: 12+12+12 forms group 1, the 24-record tail forms group 2.
+        assert_eq!(groups(&[12; 5], 300), ["0", "0", "0", "1", "1"]);
+        // g = 3: groups 1 and 2 of 36, the 24-record tail joins group 2.
+        assert_eq!(
+            groups(&[12; 8], 300),
+            ["0", "0", "0", "1", "1", "1", "1", "1"]
+        );
     }
 }
