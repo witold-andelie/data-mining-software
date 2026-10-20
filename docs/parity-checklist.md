@@ -6,7 +6,7 @@ Status `done (statistical)`: trained to statistical, not exact, parity with Mode
 
 | Scope | Implemented | Total |
 |---|---|---|
-| MVP | 77 | 85 |
+| MVP | 79 | 85 |
 | later | 3 | 25 |
 | license blocked | 0 | 5 |
 | out of scope | 0 | 34 |
@@ -105,7 +105,7 @@ Status `done (statistical)`: trained to statistical, not exact, parity with Mode
 |---|---|---|---|---|
 | Auto Classifier | `auto_classifier` | MVP | missing | `BuildBinaryClassifierNode`, `ApplyBinaryClassifierNode`, `ApplyAutoClassifierNode` |
 | Auto Numeric | `auto_numeric` | MVP | missing | `BuildNumericClassifierNode`, `ApplyNumericPredictorNode` |
-| Auto Cluster | `auto_cluster` | MVP | missing | `BuildAutoClusteringModelNode`, `ApplyAutoClusterNode` |
+| Auto Cluster | `auto_cluster` | MVP | done (statistical) | `BuildAutoClusteringModelNode`, `ApplyAutoClusterNode` |
 | C5.0 | `c50` | MVP | done | `BuildC5RuleNode`, `ApplyC5RuleNode`, `ApplyC5SplitModelNode` |
 | C&R Tree | `cart` | MVP | done (statistical) | `BuildCartRuleNode`, `ApplyCartRuleNode`, `ApplyCartSplitModelNode`, `Cart!spss.tree-extension` |
 | CHAID | `chaid` | MVP | done | `BuildChaidRuleNode`, `ApplyChaidRuleNode`, `ApplyChaidSplitModelNode`, `Chaid!spss.tree-extension` |
@@ -126,7 +126,7 @@ Status `done (statistical)`: trained to statistical, not exact, parity with Mode
 | PCA/Factor | `pca_factor` | MVP | done | `BuildPCANode`, `ApplyPCANode` |
 | Feature Selection | `feature_selection` | MVP | done | `BuildFeatureSelectionNode`, `ApplyFeatureSelectionNode`, `FeatureSelectionModelNode` |
 | Anomaly | `anomaly` | MVP | done | `BuildAnomalyNode`, `ApplyAnomalyNode` |
-| Time Series | `time_series` | MVP | missing | `BuildTimeSeriesNode`, `ApplyTimeSeriesNode`, `spss.ts!ts_builder`, `spss.ts!ts_applier` |
+| Time Series | `time_series` | MVP | done (statistical) | `BuildTimeSeriesNode`, `ApplyTimeSeriesNode`, `spss.ts!ts_builder`, `spss.ts!ts_applier` |
 | Imported PMML model | `pmml_model` | MVP | missing | `ApplyImportedNode` |
 | GLMM | `glmm` | later | missing | `GLMM!spss.glmm-extension` |
 | GLE | `gle` | later | missing | (unmapped) |
