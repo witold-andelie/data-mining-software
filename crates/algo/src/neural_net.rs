@@ -68,7 +68,7 @@
 //! trains in well under the saved 15 minutes) are refused by the build node.
 
 use crate::AlgoError;
-use crate::common::{data_field, mining_field};
+use crate::common::{Rng, data_field, mining_field};
 use dms_pmml::{
     Activation, ContinuousNorm, DerivedField, Expr, MiningFunction, Model, ModelHeader,
     NeuralInput, NeuralLayer, NeuralNetworkModel, NeuralOutput, NeuralOutputKind, Neuron,
@@ -143,30 +143,6 @@ const LAMBDA0: f64 = 5e-7;
 const INIT_OFFSET: f64 = 0.5;
 const MAX_UNITS: usize = 1000;
 const MAX_WEIGHTS: usize = 1_000_000;
-
-// ---------------------------------------------------------------------------------------------
-// Our seedable generator (SplitMix64): Modeler's is undisclosed (statistical parity).
-
-struct Rng(u64);
-
-impl Rng {
-    fn next_u64(&mut self) -> u64 {
-        self.0 = self.0.wrapping_add(0x9E37_79B9_7F4A_7C15);
-        let mut z = self.0;
-        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
-        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
-        z ^ (z >> 31)
-    }
-
-    /// Uniform in [0, 1).
-    fn unit(&mut self) -> f64 {
-        (self.next_u64() >> 11) as f64 / (1u64 << 53) as f64
-    }
-
-    fn uniform(&mut self, low: f64, high: f64) -> f64 {
-        low + (high - low) * self.unit()
-    }
-}
 
 // ---------------------------------------------------------------------------------------------
 // Encoding.

@@ -17,6 +17,8 @@
 //!   target's training range (values `0`..`9`).
 //! - Pruning keeps the smallest tree of the weakest-link sequence whose risk is minimal (or within
 //!   the standard-error rule's margin), so branches that do not lower the training risk go.
+//!   With an overfit prevention set the risks are those of the held-out records routed through
+//!   the grown tree; node predictions still come from the growing records.
 //!
 //! Tie rules settled against the oracle (`GAP:` where a single case decides):
 //! - Within a field the first best split in scan order wins (ascending values; category subsets
@@ -35,7 +37,16 @@
 //! Supported: empirical priors and equal misclassification costs, no frequency or case weights.
 //! Other settings return [`AlgoError::Unsupported`].
 //!
-//! GAP: the overfit prevention set (`tree.UseOverFitPreventionSet`, `train_pct`) is rejected.
+//! Overfit prevention set (`tree.UseOverFitPreventionSet=true` with
+//! `tree.OverFitPreventionSetPct` > 0, seed `Cart_RandomSeed`): statistical tier
+//! (`docs/statistical-parity.md` rules 1, 2 and 5). We draw one uniform number per valid-target
+//! record in input order with our own seedable generator and hold the record out when it falls
+//! below the percentage; Modeler's generator is undisclosed. The growing records train the tree
+//! and supply priors and predictions, while the held-out records route through the grown tree
+//! and supply the pruning risks (`cart_ofs2`, `cart_ofs3` oracle bands in
+//! `crates/exec/tests/tree_ofs.rs`). Without the overfit set (`train_pct` 0) the exact tier
+//! stands: the saved C&R nuggets and `cart_*` oracles are compared record by record.
+//!
 //! `oracle/cart_ofs/*` (`xtask/oracle/probes/cart_ofs_streams.py`: a regression tree of `y = id`
 //! on `x = id` grown to one record per leaf, so its leaves list the growing records) shows the
 //! shape of the draw: one uniform number per record in input order, the record held out when it
@@ -43,11 +54,11 @@
 //! `ofs_s1_pct50` contains the 30% one of `ofs_s1`). The generator behind it is not
 //! `java.util.Random` (which Partition and Sample use) nor MT19937 (32 or 64 bit, several
 //! uniform conversions and stream offsets), `std::mt19937` canonical doubles or minstd, so the
-//! held-out records cannot be reproduced yet (`team/model_comparison`, seed 54752075: Modeler
-//! grows on 1198 of 1680 records).
+//! held-out records cannot be reproduced exactly (`team/model_comparison`, seed 54752075:
+//! Modeler grows on 1198 of 1680 records).
 
 use crate::common::{
-    class_summary, data_dictionary, mining_schema, regression_summary, split_text, value_range,
+    Rng, class_summary, data_dictionary, mining_schema, regression_summary, split_text, value_range,
 };
 use crate::{AlgoError, Dataset, categories};
 use dms_pmml::{
@@ -100,6 +111,11 @@ pub struct CartSettings {
     pub prune: bool,
     /// `use_std_err_rule` with `std_err_multiplier`: `Some(multiplier)` when on (default off).
     pub std_err_rule: Option<f64>,
+    /// Share of the valid-target records drawn into the overfit prevention set (`0.0` when
+    /// `tree.UseOverFitPreventionSet` is off or its percentage is 0).
+    pub overfit_share: f64,
+    /// Seed of the overfit prevention set draw (`Cart_RandomSeed`, default 12345).
+    pub seed: u64,
 }
 
 impl Default for CartSettings {
@@ -113,6 +129,8 @@ impl Default for CartSettings {
             max_surrogates: 5,
             prune: true,
             std_err_rule: None,
+            overfit_share: 0.0,
+            seed: 12345,
         }
     }
 }
@@ -124,7 +142,12 @@ pub fn train(dataset: &Dataset<'_>, settings: &CartSettings) -> Result<Pmml, Alg
             "C&R Tree with a frequency field".into(),
         ));
     }
-    let data = Data::read(dataset)?;
+    if !settings.overfit_share.is_finite() || !(0.0..=1.0).contains(&settings.overfit_share) {
+        return Err(AlgoError::Unsupported(
+            "C&R Tree overfit prevention set share outside 0 to 100%".into(),
+        ));
+    }
+    let data = Data::read(dataset, settings)?;
     if data.rows.is_empty() {
         return Err(AlgoError::Data("no records with a valid target".into()));
     }
@@ -204,6 +227,8 @@ struct Data {
     target: Target,
     /// Training records (valid target), as indices into the columns.
     rows: Vec<usize>,
+    /// Records in the overfit prevention set: they do not train and their risk drives pruning.
+    holdout: Vec<usize>,
     /// Empirical priors per class.
     priors: Vec<f64>,
     /// Training records per class.
@@ -211,7 +236,7 @@ struct Data {
 }
 
 impl Data {
-    fn read(dataset: &Dataset<'_>) -> Result<Data, AlgoError> {
+    fn read(dataset: &Dataset<'_>, settings: &CartSettings) -> Result<Data, AlgoError> {
         let fields = dataset.table.model().fields();
         let field = |position: usize| {
             fields
@@ -288,6 +313,34 @@ impl Data {
             columns.push(column);
         }
 
+        let valid = std::mem::take(&mut rows);
+        let (rows, holdout) = if settings.overfit_share > 0.0 {
+            let mut rng = Rng(settings.seed);
+            let (mut train, mut overfit) = (Vec::new(), Vec::new());
+            for row in valid {
+                if rng.unit() < settings.overfit_share {
+                    overfit.push(row);
+                } else {
+                    train.push(row);
+                }
+            }
+            // A small table can draw every record into the overfit set (30 % of four records
+            // still means four independent draws). Modeler keeps training such tables, so put
+            // the last held-out record back rather than failing: the growing set is never empty.
+            if train.is_empty() {
+                if let Some(row) = overfit.pop() {
+                    train.push(row);
+                } else {
+                    return Err(AlgoError::Data(
+                        "the overfit prevention set took every record".into(),
+                    ));
+                }
+            }
+            (train, overfit)
+        } else {
+            (valid, Vec::new())
+        };
+
         let (priors, class_totals) = match &target {
             Target::Classes { codes, labels } => {
                 let mut totals = vec![0.0; labels.len()];
@@ -304,6 +357,7 @@ impl Data {
             columns,
             target,
             rows,
+            holdout,
             priors,
             class_totals,
         })
@@ -1061,15 +1115,94 @@ fn node_risk(data: &Data, rows: &[usize]) -> f64 {
     }
 }
 
+/// The held-out leaf a record reaches, following the primary rule, then the surrogates, then the
+/// default child.
+fn route(tree: &Tree, data: &Data, row: usize) -> usize {
+    let mut index = 0;
+    while let Some(split) = &tree.nodes[index].split {
+        let left = split
+            .rule
+            .goes_left(&data.columns[split.input], row)
+            .or_else(|| {
+                split.surrogates.iter().find_map(|s| {
+                    s.rule
+                        .goes_left(&data.columns[s.input], row)
+                        .map(|hit| hit == s.rule_left)
+                })
+            })
+            .unwrap_or(split.default_left);
+        index = if left { split.left } else { split.right };
+    }
+    index
+}
+
+/// Whether `leaf` lies in the subtree rooted at `node`.
+fn subtree_contains(tree: &Tree, node: usize, leaf: usize) -> bool {
+    let mut current = Some(leaf);
+    while let Some(index) = current {
+        if index == node {
+            return true;
+        }
+        current = tree.nodes[index].parent;
+    }
+    false
+}
+
+/// The risk of each node as a leaf on the overfit prevention set: held-out records are routed
+/// through the grown tree, the node predicts from its growing records, and risk is the
+/// misclassified (or squared-error) share of all held-out records.
+fn holdout_risk(tree: &Tree, data: &Data) -> Vec<f64> {
+    let total = data.holdout.len() as f64;
+    if total <= 0.0 {
+        return tree
+            .nodes
+            .iter()
+            .map(|node| node_risk(data, &node.rows))
+            .collect();
+    }
+    let reached: Vec<usize> = data
+        .holdout
+        .iter()
+        .map(|&row| route(tree, data, row))
+        .collect();
+    tree.nodes
+        .iter()
+        .enumerate()
+        .map(|(index, node)| {
+            let rows: Vec<usize> = data
+                .holdout
+                .iter()
+                .zip(&reached)
+                .filter(|(_, leaf)| subtree_contains(tree, index, **leaf))
+                .map(|(&row, _)| row)
+                .collect();
+            match &data.target {
+                Target::Classes { codes, labels } => {
+                    let score = summary(data, &node.rows).0;
+                    let predicted = labels.iter().position(|label| *label == score);
+                    let wrong = rows
+                        .iter()
+                        .filter(|&&row| Some(codes[row]) != predicted)
+                        .count();
+                    wrong as f64 / total
+                }
+                Target::Numbers(ys) => {
+                    let mut moments = Moments::default();
+                    for &row in &rows {
+                        moments.add(ys[row]);
+                    }
+                    moments.sse() / total
+                }
+            }
+        })
+        .collect()
+}
+
 /// Weakest-link pruning (Algorithms Guide, "Pruning"): collapse the splits with the smallest
 /// `g(t) = (R(t) - R(T_t)) / (|T_t| - 1)` until only the root is left, then keep the smallest tree
 /// of that sequence whose risk is within the chosen margin of the minimum.
 fn prune(tree: &mut Tree, data: &Data, settings: &CartSettings) {
-    let risk: Vec<f64> = tree
-        .nodes
-        .iter()
-        .map(|n| node_risk(data, &n.rows))
-        .collect();
+    let risk = holdout_risk(tree, data);
     let mut kept: Vec<bool> = tree.nodes.iter().map(|n| n.split.is_some()).collect();
     let mut sequence = vec![(kept.clone(), subtree(tree, &kept, &risk, 0).0)];
     while kept[0] {
@@ -1100,7 +1233,11 @@ fn prune(tree: &mut Tree, data: &Data, settings: &CartSettings) {
         .map(|(_, r)| *r)
         .fold(f64::INFINITY, f64::min);
     let margin = settings.std_err_rule.map_or(0.0, |multiplier| {
-        let n = data.rows.len() as f64;
+        let n = if data.holdout.is_empty() {
+            data.rows.len()
+        } else {
+            data.holdout.len()
+        } as f64;
         multiplier * (minimum * (1.0 - minimum) / n).max(0.0).sqrt()
     });
     if let Some((chosen, _)) = sequence

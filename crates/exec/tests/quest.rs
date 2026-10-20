@@ -120,17 +120,30 @@ fn tree(a: &Node, b: &Node, case: &str) -> usize {
 #[test]
 fn trained_quest_matches_tree_and_scored_records() {
     assert!(dms_exec::registry::is_implemented("quest"));
-    for case in [
-        "quest_nofs_default",
-        "quest_nofs_depth3",
-        "quest_nofs_unpruned",
-        "quest_nofs_binary",
+    // `quest_edge/*` (probe `quest_edge_streams`): one-record QDA superclasses, a class mean
+    // halfway between the 2-means centres, a Levene-selected field and an ordinal primary split;
+    // `quest_tie/*`: tied selection p values.
+    for (label, case, records) in [
+        ("quest_nofs", "quest_nofs_default", 91),
+        ("quest_nofs", "quest_nofs_depth3", 91),
+        ("quest_nofs", "quest_nofs_unpruned", 91),
+        ("quest_nofs", "quest_nofs_binary", 91),
+        ("quest_edge", "quest_edge_singleton2", 42),
+        ("quest_edge", "quest_edge_singleton3", 42),
+        ("quest_edge", "quest_edge_tie3", 60),
+        ("quest_edge", "quest_edge_levene", 80),
+        ("quest_edge", "quest_edge_ordinal", 60),
+        ("quest_tie", "quest_tie_numeric_pq", 60),
+        ("quest_tie", "quest_tie_numeric_qp", 60),
+        ("quest_tie", "quest_tie_set_cd", 60),
+        ("quest_tie", "quest_tie_set_dc", 60),
     ] {
-        let ours = train("quest_nofs", case).unwrap();
-        let root = support::repo_root().join(format!("oracle/quest_nofs/{case}"));
-        let oracle =
-            Pmml::parse(&std::fs::read_to_string(root.join("models/01_quest_nofs.xml")).unwrap())
-                .unwrap();
+        let ours = train(label, case).unwrap();
+        let root = support::repo_root().join(format!("oracle/{label}/{case}"));
+        let oracle = Pmml::parse(
+            &std::fs::read_to_string(root.join(format!("models/01_{label}.xml"))).unwrap(),
+        )
+        .unwrap();
         let (Model::Tree(a), Model::Tree(b)) = (&ours.model, &oracle.model) else {
             panic!("not a tree");
         };
@@ -191,24 +204,21 @@ fn trained_quest_matches_tree_and_scored_records() {
                 scored += 1;
             }
         }
-        assert_eq!(scored, 91);
+        assert_eq!(scored, records, "{case}");
         println!("TRAINED {case}: {nodes} nodes, {scored} scored records equal Modeler");
     }
 }
 
 #[test]
-fn overfit_prevention_set_is_a_gap() {
-    for entry in std::fs::read_dir(support::repo_root().join("corpus/models_next")).unwrap() {
-        let path = entry.unwrap().path();
-        let Some(case) = path.file_stem().and_then(|s| s.to_str()) else {
-            continue;
+fn overfit_prevention_set_streams_train() {
+    for case in ["quest_default", "quest_depth3", "quest_unpruned"] {
+        let pmml = train("models_next", case).unwrap_or_else(|error| panic!("{case}: {error}"));
+        let Model::Tree(tree) = &pmml.model else {
+            panic!("{case}: not a tree");
         };
-        if case.starts_with("quest_") && path.extension().is_some_and(|s| s == "str") {
-            let error = train("models_next", case).unwrap_err();
-            assert!(
-                error.contains("GAP:") && error.contains("train_pct=0"),
-                "{error}"
-            );
-        }
+        assert!(
+            tree.root.record_count.unwrap_or(0.0) > 0.0,
+            "{case}: empty training set"
+        );
     }
 }

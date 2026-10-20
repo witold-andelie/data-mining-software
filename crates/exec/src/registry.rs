@@ -94,7 +94,7 @@ const PENDING: &[&str] = &[];
 /// Implemented builders held to statistical rather than exact parity
 /// (`docs/statistical-parity.md`): their training draws from our own generator or converges
 /// where Modeler stops early, so they match Modeler's metrics, not its bits.
-const STATISTICAL: &[&str] = &["lsvm", "neural_net", "sequence", "kohonen"];
+const STATISTICAL: &[&str] = &["cart", "kohonen", "lsvm", "neural_net", "quest", "sequence"];
 
 /// Model nodes whose nuggets score (`nodes::apply`) while their build nodes cannot train yet;
 /// they do not count as implemented.
