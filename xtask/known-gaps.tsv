@@ -7,7 +7,7 @@ ibm-demos	bayes_bankloan	Bayes Net is license-blocked in Modeler 19 and not impl
 ibm-demos	bayes_churn_retrain	Bayes Net is license-blocked in Modeler 19 and not implemented, so the downstream filter cannot be compared
 ibm-demos	pm_binaryclassifier	Auto Classifier nugget: legacy Auto model scoring is unverified; the oracle retrains a replacement-linked model, which is out of scope
 ibm-demos	svm_cancer	SVM is license-blocked in Modeler 19 and not implemented
-ibm-demos	telco_coxreg	Cox regression is not implemented (planned after the MVP)
+ibm-demos	telco_coxreg	Cox regression: this Modeler 19 install does not have the Cox node (the demo opens it as unknownterminal, extension spss.coxreg_id missing), so no oracle can be produced; not implemented
 ibm-demos	telco_custcat_discriminant	Discriminant is license-blocked in Modeler 19 and not implemented
 random	balance_boost	Balance has no seed: Modeler's own runs keep different records; row count 1155 vs 1156
 random	balance_reduce	Balance has no seed: Modeler's own runs keep different records; row count 356 vs 379
