@@ -590,7 +590,7 @@ fn imported_model_scores_saved_outputs_and_refuses_unknown_roles() {
     let values: Vec<_> = scored.rows().iter().map(|row| row[1].clone()).collect();
     assert_eq!(values, [Value::Real(1.0), Value::Real(9.0)]);
     let Err(dms_exec::OperatorError::Settings(message)) =
-        factory(&model(vec![output("probability")]))
+        factory(&model(vec![output("standardError")]))
     else {
         panic!("an unknown output role must fail")
     };

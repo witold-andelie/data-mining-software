@@ -3,9 +3,11 @@
 # Scripting cannot import a PMML file as a model (taskrunner.openModelFromFile reads .gm only), so
 # the model node comes from the user's dialog-built corpus/misc_next/pmml_template.str: File >
 # Models > Import PMML of oracle/cart_ofs2/ofs_s1_pct95/models/01_ofs_s1_pct95.xml (a C&R Tree
-# regression of y on x), dragged into a stream (ApplyImportedNode, model in data/0001.dat). This
-# probe opens that stream, links a source of corpus/cart_ofs2/ids200.csv (x stored as real, as
-# the model's input) and a Table, and saves it as corpus/pmml_import/<case>.str.
+# regression of y on x), dragged into a stream (ApplyImportedNode, model in data/0001.dat), and
+# corpus/misc_next/pmml_template_class.str, the same for oracle/models_next/quest_default/models/
+# 01_models_next.xml (a QUEST classification tree of y on x and z). This probe opens each
+# template, links a source of data the model was built for (inputs stored as real, as the model's
+# inputs) and a Table, and saves it as corpus/pmml_import/<case>.str.
 import json
 import java.io.File
 import java.lang.Exception
@@ -14,7 +16,9 @@ import modeler.api
 OUT_DIR = @OUT_DIR@
 DIR = "D:/data-mining-software/corpus/pmml_import"
 TEMPLATE = "D:/data-mining-software/corpus/misc_next/pmml_template.str"
+CLASS_TEMPLATE = "D:/data-mining-software/corpus/misc_next/pmml_template_class.str"
 DATA = "D:/data-mining-software/corpus/cart_ofs2/ids200.csv"
+CLASS_DATA = "D:/data-mining-software/corpus/models_next/class_grid.csv"
 ERRORS = (modeler.api.ModelerException, java.lang.Exception, Exception)
 
 taskrunner = modeler.script.session().getTaskRunner()
@@ -77,6 +81,7 @@ try:
     if not directory.exists() and not directory.mkdirs():
         raise IOError("cannot create " + DIR)
     build("pmml_cart_regression", TEMPLATE, DATA, [("x", "Real"), ("y", "Real")])
+    build("pmml_quest_classification", CLASS_TEMPLATE, CLASS_DATA, [("x", "Real"), ("z", "Real")])
     # Swapping another PMML into the template's attachment is not enough: Modeler keeps the
     # node's saved inputs and outputs (tried 2026-10-20 with models_next/quest_default's
     # classification tree: every record scored $X-y = 0.0), so each model type needs its own

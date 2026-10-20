@@ -8,12 +8,16 @@
 //! record scored the template's `$X-y` as 0.0. The saved outputs are therefore the contract
 //! here: one field per output, in order, named and stored as saved.
 //!
-//! Evidence: `pmml_cart_regression` (the user's dialog import of a C&R Tree regression of `y` on
-//! `x`): the single output `$X-y` (`prefix $X`, role `predictedValue`, storage real) is the
-//! tree's predicted value for each record.
+//! Evidence (the user's dialog imports):
+//! - `pmml_cart_regression`, a C&R Tree regression of `y` on `x`: the single output `$X-y`
+//!   (`prefix $X`, role `predictedValue`, storage real) is the tree's predicted value.
+//! - `pmml_quest_classification`, a QUEST classification tree of `y` on `x` and `z`: `$X-y`
+//!   (role `predictedValue`, string) is the predicted category and `$XC-y` (role `probability`
+//!   with no `value`, real) its confidence. Every record, the missing-`x` ones included, scores
+//!   the same as the native QUEST nugget (`models_next/quest_default`, `$R-y`/`$RC-y`).
 //!
-//! GAP: output roles other than `predictedValue` (a classifier's confidence or probabilities)
-//! have no oracle yet.
+//! GAP: other roles, and a `probability` naming one category (`modelFieldInfo@value`), have no
+//! oracle yet.
 
 use super::apply::{saved_model_xml, to_pmml, typed};
 use super::field_util::{Column, with_columns};
@@ -23,7 +27,7 @@ use crate::operator::{Arity, Operator};
 use crate::settings;
 use dms_pmml::Pmml;
 use dms_stream::StreamNode;
-use dms_types::{Field, Measurement, Storage, Table};
+use dms_types::{Field, Measurement, Storage, Table, Value};
 use std::sync::Arc;
 
 const LABEL: &str = "Imported PMML model";
@@ -35,9 +39,18 @@ fn gap(message: impl std::fmt::Display) -> OperatorError {
     OperatorError::Settings(format!("GAP: {LABEL}: {message}"))
 }
 
+/// What an output carries, from its saved `modelFieldInfo@role`.
+#[derive(Clone, Copy)]
+enum Role {
+    PredictedValue,
+    /// `probability` with no category: the confidence of the predicted value.
+    Confidence,
+}
+
 struct Output {
     name: String,
     storage: Storage,
+    role: Role,
 }
 
 struct ImportedModel {
@@ -88,20 +101,35 @@ pub fn build(node: &StreamNode) -> Result<Box<dyn Operator>, OperatorError> {
         let name = settings::text(Some(output), "name")
             .filter(|name| !name.is_empty())
             .ok_or_else(|| OperatorError::Settings(format!("{LABEL}: an output without a name")))?;
-        let role = output
-            .child("modelFieldInfo")
-            .and_then(|info| info.attribute("role"))
-            .unwrap_or_default();
-        if role != "predictedValue" {
-            return Err(gap(format!("output {name} with role {role:?}")));
-        }
+        let info = output.child("modelFieldInfo");
+        let role = match info.and_then(|info| info.attribute("role")) {
+            Some("predictedValue") => Role::PredictedValue,
+            Some("probability") if info.and_then(|info| info.attribute("value")).is_none() => {
+                Role::Confidence
+            }
+            Some("probability") => {
+                return Err(gap(format!(
+                    "output {name}: the probability of one category"
+                )));
+            }
+            other => return Err(gap(format!("output {name} with role {other:?}"))),
+        };
         let storage = match settings::text(Some(output), "type/storage").as_deref() {
             Some("real") => Storage::Real,
             Some("integer") => Storage::Integer,
             Some("string") => Storage::String,
             other => return Err(gap(format!("output {name} storage {other:?}"))),
         };
-        outputs.push(Output { name, storage });
+        if matches!(role, Role::Confidence) && storage != Storage::Real {
+            return Err(gap(format!(
+                "output {name}: a confidence not stored as real"
+            )));
+        }
+        outputs.push(Output {
+            name,
+            storage,
+            role,
+        });
     }
     Ok(Box::new(ImportedModel { member, outputs }))
 }
@@ -148,7 +176,10 @@ impl Operator for ImportedModel {
                 .score(&record)
                 .map_err(|error| OperatorError::Data(format!("{LABEL}: {error}")))?;
             for (column, output) in columns.iter_mut().zip(&self.outputs) {
-                column.values.push(typed(&prediction.value, output.storage));
+                column.values.push(match output.role {
+                    Role::PredictedValue => typed(&prediction.value, output.storage),
+                    Role::Confidence => prediction.confidence.map_or(Value::Null, Value::real),
+                });
             }
         }
         if columns
