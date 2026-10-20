@@ -13,6 +13,7 @@ dms-sav.workspace = true
 zip = { version = "9", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 encoding_rs = "0.8"
 odbc-api = { version = "=29.2.0", default-features = false, features = ["odbc_version_3_80"] }
+roxmltree = "0.20"
 
 [features]
 # Tests over the local real-file corpus (`cargo xtask corpus sync ...` first) and the Modeler oracle exports.

@@ -6,7 +6,7 @@ Status `done (statistical)`: trained to statistical, not exact, parity with Mode
 
 | Scope | Implemented | Total |
 |---|---|---|
-| MVP | 84 | 85 |
+| MVP | 85 | 85 |
 | later | 3 | 25 |
 | license blocked | 0 | 5 |
 | out of scope | 0 | 34 |
@@ -18,7 +18,7 @@ Status `done (statistical)`: trained to statistical, not exact, parity with Mode
 | Var. File | `var_file` | MVP | done | `DelimitedFileImportNode` |
 | Fixed File | `fixed_file` | MVP | done | `FixedFileImportNode` |
 | Statistics File (.sav) | `statistics_file` | MVP | done | `SPSSInputNode` |
-| Excel | `excel_import` | MVP | missing | `ExcelInputNode` |
+| Excel | `excel_import` | MVP | done | `ExcelInputNode` |
 | Database | `database_import` | MVP | done | `ODBCImportNode`, `DBImportNode` |
 | User Input | `user_input` | MVP | done | `UserInputNode` |
 | XML | `xml_import` | MVP | done | `xml_import!spss.xml_data` |

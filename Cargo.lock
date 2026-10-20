@@ -201,6 +201,7 @@ dependencies = [
  "dms-types",
  "encoding_rs",
  "odbc-api",
+ "roxmltree",
  "zip",
 ]
 

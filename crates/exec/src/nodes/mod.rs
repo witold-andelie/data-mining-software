@@ -22,6 +22,7 @@ pub mod distribution;
 pub mod ensemble;
 pub mod evaluation;
 pub mod excel_export;
+pub mod excel_import;
 mod extension_params;
 mod feature_selection;
 pub mod field_reorder;
