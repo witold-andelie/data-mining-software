@@ -124,6 +124,7 @@ pub(crate) fn parse(xml: &str) -> Result<Pmml, PmmlError> {
         let segments = models
             .into_iter()
             .map(|(m, _)| MiningSegment {
+                id: None,
                 predicate: Predicate::True,
                 model: Box::new(m),
             })
@@ -150,6 +151,7 @@ pub(crate) fn parse(xml: &str) -> Result<Pmml, PmmlError> {
         let segments = models
             .into_iter()
             .map(|(m, _)| MiningSegment {
+                id: None,
                 predicate: Predicate::True,
                 model: Box::new(m),
             })
@@ -1528,6 +1530,7 @@ fn parse_segment(
         }
     }
     Ok(MiningSegment {
+        id: node.attribute("id").map(str::to_string),
         predicate: predicate.unwrap_or(Predicate::True),
         model: Box::new(model.ok_or_else(|| PmmlError::Parse("Segment has no model".into()))?),
     })

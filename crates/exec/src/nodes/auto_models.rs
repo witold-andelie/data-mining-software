@@ -12,6 +12,7 @@ use super::field_util::{Column, with_columns};
 use crate::operator::{Arity, Operator};
 use crate::settings;
 use crate::{ExecContext, NodeOutput, OperatorError};
+use dms_pmml::{Model, Pmml};
 use dms_stream::{Container, StreamNode};
 use dms_strfmt::fastinfoset::Element;
 use dms_types::{Field, Measurement, Storage, Table, Value};
@@ -39,6 +40,7 @@ pub(crate) fn component(
         "C5RuleOutput" => "ApplyC5RuleNode",
         "CartRuleOutput" => "ApplyCartRuleNode",
         "ChaidRuleOutput" => "ApplyChaidRuleNode",
+        "QuestRuleOutput" => "ApplyQuestRuleNode",
         "LogisticOutput" => "ApplyLogisticNode",
         "DecisionListModelOutput" => "ApplyDecisionListNode",
         "RegressionOutput" => "ApplyRegressionNode",
@@ -193,6 +195,15 @@ fn build_auto(node: &StreamNode) -> Result<Box<dyn Operator>, OperatorError> {
         }
         Combine::Flag(super::ensemble::FlagCombiner::new(s)?)
     };
+    Ok(Box::new(AutoModels {
+        node: node.clone(),
+        target,
+        combine,
+    }))
+}
+
+/// The components in use of the nugget's saved Auto model.
+fn saved_components(node: &StreamNode) -> Result<Vec<Scorer>, OperatorError> {
     let mut components = Vec::new();
     for item in &node.result_items {
         match item.attribute("useModel") {
@@ -203,20 +214,57 @@ fn build_auto(node: &StreamNode) -> Result<Box<dyn Operator>, OperatorError> {
         if components.len() >= 256 {
             return Err(gap("more than 256 components"));
         }
-        components.push(super::apply::build(&component(
-            node,
-            item,
-            components.len(),
-        )?)?);
+        components.push(Scorer {
+            nugget: super::apply::build(&component(node, item, components.len())?)?,
+            model: None,
+        });
     }
     if components.is_empty() {
         return Err(gap("no components in use"));
     }
-    Ok(Box::new(AutoModels {
-        components,
-        target,
-        combine,
-    }))
+    Ok(components)
+}
+
+/// The components of a model trained in this run (`nodes::auto_build`): a `selectAll`
+/// MiningModel whose segments name their builders. Each segment is scored by that builder's
+/// nugget as a model of its own over the shared data dictionary.
+fn trained_components(node: &StreamNode, pmml: &Pmml) -> Result<Vec<Scorer>, OperatorError> {
+    let Model::Mining(mining) = &pmml.model else {
+        return Err(gap("the trained Auto model is not a MiningModel"));
+    };
+    if mining.method != "selectAll" || mining.segments.is_empty() {
+        return Err(gap("the trained Auto model has no selectAll segments"));
+    }
+    mining
+        .segments
+        .iter()
+        .enumerate()
+        .map(|(index, segment)| {
+            let builder = segment
+                .id
+                .as_deref()
+                .ok_or_else(|| gap("a trained Auto segment has no id"))?;
+            Ok(Scorer {
+                nugget: super::apply::build(&super::auto_build::component_applier(
+                    builder,
+                    format!("{}#{index}", node.uid),
+                )?)?,
+                model: Some(Arc::new(Pmml {
+                    version: pmml.version.clone(),
+                    data_dictionary: pmml.data_dictionary.clone(),
+                    transformations: Vec::new(),
+                    functions: Vec::new(),
+                    model: (*segment.model).clone(),
+                })),
+            })
+        })
+        .collect()
+}
+
+/// A component nugget and, for a trained component, the model it scores.
+struct Scorer {
+    nugget: Box<dyn Operator>,
+    model: Option<Arc<Pmml>>,
 }
 
 enum Combine {
@@ -224,7 +272,7 @@ enum Combine {
     Numeric { standard_error: bool },
 }
 struct AutoModels {
-    components: Vec<Box<dyn Operator>>,
+    node: StreamNode,
     target: String,
     combine: Combine,
 }
@@ -235,13 +283,42 @@ impl Operator for AutoModels {
     }
 
     fn run(&self, inputs: &[Arc<Table>], context: &ExecContext) -> Result<Table, OperatorError> {
+        self.score(inputs, &saved_components(&self.node)?, context)
+    }
+
+    fn produce(
+        &self,
+        inputs: &[Arc<Table>],
+        model: Option<Arc<Pmml>>,
+        context: &ExecContext,
+    ) -> Result<NodeOutput, OperatorError> {
+        let components = match &model {
+            Some(pmml) => trained_components(&self.node, pmml)?,
+            None => saved_components(&self.node)?,
+        };
+        self.score(inputs, &components, context)
+            .map(|table| NodeOutput::Data(Arc::new(table)))
+    }
+}
+
+impl AutoModels {
+    fn score(
+        &self,
+        inputs: &[Arc<Table>],
+        components: &[Scorer],
+        context: &ExecContext,
+    ) -> Result<Table, OperatorError> {
         let [input] = inputs else {
             return Err(OperatorError::Inputs("Auto nugget needs one input".into()));
         };
         let width = input.model().len();
         let mut scored = Vec::new();
-        for component in &self.components {
-            let NodeOutput::Data(table) = component.produce(inputs, None, context)? else {
+        for component in components {
+            let NodeOutput::Data(table) =
+                component
+                    .nugget
+                    .produce(inputs, component.model.clone(), context)?
+            else {
                 return Err(OperatorError::Data(
                     "Auto component produced no records".into(),
                 ));

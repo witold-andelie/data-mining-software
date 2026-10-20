@@ -28,6 +28,7 @@ pub mod linear;
 pub mod linear_as;
 pub mod logistic;
 pub mod lsvm;
+pub mod model_comparison;
 pub mod neural_net;
 pub mod quest;
 pub mod random_trees;

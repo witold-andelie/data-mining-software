@@ -185,6 +185,7 @@ pub fn train(
                 });
             }
             MiningSegment {
+                id: None,
                 predicate: Predicate::True,
                 model: Box::new(Model::GeneralRegression(GeneralRegressionModel {
                     header: ModelHeader {

@@ -5,6 +5,7 @@ mod analytic_build;
 pub mod anonymize;
 pub mod append;
 pub mod apply;
+pub mod auto_build;
 pub mod auto_cluster;
 pub mod auto_data_prep;
 pub mod auto_models;
