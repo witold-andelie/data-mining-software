@@ -602,8 +602,8 @@ fn unsupported_settings_name_the_property() {
             "scaleContinuousMode",
         ),
         (
-            vec![p("uiDetectTargetOutliers", "true")],
-            "uiDetectTargetOutliers",
+            vec![p("uiReplaceOrdinalTargetMissingValue", "true")],
+            "uiReplaceOrdinalTargetMissingValue",
         ),
         (vec![p("useCustomSettings", "true")], "useCustomSettings"),
         (vec![p("useFrequency", "true")], "useFrequency"),
@@ -612,21 +612,10 @@ fn unsupported_settings_name_the_property() {
         (vec![p("excludeNoUsedField", "keep")], "excludeNoUsedField"),
         (vec![p("dateUnit", "year")], "dateUnit"),
         (
-            vec![p("uiReplaceOrdinalFeaturesMissingValue", "true")],
-            "uiReplaceOrdinalFeaturesMissingValue",
-        ),
-        (
             vec![p("uiReplaceNominalFeaturesMissingValue", "false")],
             "uiReplaceNominalFeaturesMissingValue",
         ),
-        (
-            vec![p("uiUnsupervisedMergeOrdinal", "true")],
-            "uiUnsupervisedMergeOrdinal",
-        ),
-        (
-            vec![p("uiReplaceScaleTargetMissingValue", "true")],
-            "uiReplaceScaleTargetMissingValue",
-        ),
+        (vec![p("useWeight", "true")], "useWeight"),
         (
             vec![element("inputFields", vec![p("field", "x")])],
             "inputFields",
