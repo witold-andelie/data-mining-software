@@ -5,8 +5,10 @@
 //! Cells: quoted text must match exactly; empty unquoted cells are nulls; unquoted numbers match
 //! within the rounding of the oracle's printed decimals or a relative 1e-9; other unquoted text
 //! (dates, times) must match exactly.
+//!
+//! `cargo xtask regress` calls `compare_stream` for every stream with an oracle export.
 
-use crate::{Result, cargo, oracle, workspace_root};
+use crate::{Result, cargo, cargo_quiet, oracle, workspace_root};
 use serde_json::{Value, json};
 use std::fs;
 use std::path::Path;
@@ -20,6 +22,59 @@ pub fn run(args: &[String]) -> Result<()> {
     let [label, path] = positional.as_slice() else {
         return Err("usage: compare <label> <path> [--strict]".into());
     };
+    let comparison = compare_stream(label, path, true)?;
+    if strict && !comparison.is_match() {
+        return Err("mismatches (see compare.json)".into());
+    }
+    Ok(())
+}
+
+/// One stream's terminal inputs against the Modeler oracle export.
+#[derive(Debug, Clone)]
+pub struct StreamComparison {
+    /// Terminal inputs whose export matches Modeler.
+    pub matched: usize,
+    /// Terminal inputs the oracle manifest lists.
+    pub total: usize,
+    /// One `{uid, type, result}` object per terminal input, in manifest order.
+    pub nodes: Vec<Value>,
+}
+
+impl StreamComparison {
+    /// Whether every terminal input matches Modeler (a stream whose manifest lists none matches).
+    pub fn is_match(&self) -> bool {
+        self.matched == self.total
+    }
+
+    /// One line per terminal input that does not match: `uid (type): status [problem]`.
+    pub fn problems(&self) -> Vec<String> {
+        self.nodes
+            .iter()
+            .filter_map(|node| {
+                let result = node.get("result")?;
+                let status = result.get("status")?.as_str()?;
+                if status == "match" {
+                    return None;
+                }
+                let uid = node.get("uid").and_then(Value::as_str).unwrap_or("?");
+                let kind = node.get("type").and_then(Value::as_str).unwrap_or("?");
+                let problem = result
+                    .get("problems")
+                    .and_then(Value::as_array)
+                    .and_then(|problems| problems.first())
+                    .and_then(Value::as_str)
+                    .unwrap_or("");
+                Some(format!("{uid} ({kind}): {status} {problem}"))
+            })
+            .collect()
+    }
+}
+
+/// Run one corpus stream with `dms-cli` and compare the data reaching its terminal nodes with
+/// the Modeler oracle export, writing `compare.json` under the active target directory.
+/// `verbose` prints the per-node table and the summary line (`cargo xtask compare`); `regress`
+/// compares hundreds of streams and stays quiet.
+pub fn compare_stream(label: &str, path: &str, verbose: bool) -> Result<StreamComparison> {
     let root = workspace_root()?;
     let oracle_dir = oracle::output_dir(label, path)?;
     let manifest = read_json(&oracle_dir.join("manifest.json"))
@@ -33,11 +88,11 @@ pub fn run(args: &[String]) -> Result<()> {
     let target = std::env::var_os("CARGO_TARGET_DIR")
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|| root.join("target"));
-    let ours = target.join("compare").join(label.as_str()).join(&stem);
+    let ours = target.join("compare").join(label).join(&stem);
     if ours.exists() {
         fs::remove_dir_all(&ours).map_err(|e| format!("cannot clear {}: {e}", ours.display()))?;
     }
-    let stream = root.join("corpus").join(label.as_str()).join(path.as_str());
+    let stream = root.join("corpus").join(label).join(path);
     let mut run_args: Vec<String> = vec![
         "run".into(),
         "--quiet".into(),
@@ -54,7 +109,11 @@ pub fn run(args: &[String]) -> Result<()> {
         run_args.push(dir);
     }
     let run_args: Vec<&str> = run_args.iter().map(String::as_str).collect();
-    cargo(&run_args)?;
+    if verbose {
+        cargo(&run_args)?;
+    } else {
+        cargo_quiet(&run_args)?;
+    }
     let report = read_json(&ours.join("run.json"))?;
 
     let entries = manifest
@@ -87,32 +146,37 @@ pub fn run(args: &[String]) -> Result<()> {
         } else {
             json!({ "status": "not produced", "problems": [failure_reason(&report, uid)] })
         };
-        println!(
-            "  {:<14} {:<16} {:<14} {}",
-            status.get("status").and_then(Value::as_str).unwrap_or("?"),
-            uid,
-            kind,
-            status
-                .get("problems")
-                .and_then(Value::as_array)
-                .and_then(|p| p.first())
-                .and_then(Value::as_str)
-                .unwrap_or("")
-        );
+        if verbose {
+            println!(
+                "  {:<14} {:<16} {:<14} {}",
+                status.get("status").and_then(Value::as_str).unwrap_or("?"),
+                uid,
+                kind,
+                status
+                    .get("problems")
+                    .and_then(Value::as_array)
+                    .and_then(|p| p.first())
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+            );
+        }
         rows.push(json!({ "uid": uid, "type": kind, "result": status }));
     }
     let summary = json!({ "stream": format!("{label}/{path}"), "matched": matched, "total": entries.len(), "nodes": rows });
     let text = serde_json::to_string_pretty(&summary).map_err(|e| e.to_string())?;
     fs::write(ours.join("compare.json"), text + "\n")
         .map_err(|e| format!("cannot write compare.json: {e}"))?;
-    println!(
-        "xtask compare: {label}/{path}: {matched}/{} terminal inputs match Modeler",
-        entries.len()
-    );
-    if strict && matched != entries.len() {
-        return Err("mismatches (see compare.json)".into());
+    if verbose {
+        println!(
+            "xtask compare: {label}/{path}: {matched}/{} terminal inputs match Modeler",
+            entries.len()
+        );
     }
-    Ok(())
+    Ok(StreamComparison {
+        matched,
+        total: entries.len(),
+        nodes: rows,
+    })
 }
 
 fn data_dirs(root: &Path, label: &str) -> Vec<String> {

@@ -629,6 +629,9 @@ name = "xtask"
 version = "0.1.0"
 dependencies = [
  "dms-engine",
+ "dms-exec",
+ "dms-stream",
+ "dms-strfmt",
  "serde_json",
  "sha2",
 ]

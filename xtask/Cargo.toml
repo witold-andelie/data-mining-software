@@ -9,6 +9,9 @@ publish.workspace = true
 
 [dependencies]
 dms-engine.workspace = true
+dms-exec.workspace = true
+dms-stream.workspace = true
+dms-strfmt.workspace = true
 serde_json = "1"
 sha2 = "0.10"
 
