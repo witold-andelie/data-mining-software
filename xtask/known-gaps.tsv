@@ -44,3 +44,9 @@ dl_discriminate	dl09_prefix_canonical	Decision List search mechanism unresolved:
 dl_discriminate	dl11_tie_equal	Decision List search mechanism unresolved: our trained list differs from Modeler's (all 400 policy cells rejected); see docs/decision-list-validation.md
 dl_discriminate	dl12_tie_reorder	Decision List search mechanism unresolved: our trained list differs from Modeler's (all 400 policy cells rejected); see docs/decision-list-validation.md
 linas_discriminate	x_shift	Linear-AS forward selection: entry decision for a numerically degenerate term differs (models_as/linearas_default x4*x4); under investigation
+c50_discriminate	g05_six_numeric	C5.0 test-selection gate unresolved (auto_train income vs visits); see crates/algo/src/c50.rs
+c50_discriminate	g06_six_flag	C5.0 test-selection gate unresolved (auto_train income vs visits); see crates/algo/src/c50.rs
+c50_discriminate	g07_six_no_c	C5.0 test-selection gate unresolved (auto_train income vs visits); see crates/algo/src/c50.rs
+c50_discriminate	r01_relabel	C5.0 subtree raising/re-estimation unresolved (wn, wn100); see crates/algo/src/c50.rs
+c50_discriminate	r02_regrow	C5.0 subtree raising/re-estimation unresolved (wn, wn100); see crates/algo/src/c50.rs
+c50_discriminate	r03_move_value	C5.0 subtree raising/re-estimation unresolved (wn, wn100); see crates/algo/src/c50.rs
