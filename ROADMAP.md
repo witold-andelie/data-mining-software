@@ -1,17 +1,15 @@
 # Roadmap
 
-> 阶段：**P1 完成，进入 P2** · 更新：2026-10-15
+> 阶段：**P1、P2 完成；P3 除 Python 桥外完成；P0 只差 Mac 上的 CI；P4 放到最后** · 更新：2026-10-20
 
 ## 核心数字
 
 | 数字 | 值 | 类型 |
 |---|---|---|
-| MVP 节点覆盖 | 65 / 85 | 实测（`cargo xtask parity`，2026-10-18） |
-| 以后再做 / 不做 | 13 / 34 | 实测 |
-| `.str` 语料解码成功率 | 72 / 72（团队 7、IBM 示例 41、探针 24） | 实测（`cargo xtask test-corpus`） |
-| 语料用到的节点 | 团队 7 个流：31 种，全在 MVP 内；全部 48 个真实流：57 MVP、5 以后、9 不做，0 未映射 | 实测（`dms-cli coverage`） |
-| 标准答案（oracle） | 8 个流可生成：团队 7 个 + druglearn；共 16 个模型、41 份数据 | 实测（`cargo xtask oracle`） |
-| 语料 | 81 个文件（团队 16 含数据、IBM 示例 41、探针 24） | 实测（`xtask/corpus.tsv`） |
+| MVP 节点覆盖 | 85 / 85（其中 10 个按统计等价验收） | 实测（`cargo xtask parity`，2026-10-20） |
+| 以后再做 / 许可证受阻 / 不做 | 已做 3 / 25；0 / 5；0 / 34 | 实测（`cargo xtask parity`） |
+| 回归（全部带标准答案的流） | 966 个流：854 完全一致、69 统计等价、43 已知 GAP、0 回归 | 实测（`cargo xtask regress`，2026-10-20） |
+| 语料 | `xtask/corpus.tsv` 登记 1096 个文件，50 个 oracle 标签 | 实测 |
 
 ## 阶段
 
@@ -28,6 +26,8 @@
 
 ## 进度日志
 
+- 2026-10-20：**MVP 85/85**。Excel 源节点（`excel_more` 证实空 `<row>` 元素是夹具问题、文本逗号读成句点）、XML 源、导入 PMML（回归与分类）。Auto Data Prep 按指南补齐异常值、min-max、目标 Box-Cox/缺失/异常值/重编码、监督与无监督合并（名义与序数）、监督分箱、特征选择、主成分特征构造、时间字段与日期年/自动单位（`adp_next`/`adp_corr`/`adp_more`/`adp_time` 共 43 例全部一致）。Decision List、Linear-AS、Sequence 用判别实验查到公开资料的尽头，结论记入文档；LSVM 停止点与 Cox（本机未装）确认不可复现。
+- 2026-10-19：Time Series、Auto Cluster、Random Trees、Auto Classifier/Numeric；统计等价验收层（`docs/statistical-parity.md`）。
 - 2026-10-18：PCA/Factor、Anomaly Detection（训练与打分）、Transform 输出、Apriori（表格与事务数据，规则与 oracle PMML 逐条一致）、Auto Data Prep（`misc_next` 三例）；Kohonen 仅打分。MVP 覆盖 65/85（许可证受阻的 5 个模型不计入）。
 - 2026-10-15：**P1 完成**。`.str` 流文档是 Fast Infoset（ITU-T X.891）编码的 XML；按公开规范实现解码器 `dms-strfmt`（不 panic、无递归、迭代式析构），流模型 `dms-stream`（节点、连线、超节点、两种扩展标识），`dms-cli xml/inspect/coverage`；差分探针 `cargo xtask probe`；格式规格 `docs/formats/str.md`。
 - 2026-10-15：`cargo xtask oracle` 打通：Modeler 本地批处理（`clemb`）无需 Server 许可、不弹界面；导出 PMML 和终端节点输入 CSV；跨机器数据路径按文件名重定位；druglearn 两次运行结果可复现（仅 PMML 时间戳不同）。
