@@ -624,8 +624,8 @@ fn unsupported_settings_name_the_property() {
             "uiFeatureConstruction",
         ),
         (
-            vec![p("uiRescaleScaleTargetUsingBoxCox", "true")],
-            "uiRescaleScaleTargetUsingBoxCox",
+            vec![p("uiReplaceScaleTargetMissingValue", "true")],
+            "uiReplaceScaleTargetMissingValue",
         ),
         (
             vec![element("inputFields", vec![p("field", "x")])],
