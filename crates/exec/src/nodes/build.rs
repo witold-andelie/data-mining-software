@@ -137,7 +137,9 @@ fn build_with(
     if node.type_identifier() == "BuildAutoClusteringModelNode" {
         return super::auto_cluster::build(node);
     }
-    if node.type_identifier() == "BuildBinaryClassifierNode" {
+    if node.type_identifier() == "BuildBinaryClassifierNode"
+        || node.type_identifier() == "BuildNumericClassifierNode"
+    {
         return super::auto_build::build(node);
     }
     let s = node.settings.as_ref();
@@ -191,7 +193,8 @@ enum Algorithm {
     Chaid,
     Quest,
     TreeAs(ChaidSettings),
-    LinearAs((String, Vec<String>)),
+    /// Custom target and inputs; `None`: the Type roles (an Auto Numeric component).
+    LinearAs(super::analytic_build::LinearFields),
     /// Linear SVM (`spss.linearSVM!linearSVM`), statistical parity (`dms_algo::lsvm`).
     Lsvm(LsvmSettings),
     /// Random Trees (`spss.randomTrees!RT`), statistical parity (`dms_algo::random_trees`).
@@ -273,8 +276,12 @@ impl Operator for Build {
             ));
         }
         let table = self.training_records(input)?;
-        if let Algorithm::LinearAs((target, inputs)) = &self.algorithm {
-            let (target, fields) = supervised_fields(&table, Some(target), Some(inputs))?;
+        if let Algorithm::LinearAs(custom) = &self.algorithm {
+            let (target, fields) = supervised_fields(
+                &table,
+                custom.as_ref().map(|(target, _)| target.as_str()),
+                custom.as_ref().map(|(_, inputs)| inputs.as_slice()),
+            )?;
             let model = dms_algo::linear_as::train(&Dataset {
                 table: &table,
                 target,

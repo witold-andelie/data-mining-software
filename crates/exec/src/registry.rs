@@ -75,6 +75,7 @@ const BUILT_IN: &[(&str, Factory)] = &[
     ("feature_selection", model_node),
     ("auto_cluster", model_node),
     ("auto_classifier", model_node),
+    ("auto_numeric", model_node),
     ("decision_list", model_node),
     ("sequence", model_node),
     ("time_series", model_node),
@@ -100,6 +101,7 @@ const PENDING: &[&str] = &[];
 /// where Modeler stops early, so they match Modeler's metrics, not its bits.
 const STATISTICAL: &[&str] = &[
     "auto_classifier",
+    "auto_numeric",
     "auto_cluster",
     "cart",
     "kohonen",
@@ -113,12 +115,10 @@ const STATISTICAL: &[&str] = &[
 
 /// Model nodes whose nuggets score (`nodes::apply`) while their build nodes cannot train yet;
 /// they do not count as implemented.
-/// Auto Numeric: saved components and Ensemble scoring (`nodes::auto_models`); its builder
-/// remains an explicit GAP and does not count toward implemented coverage.
 /// Tree-AS trains through the shared CHAID learner; Linear-AS trains with its
 /// correlation/sweep selection (`linearas/lin_default`, `lin_factor`); LSVM trains the
 /// documented objective to convergence (statistical parity, `dms_algo::lsvm`).
-const SCORING_ONLY: &[&str] = &["auto_numeric"];
+const SCORING_ONLY: &[&str] = &[];
 
 pub fn factory(catalog_id: &str) -> Option<Factory> {
     BUILT_IN
@@ -143,10 +143,7 @@ fn model_node(node: &StreamNode) -> Result<Box<dyn Operator>, OperatorError> {
 
 /// Why each scoring-only builder cannot train, by builder type. The evidence for each reason is
 /// in `plan/STATUS.md` (2026-10-19 training review) and the nugget modules.
-const TRAINING_GAPS: &[(&str, &str)] = &[(
-    "BuildNumericClassifierNode",
-    "Auto Numeric training needs Neural Net, Random Trees and LSVM components, whose training is a GAP",
-)];
+const TRAINING_GAPS: &[(&str, &str)] = &[];
 
 /// A nugget scores; its build node is a GAP (`TRAINING_GAPS`).
 fn nugget_or_builder(node: &StreamNode) -> Result<Box<dyn Operator>, OperatorError> {

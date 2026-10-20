@@ -6,7 +6,7 @@ Status `done (statistical)`: trained to statistical, not exact, parity with Mode
 
 | Scope | Implemented | Total |
 |---|---|---|
-| MVP | 81 | 85 |
+| MVP | 82 | 85 |
 | later | 3 | 25 |
 | license blocked | 0 | 5 |
 | out of scope | 0 | 34 |
@@ -104,7 +104,7 @@ Status `done (statistical)`: trained to statistical, not exact, parity with Mode
 | Node | Id | Scope | Status | Modeler identifiers |
 |---|---|---|---|---|
 | Auto Classifier | `auto_classifier` | MVP | done (statistical) | `BuildBinaryClassifierNode`, `ApplyBinaryClassifierNode`, `ApplyAutoClassifierNode` |
-| Auto Numeric | `auto_numeric` | MVP | missing | `BuildNumericClassifierNode`, `ApplyNumericPredictorNode` |
+| Auto Numeric | `auto_numeric` | MVP | done (statistical) | `BuildNumericClassifierNode`, `ApplyNumericPredictorNode` |
 | Auto Cluster | `auto_cluster` | MVP | done (statistical) | `BuildAutoClusteringModelNode`, `ApplyAutoClusterNode` |
 | C5.0 | `c50` | MVP | done | `BuildC5RuleNode`, `ApplyC5RuleNode`, `ApplyC5SplitModelNode` |
 | C&R Tree | `cart` | MVP | done (statistical) | `BuildCartRuleNode`, `ApplyCartRuleNode`, `ApplyCartSplitModelNode`, `Cart!spss.tree-extension` |

@@ -212,7 +212,7 @@ fn unsupported_settings_and_legacy_versions_are_gaps() {
 }
 
 #[test]
-fn auto_classifier_trains_and_auto_numeric_stays_scoring_only() {
+fn auto_classifier_and_numeric_train() {
     assert!(dms_exec::registry::is_implemented("auto_classifier"));
     // A builder with no enabled component is a GAP, not a silent empty model.
     let Err(dms_exec::OperatorError::Settings(message)) =
@@ -224,12 +224,15 @@ fn auto_classifier_trains_and_auto_numeric_stays_scoring_only() {
         panic!("builder without components must fail")
     };
     assert!(message.starts_with("GAP:"), "{message}");
-    assert!(!dms_exec::registry::is_implemented("auto_numeric"));
-    let node = nugget("BuildNumericClassifierNode", vec![]);
+    assert!(dms_exec::registry::is_implemented("auto_numeric"));
+    assert!(dms_exec::registry::is_statistical("auto_numeric"));
     let Err(dms_exec::OperatorError::Settings(message)) =
-        dms_exec::registry::factory("auto_numeric").unwrap()(&node)
+        dms_exec::registry::factory("auto_numeric").unwrap()(&nugget(
+            "BuildNumericClassifierNode",
+            vec![],
+        ))
     else {
-        panic!("builder must fail")
+        panic!("builder without components must fail")
     };
     assert!(message.starts_with("GAP:"), "{message}");
 }

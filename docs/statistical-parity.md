@@ -17,7 +17,7 @@ Modeler's single run looks like one of ours.
 | LSVM | ADMM stops before the optimum | `models_as/lsvm_*` |
 | Time Series | smoothing/ARIMA optimizer stopping point | `models_next/ts_*`, `models_next2/ts_*` |
 | Sequence | order of rules tied on every statistic | `train_next/sequence_*`, `models_next/sequence_*` |
-| Auto Classifier / Numeric / Cluster | components above (Auto Classifier is exact when every enabled component is: `auto_train/ac_trees_nofs`) | `models_next2/ac_*`, `auto_train/*`, `an_default`, `acluster_default` |
+| Auto Classifier / Numeric / Cluster | components above (exact when every enabled component is: `auto_train/ac_trees_nofs`, `auto_train/an_*`) | `models_next2/ac_*`, `auto_train/*`, `an_default`, `acluster_default` |
 | QUEST, C&R Tree with an overfit prevention set | the set is a random draw | `models_next/quest_*`, `cart_ofs*` |
 
 QUEST and C&R Tree without an overfit prevention set stay exact (`quest_nofs/*`).
