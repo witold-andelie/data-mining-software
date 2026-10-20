@@ -19,20 +19,30 @@
 //!   Nf(t) - J(t); the Guide formula is kept - every decision in the four oracles is the same
 //!   under both readings (selected p values are orders of magnitude below alpha_B).
 //! - Levene's fallback when no p is below alpha_B (ANOVA F of the absolute deviations from the
-//!   class means, alpha_L = alpha/(m + m_c)) is computed per the Guide but refused with a GAP
-//!   when it would select the field: no oracle exercises it.
+//!   class means, alpha_L = alpha/(m + m_c)) is computed per the Guide; when it selects a numeric
+//!   field the ordinary QDA split point of that field follows (`quest_edge_levene`: equal class
+//!   means 0, variances 1.05 and 105, root `x <= 2.2128065191311`).
 //! - Split point, numeric primary: the target's classes grouped into two superclasses by
 //!   two-means clustering of the class means (initial centers at the two most extreme means; a
 //!   binary target skips the grouping), then the QDA root nearer the first (lower-variance)
 //!   superclass's mean (default root `z <= 2.3611080332804`, binary root `z <= 1.69031361110306`),
-//!   degenerate variances next to the point mass (epsilon = 1e-12).
+//!   degenerate variances next to the point mass (epsilon = 1e-12). Edge cases from the
+//!   `quest_edge_streams` probe: a class mean halfway between the two centres joins the lower
+//!   superclass (`quest_edge_tie3`); all means equal puts the most frequent class (ties: the
+//!   first) against the rest and both QDA roots are then equally near, so the larger is taken
+//!   (`quest_edge_levene`); a one-record superclass is cut at the midpoint of the two means
+//!   (`quest_edge_singleton2`, `_singleton3`).
 //! - Nominal primary: CRIMCOORD scores (the dummy-variable scatter whitened by SVD, the
 //!   between-class scatter's principal eigenvector) split by the same QDA; the categories
 //!   present at the node go left or right (default node 1 `flag`: T vs F; node 2 `cat`:
 //!   {amber, blue} vs {green, red}; binary node 1 `cat`: {amber, blue, green} vs {red}).
-//! - Ordinal fields enter selection through the ANOVA F on their codes (the Guide's ordinal
-//!   fields use the F test) but appear only in surrogate predicates in the oracles; a selected
-//!   ordinal primary split is refused with a GAP.
+//! - Ordinal fields with text categories are selected and split like nominal ones: the
+//!   chi-square test and CRIMCOORD (`quest_edge_ordinal`: Modeler saves the categories in text
+//!   order high, low, middle, where the F test gives p 0.078, yet splits {low, middle} vs {high};
+//!   the chi-square p is 0.0017). Numeric ordinal fields take the F test.
+//! - Blanks go to the child with the larger weighted probability (see
+//!   `weighted_probability`); node ids are numbered breadth first, and each pure child of a
+//!   split also uses up one id (`quest_edge_singleton3`: children 4 and 5 under node 1).
 //! - Surrogates: the predictive measure of association; ordered by association, ties by their
 //!   own improvement then input order (the C&RT conventions). Default root: `x <= 4` beside
 //!   `z <= 2.3611080332804`; default node 1: `x <= 0.5`, `z <= 0.625`, `cat` in
@@ -42,6 +52,9 @@
 //!   and 1% of the training records), no field below alpha_B. Pruning keeps the smallest tree of
 //!   the weakest-link sequence (`quest_nofs_default` pruned against `quest_nofs_unpruned`: the
 //!   same 7-node tree, growth had already stopped and the full tree carries the minimum risk).
+//!   With an overfit prevention set the weakest-link risks are the held-out records' risk routed
+//!   through the grown tree, while node priors and predictions still come from the growing
+//!   records; `prune=false` reports the training resubstitution risk instead.
 //! - Missing values: records with a missing target do not train (none occur in the oracles);
 //!   GAP: missing predictor values during growth. At scoring a blank primary follows the
 //!   surrogates, then the default child, with the Laplace confidence (n_j + 1)/(N + J) reduced
@@ -54,17 +67,21 @@
 //!
 //! Supported (the oracles' settings): a nominal or flag target, at most 32 categories per field,
 //! `alpha` 0.05, maximum depth 3 or 5, minimum sizes 2%/1% in percentage mode, at most 5
-//! surrogates, pruning on or off, empirical priors, no frequency field, `train_pct` 0, at most
-//! 100000 records and 64 inputs. Everything else returns [`AlgoError::Unsupported`] with a
-//! `GAP:` - misclassification costs, profits, equal or user-specified priors, the standard error
-//! rule, the overfit prevention set (`train_pct` > 0: `oracle/models_next/quest_*` keep failing;
-//! Modeler's hold-out draw uses an undisclosed random generator), regression targets, a
-//! Levene-selected or ordinal primary split, tied selection p-values, tied CRIMCOORD
-//! eigenvalues, missing predictor values in training, and the more-than-16-category surrogate
-//! subset search shared with C&RT. See `target/quest/REPORT.md` for the full list.
+//! surrogates, pruning on or off, empirical priors, no frequency field, at most 100000 records
+//! and 64 inputs. `train_pct` 0 is the exact tier (the `quest_nofs_*` and `models_build` tests).
+//! An overfit prevention set (`tree.UseOverFitPreventionSet=true` with
+//! `tree.OverFitPreventionSetPct` > 0, seed `Quest_RandomSeed`) is the statistical tier
+//! (`docs/statistical-parity.md` rules 1, 2 and 5): we draw one uniform number per valid-target
+//! record with our own seedable generator; Modeler's generator is undisclosed. Its oracle bands
+//! live in `crates/exec/tests/tree_ofs.rs`. Everything else returns
+//! [`AlgoError::Unsupported`] with a `GAP:` - misclassification costs, profits, equal or
+//! user-specified priors, the standard error rule, regression targets,
+//! tied CRIMCOORD eigenvalues, missing predictor values in training, and the
+//! more-than-16-category surrogate subset search shared with C&RT. See
+//! `target/quest/REPORT.md` for the full list.
 
 use crate::common::{
-    class_summary, data_dictionary, mining_schema, regression_summary, split_text, value_range,
+    Rng, class_summary, data_dictionary, mining_schema, regression_summary, split_text, value_range,
 };
 use crate::{AlgoError, Dataset, categories};
 use dms_pmml::{
@@ -86,6 +103,8 @@ fn validate(dataset: &Dataset<'_>, settings: &QuestSettings) -> Result<(), AlgoE
         || settings.max_surrogates != 5
         || settings.std_err_rule.is_some()
         || settings.alpha != 0.05
+        || !settings.overfit_share.is_finite()
+        || !(0.0..=1.0).contains(&settings.overfit_share)
     {
         return Err(gap("settings outside quest_nofs coverage"));
     }
@@ -216,11 +235,14 @@ fn select_split(
     };
     let mut tests = Vec::new();
     for (input, column) in data.columns.iter().enumerate() {
+        // A field with text categories takes the chi-square test even when it is ordinal
+        // (`quest_edge_ordinal`: Modeler splits on `ord`, whose F test on the category order
+        // high < low < middle it saves gives p 0.078; its chi-square p is 0.0017).
         let p = match column {
             Column::Categorical {
                 codes: x,
                 labels: categories,
-                ordinal: false,
+                ..
             } => pearson(x, categories.len(), codes, labels.len(), rows),
             _ => anova(&numeric_values(column, codes, rows), labels.len()),
         };
@@ -259,15 +281,16 @@ fn select_split(
         }
         input = candidate;
         p = significance;
-        return Err(gap(&format!(
-            "Levene-selected split (field {input}, p={p}) has no oracle"
-        )));
     }
-    if tests
-        .get(1)
-        .is_some_and(|other| (other.1 - p).abs() <= p.abs() * 1e-12)
+    // Tied p values: the first field in input order (`quest_tie_*`: two identical numeric or
+    // set fields, in either order, split on the one listed first).
+    if let Some(first) = tests
+        .iter()
+        .filter(|other| (other.1 - p).abs() <= p.abs() * 1e-12)
+        .map(|other| other.0)
+        .min()
     {
-        return Err(gap("tied variable-selection p values"));
+        input = first;
     }
     let column = data
         .columns
@@ -275,7 +298,6 @@ fn select_split(
         .ok_or_else(|| gap("selected input"))?;
     let (values, coordinates) = match column {
         Column::Numeric { .. } => (numeric_values(column, codes, rows), None),
-        Column::Categorical { ordinal: true, .. } => return Err(gap("ordinal primary split")),
         Column::Categorical {
             codes: x,
             labels: categories,
@@ -339,18 +361,38 @@ fn qda(
         .iter()
         .map(|(_, x)| *x)
         .fold(f64::NEG_INFINITY, f64::max);
-    if low == high {
-        return Err(gap("equal class means"));
-    }
     let mut assignment = vec![false; classes];
     let mut converged = false;
+    if low == high {
+        // Guide: with all class means equal, the class with the largest frequency is one
+        // superclass (ties: the smallest index) and the other classes form the second
+        // (`quest_edge_levene`: A and B, 20 records each, mean 0).
+        let mut count = vec![0usize; classes];
+        for &r in rows {
+            if let Some(c) = target.get(r).and_then(|&j| count.get_mut(j)) {
+                *c += 1;
+            }
+        }
+        let mut best = present[0].0;
+        for &(j, _) in &present {
+            if count[j] > count[best] {
+                best = j;
+            }
+        }
+        for &(j, _) in &present {
+            assignment[j] = j != best;
+        }
+        converged = true;
+    }
     for _ in 0..100 {
+        if converged {
+            break;
+        }
         let mut centers = [Moments::default(); 2];
         let mut changed = false;
         for &(j, x) in &present {
-            if (x - low).abs() == (x - high).abs() {
-                return Err(gap("two-means assignment tie"));
-            }
+            // A class mean halfway between the two centres joins the lower superclass
+            // (`quest_edge_tie3`: class means 0, 5, 10 split {A, B} | {C} at 7.825).
             let side = (x - high).abs() < (x - low).abs();
             if let Some(a) = assignment.get_mut(j) {
                 changed |= *a != side;
@@ -393,15 +435,25 @@ fn qda(
         }
     }
     let [a, b] = moments;
-    if a.n < 2.0 || b.n < 2.0 {
-        return Err(gap("singleton QDA superclass"));
+    if a.n < 1.0 || b.n < 1.0 {
+        return Err(gap("empty QDA superclass"));
     }
     let (ma, mb) = (a.sum / a.n, b.sum / b.n);
-    let (va, vb) = (
-        (a.sse() / (a.n - 1.0)).max(0.0),
-        (b.sse() / (b.n - 1.0)).max(0.0),
-    );
-    let cut = if va.min(vb) < 1e-12 {
+    // A one-record superclass has no sample variance; the cut below does not use it.
+    let variance = |m: Moments| {
+        if m.n > 1.0 {
+            (m.sse() / (m.n - 1.0)).max(0.0)
+        } else {
+            0.0
+        }
+    };
+    let (va, vb) = (variance(a), variance(b));
+    let cut = if a.n < 2.0 || b.n < 2.0 {
+        // A one-record superclass has no variance: Modeler cuts at the midpoint of the two means
+        // (`quest_edge_singleton2`: 10.5 and 50 -> 30.25; `quest_edge_singleton3`: 10.5 and 60
+        // -> 35.25).
+        (ma + mb) / 2.0
+    } else if va.min(vb) < 1e-12 {
         // Guide p.319: degenerate distributions are separated next to the point mass.
         if va.max(vb) < 1e-12 {
             (ma + mb) / 2.0
@@ -425,7 +477,12 @@ fn qda(
             let d1 = (-bb - disc.sqrt()) / (2.0 * aa);
             let d2 = (-bb + disc.sqrt()) / (2.0 * aa);
             let first = if va <= vb { ma } else { mb };
-            if (d1 - first).abs() < (d2 - first).abs() {
+            let (near1, near2) = ((d1 - first).abs(), (d2 - first).abs());
+            if near1 == near2 {
+                // Both roots equally close (equal means): the larger one
+                // (`quest_edge_levene`: +-2.2128065191311, Modeler cuts at the positive root).
+                d1.max(d2)
+            } else if near1 < near2 {
                 d1
             } else {
                 d2
@@ -536,6 +593,11 @@ pub struct QuestSettings {
     pub prune: bool,
     /// `use_std_err_rule` with `std_err_multiplier`: `Some(multiplier)` when on (default off).
     pub std_err_rule: Option<f64>,
+    /// Share of the valid-target records drawn into the overfit prevention set (`0.0` when
+    /// `tree.UseOverFitPreventionSet` is off or its percentage is 0).
+    pub overfit_share: f64,
+    /// Seed of the overfit prevention set draw (`Quest_RandomSeed`, default 12345).
+    pub seed: u64,
 }
 
 impl Default for QuestSettings {
@@ -550,6 +612,8 @@ impl Default for QuestSettings {
             max_surrogates: 5,
             prune: true,
             std_err_rule: None,
+            overfit_share: 0.0,
+            seed: 12345,
         }
     }
 }
@@ -562,7 +626,7 @@ pub fn train(dataset: &Dataset<'_>, settings: &QuestSettings) -> Result<Pmml, Al
         ));
     }
     validate(dataset, settings)?;
-    let data = Data::read(dataset)?;
+    let data = Data::read(dataset, settings)?;
     if data.rows.is_empty() {
         return Err(AlgoError::Data("no records with a valid target".into()));
     }
@@ -665,6 +729,8 @@ struct Data {
     target: Target,
     /// Training records (valid target), as indices into the columns.
     rows: Vec<usize>,
+    /// Records in the overfit prevention set: they do not train and their risk drives pruning.
+    holdout: Vec<usize>,
     /// Empirical priors per class.
     priors: Vec<f64>,
     /// Training records per class.
@@ -672,7 +738,7 @@ struct Data {
 }
 
 impl Data {
-    fn read(dataset: &Dataset<'_>) -> Result<Data, AlgoError> {
+    fn read(dataset: &Dataset<'_>, settings: &QuestSettings) -> Result<Data, AlgoError> {
         let fields = dataset.table.model().fields();
         let field = |position: usize| {
             fields
@@ -756,6 +822,34 @@ impl Data {
             columns.push(column);
         }
 
+        let valid = std::mem::take(&mut rows);
+        let (rows, holdout) = if settings.overfit_share > 0.0 {
+            let mut rng = Rng(settings.seed);
+            let (mut train, mut overfit) = (Vec::new(), Vec::new());
+            for row in valid {
+                if rng.unit() < settings.overfit_share {
+                    overfit.push(row);
+                } else {
+                    train.push(row);
+                }
+            }
+            // A small table can draw every record into the overfit set (30 % of four records
+            // still means four independent draws). Modeler keeps training such tables, so put
+            // the last held-out record back rather than failing: the growing set is never empty.
+            if train.is_empty() {
+                if let Some(row) = overfit.pop() {
+                    train.push(row);
+                } else {
+                    return Err(AlgoError::Data(
+                        "the overfit prevention set took every record".into(),
+                    ));
+                }
+            }
+            (train, overfit)
+        } else {
+            (valid, Vec::new())
+        };
+
         let (priors, class_totals) = match &target {
             Target::Classes { codes, labels } => {
                 let mut totals = vec![0.0; labels.len()];
@@ -772,6 +866,7 @@ impl Data {
             columns,
             target,
             rows,
+            holdout,
             priors,
             class_totals,
         })
@@ -1291,7 +1386,9 @@ fn grow(data: &Data, settings: &QuestSettings) -> Result<Tree, AlgoError> {
         };
         if let Some((input, rule, surrogates, default_left, left_rows, right_rows)) = split {
             let (left, right) = (nodes.len(), nodes.len() + 1);
+            let mut pure = 0;
             for (offset, child_rows) in [left_rows, right_rows].into_iter().enumerate() {
+                pure += usize::from(is_pure(data, &child_rows));
                 nodes.push(GrownNode {
                     id: next_id + offset,
                     rows: child_rows,
@@ -1299,7 +1396,9 @@ fn grow(data: &Data, settings: &QuestSettings) -> Result<Tree, AlgoError> {
                     split: None,
                 });
             }
-            next_id += 2;
+            // Each pure child also uses up one id (`quest_edge_singleton3`, `_tie3`, `_levene`:
+            // the root's pure right child makes the left child's children 4 and 5).
+            next_id += 2 + pure;
             nodes[index].split = Some(Split {
                 input,
                 rule,
@@ -1317,6 +1416,31 @@ fn grow(data: &Data, settings: &QuestSettings) -> Result<Tree, AlgoError> {
 }
 
 type MadeSplit = (usize, Rule, Vec<Surrogate>, bool, Vec<usize>, Vec<usize>);
+
+/// The Guide's weighted probability of a child for blanks, `sum_j pi(j) N_j(t) / N_j` over the
+/// classes in order, with empirical priors `pi(j) = N_j / N` of the training records, summed in
+/// floating point. Blanks go left only when the left child's value is strictly larger:
+/// `quest_nofs_default` node 1 (counts 18 and 18) sums to 0.375 against 0.37499999999999994 and
+/// goes left, `quest_edge_singleton3` node 1 (10 and 10) ties exactly and goes right.
+fn weighted_probability(data: &Data, rows: &[usize], side: impl Fn(usize) -> bool) -> f64 {
+    let Target::Classes { codes, labels } = &data.target else {
+        return 0.0;
+    };
+    let mut root = vec![0.0; labels.len()];
+    for &row in &data.rows {
+        root[codes[row]] += 1.0;
+    }
+    let mut child = vec![0.0; labels.len()];
+    for &row in rows.iter().filter(|&&row| side(row)) {
+        child[codes[row]] += 1.0;
+    }
+    let total = data.rows.len() as f64;
+    root.iter()
+        .zip(&child)
+        .filter(|(n, _)| **n > 0.0)
+        .map(|(n, c)| (n / total) * (c / n))
+        .sum()
+}
 
 /// The node's split, or `None` when its best split fails the stopping rules.
 fn split_node(
@@ -1346,7 +1470,9 @@ fn split_node(
     }
     let column = &data.columns[input];
     let surrogates = surrogates(data, settings, input, &rule, rows);
-    let default_left = left_valid >= right_valid;
+    let default_left =
+        weighted_probability(data, rows, |r| rule.goes_left(column, r) == Some(true))
+            > weighted_probability(data, rows, |r| rule.goes_left(column, r) == Some(false));
     let (mut left_rows, mut right_rows) = (Vec::new(), Vec::new());
     for &row in rows {
         let left = rule.goes_left(column, row).or_else(|| {
@@ -1408,15 +1534,94 @@ fn node_risk(data: &Data, rows: &[usize]) -> f64 {
     }
 }
 
+/// The held-out leaf a record reaches, following the primary rule, then the surrogates, then the
+/// default child.
+fn route(tree: &Tree, data: &Data, row: usize) -> usize {
+    let mut index = 0;
+    while let Some(split) = &tree.nodes[index].split {
+        let left = split
+            .rule
+            .goes_left(&data.columns[split.input], row)
+            .or_else(|| {
+                split.surrogates.iter().find_map(|s| {
+                    s.rule
+                        .goes_left(&data.columns[s.input], row)
+                        .map(|hit| hit == s.rule_left)
+                })
+            })
+            .unwrap_or(split.default_left);
+        index = if left { split.left } else { split.right };
+    }
+    index
+}
+
+/// Whether `leaf` lies in the subtree rooted at `node`.
+fn subtree_contains(tree: &Tree, node: usize, leaf: usize) -> bool {
+    let mut current = Some(leaf);
+    while let Some(index) = current {
+        if index == node {
+            return true;
+        }
+        current = tree.nodes[index].parent;
+    }
+    false
+}
+
+/// The risk of each node as a leaf on the overfit prevention set: held-out records are routed
+/// through the grown tree, the node predicts from its growing records, and risk is the
+/// misclassified (or squared-error) share of all held-out records.
+fn holdout_risk(tree: &Tree, data: &Data) -> Vec<f64> {
+    let total = data.holdout.len() as f64;
+    if total <= 0.0 {
+        return tree
+            .nodes
+            .iter()
+            .map(|node| node_risk(data, &node.rows))
+            .collect();
+    }
+    let reached: Vec<usize> = data
+        .holdout
+        .iter()
+        .map(|&row| route(tree, data, row))
+        .collect();
+    tree.nodes
+        .iter()
+        .enumerate()
+        .map(|(index, node)| {
+            let rows: Vec<usize> = data
+                .holdout
+                .iter()
+                .zip(&reached)
+                .filter(|(_, leaf)| subtree_contains(tree, index, **leaf))
+                .map(|(&row, _)| row)
+                .collect();
+            match &data.target {
+                Target::Classes { codes, labels } => {
+                    let score = summary(data, &node.rows).0;
+                    let predicted = labels.iter().position(|label| *label == score);
+                    let wrong = rows
+                        .iter()
+                        .filter(|&&row| Some(codes[row]) != predicted)
+                        .count();
+                    wrong as f64 / total
+                }
+                Target::Numbers(ys) => {
+                    let mut moments = Moments::default();
+                    for &row in &rows {
+                        moments.add(ys[row]);
+                    }
+                    moments.sse() / total
+                }
+            }
+        })
+        .collect()
+}
+
 /// Weakest-link pruning (Algorithms Guide, "Pruning"): collapse the splits with the smallest
 /// `g(t) = (R(t) - R(T_t)) / (|T_t| - 1)` until only the root is left, then keep the smallest tree
 /// of that sequence whose risk is within the chosen margin of the minimum.
 fn prune(tree: &mut Tree, data: &Data, settings: &QuestSettings) {
-    let risk: Vec<f64> = tree
-        .nodes
-        .iter()
-        .map(|n| node_risk(data, &n.rows))
-        .collect();
+    let risk = holdout_risk(tree, data);
     let mut kept: Vec<bool> = tree.nodes.iter().map(|n| n.split.is_some()).collect();
     let mut sequence = vec![(kept.clone(), subtree(tree, &kept, &risk, 0).0)];
     while kept[0] {
@@ -1447,7 +1652,11 @@ fn prune(tree: &mut Tree, data: &Data, settings: &QuestSettings) {
         .map(|(_, r)| *r)
         .fold(f64::INFINITY, f64::min);
     let margin = settings.std_err_rule.map_or(0.0, |multiplier| {
-        let n = data.rows.len() as f64;
+        let n = if data.holdout.is_empty() {
+            data.rows.len()
+        } else {
+            data.holdout.len()
+        } as f64;
         multiplier * (minimum * (1.0 - minimum) / n).max(0.0).sqrt()
     });
     if let Some((chosen, _)) = sequence

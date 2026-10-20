@@ -1,11 +1,11 @@
 //! Model build nodes (`docs/models.md`): train on the records that reach the node and hand the
 //! model to the linked nugget (`Operator::produce` returns `NodeOutput::Model`).
 //!
-//! Supported: C&R Tree (`Cart!spss.tree-extension`) and CHAID (`Chaid!spss.tree-extension`).
-//! They are extension-framework nodes: their algorithm settings are `<Parameter name= value=>`
-//! entries of the XML attachment named by the node's `properties` attribute
-//! (`docs/formats/nodes/cart.md`, `chaid.md`). Fields: with `role_use` the
-//! attachment's `tree.TargetField` and `tree.InputFieldList`, otherwise the Type roles (one
+//! Supported: C&R Tree (`Cart!spss.tree-extension`), QUEST (`Quest!spss.tree-extension`) and
+//! CHAID (`Chaid!spss.tree-extension`). They are extension-framework nodes: their algorithm
+//! settings are `<Parameter name= value=>` entries of the XML attachment named by the node's
+//! `properties` attribute (`docs/formats/nodes/cart.md`, `chaid.md`). Fields: with `role_use`
+//! the attachment's `tree.TargetField` and `tree.InputFieldList`, otherwise the Type roles (one
 //! target, inputs `Input` and `Both`). With `usePartitionedData` and a partition field, only the
 //! training partition (the field's first value) trains.
 //! Tree-AS (`spss.treeEngine!treeEngine`) uses inline `_...` settings, Type roles,
@@ -61,11 +61,14 @@
 //! Regression (`BuildRegressionNode`) reads the node XML: `method` (`enter` only),
 //! `includeConstant`, the field selections.
 //!
+//! C&R Tree and QUEST train with the overfit prevention set at statistical parity: the held-out
+//! draw comes from our seedable generator because Modeler's is undisclosed
+//! (`docs/statistical-parity.md`). CHAID ignores the setting like Modeler (`models/chaid_default`
+//! trains on all records with a 30% set).
+//!
 //! Rejected until implemented: frequency and analysis weights, multiple split fields, boosting and
-//! bagging, the interactive builder, misclassification costs; for C&R Tree the overfit
-//! prevention set (Modeler draws it with its own random generator; CHAID ignores the setting,
-//! `models/chaid_default` trains on all records with 30% set), custom priors and ordered
-//! twoing; for CHAID splitting merged categories.
+//! bagging, the interactive builder, misclassification costs, custom priors and ordered twoing;
+//! for CHAID splitting merged categories.
 
 use crate::context::ExecContext;
 use crate::error::OperatorError;
@@ -2076,9 +2079,25 @@ fn chaid_settings(p: &Parameters) -> Result<ChaidSettings, OperatorError> {
 
 fn quest_settings(p: &Parameters) -> Result<dms_algo::quest::QuestSettings, OperatorError> {
     let gap = |what: &str| OperatorError::Settings(format!("GAP: QUEST {what}"));
-    if p.real("tree.OverFitPreventionSetPct")?.unwrap_or(30.0) != 0.0 {
-        return Err(gap("overfit prevention set requires train_pct=0"));
-    }
+    let pct = p.real("tree.OverFitPreventionSetPct")?.unwrap_or(0.0);
+    let enabled = match p.text("tree.UseOverFitPreventionSet").as_deref() {
+        None => true,
+        Some(_) => p.flag("tree.UseOverFitPreventionSet")?,
+    };
+    let overfit_share = if enabled {
+        if (0.0..=100.0).contains(&pct) {
+            pct / 100.0
+        } else {
+            return Err(gap(&format!("OverFitPreventionSetPct={pct}")));
+        }
+    } else {
+        0.0
+    };
+    let seed = match p.real("Quest_RandomSeed")? {
+        Some(v) if v.is_finite() && v >= 0.0 && v.fract() == 0.0 => v as u64,
+        None => 12345,
+        Some(v) => return Err(gap(&format!("Quest_RandomSeed={v}"))),
+    };
     if p.text("tree.Priors").is_some_and(|s| s != "Data") {
         return Err(gap("non-empirical priors"));
     }
@@ -2097,6 +2116,8 @@ fn quest_settings(p: &Parameters) -> Result<dms_algo::quest::QuestSettings, Oper
         min_child,
         alpha: p.real("tree.Alpha")?.unwrap_or(0.05),
         prune: p.text("tree.PruneTree").is_none_or(|v| v == "true"),
+        overfit_share,
+        seed,
         ..dms_algo::quest::QuestSettings::default()
     })
 }
@@ -2107,11 +2128,21 @@ fn cart_settings(p: &Parameters) -> Result<CartSettings, OperatorError> {
     if p.text("tree.Priors").is_some_and(|priors| priors != "Data") {
         return Err(unsupported("equal or custom priors"));
     }
-    if p.flag("tree.UseOverFitPreventionSet")?
-        && p.real("tree.OverFitPreventionSetPct")?.unwrap_or(0.0) > 0.0
-    {
-        return Err(unsupported("an overfit prevention set (set its size to 0)"));
-    }
+    let overfit_share = if p.flag("tree.UseOverFitPreventionSet")? {
+        let pct = p.real("tree.OverFitPreventionSetPct")?.unwrap_or(0.0);
+        if (0.0..=100.0).contains(&pct) {
+            pct / 100.0
+        } else {
+            return Err(unsupported(&format!("OverFitPreventionSetPct={pct}")));
+        }
+    } else {
+        0.0
+    };
+    let seed = match p.real("Cart_RandomSeed")? {
+        Some(v) if v.is_finite() && v >= 0.0 && v.fract() == 0.0 => v as u64,
+        None => 12345,
+        Some(v) => return Err(unsupported(&format!("Cart_RandomSeed={v}"))),
+    };
     let defaults = CartSettings::default();
     let (depth, min_parent, min_child) = tree_sizes(p)?;
     let max_depth = depth.unwrap_or(defaults.max_depth);
@@ -2140,6 +2171,8 @@ fn cart_settings(p: &Parameters) -> Result<CartSettings, OperatorError> {
             .text("tree.PruneTree")
             .map_or(defaults.prune, |v| v == "true"),
         std_err_rule,
+        overfit_share,
+        seed,
     })
 }
 

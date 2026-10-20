@@ -6,6 +6,29 @@ use dms_pmml::{
 };
 use dms_types::{Measurement, Storage, Table, Value, ValueSpec};
 
+/// Our seedable generator (SplitMix64), shared by every algorithm that draws records or initial
+/// values. Modeler's generator is undisclosed, so those algorithms are held to statistical parity.
+pub(crate) struct Rng(pub(crate) u64);
+
+impl Rng {
+    pub(crate) fn next_u64(&mut self) -> u64 {
+        self.0 = self.0.wrapping_add(0x9E37_79B9_7F4A_7C15);
+        let mut z = self.0;
+        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+        z ^ (z >> 31)
+    }
+
+    /// Uniform in [0, 1).
+    pub(crate) fn unit(&mut self) -> f64 {
+        (self.next_u64() >> 11) as f64 / (1u64 << 53) as f64
+    }
+
+    pub(crate) fn uniform(&mut self, low: f64, high: f64) -> f64 {
+        low + (high - low) * self.unit()
+    }
+}
+
 /// The categories of field `position` in PMML text form: the declared values of an
 /// instantiated field, otherwise the distinct non-null values in order of appearance; blanks
 /// (user-missing values) are not categories (`models/cart_surrogates`: `Credit_rating` declares
