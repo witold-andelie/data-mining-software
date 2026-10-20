@@ -5,7 +5,14 @@
 //! solves the objective below with an ADMM that stops before the optimum, by an undocumented
 //! rule (`oracle/models_as/lsvm_default`: objective 0.868048 against the optimum 0.867945;
 //! `lsvm_numeric`: 0.556714 against 0.550353; `lsvm_numeric` intercept -0.0155 against the
-//! optimum's -0.0359). We solve the documented objective to convergence instead, so our
+//! optimum's -0.0359). The stopping point is not recoverable from the public guide: in
+//! `lsvm_default` every record lies inside the margin (smallest `1 - y w'x` is 0.00086), so the
+//! squared hinge is least squares and the optimum *is* the guide's initial value, the ridge
+//! solution `(X'X + lambda I)^-1 X'y` (eq. 3.7); an ADMM started there (eq. 3.3, any `rho`) never
+//! leaves it, yet Modeler's coefficients differ by 8.9e-4, and they are a stationary point of no
+//! diagonal ridge penalty (the implied per-coefficient penalties range from 0.002 to 9.7e5;
+//! `D:/spss-modeler/rea-work/lsvm-lab/admm2.py`, 2026-10-20). The ADMM defaults are in an
+//! internal IBM document (Zhong 2014). We solve the documented objective to convergence instead, so our
 //! coefficients are the optimum and are reported, never compared, against Modeler's. What is
 //! compared (`crates/exec/tests/lsvm.rs`) is the objective of both coefficient vectors on the
 //! same design, the predicted classes on every scored oracle record and the continuous
