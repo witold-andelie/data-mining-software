@@ -91,12 +91,15 @@
 //! Target (`uiRescaleScaleTargetUsingBoxCox`): a continuous target is Box-Cox transformed and
 //! rescaled to `targetMean` / `targetSD`, see [`prepare_target`].
 //!
-//! `GAP:` target outliers, a target with missing values, target missing /
+//! Ordinal inputs ([`prepare_ordinal`]) and target steps ([`prepare_target`]) follow
+//! `adp_more/*`.
+//!
+//! `GAP:` target outliers set to missing, combined target steps, ordinal targets /
 //! target reorder, ordinal merging, feature construction, almost-constant category screening,
 //! frequency and analysis weights, `useCustomSettings`, a non-empty `inputFields` / `targetField`,
 //! automatic date or time units, `dateUnit` `year`, and `excludeNoUsedField` other than
-//! `filterOut` are rejected. `GAP:` original ordinal inputs are copied, not recoded (no corpus
-//! ordinal input). `GAP:` a zero-row input is copied unchanged.
+//! `filterOut` are rejected. `GAP:` string ordinal inputs are copied. `GAP:` a zero-row input is
+//! copied unchanged.
 
 use crate::context::ExecContext;
 use crate::error::OperatorError;
@@ -251,6 +254,9 @@ struct Prep {
     scale_continuous: bool,
     scale: Scale,
     outliers: Option<Outliers>,
+    /// `outlierIdentCutoff` and `outliersOperation`, also used for the target.
+    outlier_cutoff: f64,
+    outliers_to_missing: bool,
     /// `uiRescaleScaleTargetUsingBoxCox`: the final `targetMean` and `targetSD`.
     box_cox_target: Option<(f64, f64)>,
     target_ext: String,
@@ -258,6 +264,16 @@ struct Prep {
     supervised_merge: Option<f64>,
     /// `uiUnsupervisedMergeNominal` (objective `custom` only): `unsupervisedMergingMinNumberOfCases`.
     unsupervised_merge: Option<i64>,
+    /// `uiUnsupervisedMergeOrdinal` (objective `custom` only): `unsupervisedMergingMinNumberOfCases`.
+    unsupervised_merge_ordinal: Option<i64>,
+    /// `uiReplaceOrdinalFeaturesMissingValue`: an ordinal input's missing values become its median.
+    replace_ordinal_missing: bool,
+    /// `uiReplaceScaleTargetMissingValue`: a continuous target's missing values become its mean.
+    target_missing_mean: bool,
+    /// `uiDetectTargetOutliers`: a continuous target's outliers are coerced like an input's.
+    target_outliers: bool,
+    /// `uiReorderNominalTargetCategories`: a nominal target is recoded from the least frequent.
+    reorder_target: bool,
     /// `uiFeatureSelection` (objective `custom` only): the `featureSelectionPValue`.
     feature_selection: Option<f64>,
     /// `uiSupervisedBinning` (objective `custom` only): the `homogeneousSubsetsPValue`.
@@ -306,7 +322,9 @@ enum Class {
     Date,
     Continuous,
     Categorical,
-    /// A continuous target rescaled with Box-Cox.
+    /// A numeric ordinal input.
+    Ordinal,
+    /// A target with a preparation step switched on (see [`prepare_target`]).
     Target,
 }
 
@@ -367,7 +385,15 @@ impl Operator for Prep {
                 Class::Date => prepare_date(self, field, index, &values, &mut cols)?,
                 Class::Continuous if self.prepare_features => {
                     let before = cols.len();
-                    prepare_continuous(self, field, index, &values, target.as_ref(), &mut cols)?;
+                    prepare_continuous(
+                        self,
+                        field,
+                        index,
+                        &values,
+                        target.as_ref(),
+                        false,
+                        &mut cols,
+                    )?;
                     if let Some(col) = cols.get(before).filter(|_| cols.len() == before + 1)
                         && col.field.measurement == Measurement::Continuous
                         && matches!(col.group, GROUP_CONTINUOUS | GROUP_PASS)
@@ -378,10 +404,20 @@ impl Operator for Prep {
                 Class::Categorical if self.prepare_features => {
                     prepare_categorical(self, field, index, &values, target.as_ref(), &mut cols)?;
                 }
+                Class::Ordinal if self.prepare_features => {
+                    let before = cols.len();
+                    prepare_ordinal(self, field, index, &values, target.as_ref(), &mut cols)?;
+                    if let Some(col) = cols.get(before).filter(|_| cols.len() == before + 1)
+                        && col.field.measurement == Measurement::Continuous
+                        && col.group == GROUP_CONTINUOUS
+                    {
+                        candidates.push(before);
+                    }
+                }
                 Class::Target if self.prepare_features => {
                     cols.push(prepare_target(self, field, index, &values)?);
                 }
-                Class::Continuous | Class::Categorical | Class::Target => {
+                Class::Continuous | Class::Categorical | Class::Ordinal | Class::Target => {
                     cols.push(pass_col(field, values, index));
                 }
             }
@@ -455,6 +491,13 @@ fn parse(s: Option<&Element>) -> Result<Prep, OperatorError> {
             None
         },
         target_ext: text_or(s, "nameExtForTarget", "_transformed"),
+        outlier_cutoff: positive(s, "outlierIdentCutoff", 3.0)?,
+        outliers_to_missing: one_of(
+            s,
+            "outliersOperation",
+            &["coerceToCutoffVal", "setToMissingVal"],
+            "coerceToCutoffVal",
+        )? == "setToMissingVal",
         supervised_merge: if custom_steps(s)? && flag(s, "uiSupervisedMerging", true)? {
             Some(unit_interval(s, "supervisedMergingPValue", 0.05)?)
         } else {
@@ -480,6 +523,17 @@ fn parse(s: Option<&Element>) -> Result<Prep, OperatorError> {
         } else {
             None
         },
+        unsupervised_merge_ordinal: if custom_steps(s)?
+            && flag(s, "uiUnsupervisedMergeOrdinal", false)?
+        {
+            Some(int_or(s, "unsupervisedMergingMinNumberOfCases", 10)?)
+        } else {
+            None
+        },
+        replace_ordinal_missing: flag(s, "uiReplaceOrdinalFeaturesMissingValue", false)?,
+        target_missing_mean: flag(s, "uiReplaceScaleTargetMissingValue", false)?,
+        target_outliers: flag(s, "uiDetectTargetOutliers", false)?,
+        reorder_target: flag(s, "uiReorderNominalTargetCategories", false)?,
         outliers: if flag(s, "uiDetectFeatureOutliers", false)? {
             Some(Outliers {
                 cutoff: positive(s, "outlierIdentCutoff", 3.0)?,
@@ -529,20 +583,14 @@ fn reject_unknown(s: Option<&Element>) -> Result<(), OperatorError> {
 
 fn reject_unsupported(s: Option<&Element>) -> Result<(), OperatorError> {
     for key in [
-        "uiReorderNominalTargetCategories",
-        "uiReplaceScaleTargetMissingValue",
         "uiReplaceOrdinalTargetMissingValue",
-        "uiReplaceNominalTargetMissingValue",
-        "uiDetectTargetOutliers",
         "uiExtractHourFromTime",
         "uiExtractMinuteFromTime",
         "uiExtractSecondFromTime",
-        "uiUnsupervisedMergeOrdinal",
         "uiExcludeAlmostConstantCatFeature",
         "useWeight",
         "useFrequency",
         "useCustomSettings",
-        "uiReplaceOrdinalFeaturesMissingValue",
     ] {
         if flag(s, key, false)? {
             return Err(OperatorError::Settings(format!(
@@ -593,6 +641,10 @@ fn acknowledge_unused(s: Option<&Element>) -> Result<(), OperatorError> {
     let _ = flag(s, "uiCheckTargetMeasureLevel", true)?;
     let _ = flag(s, "modelExist", false)?;
     let _ = flag(s, "clearAnalysis", false)?;
+    // `adp_more/more_nominal_target_missing`: an empty-string target value is a category of its
+    // own, untouched by this flag; system-null target values with it have no oracle (checked in
+    // `prepare_target`).
+    let _ = flag(s, "uiReplaceNominalTargetMissingValue", false)?;
     let min_cases = int_or(s, "unsupervisedMergingMinNumberOfCases", 10)?;
     if min_cases < 1 {
         return Err(OperatorError::Settings(format!(
@@ -600,13 +652,6 @@ fn acknowledge_unused(s: Option<&Element>) -> Result<(), OperatorError> {
         )));
     }
     let _ = percent_int(s, "cateFeatureScreenNumber", 95)?;
-    let _ = one_of(
-        s,
-        "outliersOperation",
-        &["coerceToCutoffVal", "setToMissingVal"],
-        "coerceToCutoffVal",
-    )?;
-    let _ = positive(s, "outlierIdentCutoff", 3.0)?;
     let _ = finite(s, "minMax_min", 0.0)?;
     let _ = finite(s, "minMax_max", 100.0)?;
     let _ = settings::integer(s, "todaysDate")?;
@@ -645,12 +690,16 @@ fn classify(prep: &Prep, field: &Field) -> Class {
     ) {
         return Class::Pass;
     }
-    if field.role == Role::Target
-        && prep.box_cox_target.is_some()
-        && field.measurement == Measurement::Continuous
-        && matches!(field.storage, Storage::Integer | Storage::Real)
-    {
-        return Class::Target;
+    if field.role == Role::Target {
+        let continuous = field.measurement == Measurement::Continuous
+            && matches!(field.storage, Storage::Integer | Storage::Real);
+        if (continuous
+            && (prep.box_cox_target.is_some() || prep.target_missing_mean || prep.target_outliers))
+            || (prep.reorder_target && is_nominal_like(field))
+        {
+            return Class::Target;
+        }
+        return Class::Pass;
     }
     if field.role != Role::Input {
         return Class::Pass;
@@ -668,9 +717,13 @@ fn classify(prep: &Prep, field: &Field) -> Class {
             Class::Pass
         };
     }
-    // GAP: original ordinal inputs are not recoded.
     if field.measurement == Measurement::Ordinal {
-        return Class::Pass;
+        // String ordinals have no oracle; they are copied.
+        return if matches!(field.storage, Storage::Integer | Storage::Real) {
+            Class::Ordinal
+        } else {
+            Class::Pass
+        };
     }
     if is_nominal_like(field) {
         return Class::Categorical;
@@ -818,6 +871,7 @@ fn prepare_continuous(
     index: usize,
     values: &[Value],
     target: Option<&MergeTarget>,
+    recast: bool,
     cols: &mut Vec<OutCol>,
 ) -> Result<(), OperatorError> {
     let series: Vec<Option<f64>> = values.iter().map(|value| as_number(field, value)).collect();
@@ -892,9 +946,151 @@ fn prepare_continuous(
         field: continuous_field(name),
         values: rescale(&series, &prep.scale, prep.replace_scale_missing),
         group: GROUP_CONTINUOUS,
-        key_a: as_u32(missing)?,
+        // Recast ordinals follow the original continuous inputs (`adp_more/more_base`: `o12`
+        // after `c1`).
+        key_a: if recast { RECAST_KEY } else { as_u32(missing)? },
         key_b: index,
     });
+    Ok(())
+}
+
+/// Sort key of recast ordinals in the continuous group: after the original continuous inputs,
+/// before constructed features (`u32::MAX - 1`) and a Box-Cox target (`u32::MAX`).
+const RECAST_KEY: u32 = u32::MAX - 2;
+
+/// A numeric ordinal input (`adp_more/more_*`). More than `ordinalToScaleCategoriesNumThreshold`
+/// distinct values recast it as continuous (`o12`, 12 levels, z-scored). Otherwise it is copied
+/// unchanged (`o4`, `om` in `more_base`) unless a step changes it:
+/// - with a target, the association screen and the supervised merge of adjacent levels
+///   (`more_ordinal_merge_sup`: `o4` levels 1 and 2 join, codes 0, 1, 2 in level order; `om`
+///   p .031 stays and levels 1-4 join; missing values stay missing);
+/// - without one, `uiUnsupervisedMergeOrdinal` merges levels in value order by counts
+///   (`more_ordinal_merge_unsup`: `om`'s 4-record level 5 joins level 4; missing values stay
+///   missing; `o4`, whose levels all reach the threshold, keeps its name);
+/// - `uiReplaceOrdinalFeaturesMissingValue` replaces missing values by the median, keeping the
+///   level values (`more_ordinal_missing`: `om_transformed`, missing to 3).
+///
+/// Merged codes are integers and follow the categorical fields; a median-filled field keeps its
+/// input position. A merge that changes nothing copies the field.
+fn prepare_ordinal(
+    prep: &Prep,
+    field: &Field,
+    index: usize,
+    values: &[Value],
+    target: Option<&MergeTarget>,
+    cols: &mut Vec<OutCol>,
+) -> Result<(), OperatorError> {
+    let series: Vec<Option<f64>> = values.iter().map(|value| as_number(field, value)).collect();
+    if screen_numeric(prep, &series) {
+        return Ok(());
+    }
+    let distinct = distinct_f64(&series);
+    if prep.check_feature_level && exceeds(distinct, prep.ordinal_to_scale) {
+        let mut recast = field.clone();
+        recast.measurement = Measurement::Continuous;
+        return prepare_continuous(prep, &recast, index, values, target, true, cols);
+    }
+    let keys: Vec<Value> = series
+        .iter()
+        .map(|x| x.map_or(Value::Null, Value::real))
+        .collect();
+    let merging = prep.supervised_merge.is_some() || prep.unsupervised_merge_ordinal.is_some();
+    if merging && prep.replace_ordinal_missing {
+        return Err(OperatorError::Settings(
+            "GAP: merging an ordinal input whose missing values are replaced has no oracle".into(),
+        ));
+    }
+    let screen = prep.supervised_merge.or(prep.feature_selection);
+    let merged: Option<Vec<(Value, usize)>> = match (screen, target) {
+        (Some(alpha), Some(target)) => {
+            let (groups, continuous) = target_groups(&keys, target, &field.name)?;
+            let all: Vec<&MergeGroup> = groups.iter().collect();
+            if association_p(&all, continuous) > alpha {
+                return Ok(());
+            }
+            prep.supervised_merge
+                .map(|alpha| supervised_merge(groups, continuous, alpha, true))
+        }
+        _ => match (prep.unsupervised_merge_ordinal, target) {
+            (Some(percent), None) => {
+                let mut counts: Vec<(Value, usize)> = Vec::new();
+                for key in keys.iter().filter(|k| !k.is_null()) {
+                    match counts
+                        .iter_mut()
+                        .find(|(seen, _)| seen.total_cmp(key) == Ordering::Equal)
+                    {
+                        Some(slot) => slot.1 += 1,
+                        None => counts.push((key.clone(), 1)),
+                    }
+                }
+                counts.sort_by(|a, b| a.0.total_cmp(&b.0));
+                let valid = counts.iter().map(|(_, c)| c).sum();
+                Some(unsupervised_merge(counts, valid, percent, false))
+            }
+            _ => None,
+        },
+    };
+    let name = extended(&field.name, &prep.name_ext)?;
+    if let Some(labeled) = merged {
+        let groups = labeled
+            .iter()
+            .map(|(_, code)| *code)
+            .max()
+            .map_or(0, |m| m + 1);
+        if groups < labeled.len() {
+            let mut out = ordinal_field(name);
+            out.storage = Storage::Integer;
+            cols.push(OutCol {
+                field: out,
+                values: keys
+                    .iter()
+                    .map(|key| {
+                        match labeled
+                            .iter()
+                            .find(|(k, _)| k.total_cmp(key) == Ordering::Equal)
+                        {
+                            Some((_, code)) => Value::Integer(*code as i64),
+                            None => Value::Null,
+                        }
+                    })
+                    .collect(),
+                group: GROUP_CATEGORICAL,
+                key_a: 0,
+                key_b: index,
+            });
+            return Ok(());
+        }
+    }
+    if prep.replace_ordinal_missing && series.iter().any(Option::is_none) {
+        let mut valid: Vec<f64> = series.iter().flatten().copied().collect();
+        valid.sort_by(f64::total_cmp);
+        let (low, high) = (valid[(valid.len() - 1) / 2], valid[valid.len() / 2]);
+        if low != high {
+            return Err(OperatorError::Settings(format!(
+                "GAP: the median of {:?} falls between two levels",
+                field.name
+            )));
+        }
+        let mut out = field.clone();
+        out.name = name;
+        cols.push(OutCol {
+            field: out,
+            values: values
+                .iter()
+                .zip(&series)
+                .map(|(value, x)| match (x, field.storage) {
+                    (Some(_), _) => value.clone(),
+                    (None, Storage::Integer) => Value::Integer(low as i64),
+                    (None, _) => Value::real(low),
+                })
+                .collect(),
+            group: GROUP_PASS,
+            key_a: 0,
+            key_b: index,
+        });
+        return Ok(());
+    }
+    cols.push(pass_col(field, values.to_vec(), index));
     Ok(())
 }
 
@@ -1120,14 +1316,103 @@ fn principal_component(columns: &[&[f64]]) -> Result<Vec<f64>, String> {
 /// Box-Cox grid of the guide ("Target Handling"): lambda from -3 to 3 in steps of 0.5.
 const BOX_COX_GRID: (f64, f64, usize) = (-3.0, 0.5, 13);
 
+/// A target with a preparation step (`adp_more/more_target_*`, `more_nominal_target*`). These
+/// replace the target with `<name><nameExtForTarget>` right after the copied fields:
+/// - `uiReorderNominalTargetCategories`: codes from the least frequent category (`yn`: c 0,
+///   b 1, a 2); an empty string is a category (`ynm`: `""` 0);
+/// - `uiDetectTargetOutliers` (`coerceToCutoffVal` only): values beyond the robust bounds are
+///   coerced, the rest copied (`yco`: 49.27 to 19.21, -23.4 to 3.79);
+/// - `uiReplaceScaleTargetMissingValue`: missing values become the mean (`ycm`).
+///
+/// Box-Cox ([`box_cox_target`]) follows the continuous inputs instead.
+fn prepare_target(
+    prep: &Prep,
+    field: &Field,
+    index: usize,
+    values: &[Value],
+) -> Result<OutCol, OperatorError> {
+    let gap = |what: &str| OperatorError::Settings(format!("GAP: target {:?}: {what}", field.name));
+    let name = extended(&field.name, &prep.target_ext)?;
+    if is_nominal_like(field) {
+        if values.iter().any(|value| field.is_missing(value)) {
+            return Err(gap("missing nominal target values have no oracle"));
+        }
+        let mut counts: Vec<(Value, usize)> = Vec::new();
+        for value in values {
+            let key = category_key(field, value, prep.trim_blanks);
+            match counts
+                .iter_mut()
+                .find(|(seen, _)| seen.total_cmp(&key) == Ordering::Equal)
+            {
+                Some(slot) => slot.1 += 1,
+                None => counts.push((key, 1)),
+            }
+        }
+        let labeled = assign_codes(counts);
+        let mut out = nominal_field(name);
+        out.role = Role::Target;
+        return Ok(OutCol {
+            field: out,
+            values: values
+                .iter()
+                .map(|value| lookup(&labeled, &category_key(field, value, prep.trim_blanks)))
+                .collect(),
+            group: GROUP_PASS,
+            key_a: 1,
+            key_b: index,
+        });
+    }
+    if prep.box_cox_target.is_some() {
+        if prep.target_missing_mean || prep.target_outliers {
+            return Err(gap(
+                "Box-Cox combined with other target steps has no oracle",
+            ));
+        }
+        return box_cox_target(prep, field, index, values);
+    }
+    let mut series: Vec<Option<f64>> = values
+        .iter()
+        .map(|value| as_number(field, value).filter(|x| x.is_finite()))
+        .collect();
+    if prep.target_outliers {
+        let rule = &Outliers {
+            cutoff: prep.outlier_cutoff,
+            to_missing: prep.outliers_to_missing,
+        };
+        if rule.to_missing {
+            return Err(gap("setting target outliers to missing has no oracle"));
+        }
+        series = handle_outliers(rule, series, &field.name)?;
+    }
+    if prep.target_missing_mean {
+        let valid: Vec<f64> = series.iter().flatten().copied().collect();
+        if !valid.is_empty() {
+            let mean = valid.iter().sum::<f64>() / valid.len() as f64;
+            series.iter_mut().for_each(|x| {
+                x.get_or_insert(mean);
+            });
+        }
+    }
+    let mut out = continuous_field(name);
+    out.role = Role::Target;
+    Ok(OutCol {
+        field: out,
+        values: optional_reals(&series),
+        group: GROUP_PASS,
+        key_a: 1,
+        key_b: index,
+    })
+}
+
 /// The continuous target (`uiRescaleScaleTargetUsingBoxCox`, guide "Target Handling",
 /// `adp_next/adp_target_rescale` and `adp_target_boxcox`): `c = min(y) - 1`; the lambda of the
 /// grid with the largest log-likelihood `-n/2 ln((n-1)/n sd(g)^2) + (lambda-1) sum ln(y-c)`
 /// (ties: the smallest lambda) gives `g = ((y-c)^lambda - 1)/lambda` (`ln(y-c)` at 0), then
 /// `targetSD * (g - mean(g)) / sd(g) + targetMean` with the sample standard deviation.
-/// `ycont` picks lambda 1, the skewed `c_skew` lambda 0. The new field follows every continuous
-/// input and replaces the target.
-fn prepare_target(
+/// `ycont` picks lambda 1, the skewed `c_skew` lambda 0. Missing values stay missing and are left
+/// out of the estimates (`adp_more/more_target_boxcox_missing`). The new field follows every
+/// continuous input and replaces the target.
+fn box_cox_target(
     prep: &Prep,
     field: &Field,
     index: usize,
@@ -1139,11 +1424,11 @@ fn prepare_target(
     let gap = |what: &str| {
         OperatorError::Settings(format!("GAP: Box-Cox target {:?}: {what}", field.name))
     };
-    let y: Vec<f64> = values
+    let observed: Vec<Option<f64>> = values
         .iter()
         .map(|value| as_number(field, value).filter(|x| x.is_finite()))
-        .collect::<Option<_>>()
-        .ok_or_else(|| gap("missing target values have no oracle"))?;
+        .collect();
+    let y: Vec<f64> = observed.iter().flatten().copied().collect();
     if y.len() < 2 {
         return Err(gap("fewer than two records"));
     }
@@ -1183,9 +1468,12 @@ fn prepare_target(
     out.role = Role::Target;
     Ok(OutCol {
         field: out,
-        values: y
+        values: observed
             .iter()
-            .map(|&v| finite_real(final_sd * (transform(v, lambda) - mean) / sd + final_mean))
+            .map(|v| match v {
+                Some(v) => finite_real(final_sd * (transform(*v, lambda) - mean) / sd + final_mean),
+                None => Value::Null,
+            })
             .collect(),
         group: GROUP_CONTINUOUS,
         key_a: u32::MAX,
@@ -1205,6 +1493,7 @@ enum MergeTarget {
 fn merge_target(prep: &Prep, input: &Table) -> Result<Option<MergeTarget>, OperatorError> {
     if prep.supervised_merge.is_none()
         && prep.unsupervised_merge.is_none()
+        && prep.unsupervised_merge_ordinal.is_none()
         && prep.feature_selection.is_none()
         && prep.supervised_binning.is_none()
     {
@@ -1222,7 +1511,9 @@ fn merge_target(prep: &Prep, input: &Table) -> Result<Option<MergeTarget>, Opera
         [index] => *index,
         _ => return Err(gap("more than one target")),
     };
-    if prep.unsupervised_merge.is_some() && prep.supervised_merge.is_none() {
+    if (prep.unsupervised_merge.is_some() || prep.unsupervised_merge_ordinal.is_some())
+        && prep.supervised_merge.is_none()
+    {
         return Err(gap("unsupervised merging with a target"));
     }
     let field = &input.model().fields()[index];
@@ -1322,12 +1613,12 @@ fn prepare_categorical(
                         field.name
                     )));
                 }
-                Some(alpha) => supervised_merge(groups, continuous, alpha),
+                Some(alpha) => string_codes(supervised_merge(groups, continuous, alpha, false)),
                 None => assign_codes(counts),
             }
         }
         _ => match (prep.unsupervised_merge, target) {
-            (Some(percent), None) => unsupervised_merge(counts, n, percent),
+            (Some(percent), None) => string_codes(unsupervised_merge(counts, n, percent, true)),
             _ => assign_codes(counts),
         },
     };
@@ -1657,15 +1948,23 @@ fn target_groups(
 /// chi-square of the 2-row table) merges while that p-value is above `alpha`; categories start in
 /// value order, a merged category goes last, and the final position is the code (`n_merge`: k1+k2
 /// at p .976, then rare at .889, stop at 2e-11: k3 0, k4 1, k1/k2/rare 2).
+/// For an ordinal (`adjacent`) only neighbouring levels may join and the merged level keeps its
+/// place (guide step 4 and step 7).
 fn supervised_merge(
     mut groups: Vec<MergeGroup>,
     continuous: bool,
     alpha: f64,
-) -> Vec<(Value, Value)> {
+    adjacent: bool,
+) -> Vec<(Value, usize)> {
     loop {
         let mut best: Option<(f64, usize, usize)> = None;
         for i in 0..groups.len() {
-            for j in i + 1..groups.len() {
+            let last = if adjacent {
+                (i + 2).min(groups.len())
+            } else {
+                groups.len()
+            };
+            for j in i + 1..last {
                 let p = association_p(&[&groups[i], &groups[j]], continuous);
                 if best.is_none_or(|(top, _, _)| p > top) {
                     best = Some((p, i, j));
@@ -1676,23 +1975,31 @@ fn supervised_merge(
             Some((p, i, j)) if p > alpha => {
                 let second = groups.remove(j);
                 let first = groups.remove(i);
-                groups.push(first.join(second));
+                let joined = first.join(second);
+                if adjacent {
+                    groups.insert(i, joined);
+                } else {
+                    groups.push(joined);
+                }
             }
             _ => break,
         }
     }
-    let mut labeled: Vec<(Value, Value)> = groups
+    let mut labeled: Vec<(Value, usize)> = groups
         .into_iter()
         .enumerate()
-        .flat_map(|(code, group)| {
-            group
-                .keys
-                .into_iter()
-                .map(move |key| (key, Value::string(code.to_string())))
-        })
+        .flat_map(|(code, group)| group.keys.into_iter().map(move |key| (key, code)))
         .collect();
     labeled.sort_by(|left, right| left.0.total_cmp(&right.0));
     labeled
+}
+
+/// String codes of a nominal recoding.
+fn string_codes(labeled: Vec<(Value, usize)>) -> Vec<(Value, Value)> {
+    labeled
+        .into_iter()
+        .map(|(key, code)| (key, Value::string(code.to_string())))
+        .collect()
 }
 
 /// Supervised binning (guide "Supervised Binning", `adp_next/adp_binning`): the predictor's class
@@ -1826,16 +2133,21 @@ fn correlation_p(x: &[Option<f64>], y: &[Option<f64>]) -> f64 {
 /// are joined while a group holds fewer than `[percent% x N]` records; a short tail joins per the
 /// guide's step 4. Codes follow the groups (`n_merge`: rare(3)+k2 0, k4 1, k3 2, k1 3 at 30 of
 /// 300; `n_miss`: missing(12)+q 0, r 1, p 2).
+/// `by_count` (nominal) sorts the categories by count first; an ordinal keeps the value order it
+/// is given and counts only its valid records in `n`.
 fn unsupervised_merge(
     mut counts: Vec<(Value, usize)>,
     n: usize,
     percent: i64,
-) -> Vec<(Value, Value)> {
-    counts.sort_by(|left, right| {
-        left.1
-            .cmp(&right.1)
-            .then_with(|| left.0.total_cmp(&right.0))
-    });
+    by_count: bool,
+) -> Vec<(Value, usize)> {
+    if by_count {
+        counts.sort_by(|left, right| {
+            left.1
+                .cmp(&right.1)
+                .then_with(|| left.0.total_cmp(&right.0))
+        });
+    }
     let threshold = (percent as f64 * n as f64 / 100.0).round() as usize;
     let count = counts.len();
     let mut group_of = vec![0usize; count];
@@ -1862,10 +2174,10 @@ fn unsupervised_merge(
             break;
         }
     }
-    let mut labeled: Vec<(Value, Value)> = counts
+    let mut labeled: Vec<(Value, usize)> = counts
         .into_iter()
         .zip(group_of)
-        .map(|((key, _), group)| (key, Value::string(group.to_string())))
+        .map(|((key, _), group)| (key, group))
         .collect();
     labeled.sort_by(|left, right| left.0.total_cmp(&right.0));
     labeled
@@ -2188,7 +2500,7 @@ mod tests {
             .enumerate()
             .map(|(i, &c)| (Value::string(format!("c{i}")), c))
             .collect();
-        unsupervised_merge(keyed, n, 10)
+        unsupervised_merge(keyed, n, 10, true)
             .into_iter()
             .map(|(_, code)| code.to_string())
             .collect()
