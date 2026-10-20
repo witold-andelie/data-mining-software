@@ -264,6 +264,42 @@ pub fn student_t_quantile(p: f64, df: f64) -> Option<f64> {
     Some(0.5 * (lo + hi))
 }
 
+/// Inverse regularized beta, monotone bisection with a fixed iteration bound.
+pub fn beta_inverse(p: f64, a: f64, b: f64) -> f64 {
+    // Exact boundary-shape forms avoid cancellation in lnGamma(b+1)-lnGamma(b).
+    if a == 1.0 {
+        return -((-p).ln_1p() / b).exp_m1();
+    }
+    if b == 1.0 {
+        return (p.ln() / a).exp();
+    }
+    let (mut lo, mut hi) = (0.0, 1.0);
+    for _ in 0..80 {
+        let mid = (lo + hi) * 0.5;
+        if mid == lo || mid == hi {
+            break;
+        }
+        if beta_i(a, b, mid) < p {
+            lo = mid;
+        } else {
+            hi = mid;
+        }
+    }
+    (lo + hi) * 0.5
+}
+
+/// Upper F quantile `F_{p}(d1, d2)` (Decision List confidence bounds, ADP supervised binning).
+pub fn f_quantile(p: f64, d1: f64, d2: f64) -> f64 {
+    if d2 == 2.0 {
+        return (d2 / d1) / (-p.ln() / (d1 * 0.5)).exp_m1();
+    }
+    if d1 == 2.0 {
+        return (d2 / d1) * (-(-p).ln_1p() / (d2 * 0.5)).exp_m1();
+    }
+    let z = beta_inverse(1.0 - p, d2 * 0.5, d1 * 0.5);
+    d2 * (1.0 - z) / (d1 * z)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
