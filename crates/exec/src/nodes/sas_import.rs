@@ -11,7 +11,7 @@
 //! | `memberName` / `member_name` | Member name inside a `Transport` file | `SASTEST` (`sas_transport`) |
 //! | `readVariableNames` / `importNames` / `import_names` | Variable naming mode | `true` / `NamesAndLabels` (`sas9_names`, `sas_transport`), `false` / `LabelsAsNames` / `LabelsasNames` (`sas9_labels`) |
 //! | `readFormats` / `read_formats` | Read value labels from a SAS format catalog | `false` (default); `true` returns a `GAP:` error |
-//! | `filterTable`, `typeTable` | Embedded Filter and Type settings on the source node | Handled via [`super::r#type::parse_source_tables`] and [`super::r#type::apply_source_tables`] |
+//! | `filterTable`, `typeTable` | Embedded Filter and Type settings on the source node | Handled via `super::r#type::parse_source_tables` and `super::r#type::apply_source_tables` |
 //!
 //! Verified rules:
 //! - `SAS9` and `SAS7` both select the 64-bit little-endian `sas7bdat` reader (`sas9_names` and

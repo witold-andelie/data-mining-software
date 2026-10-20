@@ -18,7 +18,7 @@
 //! | `scanLineCount` | `lines_to_scan` | string-vs-numeric horizon, default 200 (`excel_scan_1` saved 200 vs `excel_scan_250` 250) |
 //! | `excelFileType` | `excel_file_type` | `v2007` (`.xlsx`; `Excel2007` scripting spelling accepted) |
 //! | `useNamedRange`, `namedRange` | `use_named_range`, `named_range` | only `false`/empty; `true` is a `GAP:` error (`excel_named_range` has no oracle data) |
-//! | `filterTable`, `typeTable` | — | embedded Filter and Type rules via [`parse_source_tables`] |
+//! | `filterTable`, `typeTable` | — | embedded Filter and Type rules via `parse_source_tables` |
 //!
 //! GAPs (explicit `GAP:` errors, never silently ignored):
 //! - `useNamedRange = true` (`excel_named_range`; Modeler drops the server connection, no data).

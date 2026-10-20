@@ -3,7 +3,7 @@
 //!
 //! Implemented: `inputFileName` (resolved via [`ExecContext::files`]), `fixedFileColumnSpecs`
 //! (`columnName`, 1-based `start`, `length`), `recordLength`, `lineOriented` (default true),
-//! `skipHeaderLines`, the text settings of [`super::text_source`] (trimming both ends by
+//! `skipHeaderLines`, the text settings of `super::text_source` (trimming both ends by
 //! default), and embedded `filterTable`/`typeTable` rules. `fieldNamesIncluded` does not apply:
 //! the layout names the fields.
 //!
