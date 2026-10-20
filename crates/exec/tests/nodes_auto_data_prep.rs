@@ -91,6 +91,16 @@ fn settings_error(result: Result<Table, OperatorError>, needle: &str) {
     }
 }
 
+fn all_excluded(result: Result<Table, OperatorError>) {
+    match result {
+        Err(OperatorError::Data(message)) => assert!(
+            message.starts_with("All features have been excluded"),
+            "{message}"
+        ),
+        other => panic!("expected every input excluded, got {other:?}"),
+    }
+}
+
 fn real_close(actual: &[Value], expected: &[f64]) {
     assert_eq!(actual.len(), expected.len());
     for (got, want) in actual.iter().zip(expected) {
@@ -520,8 +530,8 @@ fn screening_drops_missing_constant_and_too_many_categories() {
             vec![Value::string("B")],
         ],
     );
-    let dropped = run(vec![], mostly_missing).unwrap();
-    assert!(names(&dropped).is_empty());
+    // Every input excluded is Modeler's error (`adp_time/datetime_off`).
+    all_excluded(run(vec![], mostly_missing));
 
     let half_missing = table(
         vec![field(
@@ -551,8 +561,7 @@ fn screening_drops_missing_constant_and_too_many_categories() {
         )],
         vec![vec![Value::Real(3.0)], vec![Value::Real(3.0)]],
     );
-    let constant = run(vec![], constant).unwrap();
-    assert!(names(&constant).is_empty());
+    all_excluded(run(vec![], constant));
 
     let three = table(
         vec![field(
@@ -566,8 +575,7 @@ fn screening_drops_missing_constant_and_too_many_categories() {
             .map(|value| vec![Value::string(value)])
             .collect(),
     );
-    let too_many = run(vec![p("maxNOfUniqueCategories", "2")], three).unwrap();
-    assert!(names(&too_many).is_empty());
+    all_excluded(run(vec![p("maxNOfUniqueCategories", "2")], three));
     let two = table(
         vec![field(
             "g",
@@ -610,7 +618,10 @@ fn unsupported_settings_name_the_property() {
         (vec![p("targetField", "y")], "targetField"),
         (vec![p("analysisObjective", "nope")], "analysisObjective"),
         (vec![p("excludeNoUsedField", "keep")], "excludeNoUsedField"),
-        (vec![p("dateUnit", "year")], "dateUnit"),
+        (
+            vec![p("referenceTimeType", "currentTime")],
+            "referenceTimeType",
+        ),
         (
             vec![p("uiReplaceNominalFeaturesMissingValue", "false")],
             "uiReplaceNominalFeaturesMissingValue",
@@ -626,29 +637,39 @@ fn unsupported_settings_name_the_property() {
     }
 }
 
+/// Time inputs (`adp_time/*`): the signed duration from `fixedTime` in the fixed unit, and the
+/// field dropped when no time step applies.
 #[test]
-fn time_field_with_duration_flag_is_rejected_and_timestamp_passes() {
-    let time = table(
-        vec![field(
-            "t",
-            Storage::Time,
-            Measurement::Continuous,
-            Role::Input,
-        )],
-        vec![vec![Value::Time(0)]],
+fn time_duration_and_unused_time_input() {
+    let input = || {
+        table(
+            vec![
+                field("t", Storage::Time, Measurement::Continuous, Role::Input),
+                field("x", Storage::Real, Measurement::Continuous, Role::Input),
+            ],
+            [0i64, 1_800, 7_200]
+                .iter()
+                .enumerate()
+                .map(|(i, seconds)| vec![Value::Time(seconds * 1_000_000), Value::Real(i as f64)])
+                .collect(),
+        )
+    };
+    let output = run(
+        vec![
+            p("fixedTime", "3600"),
+            p("timeUnit", "hour"),
+            p("uiScaleContinuousFeatures", "false"),
+        ],
+        input(),
+    )
+    .unwrap();
+    assert_eq!(
+        col(&output, "t_hours"),
+        vec![Value::real(-1.0), Value::real(-0.5), Value::real(1.0)]
     );
-    settings_error(run(vec![], time), "uiComputeTimeDuration");
-    let time_off = table(
-        vec![field(
-            "t",
-            Storage::Time,
-            Measurement::Continuous,
-            Role::Input,
-        )],
-        vec![vec![Value::Time(5)]],
-    );
-    let output = run(vec![p("uiComputeTimeDuration", "false")], time_off).unwrap();
-    assert_eq!(col(&output, "t"), vec![Value::Time(5)]);
+    // `x` has 3 values, below `scaleToOrdinalValuesNumThreshold`: kept as an ordinal.
+    let output = run(vec![p("uiComputeTimeDuration", "false")], input()).unwrap();
+    assert_eq!(names(&output), vec!["x".to_string()]);
 }
 
 #[test]
@@ -686,15 +707,8 @@ fn empty_input_is_copied_and_single_row_does_not_panic() {
     assert_eq!(empty.row_count(), 0);
     assert_eq!(names(&empty), vec!["x".to_string()]);
 
-    let one = run(vec![], table(fields, vec![vec![Value::Real(1.0)]])).unwrap();
-    assert_eq!(one.row_count(), 1);
-    for row in one.rows() {
-        for value in row {
-            if let Value::Real(number) = value {
-                assert!(number.is_finite());
-            }
-        }
-    }
+    // One row: the constant input is screened out, which excludes every input.
+    all_excluded(run(vec![], table(fields, vec![vec![Value::Real(1.0)]])));
 }
 
 #[test]
