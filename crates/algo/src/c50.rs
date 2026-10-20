@@ -142,12 +142,22 @@
 //!   the Na/K subtree. Dividing by removed leaves reverses that ranking (2 vs
 //!   1.5), wrongly rejects both under the 5 + sqrt(5*95/100) = 7.179449 budget.
 //!   Ranking by added errors collapses Age alone, ending at seven errors.
-//! - GAP baseline learner: wn and wn100 remain unresolved. With the numeric
-//!   penalty above, wn100 locally has 11 errors, budget 14.128898; successive
-//!   added-error pruning steps reach 12 then 16, so it retains too much. Its
-//!   oracle has 22 errors. Final structure/exact diffs are wn 39/41, wn100 14/14
-//!   (wn100 was 2/2 before these numeric changes). No data-specific budget or
-//!   pruning exception is used.
+//! - GAP baseline learner: wn and wn100 remain unresolved. With the current
+//!   examined-gain gate wn100 has 18 training errors after local and 19 after global
+//!   pruning (the 11 / 12 recorded earlier belong to a gate that compared local
+//!   corrected gains on both sides, which breaks `ens_voting`); its oracle has 22.
+//!   The oracle wn100 tree is not a fixed point of CF = .25 leaf-versus-subtree
+//!   pruning: at c3=T / b>2.1 (46 records, 36/10) the leaf bound 12.536923 is below
+//!   the retained subtree's 13.788497. No data-specific budget or pruning exception
+//!   is used. Codex investigation 2026-10-20 (gate variants G0-G7, pruning order,
+//!   largest-branch raising, each with its regressions):
+//!   `D:/spss-modeler/rea-work/clones/c50wn/target/c50wn/REPORT.md`.
+//! - `auto_train/ac_*` (C5.0 as an Auto Classifier component): at income<=46.5 /
+//!   age>37.5 / member=Y / region=east (6 records) Modeler splits on income<=28 while
+//!   the average-gain gate keeps visits<=6.5 (income's examined gain 0.0722 is under
+//!   the average 0.0769). Gates that admit income break `ens_voting` or `drugtwice`
+//!   unless restricted to nodes whose candidate tests are all numeric, which no
+//!   source supports; not adopted.
 //! - Rejected/ambiguous hypotheses (2026-10-18): wn's root c1 gain ratio is
 //!   0.0909106225, whereas b's best direct cut is 3.95, ratio 0.0645687711.
 //!   The oracle's b=3.85 exists below c1=T, with endpoints 3.7/4.0. Promoting
