@@ -68,20 +68,20 @@
 //! not change the math; the saved flags do. `adp_balanced` and `adp_rescale` export the same
 //! table.
 //!
-//! Merging (objective `custom` with `transConsSelectFeatures`, see [`custom_steps`]): with a
-//! target, `uiSupervisedMerging` screens and merges categorical inputs ([`supervised_merge`]);
-//! without one, `uiUnsupervisedMergeNominal` merges sparse categories ([`unsupervised_merge`]).
+//! Merging (objective `custom` with `transConsSelectFeatures`, see `custom_steps`): with a
+//! target, `uiSupervisedMerging` screens and merges categorical inputs (`supervised_merge`);
+//! without one, `uiUnsupervisedMergeNominal` merges sparse categories (`unsupervised_merge`).
 //! Under objective `balance` the saved flags do not apply (`adp_balanced`).
 //!
 //! Feature selection (`uiFeatureSelection`, objective `custom`, continuous target): continuous
 //! inputs whose correlation p-value exceeds `featureSelectionPValue` are dropped
-//! ([`correlation_p`]); categorical inputs are screened as under supervised merging.
+//! (`correlation_p`); categorical inputs are screened as under supervised merging.
 //!
 //! Supervised binning (`uiSupervisedBinning`, objective `custom`, categorical target): continuous
-//! inputs become ordinal bins of homogeneous subsets ([`homogeneous_cuts`]).
+//! inputs become ordinal bins of homogeneous subsets (`homogeneous_cuts`).
 //!
 //! Feature construction (`uiFeatureConstruction`, objective `custom`): correlated continuous
-//! inputs are replaced by principal components ([`construct_features`]).
+//! inputs are replaced by principal components (`construct_features`).
 //!
 //! `GAP:` feature selection against a categorical target or with date fields, binning a field
 //! with missing values.
@@ -89,15 +89,15 @@
 //! false is rejected. Timestamps are copied (`misc_next/adp_*`, `adp_time/*`).
 //!
 //! Times and date units (`adp_time/*`): a time-of-day input gets a signed duration from
-//! `fixedTime` or hour/minute/second elements ([`prepare_time`]); date durations also take years,
-//! and automatic units follow the largest elapsed value ([`choose_unit`]). A date or time input
+//! `fixedTime` or hour/minute/second elements (`prepare_time`); date durations also take years,
+//! and automatic units follow the largest elapsed value (`choose_unit`). A date or time input
 //! with no duration and no element is excluded; when every input is excluded the node fails as
 //! Modeler does.
 //!
 //! Target (`uiRescaleScaleTargetUsingBoxCox`): a continuous target is Box-Cox transformed and
-//! rescaled to `targetMean` / `targetSD`, see [`box_cox_target`].
+//! rescaled to `targetMean` / `targetSD`, see `box_cox_target`.
 //!
-//! Ordinal inputs ([`prepare_ordinal`]) and target steps ([`prepare_target`]) follow
+//! Ordinal inputs (`prepare_ordinal`) and target steps (`prepare_target`) follow
 //! `adp_more/*`.
 //!
 //! `GAP:` target outliers set to missing, combined target steps, ordinal targets,
