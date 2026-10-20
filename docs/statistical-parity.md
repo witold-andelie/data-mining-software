@@ -16,7 +16,7 @@ Modeler's single run looks like one of ours.
 | Random Trees | bootstrap and predictor draws, seeded by an undocumented hash | `models_as/rt_*`, `models_next/rt_*` |
 | LSVM | ADMM stops before the optimum | `models_as/lsvm_*` |
 | Time Series | smoothing/ARIMA optimizer stopping point | `models_next/ts_*`, `models_next2/ts_*` |
-| Sequence | order of rules tied on every statistic | `train_next/sequence_*`, `models_next/sequence_*` |
+| Sequence | order of rules within a confidence and antecedent-length block | `train_next/sequence_*`, `models_next/sequence_*`, `seq_ties/*` |
 | Auto Classifier / Numeric / Cluster | components above (exact when every enabled component is: `auto_train/ac_trees_nofs`, `auto_train/an_*`) | `models_next2/ac_*`, `auto_train/*`, `an_default`, `acluster_default` |
 | QUEST, C&R Tree with an overfit prevention set | the set is a random draw | `models_next/quest_*`, `cart_ofs*` |
 
@@ -41,8 +41,10 @@ QUEST and C&R Tree without an overfit prevention set stay exact (`quest_nofs/*`)
    1 % of the target's standard deviation. Modeler's early stop can leave coefficients far from
    the optimum (`models_as/lsvm_numeric`: intercept -0.0155 against the optimum's -0.0359),
    so coefficients are reported, not compared.
-4. **Ties.** Sequence must produce exactly Modeler's rules and statistics; only the order of
-   rules tied on confidence, length and support is free.
+4. **Ties.** Sequence must produce exactly Modeler's rules and statistics, ordered by
+   confidence (descending) and antecedent length (ascending) as Modeler orders them; only the
+   order inside one confidence and length block is free (`seq_ties`: adding an unused Type value
+   reorders such a block, so it is no function of the rules).
 5. **Labelled.** Module docs, the builder's notes and the parity checklist say "statistical
    parity" for these builders; never describe them as matching Modeler exactly.
 
