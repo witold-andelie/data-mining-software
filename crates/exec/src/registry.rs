@@ -72,6 +72,7 @@ const BUILT_IN: &[(&str, Factory)] = &[
     ("pca_factor", model_node),
     ("anomaly", model_node),
     ("feature_selection", model_node),
+    ("auto_cluster", model_node),
     ("decision_list", model_node),
     ("sequence", model_node),
     ("time_series", model_node),
@@ -96,6 +97,7 @@ const PENDING: &[&str] = &[];
 /// (`docs/statistical-parity.md`): their training draws from our own generator or converges
 /// where Modeler stops early, so they match Modeler's metrics, not its bits.
 const STATISTICAL: &[&str] = &[
+    "auto_cluster",
     "cart",
     "kohonen",
     "lsvm",
@@ -107,20 +109,13 @@ const STATISTICAL: &[&str] = &[
 
 /// Model nodes whose nuggets score (`nodes::apply`) while their build nodes cannot train yet;
 /// they do not count as implemented.
-/// Auto Cluster: the nugget scores its saved component model (`nodes::auto_cluster`);
-/// training (`BuildAutoClusteringModelNode`) is not implemented.
 /// Auto Classifier / Numeric: saved components and Ensemble scoring (`nodes::auto_models`);
 /// their builders remain explicit GAPs and do not count toward implemented coverage.
 /// Analytic Engine Random Trees scores its saved PMML.
 /// Tree-AS trains through the shared CHAID learner; Linear-AS trains with its
 /// correlation/sweep selection (`linearas/lin_default`, `lin_factor`); LSVM trains the
 /// documented objective to convergence (statistical parity, `dms_algo::lsvm`).
-const SCORING_ONLY: &[&str] = &[
-    "auto_cluster",
-    "auto_classifier",
-    "auto_numeric",
-    "random_trees",
-];
+const SCORING_ONLY: &[&str] = &["auto_classifier", "auto_numeric", "random_trees"];
 
 pub fn factory(catalog_id: &str) -> Option<Factory> {
     BUILT_IN
@@ -149,10 +144,6 @@ const TRAINING_GAPS: &[(&str, &str)] = &[
     (
         "spss.randomTrees!RT",
         "Random Trees training is not reproduced: bootstrap counts are binomial draws and predictor subsets are seeded by a hash of tree and node id, with an undocumented generator and hash; the PMML trees carry no record counts to identify them",
-    ),
-    (
-        "BuildAutoClusteringModelNode",
-        "Auto Cluster training is not implemented: its component selection and criteria have no oracle",
     ),
     (
         "BuildBinaryClassifierNode",

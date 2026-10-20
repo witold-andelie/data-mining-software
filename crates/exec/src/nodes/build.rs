@@ -106,6 +106,9 @@ pub fn build(node: &StreamNode) -> Result<Box<dyn Operator>, OperatorError> {
     if node.type_identifier() == "BuildC5RuleNode" {
         return super::c50::build(node);
     }
+    if node.type_identifier() == "BuildAutoClusteringModelNode" {
+        return super::auto_cluster::build(node);
+    }
     let s = node.settings.as_ref();
     let algorithm = match node.type_identifier().as_str() {
         "Cart!spss.tree-extension" => Algorithm::Cart,
