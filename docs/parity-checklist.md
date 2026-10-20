@@ -6,7 +6,7 @@ Status `done (statistical)`: trained to statistical, not exact, parity with Mode
 
 | Scope | Implemented | Total |
 |---|---|---|
-| MVP | 82 | 85 |
+| MVP | 83 | 85 |
 | later | 3 | 25 |
 | license blocked | 0 | 5 |
 | out of scope | 0 | 34 |
@@ -21,7 +21,7 @@ Status `done (statistical)`: trained to statistical, not exact, parity with Mode
 | Excel | `excel_import` | MVP | missing | `ExcelInputNode` |
 | Database | `database_import` | MVP | done | `ODBCImportNode`, `DBImportNode` |
 | User Input | `user_input` | MVP | done | `UserInputNode` |
-| XML | `xml_import` | MVP | missing | `xml_import!spss.xml_data` |
+| XML | `xml_import` | MVP | done | `xml_import!spss.xml_data` |
 | JSON | `json_import` | MVP | done | `json_import!pasw.json` |
 | SAS File | `sas_import` | MVP | done | `SASInputNode` |
 | Extension Import | `extension_import` | later | missing | `ExtensionImportNode`, `script_importer!spss.scripts` |

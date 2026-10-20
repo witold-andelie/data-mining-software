@@ -8,6 +8,9 @@ use std::collections::HashMap;
 pub(crate) enum Param {
     Value(String),
     List(Vec<String>),
+    /// A list of `StructuredValue`s, each a list of named `Attribute`s (the XML source's
+    /// scanned `xmlReader.xpaths` and `xmlReader.storages`).
+    Structured(Vec<Vec<(String, String)>>),
 }
 
 pub(crate) fn load_parameters(
@@ -39,8 +42,30 @@ fn parse_parameters(text: &str) -> Result<HashMap<String, Param>, String> {
         let Some(name) = element.attribute("name") else {
             continue;
         };
+        let structured: Vec<_> = element
+            .descendants()
+            .filter(|node| node.is_element() && node.tag_name().name() == "StructuredValue")
+            .collect();
         let parameter = match element.attribute("value") {
             Some(value) => Param::Value(value.to_string()),
+            None if !structured.is_empty() => Param::Structured(
+                structured
+                    .iter()
+                    .map(|item| {
+                        item.children()
+                            .filter(|node| {
+                                node.is_element() && node.tag_name().name() == "Attribute"
+                            })
+                            .map(|node| {
+                                (
+                                    node.attribute("name").unwrap_or_default().to_string(),
+                                    node.attribute("value").unwrap_or_default().to_string(),
+                                )
+                            })
+                            .collect()
+                    })
+                    .collect(),
+            ),
             None => Param::List(
                 element
                     .descendants()
@@ -82,9 +107,12 @@ pub(crate) fn reject_lists(
     label: &str,
 ) -> Result<(), OperatorError> {
     for (name, param) in params {
-        if let Param::List(values) = param
-            && !values.is_empty()
-        {
+        let listed = match param {
+            Param::Value(_) => false,
+            Param::List(values) => !values.is_empty(),
+            Param::Structured(items) => !items.is_empty(),
+        };
+        if listed {
             return Err(OperatorError::Settings(format!(
                 "{label}: parameter {name} is a list, which is not implemented"
             )));

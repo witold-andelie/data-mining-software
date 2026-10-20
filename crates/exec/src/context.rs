@@ -103,15 +103,37 @@ impl Resolved {
     }
 }
 
+/// What a stream path names.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum EntryKind {
+    File,
+    Directory,
+}
+
 impl FileResolver {
     pub fn resolve(&self, requested: &str) -> Option<Resolved> {
-        let direct = PathBuf::from(requested);
-        if !requested.starts_with('$') && direct.is_file() {
+        self.resolve_entry(requested, EntryKind::File)
+    }
+
+    /// A directory a stream references (the XML source reading every file of a directory),
+    /// found the same way as a file.
+    pub fn resolve_dir(&self, requested: &str) -> Option<Resolved> {
+        self.resolve_entry(requested, EntryKind::Directory)
+    }
+
+    fn resolve_entry(&self, requested: &str, kind: EntryKind) -> Option<Resolved> {
+        let requested_path = requested.trim_end_matches(['/', '\\']);
+        let direct = PathBuf::from(requested_path);
+        let exists = match kind {
+            EntryKind::File => direct.is_file(),
+            EntryKind::Directory => direct.is_dir(),
+        };
+        if !requested.starts_with('$') && exists {
             return Some(Resolved::AsIs(direct));
         }
-        let name = file_name(requested)?;
+        let name = file_name(requested_path)?;
         self.data_dirs.iter().find_map(|dir| {
-            find_by_name(dir, &name, 0).map(|found| Resolved::Relocated {
+            find_by_name(dir, &name, kind, 0).map(|found| Resolved::Relocated {
                 requested: requested.to_string(),
                 found,
             })
@@ -127,7 +149,7 @@ fn file_name(path: &str) -> Option<String> {
         .map(str::to_string)
 }
 
-fn find_by_name(dir: &Path, name: &str, depth: usize) -> Option<PathBuf> {
+fn find_by_name(dir: &Path, name: &str, wanted: EntryKind, depth: usize) -> Option<PathBuf> {
     if depth > MAX_SEARCH_DEPTH {
         return None;
     }
@@ -137,21 +159,23 @@ fn find_by_name(dir: &Path, name: &str, depth: usize) -> Option<PathBuf> {
         let Ok(kind) = entry.file_type() else {
             continue;
         };
+        let matches = entry
+            .file_name()
+            .to_str()
+            .is_some_and(|candidate| candidate.eq_ignore_ascii_case(name));
         if kind.is_dir() {
+            if matches && wanted == EntryKind::Directory {
+                return Some(path);
+            }
             subdirectories.push(path);
-        } else if kind.is_file()
-            && entry
-                .file_name()
-                .to_str()
-                .is_some_and(|candidate| candidate.eq_ignore_ascii_case(name))
-        {
+        } else if kind.is_file() && matches && wanted == EntryKind::File {
             return Some(path);
         }
     }
     subdirectories.sort();
     subdirectories
         .iter()
-        .find_map(|sub| find_by_name(sub, name, depth + 1))
+        .find_map(|sub| find_by_name(sub, name, wanted, depth + 1))
 }
 
 #[cfg(test)]

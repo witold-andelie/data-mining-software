@@ -9,7 +9,7 @@
 
 use dms_exec::nodes::{
     derive, filler, fixed_file, json_import, sas_import, statistics_file, r#type, user_input,
-    var_file,
+    var_file, xml_import,
 };
 use dms_exec::{ExecContext, Factory, FileResolver, OperatorError};
 use dms_stream::StreamNode;
@@ -907,6 +907,91 @@ fn json_import_reads_parameters_from_the_attachment() {
         .is_err()
     );
     assert!(run(parameters("values", "my_reader()")).is_err());
+}
+
+// ---------------------------------------------------------------- xml_import
+
+#[test]
+fn xml_import_reads_the_scanned_structure() {
+    let dir = tmp_dir("xml_import_basic");
+    std::fs::write(
+        dir.join("r.xml"),
+        "<rows><row k=\"2\"><s>a &amp; b</s><n>7</n><s>second</s></row><row k=\"1\"><n/></row></rows>",
+    )
+    .unwrap();
+    let item = |pairs: &[(&str, &str)]| {
+        let attrs: String = pairs
+            .iter()
+            .map(|(k, v)| format!(r#"<Attribute name="{k}" value="{v}"/>"#))
+            .collect();
+        format!("<StructuredValue>{attrs}</StructuredValue>")
+    };
+    let parameters = |storage_n: &str, xpath_s: &str| {
+        let xpaths = [
+            item(&[("field_name", "s"), ("xpath", xpath_s)]),
+            item(&[("field_name", "n"), ("xpath", "/rows/row/n")]),
+            item(&[("field_name", "k"), ("xpath", "/rows/row/@k")]),
+        ]
+        .concat();
+        let storages = [
+            item(&[
+                ("field_name", "k"),
+                ("override", "false"),
+                ("storage", "integer"),
+            ]),
+            item(&[
+                ("field_name", "s"),
+                ("override", "false"),
+                ("storage", "string"),
+            ]),
+            item(&[
+                ("field_name", "n"),
+                ("override", "false"),
+                ("storage", storage_n),
+            ]),
+        ]
+        .concat();
+        format!(
+            r#"<Parameters xmlns="http://xml.spss.com/pasw/extension"><Parameter name="xmlReader.full_filename" value="r.xml"/><Parameter name="xmlReader.mode" value="single"/><Parameter name="xmlReader.read" value="read"/><Parameter name="xmlReader.records" value="/rows/row"/><Parameter name="xmlReader.fields"><ListValue/></Parameter><Parameter name="xmlReader.xpaths"><ListValue>{xpaths}</ListValue></Parameter><Parameter name="xmlReader.storages"><ListValue>{storages}</ListValue></Parameter></Parameters>"#
+        )
+    };
+    let run = |text: String| {
+        let mut ctx = ctx_with_dir(dir.clone());
+        let attachments: std::collections::HashMap<String, Arc<[u8]>> =
+            [("data/0001.dat".to_string(), Arc::from(text.into_bytes()))].into();
+        ctx.attachments = Arc::new(attachments);
+        let mut stream_node = node(Vec::new());
+        stream_node.properties_attachment = Some("data/0001.dat".into());
+        xml_import::build(&stream_node)?.run(&[], &ctx)
+    };
+    let table = run(parameters("integer", "/rows/row/s")).unwrap();
+    // Fields follow the storages, not the xpaths.
+    let names: Vec<&str> = table
+        .model()
+        .fields()
+        .iter()
+        .map(|f| f.name.as_str())
+        .collect();
+    assert_eq!(names, ["k", "s", "n"]);
+    assert_eq!(col(&table, "k"), [Value::Integer(2), Value::Integer(1)]);
+    // First of repeated children; absent child is the empty string.
+    assert_eq!(
+        col(&table, "s"),
+        [Value::string("a & b"), Value::string("")]
+    );
+    // Empty integer element is null.
+    assert_eq!(col(&table, "n"), [Value::Integer(7), Value::Null]);
+
+    // Unobserved storages and XPaths are GAPs; a node without fields fails.
+    let message = |result: Result<Table, OperatorError>| match result {
+        Err(OperatorError::Settings(message)) => message,
+        other => panic!("expected a settings error, got {other:?}"),
+    };
+    assert!(message(run(parameters("real", "/rows/row/s"))).starts_with("GAP:"));
+    assert!(message(run(parameters("integer", "/rows/row/a/b"))).starts_with("GAP:"));
+    assert!(message(run(parameters("integer", "//s"))).starts_with("GAP:"));
+    let empty = r#"<Parameters xmlns="http://xml.spss.com/pasw/extension"><Parameter name="xmlReader.full_filename" value="r.xml"/><Parameter name="xmlReader.records" value="/rows/row"/><Parameter name="xmlReader.storages"><ListValue/></Parameter></Parameters>"#;
+    assert!(run(empty.to_string()).is_err());
 }
 
 // ---------------------------------------------------------------- user_input
