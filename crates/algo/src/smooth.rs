@@ -190,7 +190,7 @@ impl SmoothSpec {
     }
 }
 
-fn recurse(spec: &SmoothSpec, y: &[f64]) -> Result<(Vec<f64>, f64, f64), SmoothError> {
+pub(crate) fn recurse(spec: &SmoothSpec, y: &[f64]) -> Result<(Vec<f64>, f64, f64), SmoothError> {
     match spec {
         SmoothSpec::Simple {
             alpha, init_level, ..

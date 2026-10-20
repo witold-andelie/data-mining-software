@@ -1188,6 +1188,7 @@ fn target_name(pmml: &Pmml) -> Result<String, OperatorError> {
                 "an association model has no single target".into(),
             ));
         }
+        dms_pmml::Model::TimeSeries { header, .. } => header,
         dms_pmml::Model::Sequence(_) => {
             return Err(OperatorError::Data(
                 "a sequence model has no single target".into(),

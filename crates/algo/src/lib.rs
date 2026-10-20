@@ -32,6 +32,7 @@ pub mod quest;
 pub mod sequence;
 pub mod smooth;
 pub mod stats;
+pub mod time_series;
 pub mod tree_as;
 pub mod twostep;
 

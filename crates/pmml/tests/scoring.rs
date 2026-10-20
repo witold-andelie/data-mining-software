@@ -3,6 +3,21 @@
 
 use dms_pmml::{Model, Pmml, PmmlError, Value};
 
+#[test]
+fn time_series_retains_pmml_for_batch_scoring() {
+    let xml = r#"<PMML version="4.3"><DataDictionary><DataField name="y" optype="continuous" dataType="double"/></DataDictionary><TimeSeriesModel functionName="timeSeries" bestFit="ARIMA"><MiningSchema><MiningField name="y" usageType="target"/></MiningSchema><Extension name="errVariance" value="0.25"/><Extension><ARIMA constantTerm="0.5" transformation="none"/></Extension></TimeSeriesModel></PMML>"#;
+    let pmml = Pmml::parse(xml).unwrap();
+    let Model::TimeSeries { header, xml: saved } = &pmml.model else {
+        panic!("TimeSeriesModel not retained")
+    };
+    assert_eq!(header.mining_schema[0].name, "y");
+    assert!(saved.contains("constantTerm=\"0.5\""));
+    assert!(saved.contains("errVariance"));
+    assert!(
+        matches!(pmml.bind(&["y"]).unwrap().score(&[Value::Number(1.0)]),Err(PmmlError::Unsupported(message)) if message.contains("batch"))
+    );
+}
+
 fn assert_close(actual: f64, expected: f64) {
     let diff = (actual - expected).abs();
     let tol = 1e-9 * actual.abs().max(expected.abs()).max(1.0);
