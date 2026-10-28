@@ -253,24 +253,29 @@ fn c50_prune_internal_branch_controls_match_exactly() {
     }
 }
 
-/// The global phase may replace a subtree whose local comparison preferred raising.
-/// This oracle tree distinguishes deferred comparisons from local-only statistics.
-/// The one-split controls also check that the extension does not simply raise the budget.
+/// Global pruning's information test (module docs): the same `[1,5] / [4,1]` split stays
+/// when its field is the only positive test or carries enough bits, and goes when a second
+/// positive test costs more bits than it carries; the one-SE budget then runs on the result.
 #[test]
-fn c50_global_deferred_local_comparisons_match_exactly() {
-    Fixture::load("c50_global", "wn100_sev85").compare();
-    for case in ["b_on", "ba_on", "bad_on", "bconst_on", "bc4d_off"] {
-        Fixture::load("c50_twig2", case).compare();
+fn c50_global_information_test_matches_exactly() {
+    for (label, case) in [
+        ("c50_presets", "c50_wn100_expert"),
+        ("c50_global", "wn25_c1F"),
+        ("c50_global", "wn100_sev85"),
+        ("c50_global2", "wn11_B_global"),
+        ("c50_twig2", "b_on"),
+        ("c50_twig2", "ba_on"),
+        ("c50_twig2", "bad_on"),
+        ("c50_twig2", "bconst_on"),
+        ("c50_twig2", "bac4_on"),
+        ("c50_twig2", "bc4d_on"),
+        ("c50_twig2", "all_on"),
+        ("c50_global3", "flag2_on"),
+        ("c50_global3", "plateau_flag3_on"),
+        ("c50_global3", "rightflat_flag3_on"),
+    ] {
+        Fixture::load(label, case).compare();
     }
-    // mc5 has a known threshold difference, but its recorded scores are exact.
-    // Deferring comparisons inside the local tolerance broke this control.
-    let fixture = Fixture::load("c50_global", "wn100_mc5");
-    let results = dms_exec::Plan::new(&fixture.stream).evaluate(&[&fixture.uid], &fixture.context);
-    let dms_exec::NodeOutput::Model(ours) = results.get(&fixture.uid).unwrap().as_ref().unwrap()
-    else {
-        panic!("expected tree model");
-    };
-    fixture.compare_model_scores(ours);
 }
 
 /// Every saved `C5RuleOutput` component across `auto_train/ac_*.str` (16 saved PMML

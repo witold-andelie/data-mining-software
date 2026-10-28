@@ -1,7 +1,6 @@
 # Streams whose oracle comparison is expected to differ. Update by hand; `cargo xtask regress`
 # fails on an entry that no longer mismatches, so delete fixed entries instead of leaving them.
 # label	stem	reason
-c50_presets	c50_wn100_expert	C5.0 global pruning: ours collapses only A (c3=T/b>2.1/c1=F/c2=T, +3 errors) and stops at 16 training errors; Modeler also collapses B (c3=T/b>2.1/c1=F/c2=F) and C (c3=F/c2=T), +3 each, to 22; see crates/algo/src/c50.rs
 ibm-demos	bayes_bankloan	Bayes Net is license-blocked in Modeler 19 and not implemented, so the downstream filter cannot be compared
 ibm-demos	bayes_churn_retrain	Bayes Net is license-blocked in Modeler 19 and not implemented, so the downstream filter cannot be compared
 ibm-demos	pm_binaryclassifier	Auto Classifier nugget: legacy Auto model scoring is unverified; the oracle retrains a replacement-linked model, which is out of scope
@@ -29,21 +28,7 @@ excel_more	more_offset	Excel sheet has cell-less <row> elements (probe fixture a
 excel_more	more_offtyped	Excel sheet has cell-less <row> elements (probe fixture artifact; Excel writes none); Modeler reads such sheets inconsistently, refused as GAP; see crates/io/src/xlsx.rs
 dl_discriminate	dl05_carry	Decision List empirical mean-beam mechanism still chooses b=v0 & c=v0 (118/140) instead of a=v1 & c=v0 (116/160); equal union but different first-hit partition; see docs/decision-list-validation.md
 linas_discriminate	x_shift	Linear-AS forward selection: entry decision for a numerically degenerate term differs (models_as/linearas_default x4*x4); under investigation
-c50_global	auto_sev80	C5.0 global pruning (c50_global probe): Modeler's collapsed subtrees differ from ours; rule unresolved; see crates/algo/src/c50.rs
-c50_global	wn100_mc3	C5.0 global pruning (c50_global probe): Modeler's collapsed subtrees differ from ours; rule unresolved; see crates/algo/src/c50.rs
-c50_global	wn100_sev65	C5.0 global pruning (c50_global probe): Modeler's collapsed subtrees differ from ours; rule unresolved; see crates/algo/src/c50.rs
-c50_global	wn100_sev70	C5.0 global pruning (c50_global probe): Modeler's collapsed subtrees differ from ours; rule unresolved; see crates/algo/src/c50.rs
-c50_global	wn100_sev80	C5.0 global pruning (c50_global probe): Modeler's collapsed subtrees differ from ours; rule unresolved; see crates/algo/src/c50.rs
-c50_global	wn25_c1F	C5.0 global pruning (c50_global probe): Modeler's collapsed subtrees differ from ours; rule unresolved; see crates/algo/src/c50.rs
-c50_global	wn49_c3F	C5.0 global pruning (c50_global probe): Modeler's collapsed subtrees differ from ours; rule unresolved; see crates/algo/src/c50.rs
-c50_global	wn51_c3T	C5.0 global pruning (c50_global probe): Modeler's collapsed subtrees differ from ours; rule unresolved; see crates/algo/src/c50.rs
-c50_global	wn77_noC	C5.0 global pruning (c50_global probe): Modeler's collapsed subtrees differ from ours; rule unresolved; see crates/algo/src/c50.rs
-c50_global	wn89_noC4F	C5.0 global pruning (c50_global probe): Modeler's collapsed subtrees differ from ours; rule unresolved; see crates/algo/src/c50.rs
+c50_global	wn100_mc3	C5.0 growth at minimum records 3: Modeler splits c3=F/c2=T on a (also with global pruning off, c50_global2/wn100_mc3_noglobal), ours on d; see crates/algo/src/c50.rs
+c50_global	wn89_noC4F	C5.0 global pruning tie: after the information test the c2=T/b>5.9 refinement and the c3=F split tie at (2 errors, 2 leaves) and together exceed the one-SE budget; Modeler collapses the refinement and then its parent; see crates/algo/src/c50.rs
 c50_global2	wn100_mc3_noglobal	C5.0 growth at minimum records 3: Modeler splits c3=F/c2=T on a (three two-leaf branches), ours on d; both 3 errors on those 23 records; see crates/algo/src/c50.rs
-c50_global2	wn11_B_global	C5.0 global pruning depends on grown structure that local pruning removes: with c4 among the inputs Modeler collapses the [1,5]/[4,1] b split, without c4 it keeps it (c50_twig2); rule unresolved; see crates/algo/src/c50.rs
-c50_global2	wn25_mc3_global	C5.0 global pruning depends on grown structure that local pruning removes: with c4 among the inputs Modeler collapses the [1,5]/[4,1] b split, without c4 it keeps it (c50_twig2); rule unresolved; see crates/algo/src/c50.rs
-c50_twig2	all_on	C5.0 global pruning depends on grown structure that local pruning removes: with c4 among the inputs Modeler collapses the [1,5]/[4,1] b split, without c4 it keeps it (c50_twig2); rule unresolved; see crates/algo/src/c50.rs
-c50_twig2	bac4_on	C5.0 global pruning depends on grown structure that local pruning removes: with c4 among the inputs Modeler collapses the [1,5]/[4,1] b split, without c4 it keeps it (c50_twig2); rule unresolved; see crates/algo/src/c50.rs
-c50_twig2	bc4d_on	C5.0 global pruning depends on grown structure that local pruning removes: with c4 among the inputs Modeler collapses the [1,5]/[4,1] b split, without c4 it keeps it (c50_twig2); rule unresolved; see crates/algo/src/c50.rs
-c50_twig3	all_s1_on	C5.0 global pruning depends on grown structure that local pruning removes: with c4 among the inputs Modeler collapses the [1,5]/[4,1] b split, without c4 it keeps it (c50_twig2); rule unresolved; see crates/algo/src/c50.rs
-c50_twig3	bc4d_s1_on	C5.0 global pruning depends on grown structure that local pruning removes: with c4 among the inputs Modeler collapses the [1,5]/[4,1] b split, without c4 it keeps it (c50_twig2); rule unresolved; see crates/algo/src/c50.rs
+c50_global	wn100_mc5	C5.0 growth at minimum records 5: Modeler's d <= 47.865 (also with global pruning off; ours d <= 47.605) was grown on other records, and Modeler keeps it where our global information test collapses it (0.20 bits, 4 positive tests); see crates/algo/src/c50.rs

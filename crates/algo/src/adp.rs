@@ -12,7 +12,7 @@
 //!   Drug merges BP HIGH/LOW, and all Cholesterol categories; Sex and goods Class stay intact.
 //!   Sex's p=.06859953366 demonstrates ALM overrides saved adp.supervisedMergingPValue=.05.
 //!   The .1 threshold is documented in IBM Modeler 18.6 Modeling Nodes, "Basics", p.153:
-//!   https://www.ibm.com/docs/en/SS3RA7_18.6.0/pdf/ModelerModelingNodes.pdf
+//!   <https://www.ibm.com/docs/en/SS3RA7_18.6.0/pdf/ModelerModelingNodes.pdf>
 //! - Only changed predictors are recoded; merged groups are numbered by increasing count,
 //!   with lexical original category as tie-breaker (drug BP: NORMAL=0, HIGH/LOW=1).
 //!   A predictor reduced to one group is excluded (drug Cholesterol).

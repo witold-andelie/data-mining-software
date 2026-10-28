@@ -8,7 +8,7 @@
 //!   child (first on ties); parent prediction resolves tied class counts.
 //! - `models/c50_default`: numeric cut description-length correction, statistical
 //!   leaf pruning. Numeric thresholds floor the binary64 midpoint to eight decimal
-//!   places, only if finite and partition-preserving; see [`numeric_cut`]. This
+//!   places, only if finite and partition-preserving; see `numeric_cut`. This
 //!   retains K = 0.0373315 but also the seven-digit `drughalf` Na = 0.7350505
 //!   and `drugtwice` K = 0.04003799, refuting six significant digits.
 //! - Numeric description length is log2(min(cuts, range/gap))/N. `cuts` counts
@@ -43,7 +43,7 @@
 //!   thresholds by gain and charging description length (p.80). Its literal
 //!   distinct-value correction differs from our recorded local range/gap rule;
 //!   positive-only membership is fixture evidence, not specified there.
-//! - `c50_costs` (B->C 8, C->B 2): minimize sum(count[actual]*cost[actual][predicted]),
+//! - `c50_costs` (B->C 8, C->B 2): minimize `sum(count[actual]*cost[actual][predicted])`,
 //!   retaining the parent's class on ties. Counts stay raw. Bound the number of
 //!   misclassified cases, then multiply by their mean cost; for zero observed
 //!   errors retain the ordinary bound. Under amber/flag=T/x<=9 this gives leaf
@@ -69,11 +69,32 @@
 //!   errors against limit 45.962848, collapsing the 4-leaf `member = N` split adds 2 errors
 //!   before the 2-leaf `income <= 28` split under `region = east`, exposing `income > 59.5`
 //!   as another 2-error, 2-leaf candidate; tied at `(2, 2)`, both together would reach
-//!   47 > 45.962848 and are rejected), see [`global_prune`]. Plain multiway splits have a
+//!   47 > 45.962848 and are rejected), see `global_prune`. Plain multiway splits have a
 //!   branch for every declared value, and a nominal field with too many values is never used
-//!   (see [`MANY_VALUES`]). GAP `c50_weight`, `c50_cw_sev50`: global pruning there
+//!   (see `MANY_VALUES`). GAP `c50_weight`, `c50_cw_sev50`: global pruning there
 //!   removes `red, code = 3, flag = T`'s `x <= 9` split but keeps `code = 1, x > 11`'s
 //!   flag split, which have equal error increases; likely tied to the zero distributions.
+//! - Global pruning first collapses uninformative tests (probes `c50_global_streams`,
+//!   `c50_global2_streams`, `c50_global3_streams`, `c50_twig_streams`, `c50_twig2_streams`,
+//!   `c50_twig3_streams`): bottom-up, a split whose children are all leaves goes when the
+//!   information it carries, its records times the corrected gain of the best test on its
+//!   field at those records, is below log2 of the number of tests with positive corrected
+//!   gain there, the bits that name the chosen test (compare the MDL motivation of the
+//!   threshold penalty in Quinlan, JAIR 4, 1996). The one-standard-error budget of
+//!   `global_prune` is then computed on the resulting tree. `c50_twig2`: the same
+//!   11-record `[1,5] / [4,1]` split on `b` (0.42 bits) stays when `b` is the only positive
+//!   test and goes when `c4` also has positive gain (cost 1 bit); `c50_global3`: flattening
+//!   `b` raises its information to 1.10 or 3.42 bits and it stays. `c50_presets/
+//!   c50_wn100_expert`: the test collapses `c3 = T / b > 2.1 / c1 = F / c2 = F` (0.42 bits,
+//!   3 positive tests) and `c3 = F / c2 = T` (negative gain), 13 -> 19 errors; the budget
+//!   19 + 3.92 then takes the `c2 = T` refinement and its parent split (22 errors). The test
+//!   is skipped under misclassification costs (no oracle). It replaces a deferred-replacement
+//!   rule that fixed only `wn100_sev85`. GAP `c50_global/wn89_noC4F`: after the test, the
+//!   `c2 = T / b > 5.9` refinement and the `c3 = F` split tie at (2 errors, 2 leaves) and
+//!   together exceed the budget, while Modeler collapses the refinement and then its parent.
+//!   GAP `c50_global/wn100_mc5`: Modeler's `d <= 47.865` (also with global pruning off; ours
+//!   `d <= 47.605`) was grown on other records, and Modeler keeps it where the test collapses
+//!   ours (0.20 bits, 4 positive tests).
 //! - GAP zero distributions: with case weights Modeler exports some leaves with all
 //!   class counts 0 but their record count kept, sums them into their ancestors, and
 //!   scores them with confidence 0. Smallest case `c50_weighted/c50_rc1_x6_10` (12
@@ -162,36 +183,6 @@
 //!   for absent classes in the exported distribution; raw binary propensity uses
 //!   confidence and its complement, including absent classes (`c50_partition`).
 //! - Rule sets (`modelFormat` `ruleSet`): [`crate::c50_rules`].
-//!
-//! Global history investigation (recorded oracles only, 2026-10-28):
-//! - Partial empirical extension: when local pruning raises a subtree, retain
-//!   whether its original leaf bound L was strictly better than the pre-promotion
-//!   subtree bound S beyond the existing local tolerance: L + 0.1 < S. Defer that
-//!   replacement to the global phase even though local pruning preferred the
-//!   still-better raising estimate. Replay top-down, then compute the existing
-//!   one-SE budget on the resulting tree. History follows retained nodes;
-//!   promoted descendants use their regrown/pruned history, in O(nodes) space.
-//! - `c50_global/wn100_sev85`: A has L=5.386796, S=5.833360, R=5.261836.
-//!   Deferring A's replacement makes the complete oracle tree exact; all 240
-//!   previously exact trees in the 262-tree diagnostic inventory remain exact
-//!   (including 110 global-prune controls and 16 Auto Classifier components).
-//!   Global-off behavior is unchanged. Neither severity nor input names gate it.
-//! - The weaker L <= S + 0.1 condition also fixes severity 80, but regresses
-//!   mc5 scoring: there L=11.116469 and S=11.135645, a difference inside the
-//!   local tolerance. Requiring a historical advantage beyond that tolerance
-//!   preserves mc5's prior scores. Severity 80 remains a GAP under this rule.
-//! - This is a partial empirical convention, not identification of Modeler's
-//!   hidden algorithm. Public two-phase descriptions motivate separate local
-//!   and whole-tree decisions but do not specify this replay. It uses no field
-//!   names, sample-count thresholds, fixture ids or newly fitted constants.
-//! - GAP: twig2/3's identical local [1,5]/[4,1] trees are kept without c4 and
-//!   collapsed with it. Our grown trees both have 4 leaves and 2 errors, but
-//!   different left-leaf sizes (2/4 versus 3/3). No raising occurs there, so
-//!   deferred comparisons cannot explain that contrast. wn100 severity 75/80,
-//!   other wn/auto contexts, weighted zero distributions and winnowing remain
-//!   unresolved. mc3's split choice and mc5's 47.605/47.865 threshold difference
-//!   already occur with global pruning off; mc5 scoring equality is not full
-//!   tree equality. See the round-2 report and the unexecuted global3 probe.
 //!
 //! Simple presets and winnowing investigation (Modeler 19, `c50_presets_streams`,
 //! recorded oracles only, 2026-10-17):
@@ -1230,38 +1221,6 @@ fn subtree_estimate(node: &Node, settings: &C50Settings, costs: Option<&[Vec<f64
     }
 }
 
-/// Local estimates and deferred replacements, shaped like the retained subtree.
-/// A raised subtree retains the comparison made before its promotion. Descendant
-/// metadata comes from pruning the regrown candidate, not from discarded branches.
-#[derive(Default)]
-struct LocalPruning {
-    estimate: f64,
-    replace_globally: bool,
-    children: Vec<LocalPruning>,
-}
-
-impl LocalPruning {
-    fn leaf(estimate: f64) -> Self {
-        Self {
-            estimate,
-            ..Self::default()
-        }
-    }
-}
-
-/// Replay historical leaf advantages exceeding LOCAL_SLACK before the one-SE pass.
-/// The depth and node count remain bounded by growth; history mirrors retained nodes.
-/// Local pruning may have preferred raising because its estimate was still lower.
-fn deferred_replacements(node: &mut Node, local: &LocalPruning) {
-    if local.replace_globally {
-        node.children.clear();
-    } else {
-        for (child, history) in node.children.iter_mut().zip(&local.children) {
-            deferred_replacements(child, history);
-        }
-    }
-}
-
 /// The selected regrown candidate receives replacement and raising pruning,
 /// without another regrowth pass. Iterating regrowth can recreate removed tests,
 /// whereas raising without regrowth strictly shrinks the candidate tree.
@@ -1271,23 +1230,20 @@ fn prune_regrown(
     node: &mut Node,
     settings: &C50Settings,
     depth: usize,
-) -> Result<LocalPruning, AlgoError> {
+) -> Result<f64, AlgoError> {
     if depth > MAX_DEPTH {
         return Err(AlgoError::Unsupported("C5.0 pruning depth limit".into()));
     }
     let leaf = leaf_estimate(node, settings, data.costs.as_deref());
     if node.children.is_empty() {
-        return Ok(LocalPruning::leaf(leaf));
+        return Ok(leaf);
     }
     let groups = branch_rows(data, rows, node);
     let mut subtree = 0.0;
-    let mut children = Vec::with_capacity(node.children.len());
     let mut largest = None;
     let mut largest_cases = 0;
     for (index, (child, group)) in node.children.iter_mut().zip(&groups).enumerate() {
-        let local = prune_regrown(data, group, child, settings, depth.saturating_add(1))?;
-        subtree += local.estimate;
-        children.push(local);
+        subtree += prune_regrown(data, group, child, settings, depth.saturating_add(1))?;
         if !child.children.is_empty() && (largest.is_none() || group.len() > largest_cases) {
             largest = Some(index);
             largest_cases = group.len();
@@ -1309,22 +1265,17 @@ fn prune_regrown(
     }
     if leaf <= subtree + LOCAL_SLACK && leaf <= estimate + LOCAL_SLACK {
         node.children.clear();
-        return Ok(LocalPruning::leaf(leaf));
+        return Ok(leaf);
     }
     if estimate <= subtree + LOCAL_SLACK
         && let Some(mut candidate) = raised
     {
-        let mut result = prune_regrown(data, rows, &mut candidate, settings, depth)?;
+        let result = prune_regrown(data, rows, &mut candidate, settings, depth)?;
         candidate.predicate = node.predicate.clone();
         *node = candidate;
-        result.replace_globally = leaf + LOCAL_SLACK < subtree;
         return Ok(result);
     }
-    Ok(LocalPruning {
-        estimate: subtree,
-        replace_globally: false,
-        children,
-    })
+    Ok(subtree)
 }
 
 fn branch_rows(data: &Data, rows: &[usize], node: &Node) -> Vec<Vec<usize>> {
@@ -1379,21 +1330,20 @@ fn prune(
     settings: &C50Settings,
     depth: usize,
     budget: &mut usize,
-) -> Result<LocalPruning, AlgoError> {
+) -> Result<f64, AlgoError> {
     if depth > MAX_DEPTH {
         return Err(AlgoError::Unsupported("C5.0 pruning depth limit".into()));
     }
     let leaf = leaf_estimate(node, settings, data.costs.as_deref());
     if node.children.is_empty() {
-        return Ok(LocalPruning::leaf(leaf));
+        return Ok(leaf);
     }
     let groups = branch_rows(data, rows, node);
     let mut subtree = 0.0;
-    let mut children = Vec::with_capacity(node.children.len());
     let mut largest = None;
     let mut largest_cases = 0;
     for (index, (child, group)) in node.children.iter_mut().zip(&groups).enumerate() {
-        let local = prune(
+        subtree += prune(
             data,
             group,
             child,
@@ -1401,8 +1351,6 @@ fn prune(
             depth.saturating_add(1),
             budget,
         )?;
-        subtree += local.estimate;
-        children.push(local);
         // Only internal children can supply a test to promote. Choose the
         // largest eligible original branch, retaining the first on ties.
         if !child.children.is_empty() && (largest.is_none() || group.len() > largest_cases) {
@@ -1426,7 +1374,7 @@ fn prune(
     }
     if leaf <= subtree + LOCAL_SLACK && leaf <= estimate + LOCAL_SLACK {
         node.children.clear();
-        return Ok(LocalPruning::leaf(leaf));
+        return Ok(leaf);
     }
     if estimate <= subtree + LOCAL_SLACK
         && let Some(mut candidate) = raised
@@ -1449,17 +1397,12 @@ fn prune(
             )?;
             child.predicate = predicate;
         }
-        let mut result = prune_regrown(data, rows, &mut candidate, settings, depth)?;
+        let result = prune_regrown(data, rows, &mut candidate, settings, depth)?;
         candidate.predicate = node.predicate.clone();
         *node = candidate;
-        result.replace_globally = leaf + LOCAL_SLACK < subtree;
         return Ok(result);
     }
-    Ok(LocalPruning {
-        estimate: subtree,
-        replace_globally: false,
-        children,
-    })
+    Ok(subtree)
 }
 
 /// A plain nominal field with more declared values than 0.3 x (training records - 4) is
@@ -1616,12 +1559,61 @@ fn collapse_subtrees(data: &Data, node: &mut Node, rows: &[usize], step: (f64, u
     }
 }
 
+/// The information test that starts global pruning (module docs): bottom-up, a split whose
+/// children are all leaves goes when records x corrected gain of its field's best test is
+/// below log2 of the tests with positive corrected gain at that node.
+fn collapse_uninformative(data: &Data, node: &mut Node, rows: &[usize], settings: &C50Settings) {
+    if node.children.is_empty() {
+        return;
+    }
+    for child in &mut node.children {
+        let sub: Vec<usize> = rows
+            .iter()
+            .copied()
+            .filter(row_matcher(data, &child.predicate))
+            .collect();
+        collapse_uninformative(data, child, &sub, settings);
+    }
+    if node.children.iter().any(|c| !c.children.is_empty()) {
+        return;
+    }
+    let field = match node.children.first().map(|c| &c.predicate) {
+        Some(Predicate::Simple { field, .. } | Predicate::SimpleSet { field, .. }) => field,
+        _ => return,
+    };
+    let mut positive = 0usize;
+    let mut gain = 0.0;
+    for column in &data.columns {
+        let Some(split) = candidate(
+            data,
+            rows,
+            column,
+            settings.min_child_records,
+            settings.group_symbolics,
+        ) else {
+            continue;
+        };
+        if split.gain > 1e-10 {
+            positive = positive.saturating_add(1);
+        }
+        let name = match column {
+            Column::Numeric { name, .. } | Column::Symbolic { name, .. } => name,
+        };
+        if name == field {
+            gain = split.gain;
+        }
+    }
+    if gain * data.weight(rows) < (positive.max(1) as f64).log2() {
+        node.children.clear();
+    }
+}
+
 /// Global pruning ranks whole subtrees by added training errors, without dividing
 /// by removed leaves (`c50_presets/c50_drughalf_expert`: Age adds 2, Na/K adds 3),
 /// and breaks equal-error ties by largest leaf count (`auto_train/ac_*`: the
 /// four-branch `member = N` split goes before the two-branch `income <= 28` split).
 /// Equal `(added_errors, leaves)` are tried together; cumulative errors must stay
-/// within one standard error of the tree after deferred replacements (`c50_globalprune`:
+/// within one standard error of the errors after [`collapse_uninformative`] (`c50_globalprune`:
 /// exception blocks correcting one record go, two stay, at every severity and with case
 /// weights; `models/c50_default`: `BP = HIGH` goes; `c50_min_child`: the equal increases
 /// `green`, `red` would reach 87 > 79 + 7.92 together and stay).
@@ -1803,9 +1795,11 @@ pub fn train_tree(dataset: &Dataset<'_>, settings: &C50Settings) -> Result<Pmml,
     let rows: Vec<usize> = (0..data.targets.len()).collect();
     let mut budget = 0;
     let mut root = grow(&data, &rows, settings, 0, 0, &mut budget)?;
-    let local = prune(&data, &rows, &mut root, settings, 0, &mut budget)?;
+    prune(&data, &rows, &mut root, settings, 0, &mut budget)?;
     if settings.global_pruning {
-        deferred_replacements(&mut root, &local);
+        if data.costs.is_none() {
+            collapse_uninformative(&data, &mut root, &rows, settings);
+        }
         global_prune(&data, &mut root);
     }
     merge_leaves(&mut root);
