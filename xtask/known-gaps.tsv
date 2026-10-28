@@ -30,3 +30,21 @@ dl_discriminate	dl05_carry	Decision List empirical mean-beam mechanism still cho
 linas_discriminate	x_shift	Linear-AS forward selection: entry decision for a numerically degenerate term differs (models_as/linearas_default x4*x4); under investigation
 c50_global	wn100_mc3	C5.0 global pruning: the local tree matches (interpolated confidence deviate), but the (1 error, 2 leaves) tie of c2=T's b split with the a=a2/a=a3 twigs fits the budget together (18 < 18.57) while Modeler collapses the whole b > 2.1 subtree (17) and keeps a=a2/a=a3; see crates/algo/src/c50.rs
 c50_global	wn100_mc5	C5.0 global pruning: the local tree matches (d <= 47.865 now raised from c1=F), but the information test collapses that d split (0.20 bits, 4 positive tests) where Modeler keeps it; see crates/algo/src/c50.rs
+adp_rest	rest_almost_constant	Auto Data Prep (probe adp_rest, not implemented yet): uiExcludeAlmostConstantCatFeature is not supported yet
+adp_rest	rest_base	Auto Data Prep (probe adp_rest, not implemented yet): string ordinal input os: Modeler recodes it like a nominal (os_transformed after the nominal fields); ours copies it
+adp_rest	rest_construct_order	Auto Data Prep (probe adp_rest, not implemented yet): GAP: feature construction: the place of constructed features next to categorical, binned, date or target fields has no oracle
+adp_rest	rest_cont_missing_binning	Auto Data Prep (probe adp_rest, not implemented yet): GAP: supervised binning of "c_miss", which has missing values
+adp_rest	rest_custom_fields	Auto Data Prep (probe adp_rest, not implemented yet): useCustomSettings is not supported yet
+adp_rest	rest_dates_minmax	Auto Data Prep (probe adp_rest, not implemented yet): GAP: min-max rescaling of date fields has no oracle
+adp_rest	rest_dates_selection	Auto Data Prep (probe adp_rest, not implemented yet): GAP: feature selection of date-derived fields has no oracle
+adp_rest	rest_freq_weight	Auto Data Prep (probe adp_rest, not implemented yet): useFrequency is not supported yet
+adp_rest	rest_nominal_noreorder	Auto Data Prep (probe adp_rest, not implemented yet): GAP: merging without uiReorderNominalCatsPriorToMerging has no oracle
+adp_rest	rest_ordinal_median_between	Auto Data Prep (probe adp_rest, not implemented yet): GAP: the median of "o_med" falls between two levels
+adp_rest	rest_ordinal_merge_missing	Auto Data Prep (probe adp_rest, not implemented yet): GAP: merging an ordinal input whose missing values are replaced has no oracle
+adp_rest	rest_selection_cattarget	Auto Data Prep (probe adp_rest, not implemented yet): GAP: feature selection against a categorical target has no oracle
+adp_rest	rest_strord_merge	Auto Data Prep (probe adp_rest, not implemented yet): supervised merge of the string ordinal os: Modeler outputs os_transformed; ours copies os
+adp_rest	rest_strord_missing	Auto Data Prep (probe adp_rest, not implemented yet): string ordinal input os with missing values replaced: Modeler outputs os_transformed; ours copies os
+adp_rest	rest_target_combined	Auto Data Prep (probe adp_rest, not implemented yet): GAP: target "ycomb": Box-Cox combined with other target steps has no oracle
+adp_rest	rest_target_outliers_delete	Auto Data Prep (probe adp_rest, not implemented yet): GAP: target "yco": setting target outliers to missing has no oracle
+adp_rest	rest_time_both	Auto Data Prep (probe adp_rest, not implemented yet): GAP: a time duration with time elements has no oracle
+adp_rest	rest_weight_control	Auto Data Prep (probe adp_rest, not implemented yet): useCustomSettings is not supported yet
