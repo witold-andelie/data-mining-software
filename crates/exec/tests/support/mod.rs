@@ -309,6 +309,8 @@ pub fn collect_oracle_cases(types: &[&str]) -> Vec<OracleCase> {
         ("outputs", true),
         ("graphs", true),
         ("graphboard", true),
+        // Not strict until the graphboard_more cases are implemented (1 of 12 matches).
+        ("graphboard_more", false),
         ("misc", true),
         ("misc_next", true),
         ("outputs_next", true),
