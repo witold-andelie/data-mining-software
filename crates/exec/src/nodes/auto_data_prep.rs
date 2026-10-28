@@ -38,9 +38,10 @@
 //! to the bound (`coerceToCutoffVal`) or set missing (`setToMissingVal`, then imputed and counted
 //! as missing for field order). `c_out`: 60 and -45 against bounds 0.00503 +/- 3 x 2.92449.
 //!
-//! Min-max (`scaleContinuousMode` `minMaxTransform`, `adp_next/adp_minmax`): `(x - min) /
-//! (max - min) * (minMax_max - minMax_min) + minMax_min` over the finite values. Date fields
-//! under min-max have no oracle and are a `GAP:` error.
+//! Min-max (`scaleContinuousMode` `minMaxTransform`, `adp_next/adp_minmax`,
+//! `adp_rest/rest_dates_minmax`): `(x - min) /
+//! (max - min) * (minMax_max - minMax_min) + minMax_min` over the finite values, date durations
+//! and recast date elements included (`d_days`/`t_hours` to 0..100).
 //!
 //! Dates (`prepareDatesAndTimes`, `uiComputeDateDuration`): a fixed unit of `month` divides the
 //! day number by 30.4375 (`adp_balanced`, suffix `_months`); `day` keeps the day number
@@ -51,15 +52,20 @@
 //! `dt_year` has 3 years, stays an integer ordinal, and its missing value stays null
 //! (`uiReplaceOrdinalFeaturesMissingValue` false). The original date is dropped.
 //!
-//! Categories (`adp_balanced` `grp`, `flg`): non-missing values and system-null are counted.
+//! Categories (`adp_balanced` `grp`, `flg`; `adp_rest/rest_base` `os`): non-missing values and system-null are counted.
 //! Codes are strings `"0"`, `"1"`, ... from the least frequent category; equal counts break by
-//! [`Value::total_cmp`] (null before any other value). `grp` empty string is a real category
-//! (`""` once → `"0"`). `flg` null once → `"0"`, `F` → `"1"`, `T` → `"2"`. The new field is a
+//! [`Value::total_cmp`] (null before any other value). Codes are zero-padded to the width of
+//! the largest code (`many80` 80 categories → `"00"`..`"79"`). `grp` empty string is a real category
+//! (`""` once → `"0"`). `flg` null once → `"0"`, `F` → `"1"`, `T` → `"2"`. A string ordinal
+//! input is a categorical to recode (`os`: missing 12 → `"0"`, `s1` → `"1"`, `s2` → `"2"`,
+//! `s3` → `"3"`, `s4` → `"4"`). The new field is a
 //! nominal string named with `nameExtForInputs` (`_transformed`). The target `y` is not recoded.
 //!
 //! Screening (saved on in the three cases; no corpus field crosses a threshold): an input is
 //! dropped when its missing share is greater than `maxNumberOfMissingValue` (50), when a
-//! categorical input has more than `maxNOfUniqueCategories` (100) non-missing categories, or
+//! categorical input has more than `maxNOfUniqueCategories` (100) non-missing categories, when
+//! `uiExcludeAlmostConstantCatFeature` sees its mode exceed `cateFeatureScreenNumber` percent
+//! of all rows (`adp_rest/rest_almost_constant`: `acat` 90% `A` > 80 drops), or
 //! when `excludePoorQualityFeatures` sees fewer than two distinct non-missing values. Role-none
 //! and typeless fields are kept (`id`, `txt`). `excludeNoUsedField` `filterOut` drops inputs
 //! that were replaced by a transformed field.
@@ -68,43 +74,61 @@
 //! not change the math; the saved flags do. `adp_balanced` and `adp_rescale` export the same
 //! table.
 //!
-//! Merging (objective `custom` with `transConsSelectFeatures`, see `custom_steps`): with a
-//! target, `uiSupervisedMerging` screens and merges categorical inputs (`supervised_merge`);
-//! without one, `uiUnsupervisedMergeNominal` merges sparse categories (`unsupervised_merge`).
-//! Under objective `balance` the saved flags do not apply (`adp_balanced`).
+//! Custom fields (`useCustomSettings` with `targetField`/`inputFields/field`,
+//! `rest_custom_fields` keeps only `c_rel`, `rest_weight_control` repeats the Type roles) select
+//! the target and inputs; other Type inputs pass through raw. Frequency weights (`useFrequency`
+//! with `frequencyWeight`, `rest_freq_weight` `wfreq`) leave the weight field unchanged and have
+//! no effect on rescaling/recoding without supervised steps (matches the control to every
+//! printed decimal); weighted supervised steps have no oracle.
 //!
-//! Feature selection (`uiFeatureSelection`, objective `custom`, continuous target): continuous
-//! inputs whose correlation p-value exceeds `featureSelectionPValue` are dropped
-//! (`correlation_p`); categorical inputs are screened as under supervised merging.
+//!
+//! Merging (objective `custom` with `transConsSelectFeatures`, see `custom_steps`): with a
+//! target, `uiSupervisedMerging` screens and merges categorical inputs (`supervised_merge`),
+//! whether or not `uiReorderNominalCatsPriorToMerging` is on (`rest_nominal_noreorder` `n1`
+//! merges `k1`/`k2` all the same); without one, `uiUnsupervisedMergeNominal` merges sparse
+//! categories (`unsupervised_merge`). Under objective `balance` the saved flags do not apply
+//! (`adp_balanced`).
+//!
+//! Feature selection (`uiFeatureSelection`, objective `custom`): continuous inputs whose
+//! correlation p-value exceeds `featureSelectionPValue` are dropped for a continuous target
+//! (`correlation_p`); with a categorical target continuous inputs are kept
+//! (`rest_selection_cattarget` `c_rel`/`c_noise`); categorical inputs are screened as under
+//! supervised merging.
 //!
 //! Supervised binning (`uiSupervisedBinning`, objective `custom`, categorical target): continuous
-//! inputs become ordinal bins of homogeneous subsets (`homogeneous_cuts`).
+//! inputs become ordinal bins of homogeneous subsets (`homogeneous_cuts`); missing values are
+//! replaced by the valid mean before the cuts when `uiReplaceScaleFeaturesMissingValue` is on
+//! (`rest_cont_missing_binning` `c_miss` cut `-0.329…`).
 //!
 //! Feature construction (`uiFeatureConstruction`, objective `custom`): correlated continuous
 //! inputs are replaced by principal components (`construct_features`).
 //!
-//! `GAP:` feature selection against a categorical target or with date fields, binning a field
-//! with missing values.
+//! `GAP:` feature selection with date fields.
 //! `GAP:` `uiReplaceNominalFeaturesMissingValue` true does not substitute the mode (see `flg`).
 //! false is rejected. Timestamps are copied (`misc_next/adp_*`, `adp_time/*`).
 //!
-//! Times and date units (`adp_time/*`): a time-of-day input gets a signed duration from
-//! `fixedTime` or hour/minute/second elements (`prepare_time`); date durations also take years,
+//! Times and date units (`adp_time/*`, `adp_rest/rest_time_both`): a time-of-day input gets a
+//! signed duration from `fixedTime` and hour/minute/second elements (`prepare_time` keeps both
+//! the duration and the three recast z-scored elements); date durations also take years,
 //! and automatic units follow the largest elapsed value (`choose_unit`). A date or time input
 //! with no duration and no element is excluded; when every input is excluded the node fails as
 //! Modeler does.
 //!
 //! Target (`uiRescaleScaleTargetUsingBoxCox`): a continuous target is Box-Cox transformed and
-//! rescaled to `targetMean` / `targetSD`, see `box_cox_target`.
+//! rescaled to `targetMean` / `targetSD`, see `box_cox_target_with`. Outliers are handled first
+//! (`rest_target_outliers_delete` Delete → missing, `rest_target_combined` Replace → bounds),
+//! then missing values become the final mean when `uiReplaceScaleTargetMissingValue` is on
+//! (`ycomb` 9 missing → 0, divisor `n_all - 1` like rescaling with imputation).
 //!
 //! Ordinal inputs (`prepare_ordinal`) and target steps (`prepare_target`) follow
 //! `adp_more/*`.
 //!
-//! `GAP:` target outliers set to missing, combined target steps, ordinal targets,
-//! almost-constant category screening, frequency and analysis weights, `useCustomSettings`, a
-//! non-empty `inputFields` / `targetField`, a reference of the current date or time,
-//! a time duration together with time elements, and `excludeNoUsedField` other than `filterOut`
-//! are rejected. `GAP:` string ordinal inputs are copied. `GAP:` a zero-row input is copied
+//! `GAP:` ordinal targets,
+//! frequency weights with supervised steps, analysis weights (Modeler rejects `use_weight`,
+//! kept rejected; no recorded streams), a
+//! reference of the current date or time,
+//! and `excludeNoUsedField` other than `filterOut`
+//! are rejected. `GAP:` a zero-row input is copied
 //! unchanged.
 
 use crate::context::ExecContext;
@@ -131,6 +155,9 @@ const GROUP_CATEGORICAL: u8 = 5;
 /// Continuous inputs binned against a categorical target follow the categorical fields
 /// (`adp_next/adp_binning`).
 const GROUP_BINNED: u8 = 6;
+/// Constructed features go last, after categorical/date fields
+/// (`rest_construct_order` `feature1` after `ncat_transformed`).
+const GROUP_CONSTRUCTED: u8 = 7;
 
 const METADATA: &[&str] = &[
     "annotation",
@@ -255,6 +282,14 @@ struct Prep {
     exclude_many_cats: bool,
     max_unique: i64,
     exclude_poor: bool,
+    exclude_almost_constant: bool,
+    almost_constant_pct: f64,
+    /// `useCustomSettings`: explicit target and inputs (`targetField`, `inputFields/field`).
+    /// `None` means the upstream Type roles are used (`rest_weight_control` repeats them).
+    custom: Option<(String, Vec<String>)>,
+    /// `useFrequency` with `frequencyWeight`: case replication weights (guide 69-71).
+    /// `None` when off; the weight field itself is left unchanged in the output.
+    freq_weight: Option<String>,
     reorder_nominal: bool,
     replace_scale_missing: bool,
     scale_continuous: bool,
@@ -387,6 +422,28 @@ impl Operator for Prep {
         if n_rows == 0 {
             return Ok(input.as_ref().clone());
         }
+        // `rest_freq_weight`: the weight field exists and is left unchanged (it is a
+        // pass-through `None` role). The oracles show no effect for rescaling/recoding
+        // without supervised steps (`rest_freq_weight` matches `rest_weight_control` to
+        // every printed decimal); weighted supervised steps have no oracle.
+        if let Some(name) = &self.freq_weight {
+            let exists = input.model().fields().iter().any(|f| &f.name == name);
+            if !exists {
+                return Err(OperatorError::Settings(format!(
+                    "frequencyWeight {name:?} is not an input field"
+                )));
+            }
+            if self.supervised_merge.is_some()
+                || self.unsupervised_merge.is_some()
+                || self.unsupervised_merge_ordinal.is_some()
+                || self.feature_selection.is_some()
+                || self.supervised_binning.is_some()
+            {
+                return Err(OperatorError::Settings(
+                    "GAP: frequency weights with supervised steps have no oracle".into(),
+                ));
+            }
+        }
         let target = merge_target(self, input)?;
         let mut cols = Vec::new();
         // Positions in `cols` of the continuous inputs feature construction may group.
@@ -394,8 +451,10 @@ impl Operator for Prep {
         // Inputs the preparation looked at, and the fields it produced from them.
         let (mut prepared, mut produced) = (0usize, 0usize);
         for (index, field) in input.model().fields().iter().enumerate() {
+            let mut effective = field.clone();
+            effective.role = self.effective_role(field);
             let values = column(input, index);
-            let class = classify(self, field);
+            let class = classify(self, &effective);
             let before = cols.len();
             let examined = match class {
                 Class::Time | Class::Date => true,
@@ -403,19 +462,18 @@ impl Operator for Prep {
                 Class::Pass | Class::Target => false,
             };
             match class {
-                Class::Time => prepare_time(self, field, index, &values, &mut cols)?,
-                Class::Pass => cols.push(pass_col(field, values, index)),
-                Class::Date if self.feature_selection.is_some() && target.is_some() => {
-                    return Err(OperatorError::Settings(
-                        "GAP: feature selection of date-derived fields has no oracle".into(),
-                    ));
+                Class::Time => {
+                    prepare_time(self, &effective, index, &values, target.as_ref(), &mut cols)?
                 }
-                Class::Date => prepare_date(self, field, index, &values, &mut cols)?,
+                Class::Pass => cols.push(pass_col(&effective, values, index)),
+                Class::Date => {
+                    prepare_date(self, &effective, index, &values, target.as_ref(), &mut cols)?
+                }
                 Class::Continuous if self.prepare_features => {
                     let before = cols.len();
                     prepare_continuous(
                         self,
-                        field,
+                        &effective,
                         index,
                         &values,
                         target.as_ref(),
@@ -430,11 +488,18 @@ impl Operator for Prep {
                     }
                 }
                 Class::Categorical if self.prepare_features => {
-                    prepare_categorical(self, field, index, &values, target.as_ref(), &mut cols)?;
+                    prepare_categorical(
+                        self,
+                        &effective,
+                        index,
+                        &values,
+                        target.as_ref(),
+                        &mut cols,
+                    )?;
                 }
                 Class::Ordinal if self.prepare_features => {
                     let before = cols.len();
-                    prepare_ordinal(self, field, index, &values, target.as_ref(), &mut cols)?;
+                    prepare_ordinal(self, &effective, index, &values, target.as_ref(), &mut cols)?;
                     if let Some(col) = cols.get(before).filter(|_| cols.len() == before + 1)
                         && col.field.measurement == Measurement::Continuous
                         && col.group == GROUP_CONTINUOUS
@@ -443,10 +508,10 @@ impl Operator for Prep {
                     }
                 }
                 Class::Target if self.prepare_features => {
-                    cols.push(prepare_target(self, field, index, &values)?);
+                    cols.push(prepare_target(self, &effective, index, &values)?);
                 }
                 Class::Continuous | Class::Categorical | Class::Ordinal | Class::Target => {
-                    cols.push(pass_col(field, values, index));
+                    cols.push(pass_col(&effective, values, index));
                 }
             }
             if examined {
@@ -530,6 +595,10 @@ fn parse(s: Option<&Element>) -> Result<Prep, OperatorError> {
         exclude_many_cats: flag(s, "uiExcludeFeatureIfHasManyUniqueCatogories", true)?,
         max_unique: nonneg_int(s, "maxNOfUniqueCategories", 100)?,
         exclude_poor: flag(s, "excludePoorQualityFeatures", true)?,
+        exclude_almost_constant: flag(s, "uiExcludeAlmostConstantCatFeature", false)?,
+        almost_constant_pct: percent_int(s, "cateFeatureScreenNumber", 95)? as f64,
+        custom: custom_fields(s)?,
+        freq_weight: frequency_field(s)?,
         reorder_nominal: flag(s, "uiReorderNominalCatsPriorToMerging", true)?,
         replace_scale_missing: flag(s, "uiReplaceScaleFeaturesMissingValue", true)?,
         scale_continuous: flag(s, "uiScaleContinuousFeatures", true)?,
@@ -657,6 +726,63 @@ fn parse(s: Option<&Element>) -> Result<Prep, OperatorError> {
     })
 }
 
+fn custom_fields(s: Option<&Element>) -> Result<Option<(String, Vec<String>)>, OperatorError> {
+    let use_custom = flag(s, "useCustomSettings", false)?;
+    let target = settings::text(s, "targetField")
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty());
+    let inputs: Vec<String> = settings::children(s, "inputFields", "field")
+        .iter()
+        .map(|element| element.text().trim().to_string())
+        .filter(|value| !value.is_empty())
+        .collect();
+    if use_custom {
+        let Some(target) = target else {
+            return Err(OperatorError::Settings(
+                "useCustomSettings needs a targetField".into(),
+            ));
+        };
+        if inputs.is_empty() {
+            return Err(OperatorError::Settings(
+                "useCustomSettings needs inputFields".into(),
+            ));
+        }
+        Ok(Some((target, inputs)))
+    } else {
+        if target.is_some() || !inputs.is_empty() {
+            return Err(OperatorError::Settings(
+                "targetField/inputFields need useCustomSettings".into(),
+            ));
+        }
+        Ok(None)
+    }
+}
+
+/// `useFrequency` with `frequencyWeight` (`adp_rest/rest_freq_weight`).
+fn frequency_field(s: Option<&Element>) -> Result<Option<String>, OperatorError> {
+    let use_freq = flag(s, "useFrequency", false)?;
+    let weight = settings::text(s, "frequencyWeight")
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty());
+    if use_freq {
+        weight.map_or_else(
+            || {
+                Err(OperatorError::Settings(
+                    "useFrequency needs a frequencyWeight".into(),
+                ))
+            },
+            |name| Ok(Some(name)),
+        )
+    } else {
+        if weight.is_some() {
+            return Err(OperatorError::Settings(
+                "frequencyWeight needs useFrequency".into(),
+            ));
+        }
+        Ok(None)
+    }
+}
+
 fn reject_unknown(s: Option<&Element>) -> Result<(), OperatorError> {
     for child in s.into_iter().flat_map(Element::child_elements) {
         let name = child.name.local.as_ref();
@@ -671,13 +797,7 @@ fn reject_unknown(s: Option<&Element>) -> Result<(), OperatorError> {
 }
 
 fn reject_unsupported(s: Option<&Element>) -> Result<(), OperatorError> {
-    for key in [
-        "uiReplaceOrdinalTargetMissingValue",
-        "uiExcludeAlmostConstantCatFeature",
-        "useWeight",
-        "useFrequency",
-        "useCustomSettings",
-    ] {
+    for key in ["uiReplaceOrdinalTargetMissingValue", "useWeight"] {
         if flag(s, key, false)? {
             return Err(OperatorError::Settings(format!(
                 "{key} is not supported yet"
@@ -689,17 +809,12 @@ fn reject_unsupported(s: Option<&Element>) -> Result<(), OperatorError> {
             "uiReplaceNominalFeaturesMissingValue is not supported yet".into(),
         ));
     }
-    for key in ["targetField", "frequencyWeight", "analysisWeight"] {
+    for key in ["analysisWeight"] {
         if settings::text(s, key).is_some_and(|value| !value.trim().is_empty()) {
             return Err(OperatorError::Settings(format!(
                 "{key} is not supported yet"
             )));
         }
-    }
-    if settings::element(s, "inputFields").is_some_and(|el| el.child_elements().next().is_some()) {
-        return Err(OperatorError::Settings(
-            "inputFields is not supported yet".into(),
-        ));
     }
     one_of(s, "excludeNoUsedField", &["filterOut"], "filterOut")?;
     one_of(s, "keepOrClearAnalysis", &["stop"], "stop")?;
@@ -734,7 +849,7 @@ fn acknowledge_unused(s: Option<&Element>) -> Result<(), OperatorError> {
             "unsupervisedMergingMinNumberOfCases: expected at least 1, found {min_cases}"
         )));
     }
-    let _ = percent_int(s, "cateFeatureScreenNumber", 95)?;
+    // `cateFeatureScreenNumber` is read in `parse` as `almost_constant_pct`.
     let _ = finite(s, "minMax_min", 0.0)?;
     let _ = finite(s, "minMax_max", 100.0)?;
     let _ = settings::integer(s, "todaysDate")?;
@@ -750,6 +865,27 @@ fn custom_steps(s: Option<&Element>) -> Result<bool, OperatorError> {
         text_or(s, "analysisObjective", "balance").as_str(),
         "custom" | "Custom"
     ) && flag(s, "transConsSelectFeatures", true)?)
+}
+
+impl Prep {
+    /// The role Modeler prepares with: the upstream Type role, or the explicit
+    /// `useCustomSettings` target/inputs (`rest_custom_fields` keeps only `c_rel`;
+    /// `rest_weight_control` repeats the Type roles).
+    fn effective_role(&self, field: &Field) -> Role {
+        if let Some((target, inputs)) = &self.custom {
+            if field.name == *target {
+                return Role::Target;
+            }
+            if inputs.contains(&field.name) {
+                return Role::Input;
+            }
+            return match field.role {
+                Role::Input | Role::Target => Role::None,
+                _ => field.role,
+            };
+        }
+        field.role
+    }
 }
 
 fn classify(prep: &Prep, field: &Field) -> Class {
@@ -791,12 +927,16 @@ fn classify(prep: &Prep, field: &Field) -> Class {
         };
     }
     if field.measurement == Measurement::Ordinal {
-        // String ordinals have no oracle; they are copied.
-        return if matches!(field.storage, Storage::Integer | Storage::Real) {
-            Class::Ordinal
-        } else {
-            Class::Pass
-        };
+        // String ordinals are categoricals to recode (`adp_rest/rest_base`,
+        // `rest_strord_missing`, `rest_strord_merge`: `os_transformed` after the
+        // nominal fields, missing as a category, nominal supervised merge).
+        if matches!(field.storage, Storage::Integer | Storage::Real) {
+            return Class::Ordinal;
+        }
+        if field.storage == Storage::String {
+            return Class::Categorical;
+        }
+        return Class::Pass;
     }
     if is_nominal_like(field) {
         return Class::Categorical;
@@ -820,6 +960,7 @@ fn prepare_date(
     field: &Field,
     index: usize,
     values: &[Value],
+    target: Option<&MergeTarget>,
     cols: &mut Vec<OutCol>,
 ) -> Result<(), OperatorError> {
     let days: Vec<Option<f64>> = values
@@ -847,13 +988,40 @@ fn prepare_date(
         }
     }
     if prep.extract_year {
-        push_element(prep, field, index, 1, &prep.suffix_year, &years, cols)?;
+        push_element(
+            prep,
+            field,
+            index,
+            1,
+            &prep.suffix_year,
+            &years,
+            target,
+            cols,
+        )?;
     }
     if prep.extract_month {
-        push_element(prep, field, index, 2, &prep.suffix_month, &months, cols)?;
+        push_element(
+            prep,
+            field,
+            index,
+            2,
+            &prep.suffix_month,
+            &months,
+            target,
+            cols,
+        )?;
     }
     if prep.extract_day {
-        push_element(prep, field, index, 3, &prep.suffix_day, &day_of_month, cols)?;
+        push_element(
+            prep,
+            field,
+            index,
+            3,
+            &prep.suffix_day,
+            &day_of_month,
+            target,
+            cols,
+        )?;
     }
     if prep.compute_date_duration {
         let elapsed: Vec<Option<f64>> = days
@@ -862,19 +1030,25 @@ fn prepare_date(
             .collect();
         let (divisor, suffix) = choose_unit(&prep.date_units, &elapsed, &[31.0, 366.0]);
         let series: Vec<Option<f64>> = elapsed.iter().map(|x| x.map(|x| x / divisor)).collect();
-        let name = extended(&field.name, suffix)?;
-        let out_values = if prep.scale_continuous {
-            rescale(&series, date_scale(prep)?, prep.replace_scale_missing)
+        // `rest_dates_selection`: date durations are screened like continuous inputs (both
+        // `d_days` and `t_hours` drop with p above alpha).
+        if !keep_date_continuous(prep, &series, target, &field.name)? {
+            // Dropped, like a screened continuous input.
         } else {
-            optional_reals(&series)
-        };
-        cols.push(OutCol {
-            field: continuous_field(name),
-            values: out_values,
-            group: GROUP_DATE_SCALE,
-            key_a: as_u32(index)?,
-            key_b: 0,
-        });
+            let name = extended(&field.name, suffix)?;
+            let out_values = if prep.scale_continuous {
+                rescale(&series, date_scale(prep)?, prep.replace_scale_missing)
+            } else {
+                optional_reals(&series)
+            };
+            cols.push(OutCol {
+                field: continuous_field(name),
+                values: out_values,
+                group: GROUP_DATE_SCALE,
+                key_a: as_u32(index)?,
+                key_b: 0,
+            });
+        }
     }
     // With no duration and no element the date is still excluded (`adp_time/time_*`: `d`).
     Ok(())
@@ -906,20 +1080,16 @@ fn choose_unit<'a>(units: &'a Units, elapsed: &[Option<f64>], limits: &[f64]) ->
 /// seconds from `fixedTime` in the chosen unit (`time_hours_raw`: 00:05:07 against 12:00:00 is
 /// -11.9147 hours), rescaled like a date duration; with the extraction flags its hour, minute and
 /// second as date elements are (`time_extract`: 24 and 60 levels, recast and z-scored). The time
-/// field itself is dropped. Both a duration and elements of one field have no oracle.
+/// field itself is dropped. `rest_time_both` keeps both the duration and the three recast
+/// elements (all z-scored).
 fn prepare_time(
     prep: &Prep,
     field: &Field,
     index: usize,
     values: &[Value],
+    target: Option<&MergeTarget>,
     cols: &mut Vec<OutCol>,
 ) -> Result<(), OperatorError> {
-    let extract = prep.extract_hour || prep.extract_minute || prep.extract_second;
-    if extract && prep.compute_time_duration {
-        return Err(OperatorError::Settings(
-            "GAP: a time duration with time elements has no oracle".into(),
-        ));
-    }
     let seconds: Vec<Option<i64>> = values
         .iter()
         .map(|value| match value {
@@ -938,18 +1108,24 @@ fn prepare_time(
             .collect();
         let (divisor, suffix) = choose_unit(&prep.time_units, &elapsed, &[60.0, 3600.0]);
         let series: Vec<Option<f64>> = elapsed.iter().map(|x| x.map(|x| x / divisor)).collect();
-        cols.push(OutCol {
-            field: continuous_field(extended(&field.name, suffix)?),
-            values: if prep.scale_continuous {
-                rescale(&series, date_scale(prep)?, prep.replace_scale_missing)
-            } else {
-                optional_reals(&series)
-            },
-            group: GROUP_DATE_SCALE,
-            key_a: as_u32(index)?,
-            key_b: 0,
-        });
-        return Ok(());
+        if keep_date_continuous(prep, &series, target, &field.name)? {
+            cols.push(OutCol {
+                field: continuous_field(extended(&field.name, suffix)?),
+                values: if prep.scale_continuous {
+                    rescale(&series, date_scale(prep)?, prep.replace_scale_missing)
+                } else {
+                    optional_reals(&series)
+                },
+                group: GROUP_DATE_SCALE,
+                key_a: as_u32(index)?,
+                key_b: 0,
+            });
+        }
+        // Without elements the duration is the only output; with them (`rest_time_both`) the
+        // elements follow it.
+        if !(prep.extract_hour || prep.extract_minute || prep.extract_second) {
+            return Ok(());
+        }
     }
     type Part<'a> = (bool, &'a str, fn(i64) -> i64);
     let parts: [Part<'_>; 3] = [
@@ -960,12 +1136,22 @@ fn prepare_time(
     for (position, (wanted, suffix, part)) in parts.into_iter().enumerate() {
         if wanted {
             let components: Vec<Option<i64>> = seconds.iter().map(|x| x.map(part)).collect();
-            push_element(prep, field, index, position + 1, suffix, &components, cols)?;
+            push_element(
+                prep,
+                field,
+                index,
+                position + 1,
+                suffix,
+                &components,
+                target,
+                cols,
+            )?;
         }
     }
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn push_element(
     prep: &Prep,
     field: &Field,
@@ -973,6 +1159,7 @@ fn push_element(
     extract_index: usize,
     suffix: &str,
     components: &[Option<i64>],
+    target: Option<&MergeTarget>,
     cols: &mut Vec<OutCol>,
 ) -> Result<(), OperatorError> {
     let name = extended(&field.name, suffix)?;
@@ -984,6 +1171,9 @@ fn push_element(
             .iter()
             .map(|value| value.map(|number| number as f64))
             .collect();
+        if !keep_date_continuous(prep, &series, target, &field.name)? {
+            return Ok(());
+        }
         let values = if prep.scale_continuous {
             rescale(&series, date_scale(prep)?, prep.replace_scale_missing)
         } else {
@@ -997,6 +1187,12 @@ fn push_element(
             key_b: extract_index,
         });
     } else {
+        // Ordinal date elements with feature selection have no oracle.
+        if prep.feature_selection.is_some() && target.is_some() {
+            return Err(OperatorError::Settings(
+                "GAP: feature selection of date-derived fields has no oracle".into(),
+            ));
+        }
         cols.push(OutCol {
             field: ordinal_field(name),
             values: components
@@ -1012,6 +1208,24 @@ fn push_element(
         });
     }
     Ok(())
+}
+
+/// Whether a continuous date/time derivative survives feature selection
+/// (`rest_dates_selection` drops `d_days`/`t_hours` with p above alpha, like a continuous
+/// input). With a categorical target there is no oracle.
+fn keep_date_continuous(
+    prep: &Prep,
+    series: &[Option<f64>],
+    target: Option<&MergeTarget>,
+    name: &str,
+) -> Result<bool, OperatorError> {
+    match (prep.feature_selection, target) {
+        (Some(alpha), Some(MergeTarget::Continuous(y))) => Ok(correlation_p(series, y) <= alpha),
+        (Some(_), Some(MergeTarget::Categorical(_))) => Err(OperatorError::Settings(format!(
+            "GAP: feature selection of date-derived field {name:?} against a categorical target has no oracle"
+        ))),
+        _ => Ok(true),
+    }
 }
 
 fn prepare_continuous(
@@ -1052,23 +1266,34 @@ fn prepare_continuous(
         (Some(alpha), Some(MergeTarget::Continuous(y))) if correlation_p(&series, y) > alpha => {
             return Ok(());
         }
-        (Some(_), Some(MergeTarget::Categorical(_))) => {
-            return Err(OperatorError::Settings(
-                "GAP: feature selection against a categorical target has no oracle".into(),
-            ));
-        }
+        // `rest_selection_cattarget` (`yn` Flag, `c_rel`/`c_noise`): both kept. Selection with a
+        // categorical target does not drop continuous inputs (guide step 1 is stated for
+        // continuous targets only, 885-888).
         _ => {}
     }
     if let (Some(alpha), Some(MergeTarget::Categorical(classes))) =
         (prep.supervised_binning, target)
     {
-        if series.iter().any(Option::is_none) {
-            return Err(OperatorError::Settings(format!(
-                "GAP: supervised binning of {:?}, which has missing values",
-                field.name
-            )));
-        }
-        let Some(cuts) = homogeneous_cuts(&series, classes, alpha) else {
+        // `rest_cont_missing_binning` (`c_miss` 15 missing, `replace_missing_continuous_inputs`
+        // on): missing values are replaced by the valid mean before the cuts, so the cuts
+        // include the 15 imputed rows (`-0.329…`, not `-0.413…` without them); missing target
+        // rows are still left out (pairwise deletion, 60-66).
+        let for_cuts: Vec<Option<f64>> = if prep.replace_scale_missing {
+            let finite: Vec<f64> = series
+                .iter()
+                .flatten()
+                .copied()
+                .filter(|x| x.is_finite())
+                .collect();
+            if finite.is_empty() {
+                return Ok(());
+            }
+            let mean = finite.iter().sum::<f64>() / finite.len() as f64;
+            series.iter().map(|v| Some(v.unwrap_or(mean))).collect()
+        } else {
+            series.clone()
+        };
+        let Some(cuts) = homogeneous_cuts(&for_cuts, classes, alpha) else {
             // One homogeneous subset: the binned field is constant and excluded (`c_noise`).
             return Ok(());
         };
@@ -1076,11 +1301,13 @@ fn prepare_continuous(
         binned.storage = Storage::Real;
         cols.push(OutCol {
             field: binned,
-            values: series
+            values: for_cuts
                 .iter()
                 .map(|x| match x {
-                    Some(x) => Value::real(cuts.iter().filter(|cut| x > *cut).count() as f64),
-                    None => Value::Null,
+                    Some(x) if x.is_finite() => {
+                        Value::real(cuts.iter().filter(|c| *x > **c).count() as f64)
+                    }
+                    _ => Value::Null,
                 })
                 .collect(),
             group: GROUP_BINNED,
@@ -1107,20 +1334,23 @@ fn prepare_continuous(
 /// before constructed features (`u32::MAX - 1`) and a Box-Cox target (`u32::MAX`).
 const RECAST_KEY: u32 = u32::MAX - 2;
 
-/// A numeric ordinal input (`adp_more/more_*`). More than `ordinalToScaleCategoriesNumThreshold`
+/// A numeric ordinal input (`adp_more/more_*`, `adp_rest/rest_ordinal_*`). More than `ordinalToScaleCategoriesNumThreshold`
 /// distinct values recast it as continuous (`o12`, 12 levels, z-scored). Otherwise it is copied
 /// unchanged (`o4`, `om` in `more_base`) unless a step changes it:
 /// - with a target, the association screen and the supervised merge of adjacent levels
 ///   (`more_ordinal_merge_sup`: `o4` levels 1 and 2 join, codes 0, 1, 2 in level order; `om`
-///   p .031 stays and levels 1-4 join; missing values stay missing);
+///   p .031 stays and levels 1-4 join; missing values stay missing;
+///   `rest_ordinal_merge_missing`: `om` 10 missing become the lower-middle median 3, then
+///   levels 1-2 join (codes 0, 1 in level order with missing, 2, 3));
 /// - without one, `uiUnsupervisedMergeOrdinal` merges levels in value order by counts
 ///   (`more_ordinal_merge_unsup`: `om`'s 4-record level 5 joins level 4; missing values stay
 ///   missing; `o4`, whose levels all reach the threshold, keeps its name);
-/// - `uiReplaceOrdinalFeaturesMissingValue` replaces missing values by the median, keeping the
-///   level values (`more_ordinal_missing`: `om_transformed`, missing to 3).
+/// - `uiReplaceOrdinalFeaturesMissingValue` replaces missing values by the lower-middle median,
+///   keeping the level values (`more_ordinal_missing`: `om_transformed`, missing to 3;
+///   `rest_ordinal_median_between`: `o_med` 145x1/145x2 +10 missing → 1).
 ///
-/// Merged codes are integers and follow the categorical fields; a median-filled field keeps its
-/// input position. A merge that changes nothing copies the field.
+/// Merged codes are integers and follow the categorical fields; a median-filled field follows the
+/// copied fields (`GROUP_PASS` `key_a` 1). A merge that changes nothing copies the field.
 fn prepare_ordinal(
     prep: &Prep,
     field: &Field,
@@ -1143,11 +1373,107 @@ fn prepare_ordinal(
         .iter()
         .map(|x| x.map_or(Value::Null, Value::real))
         .collect();
+    // `rest_ordinal_merge_missing` (`om` 10 missing) and `rest_ordinal_median_between` (`o_med`
+    // 145x1/145x2 +10 missing): missing ordinal values become the lower-middle valid value
+    // (`om` 3, `o_med` 1), the median-category count updated (guide 336-344). No GAP for a
+    // between-levels median: the lower middle is used.
+    let median: Option<f64> = if prep.replace_ordinal_missing && series.iter().any(Option::is_none)
+    {
+        let mut valid: Vec<f64> = series.iter().flatten().copied().collect();
+        if valid.is_empty() {
+            None
+        } else {
+            valid.sort_by(f64::total_cmp);
+            Some(valid[(valid.len() - 1) / 2])
+        }
+    } else {
+        None
+    };
     let merging = prep.supervised_merge.is_some() || prep.unsupervised_merge_ordinal.is_some();
     if merging && prep.replace_ordinal_missing {
-        return Err(OperatorError::Settings(
-            "GAP: merging an ordinal input whose missing values are replaced has no oracle".into(),
-        ));
+        // Supervised merge after median replacement has an oracle (`om`); unsupervised merge
+        // after replacement has none. When both flags are on with a target (`rest_ordinal_merge_missing`
+        // saves `uiUnsupervisedMergeOrdinal` true alongside the supervised merge), the supervised
+        // merge wins and the unsupervised flag is ignored.
+        if prep.unsupervised_merge_ordinal.is_some() && prep.supervised_merge.is_none() {
+            return Err(OperatorError::Settings(
+                "GAP: merging an ordinal input whose missing values are replaced has no oracle"
+                    .into(),
+            ));
+        }
+        let Some(median) = median else {
+            return Err(OperatorError::Settings(format!(
+                "GAP: the median of {:?} has no valid values",
+                field.name
+            )));
+        };
+        let filled: Vec<Value> = series
+            .iter()
+            .map(|x| x.map_or(Value::real(median), Value::real))
+            .collect();
+        let screen = prep.supervised_merge.or(prep.feature_selection);
+        let merged: Option<Vec<(Value, usize)>> = match (screen, target) {
+            (Some(alpha), Some(target)) => {
+                let (groups, continuous) = target_groups(&filled, target, &field.name)?;
+                let all: Vec<&MergeGroup> = groups.iter().collect();
+                if association_p(&all, continuous) > alpha {
+                    return Ok(());
+                }
+                prep.supervised_merge
+                    .map(|alpha| supervised_merge(groups, continuous, alpha, true))
+            }
+            _ => None,
+        };
+        let name = extended(&field.name, &prep.name_ext)?;
+        if let Some(labeled) = merged {
+            let groups = labeled
+                .iter()
+                .map(|(_, code)| *code)
+                .max()
+                .map_or(0, |m| m + 1);
+            if groups < labeled.len() {
+                let mut out = ordinal_field(name);
+                out.storage = Storage::Integer;
+                cols.push(OutCol {
+                    field: out,
+                    values: filled
+                        .iter()
+                        .map(|key| {
+                            match labeled
+                                .iter()
+                                .find(|(k, _)| k.total_cmp(key) == Ordering::Equal)
+                            {
+                                Some((_, code)) => Value::Integer(*code as i64),
+                                None => Value::Null,
+                            }
+                        })
+                        .collect(),
+                    group: GROUP_CATEGORICAL,
+                    key_a: 0,
+                    key_b: index,
+                });
+                return Ok(());
+            }
+        }
+        // Merge changed nothing: fall through to the median-filled field below.
+        let mut out = field.clone();
+        out.name = name;
+        cols.push(OutCol {
+            field: out,
+            values: values
+                .iter()
+                .zip(&series)
+                .map(|(value, x)| match (x, field.storage) {
+                    (Some(_), _) => value.clone(),
+                    (None, Storage::Integer) => Value::Integer(median as i64),
+                    (None, _) => Value::real(median),
+                })
+                .collect(),
+            group: GROUP_PASS,
+            key_a: 1,
+            key_b: index,
+        });
+        return Ok(());
     }
     let screen = prep.supervised_merge.or(prep.feature_selection);
     let merged: Option<Vec<(Value, usize)>> = match (screen, target) {
@@ -1213,13 +1539,8 @@ fn prepare_ordinal(
     if prep.replace_ordinal_missing && series.iter().any(Option::is_none) {
         let mut valid: Vec<f64> = series.iter().flatten().copied().collect();
         valid.sort_by(f64::total_cmp);
-        let (low, high) = (valid[(valid.len() - 1) / 2], valid[valid.len() / 2]);
-        if low != high {
-            return Err(OperatorError::Settings(format!(
-                "GAP: the median of {:?} falls between two levels",
-                field.name
-            )));
-        }
+        // Lower middle (`o_med` 145x1/145x2 +10 missing → 1; `om` → 3).
+        let median = valid[(valid.len() - 1) / 2];
         let mut out = field.clone();
         out.name = name;
         cols.push(OutCol {
@@ -1229,12 +1550,12 @@ fn prepare_ordinal(
                 .zip(&series)
                 .map(|(value, x)| match (x, field.storage) {
                     (Some(_), _) => value.clone(),
-                    (None, Storage::Integer) => Value::Integer(low as i64),
-                    (None, _) => Value::real(low),
+                    (None, Storage::Integer) => Value::Integer(median as i64),
+                    (None, _) => Value::real(median),
                 })
                 .collect(),
             group: GROUP_PASS,
-            key_a: 0,
+            key_a: 1,
             key_b: index,
         });
         return Ok(());
@@ -1244,7 +1565,7 @@ fn prepare_ordinal(
 }
 
 /// Feature construction (guide "Feature Selection and Construction" and "Principal Component
-/// Analysis", `adp_corr/corr_construct*`). Over the continuous inputs as prepared (z-scores, or
+/// Analysis", `adp_corr/corr_construct*`, `adp_rest/rest_construct_order`). Over the continuous inputs as prepared (z-scores, or
 /// raw values without rescaling), for the correlation levels .9, .8, ..., .2 (exact decimals:
 /// `x5`/`x6` at r .191 stay apart): the most correlated pair above the level starts a group, which
 /// takes the input whose smallest absolute correlation with the members is largest and above the
@@ -1255,8 +1576,8 @@ fn prepare_ordinal(
 /// "largest loading positive" and "loadings sum positive", so a group where those disagree is a
 /// `GAP:`. With feature selection, an input whose partial correlation with the target given a new
 /// feature has p above `featureSelectionPValue` is dropped (guide step 7). Constructed features
-/// follow the continuous inputs; next to categorical, binned, date or Box-Cox fields their place
-/// has no oracle.
+/// go last, after categorical and date fields (`rest_construct_order` `feature1` after
+/// `ncat_transformed`).
 fn construct_features(
     prep: &Prep,
     root: &str,
@@ -1349,15 +1670,14 @@ fn construct_features(
     if features.is_empty() {
         return Ok(());
     }
+    // `rest_construct_order` keeps `d_days`, `t_hours` and `ncat_transformed` alongside the new
+    // `feature1`; binned fields and a Box-Cox target with construction have no oracle.
     if cols.iter().any(|col| {
-        matches!(
-            col.group,
-            GROUP_CATEGORICAL | GROUP_BINNED | GROUP_DATE_SCALE | GROUP_DATE_ORDINAL
-        ) || (col.group == GROUP_CONTINUOUS && col.key_a == u32::MAX)
+        matches!(col.group, GROUP_BINNED)
+            || (col.group == GROUP_CONTINUOUS && col.key_a == u32::MAX)
     }) {
         return Err(gap(
-            "the place of constructed features next to categorical, binned, date or target fields \
-             has no oracle"
+            "the place of constructed features next to binned or target fields has no oracle"
                 .into(),
         ));
     }
@@ -1374,8 +1694,8 @@ fn construct_features(
         cols.push(OutCol {
             field: continuous_field(format!("{root}{}", number + 1)),
             values: values.into_iter().map(finite_real).collect(),
-            group: GROUP_CONTINUOUS,
-            key_a: u32::MAX - 1,
+            group: GROUP_CONSTRUCTED,
+            key_a: 0,
             key_b: number,
         });
     }
@@ -1465,15 +1785,18 @@ fn principal_component(columns: &[&[f64]]) -> Result<Vec<f64>, String> {
 /// Box-Cox grid of the guide ("Target Handling"): lambda from -3 to 3 in steps of 0.5.
 const BOX_COX_GRID: (f64, f64, usize) = (-3.0, 0.5, 13);
 
-/// A target with a preparation step (`adp_more/more_target_*`, `more_nominal_target*`). These
+/// A target with a preparation step (`adp_more/more_target_*`, `more_nominal_target*`,
+/// `adp_rest/rest_target_*`). These
 /// replace the target with `<name><nameExtForTarget>` right after the copied fields:
 /// - `uiReorderNominalTargetCategories`: codes from the least frequent category (`yn`: c 0,
 ///   b 1, a 2); an empty string is a category (`ynm`: `""` 0);
-/// - `uiDetectTargetOutliers` (`coerceToCutoffVal` only): values beyond the robust bounds are
-///   coerced, the rest copied (`yco`: 49.27 to 19.21, -23.4 to 3.79);
-/// - `uiReplaceScaleTargetMissingValue`: missing values become the mean (`ycm`).
+/// - `uiDetectTargetOutliers`: values beyond the robust bounds are coerced (`coerceToCutoffVal`,
+///   `yco` 49.27 to 19.21) or set to missing (`setToMissingVal`, `rest_target_outliers_delete`
+///   `yco` 53.73 and -20.04 → null, 31.25 → null);
+/// - `uiReplaceScaleTargetMissingValue`: missing values become the mean (`ycm`); with Box-Cox
+///   they become the final mean (`rest_target_combined` `ycomb` 9 missing → 0).
 ///
-/// Box-Cox ([`box_cox_target`]) follows the continuous inputs instead.
+/// Box-Cox ([`box_cox_target_with`]) follows the continuous inputs instead.
 fn prepare_target(
     prep: &Prep,
     field: &Field,
@@ -1512,26 +1835,40 @@ fn prepare_target(
         });
     }
     if prep.box_cox_target.is_some() {
-        if prep.target_missing_mean || prep.target_outliers {
-            return Err(gap(
-                "Box-Cox combined with other target steps has no oracle",
-            ));
+        let mut series: Vec<Option<f64>> = values
+            .iter()
+            .map(|value| as_number(field, value).filter(|x| x.is_finite()))
+            .collect();
+        // Outliers first (guide order), then Box-Cox over the handled values
+        // (`rest_target_combined`: `ycomb` outliers coerced, missing to the final mean).
+        if prep.target_outliers {
+            series = handle_outliers(
+                &Outliers {
+                    cutoff: prep.outlier_cutoff,
+                    to_missing: prep.outliers_to_missing,
+                },
+                series,
+                &field.name,
+            )?;
         }
-        return box_cox_target(prep, field, index, values);
+        return box_cox_target_with(prep, field, index, &series);
     }
     let mut series: Vec<Option<f64>> = values
         .iter()
         .map(|value| as_number(field, value).filter(|x| x.is_finite()))
         .collect();
     if prep.target_outliers {
-        let rule = &Outliers {
-            cutoff: prep.outlier_cutoff,
-            to_missing: prep.outliers_to_missing,
-        };
-        if rule.to_missing {
-            return Err(gap("setting target outliers to missing has no oracle"));
-        }
-        series = handle_outliers(rule, series, &field.name)?;
+        // `rest_target_outliers_delete`: outliers set to missing (guide 296-306), the rest
+        // copied; stats updated (309-313) is the rescaling of the inputs, which already sees
+        // the handled target only via merging/selection (none here).
+        series = handle_outliers(
+            &Outliers {
+                cutoff: prep.outlier_cutoff,
+                to_missing: prep.outliers_to_missing,
+            },
+            series,
+            &field.name,
+        )?;
     }
     if prep.target_missing_mean {
         let valid: Vec<f64> = series.iter().flatten().copied().collect();
@@ -1559,29 +1896,32 @@ fn prepare_target(
 /// (ties: the smallest lambda) gives `g = ((y-c)^lambda - 1)/lambda` (`ln(y-c)` at 0), then
 /// `targetSD * (g - mean(g)) / sd(g) + targetMean` with the sample standard deviation.
 /// `ycont` picks lambda 1, the skewed `c_skew` lambda 0. Missing values stay missing and are left
-/// out of the estimates (`adp_more/more_target_boxcox_missing`). The new field follows every
+/// out of the estimates (`adp_more/more_target_boxcox_missing`), unless
+/// `uiReplaceScaleTargetMissingValue` fills them with the final mean
+/// (`rest_target_combined` `ycomb` missing → 0). The new field follows every
 /// continuous input and replaces the target.
-fn box_cox_target(
+/// Box-Cox over an already outlier-handled series (`rest_target_combined`).
+fn box_cox_target_with(
     prep: &Prep,
     field: &Field,
     index: usize,
-    values: &[Value],
+    observed: &[Option<f64>],
 ) -> Result<OutCol, OperatorError> {
     let Some((final_mean, final_sd)) = prep.box_cox_target else {
-        return Ok(pass_col(field, values.to_vec(), index));
+        return Err(OperatorError::Settings(format!(
+            "GAP: Box-Cox target {:?}: no targetMean/targetSD",
+            field.name
+        )));
     };
     let gap = |what: &str| {
         OperatorError::Settings(format!("GAP: Box-Cox target {:?}: {what}", field.name))
     };
-    let observed: Vec<Option<f64>> = values
-        .iter()
-        .map(|value| as_number(field, value).filter(|x| x.is_finite()))
-        .collect();
     let y: Vec<f64> = observed.iter().flatten().copied().collect();
     if y.len() < 2 {
         return Err(gap("fewer than two records"));
     }
-    let n = y.len() as f64;
+    let n_valid = y.len() as f64;
+    let n_all = observed.len() as f64;
     let c = y.iter().copied().fold(f64::INFINITY, f64::min) - 1.0;
     let transform = |v: f64, lambda: f64| {
         if lambda == 0.0 {
@@ -1592,8 +1932,8 @@ fn box_cox_target(
     };
     let moments = |lambda: f64| {
         let g: Vec<f64> = y.iter().map(|&v| transform(v, lambda)).collect();
-        let mean = g.iter().sum::<f64>() / n;
-        let variance = g.iter().map(|x| (x - mean).powi(2)).sum::<f64>() / (n - 1.0);
+        let mean = g.iter().sum::<f64>() / n_valid;
+        let variance = g.iter().map(|x| (x - mean).powi(2)).sum::<f64>() / (n_valid - 1.0);
         (mean, variance)
     };
     let sum_log: f64 = y.iter().map(|&v| (v - c).ln()).sum();
@@ -1602,13 +1942,22 @@ fn box_cox_target(
     for j in 0..count {
         let lambda = start + step * j as f64;
         let (_, variance) = moments(lambda);
-        let likelihood = -n / 2.0 * ((n - 1.0) / n * variance).ln() + (lambda - 1.0) * sum_log;
+        let likelihood =
+            -n_valid / 2.0 * ((n_valid - 1.0) / n_valid * variance).ln() + (lambda - 1.0) * sum_log;
         if likelihood.is_finite() && best.is_none_or(|(_, top)| likelihood > top) {
             best = Some((lambda, likelihood));
         }
     }
     let lambda = best.ok_or_else(|| gap("no finite log-likelihood"))?.0;
-    let (mean, variance) = moments(lambda);
+    let (mean, variance_valid) = moments(lambda);
+    // With missing-value replacement the imputed rows sit at the final mean: they add 0 to
+    // the sum of squares but increase the divisor (`rest_target_combined` `ycomb` 9 missing:
+    // sd 5.654 over 299, not 5.741 over 290), like rescaling with imputation.
+    let variance = if prep.target_missing_mean && observed.len() > y.len() {
+        variance_valid * (n_valid - 1.0) / (n_all - 1.0)
+    } else {
+        variance_valid
+    };
     let sd = variance.sqrt();
     if !(sd.is_finite() && sd > 0.0) {
         return Err(gap("constant after the transformation"));
@@ -1621,6 +1970,10 @@ fn box_cox_target(
             .iter()
             .map(|v| match v {
                 Some(v) => finite_real(final_sd * (transform(*v, lambda) - mean) / sd + final_mean),
+                // `rest_target_combined` fills the 9 missing `ycomb` with the final mean;
+                // without `uiReplaceScaleTargetMissingValue` missing stays missing
+                // (`adp_more/more_target_boxcox_missing`).
+                None if prep.target_missing_mean => finite_real(final_mean),
                 None => Value::Null,
             })
             .collect(),
@@ -1650,7 +2003,7 @@ fn merge_target(prep: &Prep, input: &Table) -> Result<Option<MergeTarget>, Opera
     }
     let gap = |what: &str| OperatorError::Settings(format!("GAP: Auto Data Prep merge: {what}"));
     let targets: Vec<usize> = (0..input.model().len())
-        .filter(|&i| input.model().fields()[i].role == Role::Target)
+        .filter(|&i| prep.effective_role(&input.model().fields()[i]) == Role::Target)
         .collect();
     let index = match targets.as_slice() {
         [] if prep.supervised_merge.is_some() => {
@@ -1728,17 +2081,29 @@ fn prepare_categorical(
     if prep.exclude_poor && non_null <= 1 {
         return Ok(());
     }
-    if (prep.supervised_merge.is_some() || prep.unsupervised_merge.is_some())
-        && !prep.reorder_nominal
-    {
-        return Err(OperatorError::Settings(
-            "GAP: merging without uiReorderNominalCatsPriorToMerging has no oracle".into(),
-        ));
+    // Guide "Basic Variable Screening" step 3 (`adp_rest/rest_almost_constant`): a categorical
+    // is dropped when its mode exceeds `cateFeatureScreenNumber` percent of all rows
+    // (`acat` 270/300 = 90% > 80 drops; default 95 keeps). Greater-than, like the missing
+    // share screen.
+    if prep.exclude_almost_constant && n > 0 {
+        let mode = counts
+            .iter()
+            .filter(|(key, _)| !key.is_null())
+            .map(|(_, count)| *count)
+            .max()
+            .unwrap_or(0);
+        if percent(mode, n) > prep.almost_constant_pct {
+            return Ok(());
+        }
     }
-    if !prep.reorder_nominal {
+    if !prep.reorder_nominal && prep.supervised_merge.is_none() && prep.unsupervised_merge.is_none()
+    {
         cols.push(pass_col(field, values.to_vec(), index));
         return Ok(());
     }
+    // `rest_nominal_noreorder`: supervised merging without reordering still merges (`n1`
+    // `k1`/`k2` → 2, `k4` → 1, `k3` → 0, the same codes as the reordered merge would give);
+    // the reorder flag only skips the plain recoding above.
     let keys: Vec<Value> = values
         .iter()
         .map(|value| category_key(field, value, prep.trim_blanks))
@@ -1801,14 +2166,10 @@ fn screen_numeric(prep: &Prep, values: &[Option<f64>]) -> bool {
     prep.exclude_poor && distinct_f64(values) <= 1
 }
 
-/// Date durations and recast date elements have z-score evidence only (`misc_next/adp_*`).
+/// Date durations and recast date elements rescale like continuous inputs
+/// (`rest_dates_minmax` min-maxs `d_days`/`t_hours` to 0..100).
 fn date_scale(prep: &Prep) -> Result<&Scale, OperatorError> {
-    match prep.scale {
-        Scale::ZScore { .. } => Ok(&prep.scale),
-        Scale::MinMax { .. } => Err(OperatorError::Settings(
-            "GAP: min-max rescaling of date fields has no oracle".into(),
-        )),
-    }
+    Ok(&prep.scale)
 }
 
 /// Outliers of one continuous input (`adp_next/adp_outlier_*`): the bounds are the robust mean
@@ -2143,12 +2504,29 @@ fn supervised_merge(
     labeled
 }
 
-/// String codes of a nominal recoding.
+/// String codes of a nominal recoding (`adp_rest/rest_base` `many80`: 80 categories
+/// become `"00"`..`"79"`, zero-padded to the width of the largest code so lexical
+/// order stays numeric; fewer than 10 codes need no padding).
 fn string_codes(labeled: Vec<(Value, usize)>) -> Vec<(Value, Value)> {
+    let total = labeled
+        .iter()
+        .map(|(_, code)| *code)
+        .max()
+        .map_or(0, |m| m + 1);
     labeled
         .into_iter()
-        .map(|(key, code)| (key, Value::string(code.to_string())))
+        .map(|(key, code)| (key, code_string(code, total)))
         .collect()
+}
+
+/// Zero-padded code: `index` among `total` codes, width of `total - 1`.
+fn code_string(index: usize, total: usize) -> Value {
+    let width = total.saturating_sub(1).to_string().len().max(1);
+    let mut text = index.to_string();
+    while text.len() < width {
+        text.insert(0, '0');
+    }
+    Value::string(text)
 }
 
 /// Supervised binning (guide "Supervised Binning", `adp_next/adp_binning`): the predictor's class
@@ -2338,10 +2716,11 @@ fn assign_codes(mut counts: Vec<(Value, usize)>) -> Vec<(Value, Value)> {
             .cmp(&right.1)
             .then_with(|| left.0.total_cmp(&right.0))
     });
+    let total = counts.len();
     let mut labeled: Vec<(Value, Value)> = counts
         .into_iter()
         .enumerate()
-        .map(|(index, (key, _))| (key, Value::string(index.to_string())))
+        .map(|(index, (key, _))| (key, code_string(index, total)))
         .collect();
     labeled.sort_by(|left, right| left.0.total_cmp(&right.0));
     labeled
