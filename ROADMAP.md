@@ -8,7 +8,7 @@
 |---|---|---|
 | MVP 节点覆盖 | 85 / 85（其中 10 个按统计等价验收） | 实测（`cargo xtask parity`，2026-10-20） |
 | 以后再做 / 许可证受阻 / 不做 | 已做 3 / 25；0 / 5；0 / 34 | 实测（`cargo xtask parity`） |
-| 回归（全部带标准答案的流） | 995 个流：907 完全一致、60 统计等价、28 已知 GAP、0 回归 | 实测（`cargo xtask regress`，2026-10-28） |
+| 回归（全部带标准答案的流） | 1085 个流：994 完全一致、60 统计等价、31 已知 GAP、0 回归 | 实测（`cargo xtask regress`，2026-10-28） |
 | 语料 | `xtask/corpus.tsv` 登记 1096 个文件，50 个 oracle 标签 | 实测 |
 
 ## 阶段
@@ -26,7 +26,7 @@
 
 ## 进度日志
 
-- 2026-10-28：C5.0 剪枝：只让正增益测试进入平均增益门槛、提升时只重生长被选中的分支、提升最大的内部子分支、对重生长后的候选继续做子树提升、全局剪枝在误差增量相同时先坍缩叶子多的子树；`c50_prune` 6 例与 16 个 Auto Classifier C5.0 组件全部逐节点一致，`c50_presets/c50_wn100_expert` 仍差一处。Decision List 判别实验 21 例中 20 例完整一致。输出节点补上 flag/数值矩阵、成对 t 检验、利润/ROI 图。
+- 2026-10-28：C5.0 剪枝：只让正增益测试进入平均增益门槛、提升时只重生长被选中的分支、提升最大的内部子分支、对重生长后的候选继续做子树提升、全局剪枝在误差增量相同时先坍缩叶子多的子树、并先做信息量检验（切分的比特数低于 log2（正增益检验数）即剪掉，由 90 个探针流反推）；`c50_prune` 6 例与 16 个 Auto Classifier C5.0 组件全部逐节点一致，`c50_presets/c50_wn100_expert` 也已一致，剩 `wn89`（平票）与 `mc3`/`mc5`（生长阶段）。Decision List 判别实验 21 例中 20 例完整一致。输出节点补上 flag/数值矩阵、成对 t 检验、利润/ROI 图。
 - 2026-10-20：**MVP 85/85**。Excel 源节点（`excel_more` 证实空 `<row>` 元素是夹具问题、文本逗号读成句点）、XML 源、导入 PMML（回归与分类）。Auto Data Prep 按指南补齐异常值、min-max、目标 Box-Cox/缺失/异常值/重编码、监督与无监督合并（名义与序数）、监督分箱、特征选择、主成分特征构造、时间字段与日期年/自动单位（`adp_next`/`adp_corr`/`adp_more`/`adp_time` 共 43 例全部一致）。Decision List、Linear-AS、Sequence 用判别实验查到公开资料的尽头，结论记入文档；LSVM 停止点与 Cox（本机未装）确认不可复现。
 - 2026-10-19：Time Series、Auto Cluster、Random Trees、Auto Classifier/Numeric；统计等价验收层（`docs/statistical-parity.md`）。
 - 2026-10-18：PCA/Factor、Anomaly Detection（训练与打分）、Transform 输出、Apriori（表格与事务数据，规则与 oracle PMML 逐条一致）、Auto Data Prep（`misc_next` 三例）；Kohonen 仅打分。MVP 覆盖 65/85（许可证受阻的 5 个模型不计入）。
