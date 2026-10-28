@@ -236,14 +236,153 @@ fn c50_discriminate_trees_match_every_split_count_and_distribution() {
 }
 
 /// Frozen phase-3 predictions distinguish the largest branch from the largest
-/// internal branch. In auto44 the largest branch is a leaf, while the smaller
-/// west branch supplies the oracle's promoted age test. Keep the complete-tree
-/// and scoring contracts: equal training-error totals alone miss wn23's GAP.
+/// internal branch (`auto44`, `auto_noglobal`) and verify raising on a regrown
+/// candidate (`wn23`, `wn100_noglobal`). Keep the complete-tree and scoring
+/// contracts: equal training-error totals alone miss the `c4` vs `d <= 47.605` choice.
 #[test]
 fn c50_prune_internal_branch_controls_match_exactly() {
-    for case in ["auto44", "auto_noglobal", "wn11", "auto8"] {
+    for case in [
+        "auto44",
+        "auto_noglobal",
+        "wn11",
+        "auto8",
+        "wn23",
+        "wn100_noglobal",
+    ] {
         Fixture::load("c50_prune", case).compare();
     }
+}
+
+/// Every saved `C5RuleOutput` component across `auto_train/ac_*.str` (16 saved PMML
+/// attachments across 10 streams) matches our trained C5.0 component tree node-for-node.
+#[test]
+fn c50_auto_classifier_components_match_every_split_count_and_distribution() {
+    use dms_exec::{ExecContext, FileResolver, NodeOutput, Plan};
+    use dms_stream::Stream;
+    use dms_strfmt::ArchiveLimits;
+    use dms_strfmt::fastinfoset::{Element, Node};
+    use std::sync::Arc;
+
+    let root = support::repo_root();
+    let mut cases: Vec<String> = std::fs::read_dir(root.join("corpus/auto_train"))
+        .unwrap()
+        .filter_map(|e| {
+            let name = e.unwrap().file_name().into_string().unwrap();
+            name.strip_suffix(".str")
+                .filter(|s| s.starts_with("ac_"))
+                .map(str::to_owned)
+        })
+        .collect();
+    cases.sort();
+    assert_eq!(cases.len(), 10);
+    let mut attachments_checked = 0usize;
+    for case in cases {
+        let bytes = std::fs::read(root.join(format!("corpus/auto_train/{case}.str"))).unwrap();
+        let archive =
+            dms_strfmt::container::read_archive(&bytes, &ArchiveLimits::default()).unwrap();
+        let stream = Stream::from_document(&archive.document).unwrap();
+        let attachments: std::collections::HashMap<String, Arc<[u8]>> = archive
+            .attachments
+            .into_iter()
+            .map(|a| (a.name, Arc::from(a.bytes)))
+            .collect();
+        let context = ExecContext {
+            files: FileResolver {
+                data_dirs: vec![root.join("corpus/auto_train")],
+            },
+            attachments: Arc::new(attachments.clone()),
+            stream_properties: stream.properties.clone().map(Arc::new),
+            decimal_places: Some(15),
+            ..ExecContext::default()
+        };
+        let builder = stream
+            .diagram
+            .nodes
+            .iter()
+            .find(|n| n.type_identifier() == "BuildBinaryClassifierNode")
+            .unwrap();
+        let plan = Plan::new(&stream);
+        let upstream = plan.inputs_of(&builder.uid)[0];
+        let input = plan.evaluate(&[upstream], &context);
+        let NodeOutput::Data(table) = input.get(upstream).unwrap().as_ref().unwrap() else {
+            panic!("auto_train/{case}: expected input table");
+        };
+        let entry = builder
+            .settings
+            .as_ref()
+            .unwrap()
+            .child("ensembleAlgorithms")
+            .unwrap()
+            .child_elements()
+            .find(|e| e.attribute("algorithmName") == Some("BuildC5RuleNode"))
+            .unwrap();
+        assert_eq!(entry.attribute("algorithmEnabled"), Some("true"));
+        let mut settings = builder.settings.clone().unwrap();
+        settings.children.clear();
+        for param in entry
+            .child_elements()
+            .filter(|e| e.name.local.as_ref() == "AlgorithmParameter")
+        {
+            let vals: Vec<_> = param
+                .child_elements()
+                .filter(|v| v.name.local.as_ref() == "PropertyTryValue")
+                .filter_map(|v| v.attribute("propertyValue"))
+                .collect();
+            if let [val] = vals.as_slice() {
+                let key = param.attribute("propertyName").unwrap();
+                let mut child: Element = param.clone();
+                child.name.local = key.into();
+                child.attributes.clear();
+                child.children = vec![Node::Text((*val).into())];
+                settings.children.push(Node::Element(child));
+            }
+        }
+        let mut synthetic = builder.clone();
+        synthetic.class = "BuildC5RuleNode".into();
+        synthetic.extension = None;
+        synthetic.settings = Some(settings);
+        let op = dms_exec::nodes::c50::build(&synthetic).unwrap();
+        let NodeOutput::Model(ours_pmml) = op
+            .produce(std::slice::from_ref(table), None, &context)
+            .unwrap()
+        else {
+            panic!("auto_train/{case}: expected model");
+        };
+        let dms_pmml::Model::Tree(ours) = &ours_pmml.model else {
+            panic!("auto_train/{case}: expected C5.0 TreeModel");
+        };
+        for nugget in stream
+            .diagram
+            .nodes
+            .iter()
+            .filter(|n| n.type_identifier() == "ApplyAutoClassifierNode")
+        {
+            for item in &nugget.result_items {
+                let Some(output) = item.child("modelOutput") else {
+                    continue;
+                };
+                if !output
+                    .attribute("class")
+                    .is_some_and(|c| c.ends_with("C5RuleOutput"))
+                {
+                    continue;
+                }
+                let member = output
+                    .child("properties")
+                    .and_then(|p| p.child("model"))
+                    .and_then(|m| m.attribute("pmml"))
+                    .unwrap();
+                let saved =
+                    Pmml::parse(std::str::from_utf8(&attachments[member]).unwrap()).unwrap();
+                let dms_pmml::Model::Tree(saved_tree) = &saved.model else {
+                    panic!("auto_train/{case}/{member}: expected TreeModel");
+                };
+                compare_tree(&ours.root, &saved_tree.root);
+                attachments_checked += 1;
+            }
+        }
+    }
+    assert_eq!(attachments_checked, 16);
 }
 
 #[test]
