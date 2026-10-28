@@ -1,10 +1,10 @@
 # 待办（按优先级排序）
 
-> 更新：2026-10-20
+> 更新：2026-10-28
 
-2026-10-20 C5.0：P（仅正的局部修正增益进入均值，以该增益比较并计算增益比）与 R5（先按固定最大分支结构重估，选中后重长后代）已落地。15 个 `c50_discriminate` 与 `c50_wn_expert` 的完整 PMML 树、分布及评分精确匹配，7 条回归 GAP 已关闭。剩余：wn100 两个额外子树，训练误差 16 vs Modeler 22；16 个相同的 Auto Classifier C5.0 组件，39 vs 43。精确二项上界、重剪枝、raising 时序及全局预算候选均未同时解释全部见证，未额外修改生产剪枝；拟议的 6 流 `c50_prune_streams.py` 及冻结预测见 `target/c50d3/REPORT.md`。winnowing、加权分布及 boosting 原有 GAP 保留。
+2026-10-28 C5.0：P+R5 后按原始样本数选择最大的内部子分支（排除叶子后再选，平票取首个），新增精确匹配 `c50_prune/auto44` 和 `auto_noglobal`，关闭 2 条 GAP；保留全部 173 棵既有精确控制树，新增完整树/分布/评分合同覆盖 4 个剪枝流。16 个相同的 Auto Classifier C5.0 组件仍非精确：与 oracle 的预测值差异 14→2/360，预测值或置信度差异 52→17/360；训练误差 45 vs Modeler 43，剩余全局剪枝多合并 east+north，丢失 income<=28。wn100 仍为 16 vs 22；新 wn23 与 wn100_noglobal 的 d<=47.605 二叉树不在全部冻结预测中，局部提升/重估仍待解释。该内部子分支规则是有公开 grafting 基础的经验拟合，不是 C5.0 公开规范。结果、冻结预测映射、计时及验证见 `target/c50d4/REPORT.md`。winnowing、加权分布及 boosting 原有 GAP 保留。
 
-Decision List 采用 phase-3 `estimates-01822`，固定 21 例中 20 例完整 RuleSet IR 一致（原 10 例，全部保留）；平均首命中率 beam 是偏离指南 union estimate 的经验拟合。`dl_discriminate/dl05_carry` 的首命中分区仍不同；`models_next2/dl_default` 的完成列表支持数平票仍显式 GAP。`models_next2/dl_max_rules` 已严格匹配。移除 5 个已匹配的 dl_discriminate GAP；9 个 auto_train/ac_* GAP 仍由 C5.0 组件导致。显式拒绝 down 搜索、`reuseFields=false`、频率/权重、缺失输入/目标、事件、交互状态、Split 字段；未知存储和资源上限返回错误。见 `docs/decision-list-validation.md`。
+Decision List 采用 phase-3 `estimates-01822`，固定 21 例中 20 例完整 RuleSet IR 一致（原 10 例，全部保留）；平均首命中率 beam 是偏离指南 union estimate 的经验拟合。`dl_discriminate/dl05_carry` 的首命中分区仍不同；`models_next2/dl_default` 的完成列表支持数平票仍显式 GAP。`models_next2/dl_max_rules` 已严格匹配。移除 5 个已匹配的 dl_discriminate GAP；7 个 auto_train/ac_* GAP 仍由 C5.0 组件导致。显式拒绝 down 搜索、`reuseFields=false`、频率/权重、缺失输入/目标、事件、交互状态、Split 字段；未知存储和资源上限返回错误。见 `docs/decision-list-validation.md`。
 
 1. **P2：类型系统和 CLEM**：存储类型、测量级别、缺失值、日期基准（流属性 `dateBaseline`、`date2DigitBaseline`）；CLEM 解析与求值的子集。
 2. **P2：节点设置映射**：每个节点的脚本属性名 ↔ 文件元素名 ↔ 取值形式，用探针逐个确定（`docs/formats/str.md` 第 5 节），按团队流的使用频率排序（Type、Statistics File、Table、Var. File、Derive、Filter、Select、Data Audit……）。
