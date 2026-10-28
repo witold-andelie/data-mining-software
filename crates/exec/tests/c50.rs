@@ -253,15 +253,19 @@ fn c50_prune_internal_branch_controls_match_exactly() {
     }
 }
 
-/// Global pruning's information test (module docs): the same `[1,5] / [4,1]` split stays
-/// when its field is the only positive test or carries enough bits, and goes when a second
-/// positive test costs more bits than it carries; the one-SE budget then runs on the result.
+/// Global pruning (module docs): the information test keeps the same `[1,5] / [4,1]` split
+/// when its field is the only positive test or carries enough bits, and drops it when a
+/// second positive test costs more bits than it carries; the one-SE budget then runs on the
+/// result, retrying only enclosing subtrees after a refused tie group (`wn89_noC4F` versus
+/// `wn150_prefix`).
 #[test]
-fn c50_global_information_test_matches_exactly() {
+fn c50_global_pruning_matches_exactly() {
     for (label, case) in [
         ("c50_presets", "c50_wn100_expert"),
         ("c50_global", "wn25_c1F"),
         ("c50_global", "wn100_sev85"),
+        ("c50_global", "wn89_noC4F"),
+        ("c50_global", "wn150_prefix"),
         ("c50_global2", "wn11_B_global"),
         ("c50_twig2", "b_on"),
         ("c50_twig2", "ba_on"),
