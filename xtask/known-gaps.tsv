@@ -34,7 +34,6 @@ c50_global	wn100_mc3	C5.0 global pruning (c50_global probe): Modeler's collapsed
 c50_global	wn100_sev65	C5.0 global pruning (c50_global probe): Modeler's collapsed subtrees differ from ours; rule unresolved; see crates/algo/src/c50.rs
 c50_global	wn100_sev70	C5.0 global pruning (c50_global probe): Modeler's collapsed subtrees differ from ours; rule unresolved; see crates/algo/src/c50.rs
 c50_global	wn100_sev80	C5.0 global pruning (c50_global probe): Modeler's collapsed subtrees differ from ours; rule unresolved; see crates/algo/src/c50.rs
-c50_global	wn100_sev85	C5.0 global pruning (c50_global probe): Modeler's collapsed subtrees differ from ours; rule unresolved; see crates/algo/src/c50.rs
 c50_global	wn25_c1F	C5.0 global pruning (c50_global probe): Modeler's collapsed subtrees differ from ours; rule unresolved; see crates/algo/src/c50.rs
 c50_global	wn49_c3F	C5.0 global pruning (c50_global probe): Modeler's collapsed subtrees differ from ours; rule unresolved; see crates/algo/src/c50.rs
 c50_global	wn51_c3T	C5.0 global pruning (c50_global probe): Modeler's collapsed subtrees differ from ours; rule unresolved; see crates/algo/src/c50.rs
