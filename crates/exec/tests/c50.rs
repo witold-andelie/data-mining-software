@@ -282,6 +282,29 @@ fn c50_global_pruning_matches_exactly() {
     }
 }
 
+/// The pruning confidence's normal deviate (`confidence_deviate`): one-split trees whose
+/// local leaf/subtree comparison flips at known deviates, and the two wn100 trees where a
+/// 0.0024 margin decided which child's test was raised.
+#[test]
+fn c50_confidence_deviate_matches_exactly() {
+    let root = support::repo_root();
+    let mut cases: Vec<String> = std::fs::read_dir(root.join("corpus/c50_conf"))
+        .unwrap()
+        .filter_map(|e| {
+            let name = e.unwrap().file_name().into_string().unwrap();
+            name.strip_suffix(".str").map(str::to_owned)
+        })
+        .collect();
+    cases.sort();
+    assert_eq!(cases.len(), 17);
+    for case in &cases {
+        Fixture::load("c50_conf", case).compare();
+    }
+    for case in ["wn100_mc3_noglobal", "wn100_mc5_noglobal"] {
+        Fixture::load("c50_global2", case).compare();
+    }
+}
+
 /// Every saved `C5RuleOutput` component across `auto_train/ac_*.str` (16 saved PMML
 /// attachments across 10 streams) matches our trained C5.0 component tree node-for-node.
 #[test]
