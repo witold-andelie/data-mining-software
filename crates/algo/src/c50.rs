@@ -114,9 +114,9 @@
 //! - `c50_group_symbols`: greedy gain-ratio grouping of symbolic categories.
 //! - `c50_prune90`: pruning confidence is (100 - severity)/100.
 //! - `c50_no_global_prune`: local pruning, including R5, without global pruning.
-//! - R5: recursively prune children; if the largest original branch's pruned
-//!   child is nonleaf, route all current cases through its fixed tests and
-//!   recompute scores/distributions.
+//! - R5: recursively prune children; choose the largest remaining internal
+//!   child by original case count (first on ties), route all current cases
+//!   through its fixed tests and recompute scores/distributions.
 //!   Compare leaf L, kept subtree S, and fixed candidate R: choose the leaf if
 //!   L<=S+0.1 and L<=R+0.1, otherwise raise if R<=S+0.1. Only after selection,
 //!   retain the promoted test and regrow its descendants, then apply replacement
@@ -126,6 +126,20 @@
 //!   upper estimates: Esposito, Malerba & Semeraro, "A Comparative Analysis of
 //!   Methods for Pruning Decision Trees", IEEE TPAMI 19 (1997), pp.481–482.
 //!   The precise R5 selection/regrowth schedule is an empirical convention.
+//!   Phase-4 evidence (`c50_prune`, 2026-10-28): excluding leaf children before
+//!   choosing the largest candidate makes auto44 and auto_noglobal exact,
+//!   preserves wn11/auto8 and all 173 previously exact tree controls. This is
+//!   an empirical extension of the paper's internal-node graft restriction,
+//!   not a published C5.0 specification. On Auto44, north (15 cases) is a leaf;
+//!   west (14) supplies age<=32, then regrowth supplies income<=90. The fixed
+//!   candidate estimate 17.190266 beats the retained subtree's 17.871095.
+//!   Whole Auto Classifier components improve from 14 to 2 prediction-value
+//!   disagreements and 52 to 17 value/confidence disagreements per 360 rows,
+//!   but still differ after global pruning. No candidate is chosen by dataset,
+//!   field name, global-pruning setting or a fitted numerical threshold.
+//!   Row routing binds each grown predicate's column and numeric cut once per
+//!   branch partition, rather than looking up/parsing them for every record.
+//!   This removes repeated work without changing predicates or arithmetic.
 //! - `c50_discriminate` (15 complete trees): g01–g04 isolate positive-only gate
 //!   membership, g05–g07 gain comparison across numeric/flag tests, g08/g09 local
 //!   penalty scope; r02/r03 require descendants to regrow (cut 2.5 -> 2.75).
@@ -160,11 +174,18 @@
 //!   The oracle is not a fixed point of CF=.25 leaf-versus-subtree pruning: at
 //!   c3=T / b>2.1 (46 records, 36/10), leaf bound 12.536923 is below the retained
 //!   subtree's 13.788497. No data-specific budget or pruning exception is used.
-//! - `auto_train/ac_*`: P repairs the six-record income<=28 decision. All 16 saved
-//!   C5.0 component trees still differ: 39/360 errors here versus Modeler's 43/360.
-//!   Modeler replaces the 44-record member=Y region subtree with age<=32 / income<=90
-//!   and collapses the eight-record member=N region subtree. Further raising as
-//!   well as pruning remains a GAP.
+//! - `auto_train/ac_*`: all 16 saved C5.0 component trees still differ: 45/360
+//!   errors here versus Modeler's 43/360. The largest-internal-child rule fixes
+//!   the 44-record age<=32 / income<=90 replacement and eight-record collapse.
+//!   Global pruning now also merges east+north at income<=46.5 / age>37.5 /
+//!   member=Y, removing Modeler's six-record income<=28 refinement. The two
+//!   additional errors and 17 differing confidences remain a GAP.
+//! - `c50_prune/wn23` and wn100_noglobal export a d<=47.605 stump on the
+//!   23-record witness, outside every phase-3 frozen prediction; our c4 subtree
+//!   has the same six training errors but different partitions/distributions.
+//!   wn11 stays split in isolation and with global pruning off, whereas the
+//!   global-on wn100 oracle collapses it. Further local raising/re-estimation
+//!   and global selection remain unresolved; see target/c50d4/REPORT.md.
 //! - Raising evidence: wn's root c1 gain ratio is 0.0909106225, whereas b's best
 //!   direct cut is 3.95, ratio 0.0645687711. The oracle's b=3.85 exists below c1=T
 //!   with endpoints 3.7/4.0. R5 promotes this test and regrows its descendants on
@@ -1193,7 +1214,7 @@ fn branch_rows(data: &Data, rows: &[usize], node: &Node) -> Vec<Vec<usize>> {
         .map(|child| {
             rows.iter()
                 .copied()
-                .filter(|&r| row_matches(data, &child.predicate, r))
+                .filter(row_matcher(data, &child.predicate))
                 .collect()
         })
         .collect()
@@ -1249,7 +1270,9 @@ fn prune(
     }
     let groups = branch_rows(data, rows, node);
     let mut subtree = 0.0;
-    for (child, group) in node.children.iter_mut().zip(&groups) {
+    let mut largest = None;
+    let mut largest_cases = 0;
+    for (index, (child, group)) in node.children.iter_mut().zip(&groups).enumerate() {
         subtree += prune(
             data,
             group,
@@ -1258,19 +1281,16 @@ fn prune(
             depth.saturating_add(1),
             budget,
         )?;
-    }
-    // Largest original branch by case count, first on ties; a child pruned to a
-    // leaf supplies no raising candidate.
-    let mut largest = 0;
-    for index in 1..groups.len() {
-        if groups.get(index).map_or(0, Vec::len) > groups.get(largest).map_or(0, Vec::len) {
-            largest = index;
+        // Only internal children can supply a test to promote. Choose the
+        // largest eligible original branch, retaining the first on ties.
+        if !child.children.is_empty() && (largest.is_none() || group.len() > largest_cases) {
+            largest = Some(index);
+            largest_cases = group.len();
         }
     }
-    let mut raised = node
-        .children
-        .get(largest)
-        .filter(|child| !child.children.is_empty() && depth < RAISING_DEPTH)
+    let mut raised = largest
+        .and_then(|index| node.children.get(index))
+        .filter(|_| depth < RAISING_DEPTH)
         .cloned();
     let parent = data
         .classes
@@ -1326,47 +1346,57 @@ const MANY_VALUES: f64 = 0.3;
 /// more than this (`c50_no_global_prune`, `c50_globalprune/*_noglobal`).
 const LOCAL_SLACK: f64 = 0.1;
 
-/// Whether `row` satisfies a split predicate the learner grew.
-fn row_matches(data: &Data, predicate: &Predicate, row: usize) -> bool {
-    let column = |field: &str| {
+/// Bind a grown test once when partitioning rows. Field lookup and numeric
+/// parsing are invariant across the records of a branch, including raised tests.
+fn row_matcher<'a>(data: &'a Data, predicate: &'a Predicate) -> impl Fn(&usize) -> bool + 'a {
+    let field = match predicate {
+        Predicate::Simple { field, .. } | Predicate::SimpleSet { field, .. } => Some(field),
+        _ => None,
+    };
+    let column = field.and_then(|field| {
         data.columns.iter().find(|c| match c {
             Column::Numeric { name, .. } | Column::Symbolic { name, .. } => name == field,
         })
-    };
-    let label = |field: &str| match column(field) {
-        Some(Column::Symbolic { values, labels, .. }) => {
-            values.get(row).and_then(|&code| labels.get(code))
-        }
+    });
+    let cut = match predicate {
+        Predicate::Simple {
+            operator: Operator::LessOrEqual | Operator::GreaterThan,
+            value,
+            ..
+        } => value.as_deref().and_then(|v| v.parse::<f64>().ok()),
         _ => None,
     };
-    match predicate {
-        Predicate::True => true,
-        Predicate::Simple {
-            field,
-            operator,
-            value,
-        } => match operator {
-            Operator::LessOrEqual | Operator::GreaterThan => {
-                let cut = value.as_deref().and_then(|v| v.parse::<f64>().ok());
-                let x = match column(field) {
-                    Some(Column::Numeric { values, .. }) => values.get(row).copied(),
-                    _ => None,
-                };
-                match (x, cut) {
-                    (Some(x), Some(cut)) if *operator == Operator::LessOrEqual => x <= cut,
-                    (Some(x), Some(cut)) => x > cut,
-                    _ => false,
-                }
+    move |&row| {
+        let label = || match column {
+            Some(Column::Symbolic { values, labels, .. }) => {
+                values.get(row).and_then(|&code| labels.get(code))
             }
-            Operator::Equal => label(field).is_some_and(|l| Some(l) == value.as_ref()),
+            _ => None,
+        };
+        match predicate {
+            Predicate::True => true,
+            Predicate::Simple {
+                operator, value, ..
+            } => match operator {
+                Operator::LessOrEqual | Operator::GreaterThan => {
+                    let x = match column {
+                        Some(Column::Numeric { values, .. }) => values.get(row).copied(),
+                        _ => None,
+                    };
+                    match (x, cut) {
+                        (Some(x), Some(cut)) if *operator == Operator::LessOrEqual => x <= cut,
+                        (Some(x), Some(cut)) => x > cut,
+                        _ => false,
+                    }
+                }
+                Operator::Equal => label().is_some_and(|l| Some(l) == value.as_ref()),
+                _ => false,
+            },
+            Predicate::SimpleSet { is_in, values, .. } => {
+                label().is_some_and(|l| values.contains(l)) == *is_in
+            }
             _ => false,
-        },
-        Predicate::SimpleSet {
-            field,
-            is_in,
-            values,
-        } => label(field).is_some_and(|l| values.contains(l)) == *is_in,
-        _ => false,
+        }
     }
 }
 
@@ -1402,7 +1432,7 @@ fn subtree_errors(data: &Data, node: &Node, rows: &[usize]) -> (f64, f64) {
         let sub: Vec<usize> = rows
             .iter()
             .copied()
-            .filter(|&r| row_matches(data, &child.predicate, r))
+            .filter(row_matcher(data, &child.predicate))
             .collect();
         let (_, e) = subtree_errors(data, child, &sub);
         errors += e;
@@ -1421,7 +1451,7 @@ fn weakest_subtree(data: &Data, node: &Node, rows: &[usize]) -> Option<f64> {
         let sub: Vec<usize> = rows
             .iter()
             .copied()
-            .filter(|&r| row_matches(data, &child.predicate, r))
+            .filter(row_matcher(data, &child.predicate))
             .collect();
         if let Some(a) = weakest_subtree(data, child, &sub) {
             best = best.map(|b: f64| b.min(a));
@@ -1444,7 +1474,7 @@ fn collapse_subtrees(data: &Data, node: &mut Node, rows: &[usize], extra: f64) {
         let sub: Vec<usize> = rows
             .iter()
             .copied()
-            .filter(|&r| row_matches(data, &child.predicate, r))
+            .filter(row_matcher(data, &child.predicate))
             .collect();
         collapse_subtrees(data, child, &sub, extra);
     }

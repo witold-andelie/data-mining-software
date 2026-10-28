@@ -235,6 +235,17 @@ fn c50_discriminate_trees_match_every_split_count_and_distribution() {
     }
 }
 
+/// Frozen phase-3 predictions distinguish the largest branch from the largest
+/// internal branch. In auto44 the largest branch is a leaf, while the smaller
+/// west branch supplies the oracle's promoted age test. Keep the complete-tree
+/// and scoring contracts: equal training-error totals alone miss wn23's GAP.
+#[test]
+fn c50_prune_internal_branch_controls_match_exactly() {
+    for case in ["auto44", "auto_noglobal", "wn11", "auto8"] {
+        Fixture::load("c50_prune", case).compare();
+    }
+}
+
 #[test]
 fn c50_simple_presets_and_expert_controls_match_exactly() {
     let cases = recorded_preset_cases();
