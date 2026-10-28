@@ -94,6 +94,12 @@
 //!   GAP `c50_global/wn100_mc5`: Modeler's `d <= 47.865` (also with global pruning off; ours
 //!   `d <= 47.605`) was grown on other records, and Modeler keeps it where the test collapses
 //!   ours (0.20 bits, 4 positive tests).
+//! - Pruning confidence (probe `c50_conf_streams`, 17 one-split trees at severities 65-85):
+//!   the normal deviate of the error bound is interpolated between table points, see
+//!   `confidence_deviate`. At severity 75 the exact deviate kept `c1 = T [8,4]`'s raised
+//!   `d` split by 0.0024 over the 0.1 tolerance in `c50_global2/wn100_mc3_noglobal` and
+//!   `wn100_mc5_noglobal`; with the interpolated deviate it collapses, the other child's
+//!   test is raised, and both local trees match (`a` at `c3 = F / c2 = T`, `d <= 47.865`).
 //! - GAP zero distributions: with case weights Modeler exports some leaves with all
 //!   class counts 0 but their record count kept, sums them into their ancestors, and
 //!   scores them with confidence 0. Smallest case `c50_weighted/c50_rc1_x6_10` (12
@@ -1131,7 +1137,7 @@ pub(crate) fn rule_tree(dataset: &Dataset<'_>, settings: &C50Settings) -> Result
 }
 
 /// One-sided Wilson upper bound with continuity correction; zero-error bound is
-/// the exact binomial bound. Numerical inversion avoids an inverse-normal dependency.
+/// the exact binomial bound. The normal deviate comes from [`confidence_deviate`].
 /// Tree pruning and rule-condition dropping share this estimate (`c50_rules_voting`).
 pub(crate) fn error_bound(total: f64, errors: f64, confidence: f64) -> f64 {
     if total <= 0.0 {
@@ -1143,6 +1149,35 @@ pub(crate) fn error_bound(total: f64, errors: f64, confidence: f64) -> f64 {
     if errors + 0.5 >= total {
         return total;
     }
+    let z = confidence_deviate(confidence);
+    let p = (errors + 0.5) / total;
+    total
+        * (p + z * z / (2.0 * total)
+            + z * (p * (1.0 - p) / total + z * z / (4.0 * total * total)).sqrt())
+        / (1.0 + z * z / total)
+}
+
+/// Upper normal deviate for a pruning confidence: linear between the exact deviates at
+/// 0.1, 0.2 and 0.4 and zero at 0.5 (`c50_conf`: one-split trees whose leaf/subtree
+/// comparison flips at a known deviate place it in (1.0517, ...) at 0.15, (0.8379, 0.8484)
+/// at 0.20, (0.6893, 0.7005) at 0.25, (0.5359, 0.5534) at 0.30, (0.3944, 0.4066) at 0.35;
+/// the exact deviates 1.0364, 0.6745, 0.5244, 0.3853 all miss, the interpolated 1.0616,
+/// 0.6946, 0.5475, 0.4004 fit). The exact deviate below 0.1 and the interpolation between
+/// 0.4 and 0.5 have no oracle yet; 0.5 and above give zero, the point estimate plus 0.5
+/// (`c50_discriminate/g08_penalty_m2`).
+fn confidence_deviate(confidence: f64) -> f64 {
+    // (confidence, upper normal deviate) table points; 0.5 gives zero.
+    const TABLE: [(f64, f64); 4] = [
+        (0.1, 1.2815515655446004),
+        (0.2, 0.8416212335729143),
+        (0.4, 0.2533471031357997),
+        (0.5, 0.0),
+    ];
+    if confidence > TABLE[0].0 && confidence < TABLE[3].0 {
+        let upper = TABLE.iter().position(|&(k, _)| k > confidence).unwrap_or(3);
+        let ((k0, z0), (k1, z1)) = (TABLE[upper - 1], TABLE[upper]);
+        return z0 + (z1 - z0) * (confidence - k0) / (k1 - k0);
+    }
     let mut low = 0.0;
     let mut high = 8.0;
     for _ in 0..64 {
@@ -1153,12 +1188,7 @@ pub(crate) fn error_bound(total: f64, errors: f64, confidence: f64) -> f64 {
             high = z;
         }
     }
-    let z = (low + high) / 2.0;
-    let p = (errors + 0.5) / total;
-    total
-        * (p + z * z / (2.0 * total)
-            + z * (p * (1.0 - p) / total + z * z / (4.0 * total * total)).sqrt())
-        / (1.0 + z * z / total)
+    (low + high) / 2.0
 }
 
 fn normal_cdf(z: f64) -> f64 {
