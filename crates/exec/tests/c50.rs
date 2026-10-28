@@ -253,6 +253,26 @@ fn c50_prune_internal_branch_controls_match_exactly() {
     }
 }
 
+/// The global phase may replace a subtree whose local comparison preferred raising.
+/// This oracle tree distinguishes deferred comparisons from local-only statistics.
+/// The one-split controls also check that the extension does not simply raise the budget.
+#[test]
+fn c50_global_deferred_local_comparisons_match_exactly() {
+    Fixture::load("c50_global", "wn100_sev85").compare();
+    for case in ["b_on", "ba_on", "bad_on", "bconst_on", "bc4d_off"] {
+        Fixture::load("c50_twig2", case).compare();
+    }
+    // mc5 has a known threshold difference, but its recorded scores are exact.
+    // Deferring comparisons inside the local tolerance broke this control.
+    let fixture = Fixture::load("c50_global", "wn100_mc5");
+    let results = dms_exec::Plan::new(&fixture.stream).evaluate(&[&fixture.uid], &fixture.context);
+    let dms_exec::NodeOutput::Model(ours) = results.get(&fixture.uid).unwrap().as_ref().unwrap()
+    else {
+        panic!("expected tree model");
+    };
+    fixture.compare_model_scores(ours);
+}
+
 /// Every saved `C5RuleOutput` component across `auto_train/ac_*.str` (16 saved PMML
 /// attachments across 10 streams) matches our trained C5.0 component tree node-for-node.
 #[test]
@@ -787,6 +807,10 @@ impl Fixture {
             (dms_pmml::Model::Tree(a), dms_pmml::Model::Tree(b)) => compare_tree(&a.root, &b.root),
             _ => panic!("expected trees"),
         }
+        self.compare_model_scores(ours);
+    }
+
+    fn compare_model_scores(&self, ours: &Pmml) {
         let mut rows = 0;
         for entry in self.manifest["data"]
             .as_array()
