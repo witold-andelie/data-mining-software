@@ -1,7 +1,7 @@
 # Streams whose oracle comparison is expected to differ. Update by hand; `cargo xtask regress`
 # fails on an entry that no longer mismatches, so delete fixed entries instead of leaving them.
 # label	stem	reason
-c50_presets	c50_wn100_expert	C5.0 P+R5 retains two extra subtrees: 16 training errors vs Modeler 22; further pruning/raising unresolved; see crates/algo/src/c50.rs
+c50_presets	c50_wn100_expert	C5.0 P+R5 retains one extra subtree under c3=T: 16 training errors vs Modeler 22; further pruning/raising unresolved; see crates/algo/src/c50.rs
 ibm-demos	bayes_bankloan	Bayes Net is license-blocked in Modeler 19 and not implemented, so the downstream filter cannot be compared
 ibm-demos	bayes_churn_retrain	Bayes Net is license-blocked in Modeler 19 and not implemented, so the downstream filter cannot be compared
 ibm-demos	pm_binaryclassifier	Auto Classifier nugget: legacy Auto model scoring is unverified; the oracle retrains a replacement-linked model, which is out of scope
@@ -12,13 +12,6 @@ random	balance_boost	Balance has no seed: Modeler's own runs keep different reco
 random	balance_reduce	Balance has no seed: Modeler's own runs keep different records; row count 356 vs 379
 team	decision_trees_heart	Team stream: unseeded Balance duplicates records; Select 206 vs Modeler 210
 team	logistic_regression	Team stream: unseeded Balance changes the row count (7774 vs 7797) and therefore the logistic fit
-auto_train	ac_accuracy_limit	Auto Classifier C5.0 component: largest-internal-child raising fixes two sites; global pruning still merges east+north and loses income<=28 (45 vs 43 training errors; 2 prediction disagreements); Decision List trains exactly; see crates/algo/src/c50.rs
-auto_train	ac_accuracy_n2	Auto Classifier C5.0 component: largest-internal-child raising fixes two sites; global pruning still merges east+north and loses income<=28 (45 vs 43 training errors; 2 prediction disagreements); Decision List trains exactly; see crates/algo/src/c50.rs
-auto_train	ac_lift	Auto Classifier C5.0 component: largest-internal-child raising fixes two sites; global pruning still merges east+north and loses income<=28 (45 vs 43 training errors; 2 prediction disagreements); Decision List trains exactly; see crates/algo/src/c50.rs
-auto_train	ac_n1	Auto Classifier C5.0 component: largest-internal-child raising fixes two sites; global pruning still merges east+north and loses income<=28 (45 vs 43 training errors; 2 prediction disagreements); Decision List trains exactly; see crates/algo/src/c50.rs
-auto_train	ac_numvars_n2	Auto Classifier C5.0 component: largest-internal-child raising fixes two sites; global pruning still merges east+north and loses income<=28 (45 vs 43 training errors; 2 prediction disagreements); Decision List trains exactly; see crates/algo/src/c50.rs
-auto_train	ac_profit_n2	Auto Classifier C5.0 component: largest-internal-child raising fixes two sites; global pruning still merges east+north and loses income<=28 (45 vs 43 training errors; 2 prediction disagreements); Decision List trains exactly; see crates/algo/src/c50.rs
-auto_train	ac_training_n2	Auto Classifier C5.0 component: largest-internal-child raising fixes two sites; global pruning still merges east+north and loses income<=28 (45 vs 43 training errors; 2 prediction disagreements); Decision List trains exactly; see crates/algo/src/c50.rs
 sources	excel_blank_return	Excel sheet has cell-less <row> elements (probe fixture artifact; Excel writes none); Modeler reads such sheets inconsistently, refused as GAP; see crates/io/src/xlsx.rs
 sources	excel_blank_stop	Excel sheet has cell-less <row> elements (probe fixture artifact; Excel writes none); Modeler reads such sheets inconsistently, refused as GAP; see crates/io/src/xlsx.rs
 sources	excel_explicit_a1	Excel sheet has cell-less <row> elements (probe fixture artifact; Excel writes none); Modeler reads such sheets inconsistently, refused as GAP; see crates/io/src/xlsx.rs
@@ -36,5 +29,3 @@ excel_more	more_offset	Excel sheet has cell-less <row> elements (probe fixture a
 excel_more	more_offtyped	Excel sheet has cell-less <row> elements (probe fixture artifact; Excel writes none); Modeler reads such sheets inconsistently, refused as GAP; see crates/io/src/xlsx.rs
 dl_discriminate	dl05_carry	Decision List empirical mean-beam mechanism still chooses b=v0 & c=v0 (118/140) instead of a=v1 & c=v0 (116/160); equal union but different first-hit partition; see docs/decision-list-validation.md
 linas_discriminate	x_shift	Linear-AS forward selection: entry decision for a numerically degenerate term differs (models_as/linearas_default x4*x4); under investigation
-c50_prune	wn100_noglobal	C5.0 local raising/re-estimation unresolved: Modeler promotes d<=47.605 to a stump; ours retains c4 and its d descendant (both six errors on 23 rows); see crates/algo/src/c50.rs
-c50_prune	wn23	C5.0 local raising/re-estimation unresolved: Modeler promotes d<=47.605 to a stump; ours retains c4 and its d descendant (both six errors on 23 rows); see crates/algo/src/c50.rs

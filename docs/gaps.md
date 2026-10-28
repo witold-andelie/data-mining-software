@@ -2,9 +2,9 @@
 
 > 更新：2026-10-28
 
-2026-10-28 C5.0：P+R5 后按原始样本数选择最大的内部子分支（排除叶子后再选，平票取首个），新增精确匹配 `c50_prune/auto44` 和 `auto_noglobal`，关闭 2 条 GAP；保留全部 173 棵既有精确控制树，新增完整树/分布/评分合同覆盖 4 个剪枝流。16 个相同的 Auto Classifier C5.0 组件仍非精确：与 oracle 的预测值差异 14→2/360，预测值或置信度差异 52→17/360；训练误差 45 vs Modeler 43，剩余全局剪枝多合并 east+north，丢失 income<=28。wn100 仍为 16 vs 22；新 wn23 与 wn100_noglobal 的 d<=47.605 二叉树不在全部冻结预测中，局部提升/重估仍待解释。该内部子分支规则是有公开 grafting 基础的经验拟合，不是 C5.0 公开规范。结果、冻结预测映射、计时及验证见 `target/c50d4/REPORT.md`。winnowing、加权分布及 boosting 原有 GAP 保留。
+2026-10-28 C5.0：在 P+R5 及按原始样本数选择最大的内部子分支基础上，（1）对重生长后的被提升候选节点继续执行带子树提升的局部剪枝（不进行第二轮重生长），精确复现 `c50_prune/wn23` 与 `wn100_noglobal` 在 `c3=F/c2=T` 下的 `d<=47.605` 二叉树（`c4` 重生长剪枝后 `c4=T` 坍缩为叶子，剩余内部子节点 `c4=F` 的 `d<=47.605` 提升后悲观误差界从 10.149265 降至 9.186232）；（2）全局剪枝在训练误差增量相同时优先坍缩叶子数更多的子树（`auto_train/ac_*` 在 41 误差时先坍缩 4 叶的 `member=N`，使父节点 `income>59.5` 暴露为 2 误差 2 叶候选，与 `region=east` 的 `income<=28` 同为 `(2, 2)` 一起尝试达 47 > 45.962848 而保留 `income<=28`），16 个保存的 Auto Classifier C5.0 组件 PMML 树全部逐节点精确匹配，关闭 `c50_prune` 2 条与 `auto_train` 7 条共 9 条 GAP，保留全部既有精确树。`c50_presets/c50_wn100_expert` 仍剩 `c3=T` 下 1 处额外子树（训练误差 16 vs Modeler 22）。详见 `target/agy-c50/REPORT.md`。winnowing、加权分布及 boosting 原有 GAP 保留。
 
-Decision List 采用 phase-3 `estimates-01822`，固定 21 例中 20 例完整 RuleSet IR 一致（原 10 例，全部保留）；平均首命中率 beam 是偏离指南 union estimate 的经验拟合。`dl_discriminate/dl05_carry` 的首命中分区仍不同；`models_next2/dl_default` 的完成列表支持数平票仍显式 GAP。`models_next2/dl_max_rules` 已严格匹配。移除 5 个已匹配的 dl_discriminate GAP；7 个 auto_train/ac_* GAP 仍由 C5.0 组件导致。显式拒绝 down 搜索、`reuseFields=false`、频率/权重、缺失输入/目标、事件、交互状态、Split 字段；未知存储和资源上限返回错误。见 `docs/decision-list-validation.md`。
+Decision List 采用 phase-3 `estimates-01822`，固定 21 例中 20 例完整 RuleSet IR 一致（原 10 例，全部保留）；平均首命中率 beam 是偏离指南 union estimate 的经验拟合。`dl_discriminate/dl05_carry` 的首命中分区仍不同；`models_next2/dl_default` 的完成列表支持数平票仍显式 GAP。`models_next2/dl_max_rules` 已严格匹配。移除 5 个已匹配的 dl_discriminate GAP；7 个 auto_train/ac_* GAP 已随 C5.0 全局剪枝平票规则闭合。显式拒绝 down 搜索、`reuseFields=false`、频率/权重、缺失输入/目标、事件、交互状态、Split 字段；未知存储和资源上限返回错误。见 `docs/decision-list-validation.md`。
 
 1. **P2：类型系统和 CLEM**：存储类型、测量级别、缺失值、日期基准（流属性 `dateBaseline`、`date2DigitBaseline`）；CLEM 解析与求值的子集。
 2. **P2：节点设置映射**：每个节点的脚本属性名 ↔ 文件元素名 ↔ 取值形式，用探针逐个确定（`docs/formats/str.md` 第 5 节），按团队流的使用频率排序（Type、Statistics File、Table、Var. File、Derive、Filter、Select、Data Audit……）。

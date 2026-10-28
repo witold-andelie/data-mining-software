@@ -53,12 +53,24 @@
 //!   each weight keeps six significant digits, then all are scaled to sum to the
 //!   record count. Probe `c50_weighted_streams` (weights of boosting trial 2, subsets,
 //!   pruning settings): five weighted fixtures compare exactly; remaining GAPs below.
-//! - Pruning (probe `c50_globalprune_streams`, 110 trees exact): local pruning collapses a
-//!   subtree whose error bound is not lower than its leaf's by more than 0.1; global
-//!   pruning ranks subtrees by the training errors added by collapsing them, counted
-//!   in records (costs under misclassification costs), see [`global_prune`]. Plain
-//!   multiway splits have a branch for every declared value, and a nominal field
-//!   with too many values is never used
+//! - Pruning (probe `c50_globalprune_streams`, 110 trees exact; `c50_prune`, 6 trees exact;
+//!   `auto_train/ac_*`, 16 saved component trees exact): local pruning collapses a subtree
+//!   whose error bound is not lower than its leaf's by more than 0.1, or raises the largest
+//!   internal child by original case count when its redistributed bound is within 0.1 of the
+//!   subtree's (`c50_prune/auto44`, `auto_noglobal`), regrowing the raised child's branches
+//!   and then pruning the regrown candidate with both replacement and raising (without a
+//!   second regrowth pass). In `c50_prune/wn23` and `wn100_noglobal` (`c3 = F / c2 = T`,
+//!   23 rows), raising `c1 = T`'s child `c4` and pruning its regrown branches collapses
+//!   `c4 = T` (12 rows) to a leaf while keeping `d <= 47.605` under `c4 = F` (11 rows,
+//!   3-leaf bound 10.149265); raising that remaining internal child `d <= 47.605` onto all
+//!   23 rows reduces the bound to 9.186232. Global pruning ranks subtrees by the training
+//!   errors added by collapsing them, counted in records (costs under misclassification
+//!   costs), and breaks equal-error ties by largest leaf count (`auto_train/ac_*`: at 41
+//!   errors against limit 45.962848, collapsing the 4-leaf `member = N` split adds 2 errors
+//!   before the 2-leaf `income <= 28` split under `region = east`, exposing `income > 59.5`
+//!   as another 2-error, 2-leaf candidate; tied at `(2, 2)`, both together would reach
+//!   47 > 45.962848 and are rejected), see [`global_prune`]. Plain multiway splits have a
+//!   branch for every declared value, and a nominal field with too many values is never used
 //!   (see [`MANY_VALUES`]). GAP `c50_weight`, `c50_cw_sev50`: global pruning there
 //!   removes `red, code = 3, flag = T`'s `x <= 9` split but keeps `code = 1, x > 11`'s
 //!   flag split, which have equal error increases; likely tied to the zero distributions.
@@ -1188,24 +1200,61 @@ fn subtree_estimate(node: &Node, settings: &C50Settings, costs: Option<&[Vec<f64
     }
 }
 
-/// The selected regrown candidate receives replacement pruning, without another
-/// raising/regrowth pass. Iterating raising here can recreate the removed tests.
-fn prune_regrown(node: &mut Node, settings: &C50Settings, costs: Option<&[Vec<f64>]>) -> f64 {
-    let leaf = leaf_estimate(node, settings, costs);
+/// The selected regrown candidate receives replacement and raising pruning,
+/// without another regrowth pass. Iterating regrowth can recreate removed tests,
+/// whereas raising without regrowth strictly shrinks the candidate tree.
+fn prune_regrown(
+    data: &Data,
+    rows: &[usize],
+    node: &mut Node,
+    settings: &C50Settings,
+    depth: usize,
+) -> Result<f64, AlgoError> {
+    if depth > MAX_DEPTH {
+        return Err(AlgoError::Unsupported("C5.0 pruning depth limit".into()));
+    }
+    let leaf = leaf_estimate(node, settings, data.costs.as_deref());
     if node.children.is_empty() {
-        return leaf;
+        return Ok(leaf);
     }
-    let subtree: f64 = node
-        .children
-        .iter_mut()
-        .map(|c| prune_regrown(c, settings, costs))
-        .sum();
-    if leaf <= subtree + LOCAL_SLACK {
+    let groups = branch_rows(data, rows, node);
+    let mut subtree = 0.0;
+    let mut largest = None;
+    let mut largest_cases = 0;
+    for (index, (child, group)) in node.children.iter_mut().zip(&groups).enumerate() {
+        subtree += prune_regrown(data, group, child, settings, depth.saturating_add(1))?;
+        if !child.children.is_empty() && (largest.is_none() || group.len() > largest_cases) {
+            largest = Some(index);
+            largest_cases = group.len();
+        }
+    }
+    let mut raised = largest
+        .and_then(|index| node.children.get(index))
+        .filter(|_| depth < RAISING_DEPTH)
+        .cloned();
+    let parent = data
+        .classes
+        .iter()
+        .position(|c| Some(c) == node.score.as_ref())
+        .unwrap_or(0);
+    let mut estimate = f64::INFINITY;
+    if let Some(candidate) = &mut raised {
+        redistribute(data, rows, candidate, parent, depth)?;
+        estimate = subtree_estimate(candidate, settings, data.costs.as_deref());
+    }
+    if leaf <= subtree + LOCAL_SLACK && leaf <= estimate + LOCAL_SLACK {
         node.children.clear();
-        leaf
-    } else {
-        subtree
+        return Ok(leaf);
     }
+    if estimate <= subtree + LOCAL_SLACK
+        && let Some(mut candidate) = raised
+    {
+        let result = prune_regrown(data, rows, &mut candidate, settings, depth)?;
+        candidate.predicate = node.predicate.clone();
+        *node = candidate;
+        return Ok(result);
+    }
+    Ok(subtree)
 }
 
 fn branch_rows(data: &Data, rows: &[usize], node: &Node) -> Vec<Vec<usize>> {
@@ -1327,7 +1376,7 @@ fn prune(
             )?;
             child.predicate = predicate;
         }
-        let result = prune_regrown(&mut candidate, settings, data.costs.as_deref());
+        let result = prune_regrown(data, rows, &mut candidate, settings, depth)?;
         candidate.predicate = node.predicate.clone();
         *node = candidate;
         return Ok(result);
@@ -1421,32 +1470,35 @@ fn record_errors(data: &Data, node: &Node, rows: &[usize]) -> f64 {
         .sum()
 }
 
-/// (errors as a leaf, errors of its leaves), by record count.
-fn subtree_errors(data: &Data, node: &Node, rows: &[usize]) -> (f64, f64) {
+/// (errors as a leaf, errors of its leaves, number of leaves), by record count.
+fn subtree_errors(data: &Data, node: &Node, rows: &[usize]) -> (f64, f64, usize) {
     let leaf = record_errors(data, node, rows);
     if node.children.is_empty() {
-        return (leaf, leaf);
+        return (leaf, leaf, 1);
     }
     let mut errors = 0.0;
+    let mut leaves = 0usize;
     for child in &node.children {
         let sub: Vec<usize> = rows
             .iter()
             .copied()
             .filter(row_matcher(data, &child.predicate))
             .collect();
-        let (_, e) = subtree_errors(data, child, &sub);
+        let (_, e, l) = subtree_errors(data, child, &sub);
         errors += e;
+        leaves = leaves.saturating_add(l);
     }
-    (leaf, errors)
+    (leaf, errors, leaves)
 }
 
-/// The smallest total error increase from collapsing an internal node.
-fn weakest_subtree(data: &Data, node: &Node, rows: &[usize]) -> Option<f64> {
+/// The smallest total error increase from collapsing an internal node; equal
+/// error increases prefer the subtree with more leaves (`auto_train/ac_*`).
+fn weakest_subtree(data: &Data, node: &Node, rows: &[usize]) -> Option<(f64, usize)> {
     if node.children.is_empty() {
         return None;
     }
-    let (leaf, sub) = subtree_errors(data, node, rows);
-    let mut best = Some(leaf - sub);
+    let (leaf, sub, leaves) = subtree_errors(data, node, rows);
+    let mut best = Some((leaf - sub, leaves));
     for child in &node.children {
         let sub: Vec<usize> = rows
             .iter()
@@ -1454,19 +1506,25 @@ fn weakest_subtree(data: &Data, node: &Node, rows: &[usize]) -> Option<f64> {
             .filter(row_matcher(data, &child.predicate))
             .collect();
         if let Some(a) = weakest_subtree(data, child, &sub) {
-            best = best.map(|b: f64| b.min(a));
+            best = best.map(|b| {
+                if a.0 < b.0 - 1e-9 || ((a.0 - b.0).abs() <= 1e-9 && a.1 > b.1) {
+                    a
+                } else {
+                    b
+                }
+            });
         }
     }
     best
 }
 
-/// Collapse every subtree adding `extra` errors, outermost first.
-fn collapse_subtrees(data: &Data, node: &mut Node, rows: &[usize], extra: f64) {
+/// Collapse every subtree matching `(extra, target_leaves)`, outermost first.
+fn collapse_subtrees(data: &Data, node: &mut Node, rows: &[usize], step: (f64, usize)) {
     if node.children.is_empty() {
         return;
     }
-    let (leaf, sub) = subtree_errors(data, node, rows);
-    if (leaf - sub - extra).abs() <= 1e-9 {
+    let (leaf, sub, leaves) = subtree_errors(data, node, rows);
+    if (leaf - sub - step.0).abs() <= 1e-9 && leaves == step.1 {
         node.children.clear();
         return;
     }
@@ -1476,14 +1534,16 @@ fn collapse_subtrees(data: &Data, node: &mut Node, rows: &[usize], extra: f64) {
             .copied()
             .filter(row_matcher(data, &child.predicate))
             .collect();
-        collapse_subtrees(data, child, &sub, extra);
+        collapse_subtrees(data, child, &sub, step);
     }
 }
 
 /// Global pruning ranks whole subtrees by added training errors, without dividing
-/// by removed leaves (`c50_presets/c50_drughalf_expert`: Age adds 2, Na/K adds 3).
-/// Equal increases are tried together; cumulative errors must stay within one standard
-/// error of the locally pruned tree's (`c50_globalprune`:
+/// by removed leaves (`c50_presets/c50_drughalf_expert`: Age adds 2, Na/K adds 3),
+/// and breaks equal-error ties by largest leaf count (`auto_train/ac_*`: the
+/// four-branch `member = N` split goes before the two-branch `income <= 28` split).
+/// Equal `(added_errors, leaves)` are tried together; cumulative errors must stay
+/// within one standard error of the locally pruned tree's (`c50_globalprune`:
 /// exception blocks correcting one record go, two stay, at every severity and with case
 /// weights; `models/c50_default`: `BP = HIGH` goes; `c50_min_child`: the equal increases
 /// `green`, `red` would reach 87 > 79 + 7.92 together and stay).
@@ -1494,15 +1554,15 @@ fn global_prune(data: &Data, root: &mut Node) {
     let limit = start + (start * (n - start) / n).max(0.0).sqrt();
     let mut trial = root.clone();
     let mut steps = Vec::new();
-    while let Some(extra) = weakest_subtree(data, &trial, &rows) {
-        collapse_subtrees(data, &mut trial, &rows, extra);
+    while let Some(step) = weakest_subtree(data, &trial, &rows) {
+        collapse_subtrees(data, &mut trial, &rows, step);
         if subtree_errors(data, &trial, &rows).1 > limit + 1e-9 {
             break;
         }
-        steps.push(extra);
+        steps.push(step);
     }
-    for extra in steps {
-        collapse_subtrees(data, root, &rows, extra);
+    for step in steps {
+        collapse_subtrees(data, root, &rows, step);
     }
 }
 
