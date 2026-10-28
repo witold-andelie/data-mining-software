@@ -89,9 +89,8 @@
 //!   3 positive tests) and `c3 = F / c2 = T` (negative gain), 13 -> 19 errors; the budget
 //!   19 + 3.92 then takes the `c2 = T` refinement and its parent split (22 errors). The test
 //!   is skipped under misclassification costs (no oracle). It replaces a deferred-replacement
-//!   rule that fixed only `wn100_sev85`. GAP `c50_global/wn89_noC4F`: after the test, the
-//!   `c2 = T / b > 5.9` refinement and the `c3 = F` split tie at (2 errors, 2 leaves) and
-//!   together exceed the budget, while Modeler collapses the refinement and then its parent.
+//!   rule that fixed only `wn100_sev85`. After a refused tie group only the subtrees that
+//!   enclose it are tried (`c50_global/wn89_noC4F`, see `global_prune`).
 //!   GAP `c50_global/wn100_mc5`: Modeler's `d <= 47.865` (also with global pruning off; ours
 //!   `d <= 47.605`) was grown on other records, and Modeler keeps it where the test collapses
 //!   ours (0.20 bits, 4 positive tests).
@@ -1512,53 +1511,6 @@ fn subtree_errors(data: &Data, node: &Node, rows: &[usize]) -> (f64, f64, usize)
     (leaf, errors, leaves)
 }
 
-/// The smallest total error increase from collapsing an internal node; equal
-/// error increases prefer the subtree with more leaves (`auto_train/ac_*`).
-fn weakest_subtree(data: &Data, node: &Node, rows: &[usize]) -> Option<(f64, usize)> {
-    if node.children.is_empty() {
-        return None;
-    }
-    let (leaf, sub, leaves) = subtree_errors(data, node, rows);
-    let mut best = Some((leaf - sub, leaves));
-    for child in &node.children {
-        let sub: Vec<usize> = rows
-            .iter()
-            .copied()
-            .filter(row_matcher(data, &child.predicate))
-            .collect();
-        if let Some(a) = weakest_subtree(data, child, &sub) {
-            best = best.map(|b| {
-                if a.0 < b.0 - 1e-9 || ((a.0 - b.0).abs() <= 1e-9 && a.1 > b.1) {
-                    a
-                } else {
-                    b
-                }
-            });
-        }
-    }
-    best
-}
-
-/// Collapse every subtree matching `(extra, target_leaves)`, outermost first.
-fn collapse_subtrees(data: &Data, node: &mut Node, rows: &[usize], step: (f64, usize)) {
-    if node.children.is_empty() {
-        return;
-    }
-    let (leaf, sub, leaves) = subtree_errors(data, node, rows);
-    if (leaf - sub - step.0).abs() <= 1e-9 && leaves == step.1 {
-        node.children.clear();
-        return;
-    }
-    for child in &mut node.children {
-        let sub: Vec<usize> = rows
-            .iter()
-            .copied()
-            .filter(row_matcher(data, &child.predicate))
-            .collect();
-        collapse_subtrees(data, child, &sub, step);
-    }
-}
-
 /// The information test that starts global pruning (module docs): bottom-up, a split whose
 /// children are all leaves goes when records x corrected gain of its field's best test is
 /// below log2 of the tests with positive corrected gain at that node.
@@ -1617,22 +1569,102 @@ fn collapse_uninformative(data: &Data, node: &mut Node, rows: &[usize], settings
 /// exception blocks correcting one record go, two stay, at every severity and with case
 /// weights; `models/c50_default`: `BP = HIGH` goes; `c50_min_child`: the equal increases
 /// `green`, `red` would reach 87 > 79 + 7.92 together and stay).
+/// A refused group is not the end: the subtrees that enclose a refused subtree are tried
+/// next, cheapest first, and an accepted one restarts the full ranking; subtrees elsewhere
+/// are not tried (`c50_global/wn89_noC4F`: the `c2 = T / b > 5.9` refinement and `c3 = F`
+/// tie at (2, 2) and would reach 19 > 18.53, then the enclosing `c2 = T` split adds 3 and
+/// goes, 18; `wn150_prefix`: after three tied (2, 2) twigs are refused, an unrelated
+/// (3, 2) twig that would fit, 18 < 18.67, stays).
 fn global_prune(data: &Data, root: &mut Node) {
     let rows: Vec<usize> = (0..data.targets.len()).collect();
     let n = rows.len() as f64;
-    let start = subtree_errors(data, root, &rows).1;
-    let limit = start + (start * (n - start) / n).max(0.0).sqrt();
-    let mut trial = root.clone();
-    let mut steps = Vec::new();
-    while let Some(step) = weakest_subtree(data, &trial, &rows) {
-        collapse_subtrees(data, &mut trial, &rows, step);
-        if subtree_errors(data, &trial, &rows).1 > limit + 1e-9 {
-            break;
+    let mut errors = subtree_errors(data, root, &rows).1;
+    let limit = errors + (errors * (n - errors) / n).max(0.0).sqrt();
+    let mut refused: Vec<Vec<usize>> = Vec::new();
+    loop {
+        let mut steps = Vec::new();
+        collapse_candidates(data, root, &rows, &mut Vec::new(), &mut steps);
+        if !refused.is_empty() {
+            steps.retain(|step| {
+                !refused.contains(&step.path)
+                    && refused
+                        .iter()
+                        .any(|r| r.len() > step.path.len() && r.starts_with(&step.path))
+            });
         }
-        steps.push(step);
+        let Some(best) = steps.iter().map(|s| (s.added, s.leaves)).reduce(|b, a| {
+            if a.0 < b.0 - 1e-9 || ((a.0 - b.0).abs() <= 1e-9 && a.1 > b.1) {
+                a
+            } else {
+                b
+            }
+        }) else {
+            break;
+        };
+        let group: Vec<&CollapseStep> = steps
+            .iter()
+            .filter(|s| (s.added - best.0).abs() <= 1e-9 && s.leaves == best.1)
+            .collect();
+        // Outermost first: a tied descendant goes with its tied ancestor.
+        let outer: Vec<&CollapseStep> = group
+            .iter()
+            .copied()
+            .filter(|s| {
+                !group
+                    .iter()
+                    .any(|o| o.path.len() < s.path.len() && s.path.starts_with(&o.path))
+            })
+            .collect();
+        let added: f64 = outer.iter().map(|s| s.added).sum();
+        if errors + added > limit + 1e-9 {
+            refused.extend(outer.iter().map(|s| s.path.clone()));
+            continue;
+        }
+        for step in &outer {
+            let mut node = &mut *root;
+            for &child in &step.path {
+                node = &mut node.children[child];
+            }
+            node.children.clear();
+        }
+        errors += added;
+        refused.clear();
     }
-    for step in steps {
-        collapse_subtrees(data, root, &rows, step);
+}
+
+/// One internal node as a global-pruning candidate: its child-index path from the root,
+/// the training errors collapsing it adds, and its leaves.
+struct CollapseStep {
+    path: Vec<usize>,
+    added: f64,
+    leaves: usize,
+}
+
+fn collapse_candidates(
+    data: &Data,
+    node: &Node,
+    rows: &[usize],
+    path: &mut Vec<usize>,
+    out: &mut Vec<CollapseStep>,
+) {
+    if node.children.is_empty() {
+        return;
+    }
+    let (leaf, sub, leaves) = subtree_errors(data, node, rows);
+    out.push(CollapseStep {
+        path: path.clone(),
+        added: leaf - sub,
+        leaves,
+    });
+    for (index, child) in node.children.iter().enumerate() {
+        let sub: Vec<usize> = rows
+            .iter()
+            .copied()
+            .filter(row_matcher(data, &child.predicate))
+            .collect();
+        path.push(index);
+        collapse_candidates(data, child, &sub, path, out);
+        path.pop();
     }
 }
 
