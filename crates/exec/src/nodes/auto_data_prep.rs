@@ -455,6 +455,17 @@ impl Operator for Prep {
             effective.role = self.effective_role(field);
             let values = column(input, index);
             let class = classify(self, &effective);
+            if matches!(class, Class::Pass)
+                && effective.role == Role::Input
+                && is_nominal_like(&effective)
+                && matches!(effective.storage, Storage::Integer | Storage::Real)
+                && (self.supervised_merge.is_some() || self.unsupervised_merge.is_some())
+            {
+                return Err(OperatorError::Settings(format!(
+                    "GAP: Auto Data Prep merging with the numeric categorical input {:?} has no oracle",
+                    effective.name
+                )));
+            }
             let before = cols.len();
             let examined = match class {
                 Class::Time | Class::Date => true,
@@ -939,6 +950,12 @@ fn classify(prep: &Prep, field: &Field) -> Class {
         return Class::Pass;
     }
     if is_nominal_like(field) {
+        // Only string categoricals are recoded (`adp_balanced` `grp`/`flg`, `adp_rest` `n1`);
+        // numeric nominal and flag inputs pass through unchanged (`ibm-demos/ADP_basic_demo`:
+        // the 14 numeric telco fields `region` .. `ebill` keep their names and values).
+        if matches!(field.storage, Storage::Integer | Storage::Real) {
+            return Class::Pass;
+        }
         return Class::Categorical;
     }
     if matches!(field.storage, Storage::Integer | Storage::Real) {
