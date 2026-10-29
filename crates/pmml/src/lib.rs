@@ -28,8 +28,8 @@ mod sequence;
 mod tree;
 
 pub use association::{
-    AssociationItem, AssociationItemset, AssociationModel, AssociationRule, ScoredAssociation,
-    score_rules,
+    AssociationItem, AssociationItemset, AssociationModel, AssociationRule, BasketCheck,
+    RuleCriterion, ScoredAssociation, ScoringOptions, score_rules, score_rules_by,
 };
 pub use clustering::AnomalyScore;
 pub use neural::{

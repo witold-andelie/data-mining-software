@@ -20,7 +20,7 @@
 //! | Regression | `$E-<target>` prediction (`models/regression_enter`) |
 //! | K-Means | `$KM-<model name>`: `cluster-<cluster name>`; `$KMD-<model name>`: the Euclidean distance to that center, when the nugget's `buildSettings` set `generateDistanceField` |
 //! | TwoStep | `$T-<model name>`: the cluster name (`cluster-<n>`), by the log-likelihood distance; an integer with numeric labels (`buildSettings` `clusterLabelType` `NUMBER`) |
-//! | Apriori | `$A-<model>-k` consequent, `$AC-<model>-k` confidence, `$A-Rule_ID-k` rule id, for k = 1..=`associationMaxPredictions` (`apriori_default`: 3). A rule fires when every antecedent is present and, with `checkPredictions` `notInBasket`, the consequent is absent. `repeatPredictions` false keeps the best confidence per consequent. Transactional models (`usageType=group`) write the basket on the last row of each contiguous id (`apriori_transactional` basket 14) |
+//! | Apriori | `$A-<model>-k` consequent, `$AC-<model>-k` the ranking criterion's value (confidence by default), `$A-Rule_ID-k` rule id, for k = 1..=`associationMaxPredictions` (`apriori_default`: 3). The nugget settings (`checkPredictions`, `ruleCriteria`, `repeatPredictions`, `ignoreUnmatchedItems`) are fixed by probe `apriori_eval`, see `dms_pmml::ScoringOptions`; a builder-linked nugget scores with the defaults. Transactional models (`usageType=group`) score each row on its prefix up to that row (`trans_base` grid 104: `eggs` milk, `jam` milk+butter). Nominal and false-flag baskets score `field=value` items (`nominal_set` blue/circle predicts red and square). GAP: `maxLengthSet` other than 10. |
 //! | Neural Net | `$N-<target>` (`scoring.isPrediction`, default true). Categorical targets also `$NC-<target>` when `scoring.isConfidence` (default true): `onProbability` is the winning probability (`nn_default_a`), `onIncrease` is that minus the second (`nn_fixed_a` confidence-increase, row 10001 is 0.131866732354273). `$NP-<category>` in `DataField` order, the first `scoring.maxCategories` when `scoring.isProbabilityCategory` (`nn_fixed_a`: all three, or only `$NP-A` when the cap is 1; a missing cap emits all). Then `$RP-<target>` and `$AP-<target>` (`nn_partition`). Continuous targets emit none of those (`nn_regression`, `nn_rbf`). Targets follow `NeuralOutput` order (`nn_mixed_targets`: `$N-r,$N-y,$NC-y`). |
 //! | Time Series | `$FutureFlag` after the period field; per target `$TS-`, `$TSLCI-`, `$TSUCI-` (`ts_arima`, `ts_expert`, `ts_simple`, `ts_holt`). Training is a GAP; the nugget scores the saved ARIMA or exponential smoothing model. |
 //!
@@ -60,7 +60,7 @@ use crate::output::NodeOutput;
 use crate::settings;
 use dms_pmml::{
     DataType, NeuralNetworkModel, NeuralOutputKind, NeuralTarget, Pmml, Prediction, Usage,
-    Value as PmmlValue, score_rules,
+    Value as PmmlValue,
 };
 use dms_stream::StreamNode;
 use dms_types::{Measurement, Storage, Table, Value};
@@ -212,10 +212,13 @@ pub fn build(node: &StreamNode) -> Result<Box<dyn Operator>, OperatorError> {
     } else {
         None
     };
-    let max_predictions = if kind == Kind::Apriori {
+    let apriori = if kind == Kind::Apriori {
         apriori_predictions(s)?
     } else {
-        0
+        AprioriOptions {
+            max_predictions: 0,
+            ..APRIORI_DEFAULTS
+        }
     };
     let model_name = settings::text(s, "modelName")
         .filter(|name| !name.trim().is_empty())
@@ -266,7 +269,7 @@ pub fn build(node: &StreamNode) -> Result<Box<dyn Operator>, OperatorError> {
         model_name,
         properties: node.properties_attachment.clone(),
         anomaly,
-        max_predictions,
+        apriori,
     }))
 }
 
@@ -278,48 +281,69 @@ struct AnomalyOptions {
     fields: usize,
 }
 
-/// `associationMaxPredictions` and the other Apriori nugget settings that change scores.
-/// Defaults are the values `apriori_default` stores: 3 predictions, no repeats, `notInBasket`,
-/// criterion confidence, unmatched items ignored, `maxLengthSet` 10.
+/// The Apriori nugget settings that change scores (see `dms_pmml::ScoringOptions`).
+type AprioriOptions = dms_pmml::ScoringOptions;
+
+/// The values `apriori_default` stores: 3 predictions, no repeats, `notInBasket`, criterion
+/// confidence, unmatched items ignored.
+const APRIORI_DEFAULTS: AprioriOptions = dms_pmml::ScoringOptions {
+    max_predictions: 3,
+    allow_repeats: false,
+    check: dms_pmml::BasketCheck::NotInBasket,
+    criterion: dms_pmml::RuleCriterion::Confidence,
+    exact_antecedent: false,
+};
+
+/// The nugget's `associationMaxPredictions`, `repeatPredictions`, `checkPredictions`,
+/// `ruleCriteria` and `ignoreUnmatchedItems` (probe `apriori_eval`, see `dms_pmml`).
+///
+/// A nugget that the builder replaces (`refreshLinkState` `TurnOnReplaceLink` with a builder
+/// id) scores with the defaults whatever it stores: in `apriori_more/score_*` and
+/// `apriori_eval/score_matrix` such a nugget carrying `noCheck`, repeats, criterion support,
+/// one prediction or `ignoreUnmatchedItems` false scored every row exactly like the default
+/// nugget, whether its table ran before or after the builder, while unlinked copies applied
+/// each setting. Random Trees' confidence field follows the same rule.
 fn apriori_predictions(
     s: Option<&dms_strfmt::fastinfoset::Element>,
-) -> Result<usize, OperatorError> {
-    let unsupported = |what: &str| {
-        OperatorError::Settings(format!(
-            "Apriori {what} is not supported yet (GAP: no oracle)"
-        ))
-    };
+) -> Result<AprioriOptions, OperatorError> {
+    if settings::text(s, "refreshLinkState").as_deref() == Some("TurnOnReplaceLink")
+        && settings::text(s, "repalcebuilderNodeId").is_some_and(|id| !id.trim().is_empty())
+    {
+        return Ok(APRIORI_DEFAULTS);
+    }
     let count = settings::integer(s, "associationMaxPredictions")?.unwrap_or(3);
     if !(1..=10_000).contains(&count) {
         return Err(OperatorError::Settings(format!(
             "Apriori associationMaxPredictions must be from 1 to 10000, found {count}"
         )));
     }
-    if settings::flag(s, "repeatPredictions")?.unwrap_or(false) {
-        return Err(unsupported("repeatPredictions"));
-    }
-    match settings::text(s, "checkPredictions")
+    let allow_repeats = settings::flag(s, "repeatPredictions")?.unwrap_or(false);
+    let check = match settings::text(s, "checkPredictions")
         .as_deref()
         .map(str::trim)
     {
-        None | Some("") | Some("notInBasket") => {}
+        None | Some("") | Some("notInBasket") => dms_pmml::BasketCheck::NotInBasket,
+        Some("inBasket") => dms_pmml::BasketCheck::InBasket,
+        Some("noCheck") => dms_pmml::BasketCheck::NoCheck,
         Some(other) => {
             return Err(OperatorError::Settings(format!(
-                "Apriori checkPredictions {other:?} is not supported yet (GAP: only notInBasket has an oracle)"
+                "Apriori checkPredictions {other:?} is not a known value"
             )));
         }
-    }
-    match settings::text(s, "ruleCriteria").as_deref().map(str::trim) {
-        None | Some("") | Some("confidence") => {}
+    };
+    let criterion = match settings::text(s, "ruleCriteria").as_deref().map(str::trim) {
+        None | Some("") | Some("confidence") => dms_pmml::RuleCriterion::Confidence,
+        Some("support") => dms_pmml::RuleCriterion::Support,
+        Some("ruleSupport") => dms_pmml::RuleCriterion::RuleSupport,
+        Some("lift") => dms_pmml::RuleCriterion::Lift,
+        Some("deployability") => dms_pmml::RuleCriterion::Deployability,
         Some(other) => {
             return Err(OperatorError::Settings(format!(
-                "Apriori ruleCriteria {other:?} is not supported yet (GAP: only confidence has an oracle)"
+                "Apriori ruleCriteria {other:?} is not a known value"
             )));
         }
-    }
-    if !settings::flag(s, "ignoreUnmatchedItems")?.unwrap_or(true) {
-        return Err(unsupported("ignoreUnmatchedItems false"));
-    }
+    };
+    let exact_antecedent = !settings::flag(s, "ignoreUnmatchedItems")?.unwrap_or(true);
     match settings::integer(s, "maxLengthSet")? {
         None | Some(10) => {}
         Some(other) => {
@@ -328,10 +352,17 @@ fn apriori_predictions(
             )));
         }
     }
-    usize::try_from(count).map_err(|_| {
+    let max_predictions = usize::try_from(count).map_err(|_| {
         OperatorError::Settings(format!(
             "Apriori associationMaxPredictions must be from 1 to 10000, found {count}"
         ))
+    })?;
+    Ok(AprioriOptions {
+        max_predictions,
+        allow_repeats,
+        check,
+        criterion,
+        exact_antecedent,
     })
 }
 
@@ -356,8 +387,8 @@ struct Apply {
     /// Extension properties attachment (`scoring.isPrediction`, ...). Neural Net only.
     properties: Option<String>,
     anomaly: Option<AnomalyOptions>,
-    /// Apriori `associationMaxPredictions` (0 for other nuggets).
-    max_predictions: usize,
+    /// Apriori scoring options (`associationMaxPredictions` etc.; defaults for other nuggets).
+    apriori: AprioriOptions,
 }
 
 /// `models_as`: native and the saved default (`false`) produce identical score fields.
@@ -430,8 +461,9 @@ impl Apply {
     }
 
     /// Apriori nugget columns. Tabular baskets are one row each (`apriori_default`).
-    /// Transactional baskets are contiguous id runs; only the last row carries the rules
-    /// (`apriori_transactional`, basket 14's `jam` row).
+    /// Transactional baskets score each row on its prefix up to that row
+    /// (`trans_base` grid basket 104: `eggs` predicts `milk`, `jam` predicts `milk`
+    /// and `butter`). Tabular and nominal baskets score the whole row.
     /// GAP: a second Apriori nugget on the same fields uses `$A1-` / `$AC1-` / `$A1-Rule_ID-`.
     /// No oracle shows that index.
     fn score_apriori(&self, input: &Table, pmml: &Pmml) -> Result<Table, OperatorError> {
@@ -475,12 +507,12 @@ impl Apply {
             let content_at = input.model().position(&content.name).ok_or_else(|| {
                 OperatorError::Data(format!("Apriori needs content field {:?}", content.name))
             })?;
-            transactional_hits(model, input, id_at, content_at, self.max_predictions)?
+            transactional_hits(model, input, id_at, content_at, &self.apriori)?
         } else {
-            flag_hits(pmml, model, input, self.max_predictions)?
+            flag_hits(pmml, model, input, &self.apriori)?
         };
         let mut columns = Vec::new();
-        for slot in 1..=self.max_predictions {
+        for slot in 1..=self.apriori.max_predictions {
             let prediction = hits
                 .iter()
                 .map(|row| match row.get(slot - 1) {
@@ -1016,8 +1048,11 @@ fn flag_hits(
     pmml: &Pmml,
     model: &dms_pmml::AssociationModel,
     input: &Table,
-    max_predictions: usize,
+    options: &AprioriOptions,
 ) -> Result<Vec<Vec<dms_pmml::ScoredAssociation>>, OperatorError> {
+    // Active fields: flags with a true value score the field name when true;
+    // valued fields (`trueflags_false`, `nominal_set`: no flag true value in the PMML)
+    // score `field=value` for every non-null value.
     let mut specs = Vec::new();
     for field in model
         .header
@@ -1033,28 +1068,29 @@ fn flag_hits(
             .data_dictionary
             .iter()
             .find(|data| data.name == field.name)
-            .and_then(|data| data.flag_true_value.clone())
-            .ok_or_else(|| {
-                OperatorError::Data(format!(
-                    "Apriori field {:?} has no flag true value",
-                    field.name
-                ))
-            })?;
+            .and_then(|data| data.flag_true_value.clone());
         specs.push((position, field.name.clone(), true_value));
     }
     let mut rows = Vec::with_capacity(input.rows().len());
     for row in input.rows() {
         let mut present = HashSet::new();
         for (position, name, true_value) in &specs {
-            if row
-                .get(*position)
-                .is_some_and(|value| value.to_string() == *true_value)
-            {
-                present.insert(name.clone());
+            let Some(value) = row.get(*position) else {
+                continue;
+            };
+            if *value == Value::Null {
+                continue;
+            }
+            if let Some(true_text) = true_value {
+                if value.to_string() == *true_text {
+                    present.insert(name.clone());
+                }
+            } else {
+                present.insert(format!("{name}={value}"));
             }
         }
         rows.push(
-            score_rules(model, &present, max_predictions, false, true)
+            dms_pmml::score_rules_by(model, &present, options)
                 .map_err(|error| OperatorError::Data(format!("Apriori: {error}")))?,
         );
     }
@@ -1066,10 +1102,11 @@ fn transactional_hits(
     input: &Table,
     id_at: usize,
     content_at: usize,
-    max_predictions: usize,
+    options: &AprioriOptions,
 ) -> Result<Vec<Vec<dms_pmml::ScoredAssociation>>, OperatorError> {
+    use dms_pmml::{ScoredAssociation, score_rules_by};
     let known: HashSet<&str> = model.items.iter().map(|item| item.value.as_str()).collect();
-    let mut out = vec![Vec::new(); input.rows().len()];
+    let mut out: Vec<Vec<ScoredAssociation>> = vec![Vec::new(); input.rows().len()];
     let mut start = 0;
     while start < input.rows().len() {
         let id = input
@@ -1103,6 +1140,10 @@ fn transactional_hits(
             }
             end = end.saturating_add(1);
         }
+        // Score each row on its prefix up to that row (`trans_base` grid basket 104:
+        // `bread` null, `eggs` milk, `jam` milk+butter). `ignoreUnmatchedItems` true skips
+        // values that are not model items; false keeps them in the basket, where no
+        // antecedent can equal it (`score_trans_unmatched` basket 106, `cheese`: nothing).
         let mut present = HashSet::new();
         for row_index in start..end {
             let Some(content) = input
@@ -1116,16 +1157,14 @@ fn transactional_hits(
                 continue;
             }
             let text = content.to_string();
-            // `ignoreUnmatchedItems` true (the oracle): values that are not model items are
-            // skipped. The nugget rejects the false setting.
-            if known.contains(text.as_str()) {
+            if options.exact_antecedent || known.contains(text.as_str()) {
                 present.insert(text);
             }
-        }
-        let scored = score_rules(model, &present, max_predictions, false, true)
-            .map_err(|error| OperatorError::Data(format!("Apriori: {error}")))?;
-        if let Some(slot) = out.get_mut(end.saturating_sub(1)) {
-            *slot = scored;
+            let scored = score_rules_by(model, &present, options)
+                .map_err(|error| OperatorError::Data(format!("Apriori: {error}")))?;
+            if let Some(slot) = out.get_mut(row_index) {
+                *slot = scored;
+            }
         }
         start = end;
     }

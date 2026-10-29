@@ -712,12 +712,15 @@ impl Build {
 }
 
 /// Apriori settings from the node's XML (`apriori_default`, `apriori_thresholds`,
-/// `apriori_transactional`).
+/// `apriori_transactional`, and the `apriori_more` expert, false-flag, nominal,
+/// non-contiguous and differing-sets oracles).
 ///
 /// `evaluationBound` is stored even when `evaluationMeasure` is `rule`; rule confidence does
 /// not use it. `expertMode` with `rule` trains the same rules as simple mode.
-/// GAP: no oracle has `expertMode` true.
 /// `optimization` `speed` and `memory` produce the same rules (`apriori_default` is `speed`).
+/// `evaluationMeasure` is saved as `rule`, `confidence`, `ratio`, `information` or
+/// `normalised` (`apriori_eval`). Events, empty antecedents and antecedent-only differing
+/// shapes stay rejected.
 fn apriori_settings(node: &StreamNode) -> Result<AprioriSettings, OperatorError> {
     let s = node.settings.as_ref();
     let unsupported = |what: &str| {
@@ -725,17 +728,23 @@ fn apriori_settings(node: &StreamNode) -> Result<AprioriSettings, OperatorError>
             "Apriori {what} is not supported yet (GAP: no oracle)"
         ))
     };
-    match settings::text(s, "evaluationMeasure")
+    let evaluation = match settings::text(s, "evaluationMeasure")
         .as_deref()
         .map(str::trim)
     {
-        None | Some("") | Some("rule") => {}
+        None | Some("") | Some("rule") => dms_algo::apriori::Evaluation::RuleConfidence,
+        // Saved names (`apriori_eval`): `confidence`, `ratio`, `information`, `normalised`.
+        Some("confidence") => dms_algo::apriori::Evaluation::DifferenceToPrior,
+        Some("ratio") => dms_algo::apriori::Evaluation::ConfidenceRatio,
+        Some("information") => dms_algo::apriori::Evaluation::InformationDifference,
+        Some("normalised") => dms_algo::apriori::Evaluation::NormalizedChiSquare,
         Some(other) => {
             return Err(OperatorError::Settings(format!(
-                "Apriori evaluationMeasure {other:?} is not supported yet (GAP: only rule confidence has an oracle)"
+                "Apriori evaluationMeasure {other:?} is not a known measure"
             )));
         }
-    }
+    };
+    let evaluation_bound = settings::real(s, "evaluationBound")?.unwrap_or(10.0);
     if settings::flag(s, "rulesWithoutAntecdents")?.unwrap_or(false) {
         return Err(unsupported("rulesWithoutAntecdents"));
     }
@@ -754,13 +763,9 @@ fn apriori_settings(node: &StreamNode) -> Result<AprioriSettings, OperatorError>
     }
     let transactional = settings::flag(s, "transactionalData")?.unwrap_or(false);
     let only_true = settings::flag(s, "onlyTrueValues")?.unwrap_or(true);
-    if !transactional && !only_true {
-        return Err(unsupported("onlyTrueValues false"));
-    }
+    // `onlyTrueValues` false is supported (`trueflags_false`: `F` is its own item).
+    // Non-contiguous transactional ids are supported (`trans_noncontig` groups by id).
     let contiguous = settings::flag(s, "contiguousID")?.unwrap_or(false);
-    if transactional && !contiguous {
-        return Err(unsupported("contiguousID false"));
-    }
     let support = settings::real(s, "minRuleSupport")?.unwrap_or(10.0);
     let confidence = settings::real(s, "minRuleConfidence")?.unwrap_or(80.0);
     if !support.is_finite() || !(0.0..=100.0).contains(&support) {
@@ -815,6 +820,8 @@ fn apriori_settings(node: &StreamNode) -> Result<AprioriSettings, OperatorError>
         auto_fields: settings::flag(s, "autoModelFieldSelection")?.unwrap_or(true),
         antecedents: listed("modelInputFieldSelection"),
         consequents: listed("modelTargetFieldSelection"),
+        evaluation,
+        evaluation_bound,
         model_name,
     })
 }
