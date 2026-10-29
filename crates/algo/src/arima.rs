@@ -2,7 +2,7 @@
 //! multiply lag polynomials, and both differencing polynomials are inverted for
 //! history/forecasts. Covariances solve the finite Yule-Walker equations with
 //! MA forcing, avoiding truncated impulse sums near unit roots. Sqrt forecasts
-//! use E[Z^2]=E[Z]^2+Var[Z]; log uses the lognormal mean. Converged fits of
+//! use `E[Z^2] = E[Z]^2 + Var[Z]`; log uses the lognormal mean. Converged fits of
 //! ts_ar/ma/arima/airline and their no-constant airline counterpart pass rule 3;
 //! saved log/sqrt models pass when refitted with their recorded transformation.
 //! The no-constant seasonal log case's linked, untransformed rebuild still
