@@ -314,6 +314,8 @@ pub fn collect_oracle_cases(types: &[&str]) -> Vec<OracleCase> {
         ("misc", true),
         ("misc_next", true),
         ("outputs_next", true),
+        // Not strict until the outputs_more cases are implemented.
+        ("outputs_more", false),
         ("team", false),
     ] {
         let dir = repo_root().join("oracle").join(label);
