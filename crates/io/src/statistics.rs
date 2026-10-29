@@ -305,11 +305,25 @@ mod tests {
         assert_eq!(storage_of(&numeric(5, 3), true), Ok(Storage::Real));
         assert_eq!(storage_of(&numeric(22, 0), true), Ok(Storage::Timestamp));
         assert_eq!(storage_of(&numeric(5, 0), false), Ok(Storage::Real));
-        // DOLLAR8 (`employee_data.sav`) has no oracle.
-        assert!(storage_of(&numeric(4, 0), true).is_err());
+        // DOLLAR8 (`employee_data.sav`, `ibm-demos/graphboard`) is an integer too; COMMA has
+        // no oracle.
+        assert_eq!(storage_of(&numeric(4, 0), true), Ok(Storage::Integer));
+        assert!(storage_of(&numeric(3, 0), true).is_err());
         assert_eq!(
             convert(&dms_sav::Value::Number(7.0), Storage::Integer),
             Value::Integer(7)
+        );
+        // Fractions round to the nearest integer (`broadband_2.sav` Market_1).
+        assert_eq!(
+            convert(&dms_sav::Value::Number(4009.801974177), Storage::Integer),
+            Value::Integer(4010)
+        );
+        assert_eq!(
+            convert(
+                &dms_sav::Value::Number(3750.1797916378027),
+                Storage::Integer
+            ),
+            Value::Integer(3750)
         );
     }
 
