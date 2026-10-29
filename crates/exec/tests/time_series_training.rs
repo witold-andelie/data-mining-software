@@ -312,13 +312,11 @@ fn unsupported_time_series_settings_are_gaps() {
         .unwrap();
     for (key, value) in [
         ("_method", "Unknown"),
-        ("_arimaIncludeConst", "false"),
         ("_useWeight", "true"),
         ("_specifyEstimationPeriod", "true"),
         ("_arimaDetectOutliersAutomatically", "true"),
         ("_continueEstimation", "true"),
         ("_dataStructure", "panel"),
-        ("_usePeriod", "false"),
     ] {
         let mut node = builder.clone();
         let property = node
@@ -423,7 +421,7 @@ fn estimation_never_uses_saved_parameters_and_responds_to_new_data() {
             "{case}: no saved parameter may affect estimation"
         );
         let mut rows = table.rows().to_vec();
-        for row in &mut rows {
+        for row in rows.iter_mut().step_by(2) {
             for target in ["sales", "cost"] {
                 let at = table.model().position(target).unwrap();
                 row[at] = dms_types::Value::Real(row[at].as_f64().unwrap() + 10.0);

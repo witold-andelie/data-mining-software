@@ -10,12 +10,21 @@
 //! into a monotone least-squares objective. Variance is S/(n-k), excluding sigma²
 //! from k. All recursions belong to `smooth` / `arima`, also used by the scorer.
 //!
-//! Only simple/Holt (no transform) and constant ARIMA(1,1,1) / (0,1,0)
-//! (none/log) are evidenced. Expert automatic transformation/order selection is
-//! GAP: the guide's flowchart does not specify its thresholds. The executor can
-//! refit an Expert model's recorded selected specification, never its coefficients.
-//! Modeler's coefficients are reported, not asserted equal: the smoothing data
-//! are exact lines, with a boundary optimum for simple and nonunique Holt weights.
+//! Phase B evidence: `ts_more` (30 saved streams), 26 satisfy optimizer rule 3
+//! in `exec/tests/time_series_more.rs`: converged SSE/likelihood no worse than
+//! saved Modeler parameters (1e-9 relative), all scored points, bounds and
+//! residuals within 0.01 target sample SD (worst accepted: 0.008378 SD).
+//! Supports d=0, seasonal ARIMA products, simple/Holt/Brown/damped/seasonal/
+//! Winters smoothing, log/sqrt, and numerator-only transfer functions (`transfer`).
+//! Expert refits recorded structure including omitted AR lags; automatic
+//! transform/order selection remains GAP (the guide omits decision thresholds).
+//! The four keyed ARIMA transform recordings have different saved and rebuilt
+//! specifications: detached-model refits are tested separately from linked scores.
+//! Remaining rule-3 GAPs: ts_sarlog_noconst (linked rebuild), ts_tf_static
+//! (better likelihood but 0.016416 SD discrepancy), ts_tf_diff/ts_tf_two
+//! (denominator initial state). Passing the objective alone is not acceptance.
+//! Other limits: <=512 fitting observations, monthly regular dates, bounded
+//! orders; no outlier detection, missing values, aggregation or automatic Expert.
 
 use crate::{AlgoError, arima, smooth};
 use arima::{ArimaSpec, Transform};
@@ -25,6 +34,18 @@ use smooth::SmoothSpec;
 pub enum Method {
     Simple,
     Holt,
+    Smooth {
+        kind: smooth::Kind,
+        transform: Transform,
+        period: usize,
+    },
+    SeasonalArima(ArimaOrder),
+    /// Zero coefficients in a recorded subset ARIMA denote omitted lags.
+    SparseArima {
+        order: ArimaOrder,
+        zero_ar: u64,
+        zero_ma: u64,
+    },
     Arima {
         p: usize,
         d: usize,
@@ -33,8 +54,22 @@ pub enum Method {
     },
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ArimaOrder {
+    pub p: usize,
+    pub d: usize,
+    pub q: usize,
+    pub sp: usize,
+    pub sd: usize,
+    pub sq: usize,
+    pub period: usize,
+    pub constant: bool,
+    pub transform: Transform,
+}
+
 #[derive(Debug, Clone)]
 pub enum FittedSpec {
+    Transfer(crate::transfer::TransferSpec),
     Smooth(SmoothSpec),
     Arima(ArimaSpec),
 }
@@ -71,14 +106,25 @@ fn count(n: usize) -> f64 {
 pub fn fit(y: &[f64], method: Method) -> Result<Fit, AlgoError> {
     validate(y)?;
     match method {
+        Method::SeasonalArima(order) => fit_seasonal_arima(y, order, 0, 0),
+        Method::SparseArima {
+            order,
+            zero_ar,
+            zero_ma,
+        } => fit_seasonal_arima(y, order, zero_ar, zero_ma),
+        Method::Smooth {
+            kind,
+            transform,
+            period,
+        } => fit_general_smooth(y, kind, transform, period),
         Method::Simple | Method::Holt => fit_smooth(y, method == Method::Holt),
         Method::Arima { p, d, q, transform } => {
-            if d != 1 || !matches!((p, q), (0, 0) | (1, 1)) {
+            if d > 1 || p > 1 || q > 1 {
                 return Err(AlgoError::Unsupported(
                     "GAP: ARIMA estimation orders outside (0,1,0)/(1,1,1)".into(),
                 ));
             }
-            fit_arima(y, p, q, transform)
+            fit_arima(y, p, d, q, transform)
         }
     }
 }
@@ -87,7 +133,13 @@ pub fn fit(y: &[f64], method: Method) -> Result<Fit, AlgoError> {
 pub fn objective(spec: &FittedSpec, y: &[f64]) -> Result<f64, AlgoError> {
     validate(y)?;
     match spec {
+        FittedSpec::Transfer(_) => Err(data("transfer objective requires predictor observations")),
         FittedSpec::Smooth(spec) => {
+            if let SmoothSpec::General(g) = spec {
+                let z = arima::transform(g.transform, y).map_err(data)?;
+                let (p, _) = g.run(&z).map_err(data)?;
+                return Ok(p.iter().zip(z).map(|(a, b)| (a - b).powi(2)).sum());
+            }
             let (points, _, _) = smooth::recurse(spec, y).map_err(data)?;
             Ok(points.iter().zip(y).map(|(a, b)| (a - b).powi(2)).sum())
         }
@@ -158,6 +210,7 @@ fn fit_smooth(y: &[f64], holt: bool) -> Result<Fit, AlgoError> {
     let sse = objective(&FittedSpec::Smooth(spec.clone()), y)?;
     let df = count(y.len()) - if holt { 2.0 } else { 1.0 };
     match &mut spec {
+        SmoothSpec::General(_) => return Err(data("general smoothing dispatch")),
         SmoothSpec::Simple { sigma2, .. } | SmoothSpec::Holt { sigma2, .. } => *sigma2 = sse / df,
     }
     let (_, final_level, final_trend) = smooth::recurse(&spec, y).map_err(data)?;
@@ -171,8 +224,282 @@ fn fit_smooth(y: &[f64], holt: bool) -> Result<Fit, AlgoError> {
     })
 }
 
-fn fit_arima(y: &[f64], p: usize, q: usize, transform: Transform) -> Result<Fit, AlgoError> {
-    let w = arima::difference(&arima::transform(transform, y).map_err(data)?, 1);
+fn general_initial(
+    z: &[f64],
+    kind: smooth::Kind,
+    transform: Transform,
+    period: usize,
+    x: &[f64],
+) -> Result<smooth::GeneralSpec, AlgoError> {
+    use smooth::{GeneralSpec, Kind, State};
+    if kind.seasonal() && (!(2..=64).contains(&period) || z.len() < period.saturating_mul(2)) {
+        return Err(data("seasonal smoothing needs two complete seasons"));
+    }
+    let n = count(z.len());
+    let mean = z.iter().sum::<f64>() / n;
+    let mid = (n - 1.0) / 2.0;
+    let mut slope = if kind.trend() {
+        z.iter()
+            .enumerate()
+            .map(|(i, y)| (count(i) - mid) * (y - mean))
+            .sum::<f64>()
+            / (n * (n * n - 1.0) / 12.0)
+    } else {
+        0.0
+    };
+    let mut seasons = Vec::new();
+    if kind.seasonal() {
+        let mut groups = Vec::new();
+        let mut cross = 0.0;
+        let mut squares = 0.0;
+        for j in 0..period {
+            let group: Vec<_> = z
+                .iter()
+                .enumerate()
+                .skip(j)
+                .step_by(period)
+                .map(|(i, y)| (count(i), *y))
+                .collect();
+            let size = count(group.len());
+            let t = group.iter().map(|(t, _)| t).sum::<f64>() / size;
+            let v = group.iter().map(|(_, v)| v).sum::<f64>() / size;
+            let xx = group.iter().map(|(a, _)| (a - t).powi(2)).sum::<f64>();
+            let xy = group.iter().map(|(a, b)| (a - t) * (b - v)).sum::<f64>();
+            cross += xy;
+            squares += xx;
+            groups.push((t, v, if xx > 0.0 { xy / xx } else { 0.0 }));
+        }
+        if kind == Kind::WintersAdd {
+            slope = cross / squares;
+        }
+        if kind == Kind::WintersMul {
+            slope = groups.iter().map(|(_, _, s)| s).sum::<f64>() / count(period);
+        }
+        seasons = groups
+            .iter()
+            .map(|(t, v, s)| match kind {
+                Kind::Seasonal => *v,
+                Kind::WintersAdd => v - slope * t,
+                _ => v - s * t,
+            })
+            .collect();
+        let center = seasons.iter().sum::<f64>() / count(period);
+        for v in &mut seasons {
+            if kind == Kind::WintersMul {
+                *v /= center;
+            } else {
+                *v -= center;
+            }
+        }
+    }
+    let alpha = x.first().copied().ok_or_else(|| data("missing alpha"))?;
+    let mut at = 1;
+    let gamma = if kind.trend() && kind != Kind::Brown {
+        at += 1;
+        x.get(1).copied().unwrap_or(0.0)
+    } else {
+        0.0
+    };
+    let phi = if kind == Kind::Damped {
+        at += 1;
+        x.get(at - 1).copied().unwrap_or(1.0)
+    } else {
+        1.0
+    };
+    let delta = if kind.seasonal() {
+        x.get(at).copied().unwrap_or(0.0)
+    } else {
+        0.0
+    };
+    let mut g = GeneralSpec {
+        kind,
+        transform,
+        alpha,
+        gamma,
+        phi,
+        delta,
+        initial: State {
+            level: z.last().copied().ok_or_else(|| data("empty history"))?,
+            trend: -slope,
+            seasons,
+        },
+        sigma2: 0.0,
+        df: n - count(kind.parameters()),
+    };
+    let mut state = g.initial.clone();
+    // Include t=n, then predict/assimilate t=0 with zero innovation. Reversing
+    // time changes the trend sign, after the damped/Brown state update at zero.
+    for (i, y) in z.iter().enumerate().rev() {
+        g.step(&mut state, Some(*y), i).map_err(data)?;
+    }
+    let zero = if kind.seasonal() { period - 1 } else { 0 };
+    g.step(&mut state, None, zero).map_err(data)?;
+    state.trend = -state.trend;
+    g.initial = state;
+    Ok(g)
+}
+
+fn fit_general_smooth(
+    y: &[f64],
+    kind: smooth::Kind,
+    transform: Transform,
+    period: usize,
+) -> Result<Fit, AlgoError> {
+    let z = arima::transform(transform, y).map_err(data)?;
+    let bounds = vec![(1e-7, 1.0 - 1e-7); kind.parameters()];
+    let residuals = |x: &[f64]| {
+        let g = general_initial(&z, kind, transform, period, x)?;
+        let (p, _) = g.run(&z).map_err(data)?;
+        Ok(p.iter().zip(&z).map(|(a, b)| a - b).collect::<Vec<_>>())
+    };
+    let mut best = None;
+    for start in [0.25, 0.5, 0.8] {
+        let mut initial = vec![start; kind.parameters()];
+        if kind == smooth::Kind::Damped
+            && let Some(v) = initial.get_mut(2)
+        {
+            *v = 0.9;
+        }
+        if let Ok((x, iterations)) = lm(initial, &bounds, residuals) {
+            let r = residuals(&x)?;
+            let value = r.iter().map(|v| v * v).sum::<f64>();
+            if best.as_ref().is_none_or(|(_, _, v)| value < *v) {
+                best = Some((x, iterations, value));
+            }
+        }
+    }
+    let (x, iterations, objective) =
+        best.ok_or_else(|| data("smoothing optimizer did not converge"))?;
+    let mut g = general_initial(&z, kind, transform, period, &x)?;
+    g.sigma2 = objective / g.df;
+    let (_, state) = g.run(&z).map_err(data)?;
+    let rmse = g.sigma2.sqrt();
+    Ok(Fit {
+        spec: FittedSpec::Smooth(SmoothSpec::General(g)),
+        objective,
+        iterations,
+        final_level: state.level,
+        final_trend: state.trend,
+        rmse,
+    })
+}
+
+fn fit_seasonal_arima(
+    y: &[f64],
+    o: ArimaOrder,
+    zero_ar: u64,
+    zero_ma: u64,
+) -> Result<Fit, AlgoError> {
+    if o.p > 4
+        || o.q > 4
+        || o.sp > 1
+        || o.sq > 1
+        || o.d > 1
+        || o.sd > 1
+        || o.period > 24
+        || o.period == 0
+    {
+        return Err(AlgoError::Unsupported(
+            "GAP: estimation ARIMA factor orders exceed one".into(),
+        ));
+    }
+    let degree = o.d + o.sd * o.period;
+    if y.len() <= degree + 5 {
+        return Err(data("insufficient differenced history"));
+    }
+    let z = arima::transform(o.transform, y).map_err(data)?;
+    let n = count(y.len() - degree);
+    let active = |order: usize, zeros: u64| (0..order).filter(|i| zeros & (1u64 << i) == 0).count();
+    let k = usize::from(o.constant) + active(o.p, zero_ar) + active(o.q, zero_ma) + o.sp + o.sq;
+    let make = |x: &[f64]| {
+        let mut i = usize::from(o.constant);
+        let mut take = |len: usize, zeros: u64| {
+            (0..len)
+                .map(|lag| {
+                    if zeros & (1u64 << lag) != 0 {
+                        0.0
+                    } else {
+                        let value = x.get(i).copied().unwrap_or(0.0);
+                        i += 1;
+                        value
+                    }
+                })
+                .collect()
+        };
+        ArimaSpec {
+            constant: if o.constant {
+                x.first().copied().unwrap_or(0.0)
+            } else {
+                0.0
+            },
+            transform: o.transform,
+            d: o.d,
+            period: o.period,
+            seasonal_d: o.sd,
+            ar: take(o.p, zero_ar),
+            ma: take(o.q, zero_ma),
+            seasonal_ar: take(o.sp, 0),
+            seasonal_ma: take(o.sq, 0),
+            sigma2: 1.0,
+            df: n - count(k),
+        }
+    };
+    let residuals = |x: &[f64]| {
+        let (r, ld) = arima::likelihood_residuals(&make(x), y).map_err(data)?;
+        let scale = (ld / (2.0 * n)).exp();
+        Ok(r.into_iter().map(|v| v * scale).collect::<Vec<_>>())
+    };
+    let mut bounds = vec![(-1.0 + 1e-8, 1.0 - 1e-8); k];
+    if o.constant
+        && let Some(v) = bounds.first_mut()
+    {
+        *v = (f64::NEG_INFINITY, f64::INFINITY);
+    }
+    let mut best = None;
+    for start in [-0.3, 0.1, 0.5] {
+        let mut x = vec![start; k];
+        if o.constant
+            && let Some(v) = x.first_mut()
+        {
+            *v = if degree == 0 {
+                z.iter().sum::<f64>() / count(z.len())
+            } else {
+                0.0
+            };
+        }
+        if let Ok((x, iterations)) = lm(x, &bounds, residuals) {
+            let r = residuals(&x)?;
+            let value = r.iter().map(|v| v * v).sum::<f64>();
+            if best.as_ref().is_none_or(|(_, _, v)| value < *v) {
+                best = Some((x, iterations, value));
+            }
+        }
+    }
+    let (x, iterations, _) =
+        best.ok_or_else(|| data("seasonal ARIMA optimizer did not converge"))?;
+    let mut spec = make(&x);
+    let (r, _) = arima::likelihood_residuals(&spec, y).map_err(data)?;
+    spec.sigma2 = r.iter().map(|v| v * v).sum::<f64>() / spec.df;
+    let objective = objective(&FittedSpec::Arima(spec.clone()), y)?;
+    let rmse = spec.sigma2.sqrt();
+    Ok(Fit {
+        spec: FittedSpec::Arima(spec),
+        objective,
+        iterations,
+        final_level: 0.0,
+        final_trend: 0.0,
+        rmse,
+    })
+}
+
+fn fit_arima(
+    y: &[f64],
+    p: usize,
+    d: usize,
+    q: usize,
+    transform: Transform,
+) -> Result<Fit, AlgoError> {
+    let w = arima::difference(&arima::transform(transform, y).map_err(data)?, d);
     let n = count(w.len());
     let mean = w.iter().sum::<f64>() / n;
     let mut initial = vec![mean];
@@ -218,13 +545,26 @@ fn fit_arima(y: &[f64], p: usize, q: usize, transform: Transform) -> Result<Fit,
             })
             .sum();
         let lambda = r1 - a1 * r2 - phi + phi * (a1 * r1 + a2 * r2);
-        initial.push(phi.clamp(-0.95, 0.95));
-        initial.push((lambda / variance).clamp(-0.95, 0.95)); // internal MA sign is plus
+        initial.push(if q == 0 {
+            r1.clamp(-0.95, 0.95)
+        } else {
+            phi.clamp(-0.95, 0.95)
+        });
+        if q == 1 {
+            initial.push((lambda / variance).clamp(-0.95, 0.95));
+        } // internal MA sign is plus
+    }
+    if p == 0 && q == 1 {
+        initial.push(0.1);
     }
     let make = |x: &[f64]| ArimaSpec {
+        seasonal_d: 0,
+        period: 1,
+        seasonal_ar: vec![],
+        seasonal_ma: vec![],
         transform,
         constant: x.first().copied().unwrap_or(0.0),
-        d: 1,
+        d,
         ar: if p == 0 {
             vec![]
         } else {
@@ -233,7 +573,7 @@ fn fit_arima(y: &[f64], p: usize, q: usize, transform: Transform) -> Result<Fit,
         ma: if q == 0 {
             vec![]
         } else {
-            vec![x.get(2).copied().unwrap_or(0.0)]
+            vec![x.get(1 + p).copied().unwrap_or(0.0)]
         },
         sigma2: 1.0,
         df: n - count(1 + p + q),
@@ -271,7 +611,7 @@ fn fit_arima(y: &[f64], p: usize, q: usize, transform: Transform) -> Result<Fit,
 /// Small, bounded Levenberg–Marquardt solver. Reject nonfinite/inadmissible steps,
 /// use central numerical derivatives, and explicitly fail instead of returning a
 /// silently unconverged model when the work budget is exhausted.
-fn lm(
+pub(crate) fn lm(
     mut x: Vec<f64>,
     bounds: &[(f64, f64)],
     raw_residuals: impl Fn(&[f64]) -> Result<Vec<f64>, AlgoError>,
@@ -388,7 +728,7 @@ fn lm(
     Err(data("Time Series optimizer exceeded 400 iterations"))
 }
 
-fn solve(mut a: Vec<Vec<f64>>, mut b: Vec<f64>) -> Result<Vec<f64>, AlgoError> {
+pub(crate) fn solve(mut a: Vec<Vec<f64>>, mut b: Vec<f64>) -> Result<Vec<f64>, AlgoError> {
     let n = b.len();
     for i in 0..n {
         let pivot = (i..n)
@@ -446,6 +786,13 @@ fn solve(mut a: Vec<Vec<f64>>, mut b: Vec<f64>) -> Result<Vec<f64>, AlgoError> {
 impl Fit {
     /// One PMML TimeSeriesModel, consumed by the same parser as a saved nugget.
     pub fn to_xml(&self, target: &str, n: usize) -> String {
+        if let FittedSpec::Transfer(spec) = &self.spec {
+            let mut plain = self.clone();
+            plain.spec = FittedSpec::Arima(spec.noise.clone());
+            return plain
+                .to_xml(target, n)
+                .replace("</ARIMA>", &format!("{}</ARIMA>", spec.effects_xml()));
+        }
         let target = target
             .replace('&', "&amp;")
             .replace('<', "&lt;")
@@ -454,8 +801,56 @@ impl Fit {
             .replace('\n', "&#10;")
             .replace('\t', "&#9;");
         let (algorithm, body, variance, df) = match &self.spec {
+            FittedSpec::Transfer(_) => return String::new(),
+            FittedSpec::Smooth(SmoothSpec::General(g)) => {
+                let transform = match g.transform {
+                    Transform::None => "none",
+                    Transform::Log => "logarithmic",
+                    Transform::Sqrt => "squareroot",
+                };
+                let trend = match g.kind {
+                    smooth::Kind::Brown => "polynomial_exponential",
+                    smooth::Kind::Damped => "damped_additive",
+                    _ => "additive",
+                };
+                let trend_xml = if g.kind.trend() {
+                    format!(
+                        "<Trend_ExpoSmooth trend=\"{trend}\" gamma=\"{}\" phi=\"{}\"/>",
+                        g.gamma, g.phi
+                    )
+                } else {
+                    String::new()
+                };
+                let seasonal = if g.kind.seasonal() {
+                    format!(
+                        "<Seasonality_ExpoSmooth type=\"{}\" period=\"{}\" delta=\"{}\"/>",
+                        if g.kind == smooth::Kind::WintersMul {
+                            "multiplicative"
+                        } else {
+                            "additive"
+                        },
+                        g.initial.seasons.len(),
+                        g.delta
+                    )
+                } else {
+                    String::new()
+                };
+                let array = g
+                    .initial
+                    .seasons
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                let body = format!(
+                    "<ExponentialSmoothing transformation=\"{transform}\"><Level alpha=\"{}\"/>{trend_xml}{seasonal}</ExponentialSmoothing><Extension name=\"initLevel\" value=\"{}\"/><Extension name=\"initTrend\" value=\"{}\"/><Extension name=\"initSeason\"><Array>{array}</Array></Extension>",
+                    g.alpha, g.initial.level, g.initial.trend
+                );
+                ("ExponentialSmoothing", body, g.sigma2, g.df)
+            }
             FittedSpec::Smooth(spec) => {
                 let (alpha, gamma, level, trend, variance, df) = match spec {
+                    SmoothSpec::General(_) => (0.0, None, 0.0, 0.0, 0.0, 0.0),
                     SmoothSpec::Simple {
                         alpha,
                         init_level,
@@ -482,10 +877,10 @@ impl Fit {
                 ("ExponentialSmoothing", body, variance, df)
             }
             FittedSpec::Arima(spec) => {
-                let transform = if spec.transform == Transform::Log {
-                    "logarithmic"
-                } else {
-                    "none"
+                let transform = match spec.transform {
+                    Transform::None => "none",
+                    Transform::Log => "logarithmic",
+                    Transform::Sqrt => "squareRoot",
                 };
                 let array = |tag: &str, v: &[f64], sign: f64| {
                     format!(
@@ -498,14 +893,20 @@ impl Fit {
                     )
                 };
                 let body = format!(
-                    "<Extension><ARIMA RMSE=\"{}\" transformation=\"{transform}\" constantTerm=\"{}\" seasonLength=\"1\"><NonseasonalComponent p=\"{}\" d=\"{}\" q=\"{}\">{}{}</NonseasonalComponent><SeasonalComponent p=\"0\" d=\"0\" q=\"0\"/></ARIMA></Extension>",
-                    self.rmse,
+                    "<Extension><ARIMA transformation=\"{transform}\" constantTerm=\"{}\" seasonLength=\"{}\"><NonseasonalComponent p=\"{}\" d=\"{}\" q=\"{}\">{}{}</NonseasonalComponent><SeasonalComponent seasonalP=\"{}\" seasonalD=\"{}\" seasonalQ=\"{}\" period=\"{}\">{}{}</SeasonalComponent></ARIMA></Extension>",
                     spec.constant,
+                    spec.period,
                     spec.ar.len(),
                     spec.d,
                     spec.ma.len(),
                     array("AR", &spec.ar, 1.0),
-                    array("MA", &spec.ma, -1.0)
+                    array("MA", &spec.ma, -1.0),
+                    spec.seasonal_ar.len(),
+                    spec.seasonal_d,
+                    spec.seasonal_ma.len(),
+                    spec.period,
+                    array("AR", &spec.seasonal_ar, 1.0),
+                    array("MA", &spec.seasonal_ma, -1.0)
                 );
                 ("ARIMA", body, spec.sigma2, spec.df)
             }
