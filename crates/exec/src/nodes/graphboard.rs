@@ -10,17 +10,32 @@
 //! amount; `scatter_color_panel`: score, amount, channel, region, segment).
 //!
 //! Rules, each shown by the case named with it:
-//! - Histogram (`histogram_amount`): non-missing `graphXField` values. The bin width is the
-//!   Heckbert ceiling of `max - min` (1, 2 or 5 times a power of ten; the span 19.87 ceilings
-//!   to 20) divided by 12. Edges accumulate from the minimum (`edge += width`); a value goes
-//!   to the greatest bin whose left edge is `<=` the value, and a value past the last edge
-//!   stays in the last bin. The centre is the midpoint of the two edges. Empty bins are left
-//!   out. System-missing values are their own first row (an empty bin cell and `count`).
-//!   Cells are Java doubles (`6.0`, `-6.916666666666666`). Header `{x}_bin`, `count`.
+//! - Histogram (`histogram_amount`, `hist_score_range`, `hist_weight_range`,
+//!   `hist_constant_amount`, `hist_large_2500`): non-missing `graphXField` values.
+//!   Let `n` be the present count and `span = max - min`. The target is
+//!   `round((32*n)^(1/3))` (12 for the 54-56 present small cases, 42 for the 2272
+//!   present large case). The span is ceiled to an integer when that grows it by
+//!   less than a tenth (`histogram_amount` 19.87->20, `hist_score_range` 5.5->6,
+//!   `hist_large_2500` 20.12->21); otherwise the exact span is kept
+//!   (`hist_weight_range` 0.8->1 would grow by a quarter). The width is the
+//!   (possibly ceiled) span divided by the target; the bin count is
+//!   `ceil(span/width)` (11 for `hist_score_range` since 5.5/0.5 is exact, 41 for
+//!   `hist_large_2500`, otherwise the target). A constant x (`hist_constant_amount`)
+//!   is one bin at that value (Modeler `binStart` 3.5 `binWidth` 1.0, centre 4.0).
+//!   Edges accumulate from the minimum (`edge += width`); a value goes to the
+//!   greatest bin whose left edge is `<=` the value, and a value past the last edge
+//!   stays in the last bin. The centre is the midpoint of the two edges. Empty bins
+//!   are left out; bins appear in first-appearance order. System-missing values are
+//!   their own first row (an empty bin cell and `count`). Cells are Java doubles
+//!   (`6.0`, `-6.916666666666666`). Header `{x}_bin`, `count`.
 //! - Pie (`pie_categories`) and bar (`bar_region_amount`): one row per `graphCategoriesField`
 //!   value, first appearance, the sum of non-missing `graphValuesField`. Header
 //!   `{categories}`, `{values}_sum`. A blank category is the cell `""` (`&quot;&quot;` in the
 //!   VIZML). A group whose values are all missing keeps the row and leaves the sum empty.
+//!   A colour on a summed bar (`bar_color_summed`) groups by (categories, colour)
+//!   pairs; header `{categories}`, `{color}`, `{values}_sum`. A colour on a summed
+//!   pie (`pie_color_summed`) leaves the raw records (`{values}`, `{categories}`,
+//!   `{color}` in input order, `summaryStatistic sum` in the VIZML).
 //! - Pie and bar of counts (`piecounts_region`, `barcounts_region`): one row per
 //!   `graphCategoriesField` value, first appearance, the number of records (blank categories
 //!   included). Header `{categories}`, `count`. A bar of counts with `graphColorField`
@@ -28,7 +43,10 @@
 //!   `{categories}`, `{color}`, `count`.
 //! - Line (`line_score_amount`) and area (`area_score_amount`): one row per `graphXField`
 //!   value, first appearance, the mean of non-missing `graphYField`. Header `{x}`, `{y}_mean`.
-//!   A blank numeric x is an empty cell (the blank score mean is `-0.625`).
+//!   A blank numeric x is an empty cell (the blank score mean is `-0.625`). Panel fields
+//!   (`line_panel`: `score;region;channel;amount_mean`) add the panel columns as extra
+//!   keys (`x`, across, down); a summed bar with panel (`bar_panel`:
+//!   `region;channel;amount_sum`) adds them the same way with the duplicate dropped.
 //! - Heatmap (`heatmap_rows`): one row per (`graphColumnsField`, `graphRowsField`), first
 //!   appearance, the mean of non-missing `graphColorField`. Header columns, rows,
 //!   `{color}_mean`. Store with a blank region has no present amount, so the mean cell is
@@ -37,25 +55,31 @@
 //!   bubble (`bubble_score_amount`) and parallel (`parallel_fields`): one row per record, in
 //!   input order. Columns: scatter is x, y, then `graphDownField`, `graphAcrossField` and
 //!   `graphColorField` when set (the panel case stores channel in `graphDownField` and region
-//!   in `graphAcrossField`); bubble is size, x, y; dot plot is x; parallel is `graphMultiFields`
+//!   in `graphAcrossField`); an animation field (`scatter_animation`: `score;amount;segment`)
+//!   trails as the last column; a coordinate map (`map_coordinate_slots`) is raw latitude
+//!   then longitude (`amount;score`); bubble is size, x, y; dot plot is x; parallel is `graphMultiFields`
 //!   in saved order. A null or missing number is an empty cell; a blank string is `""`.
 //!   Integers print as Java doubles.
-//! - Boxplot (`boxplot_region_amount`): Tukey hinges of non-missing `graphYField` by
-//!   `graphXField`. Categories are sorted by the printed category (`""`, East, North, South).
-//!   Per category, five rows: median, first hinge, third hinge, upper whisker, lower whisker
-//!   (duplicates kept). The half for a hinge is `ceil(n/2)` and includes the median when `n`
-//!   is odd. Fences are 1.5 times the interquartile range, inclusive. Whiskers are the least
-//!   and greatest inside points. Outliers follow every category block, in that category
-//!   order. Header is the scale field, then the category field.
+//! - Boxplot (`boxplot_region_amount`, `box_many_outliers`): SAS (R-3) quartiles of
+//!   non-missing `graphYField` by `graphXField`. Categories are sorted by the printed
+//!   category (`""`, East, North, South). Per category, five rows: median, first
+//!   quartile, third quartile, upper whisker, lower whisker (duplicates kept). The
+//!   quartile is `x[ceil(n*p)]` (1-indexed), averaging `x[h]` and `x[h+1]` when
+//!   `h = n*p` is an integer (`South [10,11,12]` gives 10.0 and 12.0; `North
+//!   [1,2,3,4]` gives 1.5 and 3.5). Fences are 1.5 times the interquartile range,
+//!   inclusive. Whiskers are the least and greatest inside points. Outliers follow
+//!   every category block, in that category order. Header is the scale field, then
+//!   the category field.
 //!
-//! GAP: the bin count 12 is what `histogram_amount` shows; no other Graphboard histogram was
-//! captured. A constant x (one bin at that value) and several outliers in one category (emitted
-//! in ascending value) are not in the cases. A category with no present y is omitted. Maps,
-//! 3-D, animation, overlays, transparency, templates, an axis summary other than `MEAN`, and
-//! inputs larger than `graphLargeDatasetReadThreshold` (default 2000; Modeler then samples or
-//! bins) are rejected. So are graph types and field slots the cases do not use (pie or bar on
-//! x/y, colour on a summed bar or any pie, heatmap on x/y, shape, panel, data labels, summary
-//! field).
+//! GAP: a category with no present y throws Modeler's own internal error
+//!   (`box_empty_category` was not recorded). Maps except one coordinate map
+//!   (`map_coordinate_slots`: raw latitude then longitude), 3-D types, overlays,
+//!   transparency, templates, an axis summary other than `MEAN`, and raw graphs past
+//!   `graphLargeDatasetReadThreshold` (default 2000; Modeler samples them:
+//!   `scatter_large_2500` stays a GAP since the sample is random) are rejected. So are
+//!   graph types and field slots the cases do not use (pie or bar on x/y, heatmap on
+//!   x/y, pie with panel, bar with colour and panel together, shape, data labels,
+//!   summary field). Histograms past the threshold are binned (`hist_large_2500`).
 //!
 //! `nodes::graph_data::BinSettings` is the Histogram node's binning and is not used here.
 
@@ -69,19 +93,35 @@ use dms_stream::StreamNode;
 use dms_types::{Field, Storage, Table, Value};
 use std::sync::Arc;
 
-/// Bins over the Heckbert ceiling of the data span. `histogram_amount` has twelve.
-const HISTOGRAM_BINS: usize = 12;
+/// Bins over the data span. `histogram_amount` has twelve.
+fn histogram_target(present: usize) -> Option<usize> {
+    let n = present as f64;
+    if !(n.is_finite() && n >= 1.0) {
+        return None;
+    }
+    let scaled = 32.0 * n;
+    if !(scaled.is_finite() && scaled > 0.0) {
+        return None;
+    }
+    let root = scaled.cbrt();
+    if !root.is_finite() {
+        return None;
+    }
+    let rounded = root.round();
+    if !(rounded.is_finite() && rounded >= 1.0 && rounded <= MAX_BINS as f64) {
+        return None;
+    }
+    let target = rounded as usize;
+    (1..=MAX_BINS).contains(&target).then_some(target)
+}
 
 const ALWAYS_EMPTY: &[&str] = &[
-    "graphAnimationField",
     "graphZField",
     "graphShapeField",
     "graphTransparencyField",
     "graphPanelField",
     "graphDatalabelField",
     "graphSummaryField",
-    "graphLongitudeField",
-    "graphLatitudeField",
     "graphMapColorField",
     "graphDataKeyField",
     "graphStartLongitudeField",
@@ -144,6 +184,9 @@ struct Slots {
     down: Option<String>,
     across: Option<String>,
     multi: Vec<String>,
+    animation: Option<String>,
+    longitude: Option<String>,
+    latitude: Option<String>,
 }
 
 fn gap(message: &str) -> OperatorError {
@@ -234,6 +277,9 @@ fn read_slots(s: Option<&dms_strfmt::fastinfoset::Element>) -> Slots {
         down: named(s, "graphDownField"),
         across: named(s, "graphAcrossField"),
         multi,
+        animation: named(s, "graphAnimationField"),
+        longitude: named(s, "graphLongitudeField"),
+        latitude: named(s, "graphLatitudeField"),
     }
 }
 
@@ -250,6 +296,9 @@ fn reject_unused(slots: &Slots) -> Result<(), OperatorError> {
         ("graphDownField", slots.down.is_some()),
         ("graphAcrossField", slots.across.is_some()),
         ("graphMultiFields", !slots.multi.is_empty()),
+        ("graphAnimationField", slots.animation.is_some()),
+        ("graphLongitudeField", slots.longitude.is_some()),
+        ("graphLatitudeField", slots.latitude.is_some()),
     ];
     for (name, set) in extras {
         if set {
@@ -259,6 +308,16 @@ fn reject_unused(slots: &Slots) -> Result<(), OperatorError> {
         }
     }
     Ok(())
+}
+
+fn deduped(keys: Vec<String>) -> Vec<String> {
+    let mut seen = Vec::new();
+    for key in keys {
+        if !seen.contains(&key) {
+            seen.push(key);
+        }
+    }
+    seen
 }
 
 fn build_kind(graph_type: &str, slots: &mut Slots) -> Result<Kind, OperatorError> {
@@ -278,6 +337,53 @@ fn build_kind(graph_type: &str, slots: &mut Slots) -> Result<Kind, OperatorError
                 return Err(gap(&format!(
                     "Graphboard {label} on graphXField/graphYField is not supported (pie_categories and bar_region_amount use graphCategoriesField and graphValuesField)"
                 )));
+            }
+            // A colour on a summed pie leaves the raw records (`pie_color_summed`:
+            // `amount;region;segment` in input order, `summaryStatistic sum` in the
+            // VIZML); a colour on a summed bar groups by the pair (`bar_color_summed`:
+            // `region;segment;amount_sum`).
+            if graph_type.eq_ignore_ascii_case("PIE") {
+                if slots.down.is_some() || slots.across.is_some() {
+                    return Err(gap(
+                        "Graphboard setting graphDownField is not supported for this graph type",
+                    ));
+                }
+                if slots.color.is_some() {
+                    let columns = vec![
+                        require(&mut slots.values, "graphValuesField")?,
+                        require(&mut slots.categories, "graphCategoriesField")?,
+                        require(&mut slots.color, "graphColorField")?,
+                    ];
+                    let kind = Kind::Raw { columns, label };
+                    reject_unused(slots)?;
+                    return Ok(kind);
+                }
+            } else {
+                // Bar.
+                if slots.color.is_some() && (slots.down.is_some() || slots.across.is_some()) {
+                    return Err(gap("Graphboard Bar with colour and panel is not supported"));
+                }
+                if slots.down.is_some() || slots.across.is_some() || slots.color.is_some() {
+                    let mut keys = vec![require(&mut slots.categories, "graphCategoriesField")?];
+                    // `bar_color_summed` groups by (categories, colour); `bar_panel`
+                    // groups by (categories, panel columns) with the duplicate panel
+                    // row dropped (`region` is both categories and across).
+                    keys.extend(slots.color.take());
+                    if slots.down.is_some() || slots.across.is_some() {
+                        // Across first (`line_panel`: `score;region;channel`).
+                        keys.push(slots.across.take().unwrap_or_default());
+                        keys.push(slots.down.take().unwrap_or_default());
+                        keys.retain(|key| !key.is_empty());
+                    }
+                    let keys = deduped(keys);
+                    let kind = Kind::Aggregate {
+                        keys,
+                        summary: Summary::Sum(require(&mut slots.values, "graphValuesField")?),
+                        label,
+                    };
+                    reject_unused(slots)?;
+                    return Ok(kind);
+                }
             }
             Kind::Aggregate {
                 keys: vec![require(&mut slots.categories, "graphCategoriesField")?],
@@ -305,8 +411,17 @@ fn build_kind(graph_type: &str, slots: &mut Slots) -> Result<Kind, OperatorError
             } else {
                 "Area"
             };
+            // `line_panel` groups by (x, panel columns): `score;region;channel`
+            // with Down `channel` and Across `region`, i.e. Across first.
+            let mut keys = vec![require(&mut slots.x, "graphXField")?];
+            if slots.down.is_some() || slots.across.is_some() {
+                keys.push(slots.across.take().unwrap_or_default());
+                keys.push(slots.down.take().unwrap_or_default());
+                keys.retain(|key| !key.is_empty());
+            }
+            let keys = deduped(keys);
             Kind::Aggregate {
-                keys: vec![require(&mut slots.x, "graphXField")?],
+                keys,
                 summary: Summary::Mean(require(&mut slots.y, "graphYField")?),
                 label,
             }
@@ -336,6 +451,8 @@ fn build_kind(graph_type: &str, slots: &mut Slots) -> Result<Kind, OperatorError
             columns.extend(slots.down.take());
             columns.extend(slots.across.take());
             columns.extend(slots.color.take());
+            // `scatter_animation` trails the animation field (`score;amount;segment`).
+            columns.extend(slots.animation.take());
             Kind::Raw {
                 columns,
                 label: "Scatterplot",
@@ -369,6 +486,18 @@ fn build_kind(graph_type: &str, slots: &mut Slots) -> Result<Kind, OperatorError
             category: require(&mut slots.x, "graphXField")?,
             scale: require(&mut slots.y, "graphYField")?,
         },
+        "COORDINATE_POINTS_ON_MAP" | "COORDINATEMAP" => {
+            // `map_coordinate_slots`: raw latitude then longitude
+            // (`amount;score` in input order).
+            let columns = vec![
+                require(&mut slots.latitude, "graphLatitudeField")?,
+                require(&mut slots.longitude, "graphLongitudeField")?,
+            ];
+            Kind::Raw {
+                columns,
+                label: "CoordinateMap",
+            }
+        }
         other => {
             return Err(gap(&format!(
                 "Graphboard graph type {other:?} is not supported"
@@ -540,36 +669,6 @@ fn aggregate_table(
     })
 }
 
-/// Heckbert's "nice" ceiling: 1, 2 or 5 times a power of ten (`histogram_amount`: 19.87 → 20).
-fn nice_ceil(span: f64) -> Option<f64> {
-    if !(span.is_finite() && span > 0.0) {
-        return None;
-    }
-    let exp = span.log10().floor();
-    if !exp.is_finite() {
-        return None;
-    }
-    let pow = 10f64.powf(exp);
-    if !(pow.is_finite() && pow > 0.0) {
-        return None;
-    }
-    let frac = span / pow;
-    if !frac.is_finite() {
-        return None;
-    }
-    let nice = if frac <= 1.0 {
-        1.0
-    } else if frac <= 2.0 {
-        2.0
-    } else if frac <= 5.0 {
-        5.0
-    } else {
-        10.0
-    };
-    let result = nice * pow;
-    (result.is_finite() && result > 0.0).then_some(result)
-}
-
 enum Scale {
     /// Every present value is equal (`histogram_amount` does not show this).
     One(f64),
@@ -579,20 +678,66 @@ enum Scale {
     },
 }
 
-fn histogram_scale(low: f64, high: f64) -> Result<Scale, OperatorError> {
+fn histogram_scale(low: f64, high: f64, present: usize) -> Result<Scale, OperatorError> {
     if high == low {
         return Ok(Scale::One(low));
     }
     let span = high - low;
-    let nice = nice_ceil(span).ok_or_else(|| {
-        OperatorError::Data(format!("Graphboard histogram cannot bin a range of {span}"))
+    if !(span.is_finite() && span > 0.0) {
+        return Err(OperatorError::Data(format!(
+            "Graphboard histogram cannot bin a range of {span}"
+        )));
+    }
+    // Target bins from the present count (`histogram_amount` (n=54) and the three
+    // new small cases (n=55,56) all give 12; `hist_large_2500` (n=2272) gives 42):
+    // `round((32*n)^(1/3))`. The span is ceiled to an integer when that grows it
+    // by less than a tenth (`histogram_amount` 19.87->20, `hist_score_range`
+    // 5.5->6, `hist_large_2500` 20.12->21); otherwise the exact span is kept
+    // (`hist_weight_range` 0.8->1 would grow by a quarter).
+    let target = histogram_target(present).ok_or_else(|| {
+        OperatorError::Data(format!("Graphboard histogram cannot bin {present} values"))
     })?;
-    let bins = HISTOGRAM_BINS.clamp(1, MAX_BINS);
-    let width = nice / (bins as f64);
+    let ceil_span = span.ceil();
+    if !(ceil_span.is_finite() && ceil_span >= span) {
+        return Err(OperatorError::Data(format!(
+            "Graphboard histogram cannot bin a range of {span}"
+        )));
+    }
+    let grown = (ceil_span - span) / span;
+    if !grown.is_finite() {
+        return Err(OperatorError::Data(format!(
+            "Graphboard histogram cannot bin a range of {span}"
+        )));
+    }
+    let nice_span = if grown < 0.1 { ceil_span } else { span };
+    if !(nice_span.is_finite() && nice_span > 0.0) {
+        return Err(OperatorError::Data(format!(
+            "Graphboard histogram cannot bin a range of {span}"
+        )));
+    }
+    let width = nice_span / (target as f64);
     if !(width.is_finite() && width > 0.0) {
         return Err(OperatorError::Data(
             "Graphboard histogram bin width is not usable".into(),
         ));
+    }
+    let exact = span / width;
+    if !exact.is_finite() {
+        return Err(OperatorError::Data(format!(
+            "Graphboard histogram cannot bin a range of {span}"
+        )));
+    }
+    let bins_f = exact.ceil();
+    if !(bins_f.is_finite() && bins_f >= 1.0 && bins_f <= MAX_BINS as f64) {
+        return Err(OperatorError::Data(format!(
+            "Graphboard histogram cannot bin a range of {span}"
+        )));
+    }
+    let bins = bins_f as usize;
+    if !(1..=MAX_BINS).contains(&bins) {
+        return Err(OperatorError::Data(format!(
+            "Graphboard histogram cannot bin a range of {span}"
+        )));
     }
     let mut edges = Vec::with_capacity(bins);
     let mut edge = low;
@@ -657,14 +802,16 @@ fn histogram_table(input: &Table, x: &str) -> Result<DocumentTable, OperatorErro
     let at = position(input, x)?;
     let mut low = None;
     let mut high = None;
+    let mut present = 0usize;
     for row in input.rows() {
         if let Some(number) = number_at(input, row, at) {
             low = Some(low.map_or(number, |seen: f64| seen.min(number)));
             high = Some(high.map_or(number, |seen: f64| seen.max(number)));
+            present = present.saturating_add(1);
         }
     }
     let scale = match (low, high) {
-        (Some(low), Some(high)) => Some(histogram_scale(low, high)?),
+        (Some(low), Some(high)) => Some(histogram_scale(low, high, present)?),
         _ => None,
     };
     let slot_count = match &scale {
@@ -728,6 +875,37 @@ struct BoxStats {
     outliers: Vec<f64>,
 }
 
+/// Quartile by the SAS (R-3) rule `box_many_outliers` and `boxplot_region_amount`
+/// show: `h = n * p` (1-indexed); when `h` is an integer average `x[h]` and
+/// `x[h+1]`, otherwise take `x[ceil(h)]`. For `n = 3` (`South [10,11,12]`) this
+/// is the minimum and maximum (10.0 and 12.0); for `n = 4` (`North [1,2,3,4]`)
+/// it averages to 1.5 and 3.5; for `n = 17` it lands on the 5th/13th values,
+/// the same cells the old `ceil(n/2)` halves gave.
+fn quartile_r3(sorted: &[f64], p: f64) -> Option<f64> {
+    let n = sorted.len();
+    if n == 0 || !(p > 0.0 && p < 1.0) {
+        return None;
+    }
+    // h = n * p is a multiple of 0.25; an integer exactly when n % 4 == 0.
+    // Use integer arithmetic to avoid float wobble.
+    let num = n
+        .saturating_mul(1)
+        .saturating_mul(if p < 0.5 { 1 } else { 3 });
+    // num = n * 1 for Q1, n * 3 for Q3; h = num / 4.
+    let (quot, rem) = (num / 4, num % 4);
+    if rem == 0 {
+        // h is an integer (1-indexed): average x[h] and x[h+1].
+        // h >= 1 because n >= 1 and p >= 0.25; h < n because p <= 0.75 and n >= 1
+        // gives h = n*0.75 < n for n >= 1? For n=4, h=3, h+1=4 <= n. Guard anyway.
+        let left = sorted.get(quot.saturating_sub(1))?;
+        let right = sorted.get(quot.min(n.saturating_sub(1)))?;
+        Some((*left + *right) / 2.0)
+    } else {
+        // ceil(h) = quot + 1 (1-indexed) -> index quot (0-indexed).
+        sorted.get(quot.min(n.saturating_sub(1))).copied()
+    }
+}
+
 /// Five-number box of `boxplot_region_amount`. `values` is sorted here.
 fn box_stats(values: &mut [f64]) -> Option<BoxStats> {
     if values.is_empty() {
@@ -735,12 +913,8 @@ fn box_stats(values: &mut [f64]) -> Option<BoxStats> {
     }
     values.sort_by(|left, right| left.total_cmp(right));
     let mid = median(values)?;
-    let n = values.len();
-    let half = n.div_ceil(2);
-    let lower = values.get(..half)?;
-    let upper = values.get(n.saturating_sub(half)..)?;
-    let q1 = median(lower)?;
-    let q3 = median(upper)?;
+    let q1 = quartile_r3(values, 0.25)?;
+    let q3 = quartile_r3(values, 0.75)?;
     let iqr = q3 - q1;
     let fence_low = q1 - 1.5 * iqr;
     let fence_high = q3 + 1.5 * iqr;
@@ -837,7 +1011,10 @@ impl Operator for Graphboard {
         let input = inputs
             .first()
             .ok_or_else(|| OperatorError::Inputs("Graphboard needs one input".into()))?;
-        if input.row_count() > self.threshold {
+        // `hist_large_2500` bins all 2,500 records past the 2,000 threshold; a raw
+        // graph past the threshold still samples (`scatter_large_2500` stays GAP).
+        let is_histogram = matches!(&self.kind, Kind::Histogram { .. });
+        if !is_histogram && input.row_count() > self.threshold {
             return Err(gap(&format!(
                 "Graphboard of more than {} records is not supported (graphLargeDatasetOption samples or bins them)",
                 self.threshold
@@ -856,7 +1033,7 @@ impl Operator for Graphboard {
 #[cfg(test)]
 mod tests {
     use super::java_double;
-    use super::{box_stats, nice_ceil};
+    use super::{box_stats, histogram_target};
     use crate::context::ExecContext;
     use crate::output::NodeOutput;
     use dms_stream::StreamNode;
@@ -975,8 +1152,10 @@ mod tests {
 
     #[test]
     fn histogram_amount_centres_match_the_oracle_text() {
-        let span = 12.123456789012344 - (-7.75);
-        assert_eq!(nice_ceil(span), Some(20.0));
+        let span: f64 = 12.123456789012344 - (-7.75);
+        assert_eq!(histogram_target(54), Some(12));
+        let ceil_span = span.ceil();
+        assert_eq!(ceil_span, 20.0);
         let width = 20.0 / 12.0;
         let mut edge = -7.75;
         let mut centres = Vec::new();
