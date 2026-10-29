@@ -2039,27 +2039,12 @@ mod tests {
 
     #[test]
     fn rejects_smoothing_models_outside_the_oracle() {
-        let seasonal = model(
-            "<ExponentialSmoothing transformation=\"none\"><Level alpha=\"0.2\" smoothedValue=\"1\"/><Seasonality_ExpoSmooth type=\"additive\" period=\"12\" delta=\"0.2\"/></ExponentialSmoothing>",
-        );
-        assert!(gap(&seasonal).starts_with("GAP:"));
-        assert!(gap(&seasonal).contains("Winters"));
-        let damped = model(
-            "<ExponentialSmoothing transformation=\"none\"><Level alpha=\"0.2\" smoothedValue=\"1\"/><Trend_ExpoSmooth trend=\"damped\" gamma=\"0.1\" phi=\"0.8\" smoothedValue=\"0.1\"/></ExponentialSmoothing>",
-        );
-        assert!(gap(&damped).contains("damped"));
+        // Seasonal, Winters, damped, Brown and log/sqrt smoothing are implemented since
+        // `ts_more`; an additive trend with a phi and a multiplicative trend still have no oracle.
         let phi = model(
             "<ExponentialSmoothing transformation=\"none\"><Level alpha=\"0.2\" smoothedValue=\"1\"/><Trend_ExpoSmooth trend=\"additive\" gamma=\"0.1\" phi=\"0.9\" smoothedValue=\"0.1\"/></ExponentialSmoothing>",
         );
         assert!(gap(&phi).contains("phi"));
-        let brown = model(
-            "<ExponentialSmoothing transformation=\"none\"><Level alpha=\"0.2\" smoothedValue=\"1\" quadraticSmoothedValue=\"0.4\"/></ExponentialSmoothing>",
-        );
-        assert!(gap(&brown).contains("Brown"));
-        let logged = model(
-            "<ExponentialSmoothing transformation=\"logarithmic\"><Level alpha=\"0.2\" smoothedValue=\"1\"/></ExponentialSmoothing><Extension name=\"errVariance\" value=\"1\"/><Extension name=\"degreesOfFreedom\" value=\"10\"/><Extension name=\"initLevel\" value=\"1\"/>",
-        );
-        assert!(gap(&logged).contains("transformation"));
         let multiplicative = model(
             "<ExponentialSmoothing transformation=\"none\"><Level alpha=\"0.2\" smoothedValue=\"1\"/><Trend_ExpoSmooth trend=\"multiplicative\" gamma=\"0.1\" smoothedValue=\"1\"/></ExponentialSmoothing>",
         );
