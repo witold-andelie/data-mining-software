@@ -301,6 +301,7 @@ fn var_file_handles_empty_files_and_rejects_bad_settings() {
     assert!(
         var_file::build(&node(vec![
             p("inputFileName", "a.csv"),
+            p("delimitOnSpace", "true"),
             p("multiBlankDelimiters", "true"),
         ]))
         .is_err()
