@@ -25,7 +25,7 @@
     SAV 的 `F w.0` 与 `DOLLAR w.0` 变量按整数读入并四舍五入（`broadband_apply_models`、`graphboard` 一致）；
     Auto Data Prep 只重编码字符串分类输入，数值型名义/flag 输入原样保留（`ADP_basic_demo` 4/4 一致）。
   - 仍缺：流日期格式 `format27`（MON YYYY）在 CLEM `to_date` 与导出中的使用、Time Series 的季节/变换传递函数
-    （`broadband_create_models`）；Time Series 的 `_isOutputOthers`（`catalog_forecast`）；Statistics 文件源
+    （`broadband_create_models`）；Time Series 的 `_isOutputOthers` 与 `_calculatePI` 已确认不影响打分输出（`catalog_forecast` 一致）；Statistics 文件源
     `labelsAsData`（`modelingintro`，Modeler 批处理本身也找不到可执行节点）；STP 与 `treatSquareBracketsAsLists`
     （`stp_server_demo`）；Clementine 11 内联 `RuleTreeModel` 模型块（`telco_dataaudit`）；旧版 Auto 模型块 2 个。
 
