@@ -1,3 +1,14 @@
+//! Phase B (`ts_more`): d=0 starts at the stationary mean; seasonal factors
+//! multiply lag polynomials, and both differencing polynomials are inverted for
+//! history/forecasts. Covariances solve the finite Yule-Walker equations with
+//! MA forcing, avoiding truncated impulse sums near unit roots. Sqrt forecasts
+//! use E[Z^2]=E[Z]^2+Var[Z]; log uses the lognormal mean. Converged fits of
+//! ts_ar/ma/arima/airline and their no-constant airline counterpart pass rule 3;
+//! saved log/sqrt models pass when refitted with their recorded transformation.
+//! The no-constant seasonal log case's linked, untransformed rebuild still
+//! differs by 0.116627 target SD and remains GAP, not accepted optimizer parity.
+//! Public source: Modeler Algorithms Guide (1994–2016), Time Series pp.384–386.
+//!
 //! ARIMA scoring by the innovations algorithm (Brockwell & Davis; Algorithms Guide
 //! "Maximum Likelihood (ML) Method").
 //!
@@ -27,10 +38,15 @@ const MAX_PSI: usize = 10_000;
 pub enum Transform {
     None,
     Log,
+    Sqrt,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ArimaSpec {
+    pub seasonal_d: usize,
+    pub period: usize,
+    pub seasonal_ar: Vec<f64>,
+    pub seasonal_ma: Vec<f64>,
     pub transform: Transform,
     pub constant: f64,
     pub d: usize,
@@ -82,6 +98,8 @@ pub fn score(
     conf_percent: f64,
 ) -> Result<SeriesScore, ArimaError> {
     spec.check()?;
+    let expanded = spec.expanded()?;
+    let spec = &expanded;
     if y.len() > MAX_HISTORY {
         return Err(ArimaError::Data(format!(
             "Time Series history of {} exceeds {MAX_HISTORY}",
@@ -106,12 +124,14 @@ pub fn score(
         ))
     })?;
     let z = transform(spec.transform, y)?;
-    if z.len() <= spec.d {
+    let diff = spec.difference_polynomial()?;
+    let degree = diff.len().saturating_sub(1);
+    if z.len() <= degree {
         return Err(ArimaError::Data(
             "Time Series series is shorter than the differencing order".into(),
         ));
     }
-    let differenced = difference(&z, spec.d);
+    let differenced = filter_difference(&z, &diff);
     let w: Vec<f64> = differenced.iter().map(|v| v - spec.constant).collect();
     let gamma_lags = w.len().saturating_add(horizon).saturating_add(2).max(2);
     let gamma = arma_gamma(&spec.ar, &spec.ma, gamma_lags)?;
@@ -119,12 +139,12 @@ pub fn score(
     let psi = integrated_psi(spec, horizon.saturating_add(1))?;
 
     let mut fitted = vec![None; z.len()];
-    for (t, slot) in fitted.iter_mut().enumerate().skip(spec.d) {
-        let w_index = t.saturating_sub(spec.d);
+    for (t, slot) in fitted.iter_mut().enumerate().skip(degree) {
+        let w_index = t.saturating_sub(degree);
         let what = *hats.get(w_index).ok_or_else(|| {
             ArimaError::Data("Time Series innovations is short of the history".into())
         })?;
-        let zhat = undifference_one(spec.d, &z, t, spec.constant, what)?;
+        let zhat = invert_difference(&diff, &z, t, spec.constant + what)?;
         let vn = *v.get(w_index).ok_or_else(|| {
             ArimaError::Data("Time Series innovations variance is short of the history".into())
         })?;
@@ -139,12 +159,10 @@ pub fn score(
 
     let mut forecasts = Vec::with_capacity(horizon);
     let w_forecasts = future_w(spec, &w, &hats, horizon)?;
-    let mut last_z = *z
-        .last()
-        .ok_or_else(|| ArimaError::Data("Time Series series is empty".into()))?;
+    let mut extended = z.clone();
     for (h, what) in w_forecasts.iter().enumerate() {
-        let zhat = last_z + spec.constant + what;
-        last_z = zhat;
+        let zhat = invert_difference(&diff, &extended, extended.len(), spec.constant + what)?;
+        extended.push(zhat);
         let sum_psi2: f64 = psi.iter().take(h.saturating_add(1)).map(|p| p * p).sum();
         let se = (spec.sigma2 * sum_psi2).sqrt();
         forecasts.push(back_transform(spec.transform, zhat, se, tcrit)?);
@@ -153,7 +171,50 @@ pub fn score(
 }
 
 impl ArimaSpec {
+    fn difference_polynomial(&self) -> Result<Vec<f64>, ArimaError> {
+        let mut poly = vec![1.0];
+        for _ in 0..self.d {
+            poly = polynomial_product(&poly, &[1.0, -1.0]);
+        }
+        if self.seasonal_d > 0 {
+            let mut seasonal = vec![0.0; self.period.saturating_add(1)];
+            if let Some(v) = seasonal.first_mut() {
+                *v = 1.0;
+            }
+            if let Some(v) = seasonal.last_mut() {
+                *v = -1.0;
+            }
+            for _ in 0..self.seasonal_d {
+                poly = polynomial_product(&poly, &seasonal);
+            }
+        }
+        if poly.len() > 65 {
+            return Err(ArimaError::Settings("difference degree exceeds 64".into()));
+        }
+        Ok(poly)
+    }
+
+    fn expanded(&self) -> Result<Self, ArimaError> {
+        let mut spec = self.clone();
+        spec.ar = expand_coefficients(&self.ar, &self.seasonal_ar, self.period, -1.0)?;
+        spec.ma = expand_coefficients(&self.ma, &self.seasonal_ma, self.period, 1.0)?;
+        spec.seasonal_ar.clear();
+        spec.seasonal_ma.clear();
+        Ok(spec)
+    }
+
     fn check(&self) -> Result<(), ArimaError> {
+        if self.period == 0
+            || self.period > 64
+            || self.seasonal_d > 2
+            || self.d > 2
+            || self.seasonal_ar.len() > 2
+            || self.seasonal_ma.len() > 2
+        {
+            return Err(ArimaError::Settings(
+                "unsupported seasonal ARIMA order".into(),
+            ));
+        }
         if self.ar.len() > MAX_ORDER || self.ma.len() > MAX_ORDER || self.d > MAX_ORDER {
             return Err(ArimaError::Settings(
                 "GAP: ARIMA order exceeds the supported maximum".into(),
@@ -183,9 +244,61 @@ impl ArimaSpec {
     }
 }
 
+fn polynomial_product(a: &[f64], b: &[f64]) -> Vec<f64> {
+    let mut out = vec![0.0; a.len().saturating_add(b.len()).saturating_sub(1)];
+    for (i, a) in a.iter().enumerate() {
+        for (j, b) in b.iter().enumerate() {
+            if let Some(v) = out.get_mut(i.saturating_add(j)) {
+                *v += a * b;
+            }
+        }
+    }
+    out
+}
+
+fn expand_coefficients(
+    a: &[f64],
+    season: &[f64],
+    period: usize,
+    sign: f64,
+) -> Result<Vec<f64>, ArimaError> {
+    let degree = season.len().saturating_mul(period).saturating_add(a.len());
+    if degree > 64 {
+        return Err(ArimaError::Settings("ARMA degree exceeds 64".into()));
+    }
+    let mut poly = vec![1.0];
+    poly.extend(a.iter().map(|v| v * sign));
+    let mut sp = vec![0.0; season.len().saturating_mul(period).saturating_add(1)];
+    if let Some(v) = sp.first_mut() {
+        *v = 1.0;
+    }
+    for (i, c) in season.iter().enumerate() {
+        if let Some(v) = sp.get_mut((i + 1) * period) {
+            *v = c * sign;
+        }
+    }
+    Ok(polynomial_product(&poly, &sp)
+        .into_iter()
+        .skip(1)
+        .map(|v| v * sign)
+        .collect())
+}
+
 pub(crate) fn transform(kind: Transform, y: &[f64]) -> Result<Vec<f64>, ArimaError> {
     match kind {
         Transform::None => Ok(y.to_vec()),
+        Transform::Sqrt => y
+            .iter()
+            .map(|v| {
+                if *v < 0.0 {
+                    Err(ArimaError::Data(
+                        "square root transform needs nonnegative values".into(),
+                    ))
+                } else {
+                    Ok(v.sqrt())
+                }
+            })
+            .collect(),
         Transform::Log => y
             .iter()
             .map(|v| {
@@ -218,45 +331,71 @@ pub(crate) fn difference(z: &[f64], d: usize) -> Vec<f64> {
     series
 }
 
-fn undifference_one(
-    d: usize,
-    z: &[f64],
-    t: usize,
-    constant: f64,
-    what: f64,
-) -> Result<f64, ArimaError> {
-    if d != 1 {
-        return Err(ArimaError::Settings(format!(
-            "GAP: ARIMA differencing order {d} is not implemented (oracle cases use d=1)"
-        )));
+fn invert_difference(diff: &[f64], z: &[f64], t: usize, w: f64) -> Result<f64, ArimaError> {
+    let mut value = w;
+    for (lag, coef) in diff.iter().enumerate().skip(1) {
+        let at = t
+            .checked_sub(lag)
+            .ok_or_else(|| ArimaError::Data("insufficient differencing history".into()))?;
+        value -= coef
+            * z.get(at)
+                .copied()
+                .ok_or_else(|| ArimaError::Data("missing differencing history".into()))?;
     }
-    let prev = z.get(t.saturating_sub(1)).copied().ok_or_else(|| {
-        ArimaError::Data("Time Series differencing needs the previous observation".into())
-    })?;
-    Ok(prev + constant + what)
+    Ok(value)
 }
 
-fn back_transform(kind: Transform, zhat: f64, se: f64, tcrit: f64) -> Result<Forecast, ArimaError> {
+fn filter_difference(z: &[f64], diff: &[f64]) -> Vec<f64> {
+    z.iter()
+        .enumerate()
+        .skip(diff.len().saturating_sub(1))
+        .map(|(i, _)| {
+            diff.iter()
+                .enumerate()
+                .map(|(j, c)| c * z.get(i.saturating_sub(j)).copied().unwrap_or(0.0))
+                .sum()
+        })
+        .collect()
+}
+
+pub(crate) fn back_transform(
+    kind: Transform,
+    zhat: f64,
+    se: f64,
+    tcrit: f64,
+) -> Result<Forecast, ArimaError> {
     if !zhat.is_finite() || !se.is_finite() || se < 0.0 {
         return Err(ArimaError::Data(
             "Time Series prediction is not finite".into(),
         ));
     }
-    match kind {
-        Transform::None => Ok(Forecast {
+    let forecast = match kind {
+        Transform::Sqrt => Forecast {
+            point: zhat * zhat + se * se,
+            lower: (zhat - tcrit * se).max(0.0).powi(2),
+            upper: (zhat + tcrit * se).max(0.0).powi(2),
+        },
+        Transform::None => Forecast {
             point: zhat,
             lower: zhat - tcrit * se,
             upper: zhat + tcrit * se,
-        }),
+        },
         Transform::Log => {
             let point = (zhat + se * se / 2.0).exp();
-            Ok(Forecast {
+            Forecast {
                 point,
                 lower: (zhat - tcrit * se).exp(),
                 upper: (zhat + tcrit * se).exp(),
-            })
+            }
         }
+    };
+    if [forecast.point, forecast.lower, forecast.upper]
+        .iter()
+        .any(|v| !v.is_finite())
+    {
+        return Err(ArimaError::Data("inverse transformation overflow".into()));
     }
+    Ok(forecast)
 }
 
 fn arma_psi(phi: &[f64], theta: &[f64], n: usize) -> Result<Vec<f64>, ArimaError> {
@@ -298,26 +437,50 @@ fn arma_gamma(phi: &[f64], theta: &[f64], lags: usize) -> Result<Vec<f64>, Arima
         }
         return Ok(gamma);
     }
-    let extra = 400usize;
-    let psi_len = lags
-        .saturating_add(extra)
-        .min(MAX_PSI)
-        .max(lags.saturating_add(1));
-    let psi = arma_psi(phi, theta, psi_len)?;
-    let mut gamma = Vec::with_capacity(lags);
-    for k in 0..lags {
-        let mut g = 0.0;
-        let last = psi.len().saturating_sub(k);
-        for j in 0..last {
-            let a = psi.get(j).copied().unwrap_or(0.0);
-            let b = psi.get(j.saturating_add(k)).copied().unwrap_or(0.0);
-            g += a * b;
+    // Solve the finite Yule-Walker system, including the MA forcing terms.
+    // Truncated impulse sums bias near-unit seasonal roots (ts_sarlog_noconst).
+    let p = phi.len();
+    let psi = arma_psi(phi, theta, theta.len().saturating_add(1))?;
+    let forcing = |k: usize| -> f64 {
+        let mut total = if k == 0 { 1.0 } else { 0.0 };
+        for (j, t) in theta.iter().enumerate() {
+            if let Some(lag) = (j + 1).checked_sub(k) {
+                total += t * psi.get(lag).copied().unwrap_or(0.0);
+            }
         }
+        total
+    };
+    let mut matrix = vec![vec![0.0; p + 1]; p + 1];
+    let mut rhs = Vec::with_capacity(p + 1);
+    for (k, row) in matrix.iter_mut().enumerate() {
+        if let Some(v) = row.get_mut(k) {
+            *v = 1.0;
+        }
+        for (i, v) in phi.iter().enumerate() {
+            if let Some(c) = row.get_mut(k.abs_diff(i + 1)) {
+                *c -= v;
+            }
+        }
+        rhs.push(forcing(k));
+    }
+    let mut gamma =
+        crate::time_series::solve(matrix, rhs).map_err(|e| ArimaError::Data(e.to_string()))?;
+    if gamma.first().is_none_or(|v| *v <= 0.0 || !v.is_finite()) {
+        return Err(ArimaError::Settings("nonstationary covariance".into()));
+    }
+    for k in gamma.len()..lags {
+        let g = forcing(k)
+            + phi
+                .iter()
+                .enumerate()
+                .map(|(i, v)| v * gamma.get(k - i - 1).copied().unwrap_or(0.0))
+                .sum::<f64>();
         if !g.is_finite() {
-            return Err(ArimaError::Data("ARMA autocovariance is not finite".into()));
+            return Err(ArimaError::Data("ARMA covariance overflow".into()));
         }
         gamma.push(g);
     }
+    gamma.truncate(lags);
     Ok(gamma)
 }
 
@@ -325,18 +488,21 @@ fn arma_gamma(phi: &[f64], theta: &[f64], lags: usize) -> Result<Vec<f64>, Arima
 /// Returns standardized innovations and log determinant (innovation variance at sigma²=1).
 pub fn likelihood_residuals(spec: &ArimaSpec, y: &[f64]) -> Result<(Vec<f64>, f64), ArimaError> {
     spec.check()?;
+    let expanded = spec.expanded()?;
+    let spec = &expanded;
     if y.len() < 5 || y.len() > 512 || y.iter().any(|v| !v.is_finite()) {
         return Err(ArimaError::Data(
             "ARIMA estimation requires 5..=512 finite observations".into(),
         ));
     }
-    if spec.d != 1 || spec.ar.len() > 1 || spec.ma.len() > 1 {
+    if spec.d > 2 || spec.ar.len() > MAX_ORDER || spec.ma.len() > MAX_ORDER {
         return Err(ArimaError::Settings(
             "GAP: estimation supports d=1, p/q <= 1".into(),
         ));
     }
     let z = transform(spec.transform, y)?;
-    let w: Vec<f64> = difference(&z, spec.d)
+    let diff = spec.difference_polynomial()?;
+    let w: Vec<f64> = filter_difference(&z, &diff)
         .iter()
         .map(|v| v - spec.constant)
         .collect();
@@ -424,18 +590,7 @@ fn integrated_psi(spec: &ArimaSpec, hmax: usize) -> Result<Vec<f64>, ArimaError>
     for coef in &spec.ar {
         ar_poly.push(-coef);
     }
-    for _ in 0..spec.d {
-        let mut next = vec![0.0; ar_poly.len().saturating_add(1)];
-        for (i, a) in ar_poly.iter().enumerate() {
-            if let Some(slot) = next.get_mut(i) {
-                *slot += a;
-            }
-            if let Some(slot) = next.get_mut(i.saturating_add(1)) {
-                *slot -= a;
-            }
-        }
-        ar_poly = next;
-    }
+    ar_poly = polynomial_product(&ar_poly, &spec.difference_polynomial()?);
     let mut ma_poly = vec![1.0];
     ma_poly.extend_from_slice(&spec.ma);
     let mut psi = vec![0.0; hmax];
@@ -510,6 +665,24 @@ fn future_w(
 mod tests {
     use super::*;
 
+    #[test]
+    fn seasonal_covariance_near_unit_root_is_not_truncated() {
+        let mut ar = vec![0.0; 12];
+        ar[11] = 0.999;
+        let g = arma_gamma(&ar, &[], 25).unwrap();
+        let variance = 1.0 / (1.0 - 0.999_f64.powi(2));
+        assert!((g[0] - variance).abs() < 1e-9);
+        assert!((g[12] - 0.999 * variance).abs() < 1e-9);
+        assert_eq!(g[1], 0.0);
+    }
+
+    #[test]
+    fn inverse_transform_overflow_is_an_error() {
+        for transform in [Transform::None, Transform::Log, Transform::Sqrt] {
+            assert!(back_transform(transform, 1e308, 1e308, 2.0).is_err());
+        }
+    }
+
     fn close(a: f64, b: f64, abs: f64) -> bool {
         (a - b).abs() <= abs
     }
@@ -524,6 +697,10 @@ mod tests {
 
     fn arima_sales() -> ArimaSpec {
         ArimaSpec {
+            seasonal_d: 0,
+            period: 1,
+            seasonal_ar: vec![],
+            seasonal_ma: vec![],
             transform: Transform::None,
             constant: 0.5767484206988256,
             d: 1,
@@ -536,6 +713,10 @@ mod tests {
 
     fn expert_sales() -> ArimaSpec {
         ArimaSpec {
+            seasonal_d: 0,
+            period: 1,
+            seasonal_ar: vec![],
+            seasonal_ma: vec![],
             transform: Transform::Log,
             constant: 0.01909870194198764,
             d: 1,

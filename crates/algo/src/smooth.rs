@@ -1,3 +1,12 @@
+//! Phase B (`ts_more`): Brown double smoothing, damped trend, additive seasons,
+//! Winters additive/multiplicative and log/sqrt transforms use component
+//! recursions and reverse-time initialization from the Algorithms Guide
+//! (1994–2016, pp.379–383). All ten explicit smoothing cases pass rule 3;
+//! largest point/bound discrepancy is Winters multiplicative, 0.001535 SD.
+//! Additive forecast variances propagate independent unit innovations;
+//! multiplicative seasons use local derivatives (validated at six steps only;
+//! long-horizon variance parity remains GAP). Intervals use Student t and n-k.
+//!
 //! Exponential smoothing scoring for the Time Series nugget.
 //!
 //! Simple model (`ts_simple` sales, PMML `Level alpha="0.9999889207657683"` and
@@ -31,8 +40,243 @@ use std::fmt;
 const MAX_HISTORY: usize = 100_000;
 const MAX_HORIZON: usize = 10_000;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Kind {
+    Simple,
+    Holt,
+    Brown,
+    Damped,
+    Seasonal,
+    WintersAdd,
+    WintersMul,
+}
+
+impl Kind {
+    pub fn trend(self) -> bool {
+        !matches!(self, Self::Simple | Self::Seasonal)
+    }
+    pub fn seasonal(self) -> bool {
+        matches!(self, Self::Seasonal | Self::WintersAdd | Self::WintersMul)
+    }
+    pub fn parameters(self) -> usize {
+        1 + usize::from(self.trend() && self != Self::Brown)
+            + usize::from(self == Self::Damped)
+            + usize::from(self.seasonal())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct State {
+    pub level: f64,
+    pub trend: f64,
+    pub seasons: Vec<f64>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct GeneralSpec {
+    pub kind: Kind,
+    pub transform: crate::arima::Transform,
+    pub alpha: f64,
+    pub gamma: f64,
+    pub phi: f64,
+    pub delta: f64,
+    pub initial: State,
+    pub sigma2: f64,
+    pub df: f64,
+}
+
+impl GeneralSpec {
+    fn check(&self) -> Result<(), SmoothError> {
+        let s = &self.initial;
+        if [
+            self.alpha,
+            self.gamma,
+            self.phi,
+            self.delta,
+            self.sigma2,
+            self.df,
+            s.level,
+            s.trend,
+        ]
+        .iter()
+        .any(|v| !v.is_finite())
+            || s.seasons.iter().any(|v| !v.is_finite())
+            || self.df <= 0.0
+            || self.sigma2 < 0.0
+            || !(0.0..=1.0).contains(&self.alpha)
+            || !(0.0..=1.0).contains(&self.gamma)
+            || !(0.0..=1.0).contains(&self.phi)
+            || !(0.0..=1.0).contains(&self.delta)
+            || (self.kind == Kind::Brown && (self.alpha <= 0.0 || self.alpha >= 1.0))
+            || (self.kind.seasonal() && !(2..=64).contains(&s.seasons.len()))
+        {
+            return Err(SmoothError::Settings(
+                "invalid smoothing parameters/state".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    /// Component recursions; Brown stores the first smoothed level and its implied trend.
+    pub(crate) fn step(
+        &self,
+        state: &mut State,
+        obs: Option<f64>,
+        index: usize,
+    ) -> Result<f64, SmoothError> {
+        let seasonal = self.kind.seasonal();
+        let j = index.checked_rem(state.seasons.len()).unwrap_or(0);
+        let season = if seasonal {
+            *state
+                .seasons
+                .get(j)
+                .ok_or_else(|| SmoothError::Data("missing seasonal state".into()))?
+        } else {
+            0.0
+        };
+        let base = state.level
+            + if self.kind == Kind::Brown {
+                state.trend / self.alpha
+            } else if self.kind.trend() {
+                self.phi * state.trend
+            } else {
+                0.0
+            };
+        let prediction = if self.kind == Kind::WintersMul {
+            base * season
+        } else {
+            base + season
+        };
+        let y = obs.unwrap_or(prediction);
+        let old = state.level;
+        if self.kind == Kind::Brown {
+            let second = old - (1.0 - self.alpha) / self.alpha * state.trend;
+            state.level = self.alpha * y + (1.0 - self.alpha) * old;
+            let next_second = self.alpha * state.level + (1.0 - self.alpha) * second;
+            state.trend = self.alpha / (1.0 - self.alpha) * (state.level - next_second);
+        } else {
+            let deseason = if self.kind == Kind::WintersMul {
+                if season == 0.0 {
+                    return Err(SmoothError::Data("zero multiplicative season".into()));
+                }
+                y / season
+            } else {
+                y - season
+            };
+            state.level = self.alpha * deseason + (1.0 - self.alpha) * base;
+            if self.kind.trend() {
+                state.trend =
+                    self.gamma * (state.level - old) + (1.0 - self.gamma) * self.phi * state.trend;
+            }
+            if seasonal {
+                let new = if self.kind == Kind::WintersMul {
+                    if state.level == 0.0 {
+                        return Err(SmoothError::Data("zero multiplicative level".into()));
+                    }
+                    self.delta * y / state.level + (1.0 - self.delta) * season
+                } else {
+                    self.delta * (y - state.level) + (1.0 - self.delta) * season
+                };
+                if let Some(slot) = state.seasons.get_mut(j) {
+                    *slot = new;
+                }
+            }
+        }
+        if !prediction.is_finite()
+            || !state.level.is_finite()
+            || !state.trend.is_finite()
+            || state.seasons.iter().any(|v| !v.is_finite())
+        {
+            return Err(SmoothError::Data("nonfinite smoothing recurrence".into()));
+        }
+        Ok(prediction)
+    }
+
+    pub(crate) fn run(&self, z: &[f64]) -> Result<(Vec<f64>, State), SmoothError> {
+        self.check()?;
+        if z.len() > MAX_HISTORY || z.iter().any(|v| !v.is_finite()) {
+            return Err(SmoothError::Data("invalid smoothing history".into()));
+        }
+        let mut state = self.initial.clone();
+        let points = z
+            .iter()
+            .enumerate()
+            .map(|(i, y)| self.step(&mut state, Some(*y), i))
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok((points, state))
+    }
+
+    pub fn score(
+        &self,
+        y: &[f64],
+        horizon: usize,
+        confidence: f64,
+    ) -> Result<SeriesScore, SmoothError> {
+        if y.is_empty() || horizon > 512 {
+            return Err(SmoothError::Data(
+                "smoothing requires history and horizon <=512".into(),
+            ));
+        }
+        let z = crate::arima::transform(self.transform, y)
+            .map_err(|e| SmoothError::Data(e.to_string()))?;
+        let (points, final_state) = self.run(&z)?;
+        let t = student_t_quantile((1.0 + confidence / 100.0) / 2.0, self.df)
+            .ok_or_else(|| SmoothError::Settings("invalid confidence/df".into()))?;
+        let back = |p: f64, v: f64| -> Result<Forecast, SmoothError> {
+            let f = crate::arima::back_transform(self.transform, p, v.sqrt(), t)
+                .map_err(|e| SmoothError::Data(e.to_string()))?;
+            if [f.point, f.lower, f.upper].iter().any(|v| !v.is_finite()) {
+                return Err(SmoothError::Data("nonfinite inverse transform".into()));
+            }
+            Ok(Forecast {
+                point: f.point,
+                lower: f.lower,
+                upper: f.upper,
+            })
+        };
+        let fitted = points
+            .into_iter()
+            .map(|p| back(p, self.sigma2))
+            .collect::<Result<Vec<_>, _>>()?;
+        let mut state = final_state.clone();
+        let mut means = Vec::new();
+        for h in 0..horizon {
+            means.push(self.step(&mut state, None, z.len().saturating_add(h))?);
+        }
+        // Impulse propagation is exact for additive component models. Multiplicative
+        // seasonality uses the local derivative; longer-horizon variance remains GAP.
+        let mut variance = vec![self.sigma2; horizon];
+        let eps = 1e-5 * final_state.level.abs().max(1.0);
+        for j in 0..horizon {
+            let mut state = final_state.clone();
+            for (h, mean) in means.iter().enumerate() {
+                let pred = self.step(&mut state, None, z.len().saturating_add(h))?;
+                if h == j {
+                    let mut before = final_state.clone();
+                    for k in 0..j {
+                        self.step(&mut before, None, z.len().saturating_add(k))?;
+                    }
+                    self.step(&mut before, Some(*mean + eps), z.len().saturating_add(h))?;
+                    state = before;
+                } else if h > j
+                    && let Some(v) = variance.get_mut(h)
+                {
+                    *v += self.sigma2 * ((pred - mean) / eps).powi(2);
+                }
+            }
+        }
+        let forecasts = means
+            .into_iter()
+            .zip(variance)
+            .map(|(p, v)| back(p, v))
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(SeriesScore { fitted, forecasts })
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum SmoothSpec {
+    General(GeneralSpec),
     /// No trend element (`ts_simple`).
     Simple {
         alpha: f64,
@@ -89,6 +333,9 @@ pub fn score(
     horizon: usize,
     conf_percent: f64,
 ) -> Result<SeriesScore, SmoothError> {
+    if let SmoothSpec::General(g) = spec {
+        return g.score(y, horizon, conf_percent);
+    }
     spec.check()?;
     if y.is_empty() {
         return Err(SmoothError::Data("Time Series series is empty".into()));
@@ -125,6 +372,9 @@ pub fn score(
     let mut forecasts = Vec::with_capacity(horizon);
     for step in 1..=horizon {
         let point = match spec {
+            SmoothSpec::General(_) => {
+                return Err(SmoothError::Settings("general smoothing dispatch".into()));
+            }
             SmoothSpec::Simple { .. } => level,
             SmoothSpec::Holt { .. } => {
                 let hf = as_f64(step)?;
@@ -140,18 +390,21 @@ pub fn score(
 impl SmoothSpec {
     fn df(&self) -> f64 {
         match self {
+            SmoothSpec::General(g) => g.df,
             SmoothSpec::Simple { df, .. } | SmoothSpec::Holt { df, .. } => *df,
         }
     }
 
     fn sigma2(&self) -> f64 {
         match self {
+            SmoothSpec::General(g) => g.sigma2,
             SmoothSpec::Simple { sigma2, .. } | SmoothSpec::Holt { sigma2, .. } => *sigma2,
         }
     }
 
     fn check(&self) -> Result<(), SmoothError> {
         let (alpha, gamma, init_level, init_trend, sigma2, df) = match self {
+            SmoothSpec::General(g) => return g.check(),
             SmoothSpec::Simple {
                 alpha,
                 init_level,
@@ -192,6 +445,10 @@ impl SmoothSpec {
 
 pub(crate) fn recurse(spec: &SmoothSpec, y: &[f64]) -> Result<(Vec<f64>, f64, f64), SmoothError> {
     match spec {
+        SmoothSpec::General(g) => {
+            let (p, state) = g.run(y)?;
+            Ok((p, state.level, state.trend))
+        }
         SmoothSpec::Simple {
             alpha, init_level, ..
         } => {
@@ -263,6 +520,9 @@ fn variance_factor(spec: &SmoothSpec, h: usize) -> Result<f64, SmoothError> {
     }
     let hf = as_f64(h)?;
     let factor = match spec {
+        SmoothSpec::General(_) => {
+            return Err(SmoothError::Settings("general variance dispatch".into()));
+        }
         SmoothSpec::Simple { alpha, .. } => 1.0 + (hf - 1.0) * alpha * alpha,
         SmoothSpec::Holt { alpha, gamma, .. } => {
             let beta = alpha * gamma;
