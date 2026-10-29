@@ -465,9 +465,8 @@ fn c50_simple_presets_and_expert_controls_match_exactly() {
     }
 }
 
-/// P+R5 reproduces wn; wn100 still retains two subtrees absent from Modeler.
+/// Corrected pruning is the baseline for the exhaustive winnowing rerun.
 #[test]
-#[ignore = "GAP: wn100 extra pruning beyond P+R5"]
 fn c50_remaining_preset_expert_controls_match_exactly() {
     let mut mismatches = Vec::new();
     for case in PRESET_BASELINE_GAPS {
@@ -504,7 +503,7 @@ fn c50_winnowing_remains_rejected_for_every_recorded_case() {
 }
 
 #[test]
-#[ignore = "GAP: winnowing elimination criterion and unwinnowed baseline trees; all 20 must match before enabling"]
+#[ignore = "GAP: all 20 admit exact subsets, but tested selectors fail the zero-regression adoption gate"]
 fn c50_all_winnowing_trees_match_exactly() {
     let mut mismatches = Vec::new();
     for (label, case) in recorded_winnowing_cases() {
