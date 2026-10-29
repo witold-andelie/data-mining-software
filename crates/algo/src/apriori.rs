@@ -33,15 +33,25 @@
 //! for 5/7 is truncated; the rule attribute is the full ratio (`apriori_thresholds` rule 4).
 //!
 //! Transactional input (`apriori_transactional`) groups contiguous rows of the same id. The
-//! content value is the item. Empty antecedent and consequent lists mean every content value.
-//! The resulting rules match `apriori_default`.
+//! content value is the item; the antecedent and consequent field lists do not apply
+//! (`antecons_diff_trans` mines the same rules as `trans_base`). The resulting rules match
+//! `apriori_default`. With `contiguousID` false ids are grouped even when split
+//! (`trans_noncontig` restores 128 transactions and the five rules).
 //!
-//! GAP: equal support, so the original-index tie break, does not occur in these baskets.
-//! GAP: two new items in one antecedent, so mention order among new items, does not occur.
-//! GAP: `onlyTrueValues` false, rules with an empty antecedent, a non-flag field, evaluation
-//! measures other than rule confidence, and non-contiguous ids are rejected.
-//! GAP: antecedent and consequent sets that differ are rejected (no oracle for the direction
-//! extension or for which items are mined).
+//! Evaluation measures: see [`Evaluation`] (probe `apriori_eval`, every measure at five
+//! percent bounds).
+//!
+//! False flags (`trueflags_false`): `F` is its own item `field=F` (150 rules, 10 items).
+//! Nominal `Set` fields (`nominal_set`): each value is an item `field=value` (4 rules).
+//! Tabular differing sets (`antecons_diff_tab`): antecedents omit `jam`, so `jam=>butter`
+//! and `jam+bread=>butter` are dropped (3 rules, 4 items).
+//!
+//! GAP: the rank of items with equal support (`tie_equal`, `tie_twonew`). The rule order
+//! itself holds there (itemsets by size, then by rank; consequents from the highest rank), but
+//! Modeler ranks five equal items 3, 4, 1, 2, 0 by field index and two equal ones 1, 0, where
+//! we keep field order. Heap, selection, shell, Hoare and Lomuto sorts of the counts, with
+//! strict or non-strict comparisons, ascending or reversed, reproduce at most one of the two.
+//! GAP: rules with an empty antecedent and events are rejected.
 //! GAP: `Item` / `Itemset` element order in Modeler's file is not id order and is not
 //! reproduced. Comparison is by id.
 
@@ -71,11 +81,11 @@ pub struct AprioriSettings {
     pub min_confidence_percent: f64,
     /// `maxRuleAntecedents` (1..=32, default 5).
     pub max_antecedents: u32,
-    /// `onlyTrueValues`. False is rejected for tabular data.
+    /// `onlyTrueValues`. False makes `F` its own item (`trueflags_false`).
     pub only_true_values: bool,
     /// `transactionalData`.
     pub transactional: bool,
-    /// `contiguousID`. Required when transactional; ignored otherwise (`apriori_default` is false).
+    /// `contiguousID`. False groups by id even when split (`trans_noncontig`).
     pub contiguous: bool,
     /// `idField`.
     pub id_field: Option<String>,
@@ -85,10 +95,41 @@ pub struct AprioriSettings {
     pub auto_fields: bool,
     /// `modelInputFieldSelection`, in listed order. Empty with transactional data: every value.
     pub antecedents: Vec<String>,
-    /// `modelTargetFieldSelection`. Must name the same set as `antecedents` when either is set.
+    /// `modelTargetFieldSelection`. Tabular lists may differ (`antecons_diff_tab`); both
+    /// lists are ignored with transactional data (`antecons_diff_trans`).
     pub consequents: Vec<String>,
+    /// `evaluationMeasure`: see [`Evaluation`].
+    pub evaluation: Evaluation,
+    /// `evaluationBound`, in whole percent (Modeler stores 0.3 as 0): a rule is kept when
+    /// its evaluation measure reaches `bound / 100`. Stored even when the measure is rule
+    /// confidence (`apriori_default`), which ignores it.
+    pub evaluation_bound: f64,
     /// `modelName` (`models_next` in the three oracles).
     pub model_name: String,
+}
+
+/// Evaluation measures (`evaluationMeasure`), with `r`, `a`, `c` the rule, antecedent and
+/// consequent counts and `n` the transactions. The Algorithms Guide names them (its formulas
+/// are images); probe `apriori_eval` fixes each one: 20 candidate rules (10 % support, 40 %
+/// confidence) filtered at bounds 5, 10, 20, 40 and 60 %, and only these definitions keep
+/// exactly Modeler's rules at all five bounds of their measure. `>=` and `>` are not told
+/// apart (no rule sits on a bound).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Evaluation {
+    /// `rule`: no filter beyond the minimum confidence.
+    #[default]
+    RuleConfidence,
+    /// `confidence` (absolute confidence difference to prior): `|r/a - c/n|`. The signed
+    /// difference keeps too few rules at 5 and 10 %.
+    DifferenceToPrior,
+    /// `ratio` (difference of the confidence quotient to 1): `1 - min(q, 1/q)` with
+    /// `q = (r/a) / (c/n)`. `|q - 1|` keeps too many rules at 40 and 60 %.
+    ConfidenceRatio,
+    /// `information` (information difference to prior): the mutual information of the
+    /// antecedent and consequent indicators in bits. Nats keep too many at 5 and 10 %.
+    InformationDifference,
+    /// `normalised` (normalized chi-square): `(r n - a c)^2 / (a c (n - a) (n - c))`.
+    NormalizedChiSquare,
 }
 
 impl Default for AprioriSettings {
@@ -105,6 +146,8 @@ impl Default for AprioriSettings {
             auto_fields: true,
             antecedents: Vec::new(),
             consequents: Vec::new(),
+            evaluation: Evaluation::RuleConfidence,
+            evaluation_bound: 10.0,
             model_name: String::new(),
         }
     }
@@ -121,7 +164,19 @@ struct FlagColumn {
 #[derive(Debug)]
 enum Columns {
     Flags(Vec<FlagColumn>),
-    Transactions { id: usize, content: usize },
+    /// Nominal `Set` fields and `onlyTrueValues` false: one `field=value` item per
+    /// field (`nominal_set`, `trueflags_false`). No flag true value is written.
+    Valued(Vec<ValuedColumn>),
+    Transactions {
+        id: usize,
+        content: usize,
+    },
+}
+
+#[derive(Debug)]
+struct ValuedColumn {
+    position: usize,
+    name: String,
 }
 
 pub(crate) struct Prepared {
@@ -192,14 +247,9 @@ fn validate(settings: &AprioriSettings) -> Result<(), AlgoError> {
             settings.max_antecedents
         )));
     }
-    if !settings.transactional && !settings.only_true_values {
-        return Err(AlgoError::Unsupported(
-            "Apriori onlyTrueValues false (GAP: no oracle for a false flag as its own item)".into(),
-        ));
-    }
-    if settings.transactional && !settings.contiguous {
-        return Err(AlgoError::Unsupported(
-            "Apriori transactional data with contiguousID false (GAP: no oracle for non-contiguous ids)".into(),
+    if !settings.evaluation_bound.is_finite() {
+        return Err(AlgoError::Settings(
+            "Apriori evaluationBound must be finite".into(),
         ));
     }
     Ok(())
@@ -225,12 +275,31 @@ pub(crate) fn prepare_flags(
     } else {
         (unique(&settings.antecedents), unique(&settings.consequents))
     };
-    if antecedents.is_empty() || !same_names(&antecedents, &consequents) {
+    if antecedents.is_empty() || consequents.is_empty() {
         return Err(AlgoError::Unsupported(
-            "Apriori antecedent and consequent sets differ or are empty (GAP: no oracle for a direction other than BOTH)".into(),
+            "Apriori antecedent and consequent sets are empty (GAP: no oracle for empty sets)"
+                .into(),
         ));
     }
-    let mut columns = Vec::new();
+    // Tabular differing sets are supported when every antecedent is also a consequent
+    // (`antecons_diff_tab`: antecedents omit `jam`, consequents list all five; `jam=>butter`
+    // and `jam+bread=>butter` drop, 3 rules). Any antecedent-only field (in antecedents
+    // but not consequents) has no oracle and stays rejected, as does valued differing.
+    {
+        let consequent_set: HashSet<&str> = consequents.iter().map(String::as_str).collect();
+        if !antecedents
+            .iter()
+            .all(|name| consequent_set.contains(name.as_str()))
+        {
+            return Err(AlgoError::Unsupported(
+                "Apriori antecedent and consequent sets differ (GAP: only the tabular subset omit has an oracle)".into(),
+            ));
+        }
+    }
+    let mut columns_flags = Vec::new();
+    let mut columns_valued = Vec::new();
+    let mut order = Vec::new();
+    let mut only_flags = true;
     for name in &antecedents {
         let position = field_position(table, name)?;
         let field = table
@@ -238,33 +307,155 @@ pub(crate) fn prepare_flags(
             .fields()
             .get(position)
             .ok_or_else(|| AlgoError::Settings(format!("Apriori field {name:?} is missing")))?;
-        let ValueSpec::Flag { true_value, .. } = &field.values else {
-            return Err(AlgoError::Unsupported(format!(
-                "Apriori field {name:?} is not a flag (GAP: no oracle for nominal items)"
-            )));
+        match &field.values {
+            ValueSpec::Flag { .. } if settings.only_true_values => {
+                // `onlyTrueValues` true: the flag name itself is the item.
+            }
+            ValueSpec::Flag { .. } | ValueSpec::Categories(_) => {
+                only_flags = false;
+            }
+            _ => {
+                return Err(AlgoError::Unsupported(format!(
+                    "Apriori field {name:?} is not a flag or nominal Set (GAP: no oracle)"
+                )));
+            }
+        }
+    }
+    // Consequent-only fields (tabular differing: `jam` is in consequents but not
+    // antecedents) still need metadata for the dictionary when they are flags with
+    // `onlyTrueValues` true; valued fields only mine antecedent fields (`antecons_diff_tab`
+    // mines 4 items, no `jam`).
+    if only_flags && settings.only_true_values {
+        for name in &antecedents {
+            let position = field_position(table, name)?;
+            let field =
+                table.model().fields().get(position).ok_or_else(|| {
+                    AlgoError::Settings(format!("Apriori field {name:?} is missing"))
+                })?;
+            let ValueSpec::Flag { true_value, .. } = &field.values else {
+                return Err(AlgoError::Settings(format!(
+                    "Apriori field {name:?} is not a flag"
+                )));
+            };
+            columns_flags.push(FlagColumn {
+                position,
+                name: name.clone(),
+                true_value: true_value.clone(),
+                true_text: true_value.to_string(),
+            });
+        }
+        // Dictionary also lists consequent-only flag fields (`antecons_diff_tab` lists all
+        // five fields with BOTH direction in the PMML even though `jam` is never mined).
+        // `prepare` order for ranking is the antecedent field order.
+        let mut transactions = Vec::with_capacity(table.rows().len());
+        for row in table.rows() {
+            let mut basket = Vec::new();
+            for column in &columns_flags {
+                if row.get(column.position) == Some(&column.true_value) {
+                    basket.push(column.name.clone());
+                }
+            }
+            transactions.push(basket);
+        }
+        let allowed = antecedents.iter().cloned().collect();
+        return Ok(Prepared {
+            transactions,
+            order: antecedents.clone(),
+            columns: Columns::Flags(columns_flags),
+            antecedent: allowed,
+            consequent: consequents.into_iter().collect(),
+        });
+    }
+    // Valued items (`trueflags_false`, `nominal_set`, and tabular differing with valued
+    // fields should it occur): `field=value` per field. Order is field-major: for each
+    // antecedent field in listed order, each value in declared-then-seen order
+    // (`nominal_set`: red,green,blue then circle,square; `trueflags_false`: T then F per
+    // field as the dictionary writes).
+    let field_order = antecedents.clone();
+    // Include consequent-only fields in the dictionary order? No: mining only uses
+    // antecedent fields (`antecons_diff_tab` mines 4 items). Keep antecedent order.
+    for name in &field_order {
+        let position = field_position(table, name)?;
+        let field = table
+            .model()
+            .fields()
+            .get(position)
+            .ok_or_else(|| AlgoError::Settings(format!("Apriori field {name:?} is missing")))?;
+        let values: Vec<String> = match &field.values {
+            ValueSpec::Flag {
+                true_value,
+                false_value,
+            } => {
+                // `trueflags_false`: T then F, the dictionary order.
+                [true_value, false_value]
+                    .into_iter()
+                    .map(ToString::to_string)
+                    .collect()
+            }
+            ValueSpec::Categories(values) => {
+                let mut seen: Vec<String> = Vec::new();
+                for value in values {
+                    let text = value.to_string();
+                    if !seen.iter().any(|kept| kept == &text) {
+                        seen.push(text);
+                    }
+                }
+                // Nominal score grids may name unseen values (`nominal_grid` blue/circle);
+                // mining only uses training values, first-seen order appended below.
+                seen
+            }
+            _ => {
+                return Err(AlgoError::Unsupported(format!(
+                    "Apriori field {name:?} is not a flag or nominal Set (GAP: no oracle)"
+                )));
+            }
         };
-        columns.push(FlagColumn {
+        for value in values {
+            let item = format!("{name}={value}");
+            if !order.iter().any(|kept| kept == &item) {
+                order.push(item);
+            }
+        }
+        columns_valued.push(ValuedColumn {
             position,
             name: name.clone(),
-            true_value: true_value.clone(),
-            true_text: true_value.to_string(),
         });
+    }
+    // Append first-seen values not in the declared set (transactional-style safety;
+    // training files here declare all values, so this rarely adds).
+    for row in table.rows() {
+        for column in &columns_valued {
+            let Some(value) = row.get(column.position) else {
+                continue;
+            };
+            if *value == Value::Null {
+                continue;
+            }
+            let item = format!("{}={}", column.name, value);
+            if !order.iter().any(|kept| kept == &item) {
+                order.push(item);
+            }
+        }
     }
     let mut transactions = Vec::with_capacity(table.rows().len());
     for row in table.rows() {
         let mut basket = Vec::new();
-        for column in &columns {
-            if row.get(column.position) == Some(&column.true_value) {
-                basket.push(column.name.clone());
+        for column in &columns_valued {
+            let Some(value) = row.get(column.position) else {
+                continue;
+            };
+            if *value == Value::Null {
+                continue;
             }
+            basket.push(format!("{}={}", column.name, value));
         }
         transactions.push(basket);
     }
     let allowed = antecedents.iter().cloned().collect();
     Ok(Prepared {
         transactions,
-        order: antecedents,
-        columns: Columns::Flags(columns),
+        order,
+        columns: Columns::Valued(columns_valued),
         antecedent: allowed,
         consequent: consequents.into_iter().collect(),
     })
@@ -290,17 +481,10 @@ fn prepare_transactions(table: &Table, settings: &AprioriSettings) -> Result<Pre
     }
     let id_at = field_position(table, id_name)?;
     let content_at = field_position(table, content_name)?;
-    let (antecedents, consequents) = if settings.auto_fields {
-        (Vec::new(), Vec::new())
-    } else {
-        (unique(&settings.antecedents), unique(&settings.consequents))
-    };
-    if antecedents.is_empty() != consequents.is_empty() || !same_names(&antecedents, &consequents) {
-        return Err(AlgoError::Unsupported(
-            "Apriori transactional antecedent and consequent lists differ (GAP: no oracle)".into(),
-        ));
-    }
-    let restrict: HashSet<String> = antecedents.iter().cloned().collect();
+    // The antecedent and consequent field lists do not apply to transactional data: with
+    // antecedents eggs/jam/bread and consequents milk/butter (`antecons_diff_trans`) Modeler
+    // mines the same 128 baskets and five rules as with none (`trans_base`); every other
+    // transactional oracle saves empty lists. Every content value is an item.
     let declared = match table
         .model()
         .fields()
@@ -311,10 +495,57 @@ fn prepare_transactions(table: &Table, settings: &AprioriSettings) -> Result<Pre
         _ => Vec::new(),
     };
     let mut order = declared;
-    let mut transactions = Vec::new();
-    let mut basket = Vec::new();
-    let mut seen = HashSet::new();
-    let mut current: Option<Value> = None;
+    if settings.contiguous {
+        let mut transactions = Vec::new();
+        let mut basket = Vec::new();
+        let mut seen = HashSet::new();
+        let mut current: Option<Value> = None;
+        for (index, row) in table.rows().iter().enumerate() {
+            let id = row.get(id_at).cloned().unwrap_or(Value::Null);
+            if id == Value::Null {
+                return Err(AlgoError::Data(format!(
+                    "Apriori transaction id is null at row {}",
+                    index + 1
+                )));
+            }
+            if current.as_ref() != Some(&id) {
+                if current.is_some() {
+                    transactions.push(std::mem::take(&mut basket));
+                    seen.clear();
+                }
+                current = Some(id);
+            }
+            let content = row.get(content_at).cloned().unwrap_or(Value::Null);
+            if content == Value::Null {
+                continue;
+            }
+            let text = content.to_string();
+            if !order.iter().any(|item| item == &text) {
+                order.push(text.clone());
+            }
+            if seen.insert(text.clone()) {
+                basket.push(text);
+            }
+        }
+        if current.is_some() {
+            transactions.push(basket);
+        }
+        return Ok(Prepared {
+            transactions,
+            order,
+            columns: Columns::Transactions {
+                id: id_at,
+                content: content_at,
+            },
+            antecedent: HashSet::new(),
+            consequent: HashSet::new(),
+        });
+    }
+    // Non-contiguous ids (`trans_noncontig`): group every row with the same id even when
+    // scattered, restoring 128 transactions from the split file. Order of first mention
+    // follows row order.
+    let mut grouped: HashMap<String, (Value, Vec<String>, HashSet<String>)> = HashMap::new();
+    let mut ids: Vec<String> = Vec::new();
     for (index, row) in table.rows().iter().enumerate() {
         let id = row.get(id_at).cloned().unwrap_or(Value::Null);
         if id == Value::Null {
@@ -323,31 +554,36 @@ fn prepare_transactions(table: &Table, settings: &AprioriSettings) -> Result<Pre
                 index + 1
             )));
         }
-        if current.as_ref() != Some(&id) {
-            if current.is_some() {
-                transactions.push(std::mem::take(&mut basket));
-                seen.clear();
-            }
-            current = Some(id);
+        let key = id.to_string();
+        if !grouped.contains_key(&key) {
+            ids.push(key.clone());
+            grouped.insert(key.clone(), (id, Vec::new(), HashSet::new()));
         }
+        let Some(entry) = grouped.get_mut(&key) else {
+            continue;
+        };
         let content = row.get(content_at).cloned().unwrap_or(Value::Null);
         if content == Value::Null {
             continue;
         }
         let text = content.to_string();
-        if !restrict.is_empty() && !restrict.contains(&text) {
-            continue;
-        }
         if !order.iter().any(|item| item == &text) {
             order.push(text.clone());
         }
-        if seen.insert(text.clone()) {
-            basket.push(text);
+        if entry.2.insert(text.clone()) {
+            entry.1.push(text);
         }
     }
-    if current.is_some() {
-        transactions.push(basket);
+    if grouped.len() > MAX_TRANSACTIONS {
+        return Err(AlgoError::Data(format!(
+            "Apriori has {} transactions; the limit is {MAX_TRANSACTIONS}",
+            grouped.len()
+        )));
     }
+    let transactions: Vec<Vec<String>> = ids
+        .iter()
+        .filter_map(|key| grouped.get(key).map(|(_, basket, _)| basket.clone()))
+        .collect();
     Ok(Prepared {
         transactions,
         order,
@@ -355,12 +591,8 @@ fn prepare_transactions(table: &Table, settings: &AprioriSettings) -> Result<Pre
             id: id_at,
             content: content_at,
         },
-        antecedent: restrict.clone(),
-        consequent: if consequents.is_empty() {
-            HashSet::new()
-        } else {
-            consequents.into_iter().collect()
-        },
+        antecedent: HashSet::new(),
+        consequent: HashSet::new(),
     })
 }
 
@@ -507,6 +739,16 @@ fn mine(
                 if cons_count == 0 {
                     continue;
                 }
+                if !evaluation_passes(
+                    settings.evaluation,
+                    settings.evaluation_bound,
+                    union_count,
+                    ant_count,
+                    cons_count,
+                    n,
+                ) {
+                    continue;
+                }
                 if rules.len() >= MAX_RULES {
                     return Err(AlgoError::Data(format!(
                         "Apriori found more than {MAX_RULES} rules"
@@ -618,9 +860,18 @@ fn allowed(set: &HashSet<String>, names: &[String], rank: u16) -> bool {
     if set.is_empty() {
         return true;
     }
-    names
-        .get(usize::from(rank))
-        .is_some_and(|name| set.contains(name))
+    let Some(name) = names.get(usize::from(rank)) else {
+        return false;
+    };
+    if set.contains(name) {
+        return true;
+    }
+    // Valued items (`field=value`): the set holds field names (`nominal_set`,
+    // `trueflags_false`), so check the field part.
+    if let Some((field, _)) = name.split_once('=') {
+        return set.contains(field);
+    }
+    false
 }
 
 fn assemble(
@@ -841,6 +1092,29 @@ fn dictionary(
                     Some(column.true_text.clone()),
                 )?;
             }
+            // Consequent-only flag fields (`antecons_diff_tab` `jam`): predicted direction,
+            // no mining, but listed in the PMML.
+            for name in prepared
+                .consequent
+                .iter()
+                .filter(|name| !prepared.antecedent.contains(*name))
+            {
+                // Valued items contain `=`; flags here never do (onlyTrue True path).
+                if name.contains('=') {
+                    continue;
+                }
+                let Some(position) = table.model().position(name) else {
+                    continue;
+                };
+                // Only list fields that exist; missing is a settings error elsewhere.
+                // Direction predicted matches `antecons_diff_tab` (`jam` predicted).
+                push(position, Usage::Active, Some("predicted".into()), None)?;
+            }
+        }
+        Columns::Valued(columns) => {
+            for column in columns {
+                push(column.position, Usage::Active, Some("BOTH".into()), None)?;
+            }
         }
         Columns::Transactions { id, content } => {
             push(*id, Usage::Group, None, None)?;
@@ -871,6 +1145,64 @@ pub(crate) fn at_least_ratio(numer: u64, denom: u64, basis: u128) -> bool {
         return false;
     }
     (numer as u128).saturating_mul(PERCENT_SCALE * 100) >= basis.saturating_mul(denom as u128)
+}
+
+/// Whether a rule passes its evaluation measure (`evaluationBound`, percent; see
+/// [`Evaluation`]). Rule confidence already passed via `minRuleConfidence`.
+fn evaluation_passes(
+    evaluation: Evaluation,
+    bound: f64,
+    union_count: u64,
+    ant_count: u64,
+    cons_count: u64,
+    n: u64,
+) -> bool {
+    if !bound.is_finite() {
+        return false;
+    }
+    if evaluation == Evaluation::RuleConfidence {
+        return true;
+    }
+    if ant_count == 0 || cons_count == 0 || n == 0 {
+        return false;
+    }
+    let (r, a, c, n) = (
+        union_count as f64,
+        ant_count as f64,
+        cons_count as f64,
+        n as f64,
+    );
+    let posterior = r / a;
+    let prior = c / n;
+    let value = match evaluation {
+        Evaluation::RuleConfidence => return true,
+        Evaluation::DifferenceToPrior => (posterior - prior).abs(),
+        Evaluation::ConfidenceRatio => {
+            let q = posterior / prior;
+            if q <= 0.0 { 1.0 } else { 1.0 - q.min(1.0 / q) }
+        }
+        Evaluation::InformationDifference => {
+            // The four cells of the 2 x 2 table, each with its row and column totals.
+            [
+                (r, a, c),
+                (a - r, a, n - c),
+                (c - r, n - a, c),
+                (n - a - c + r, n - a, n - c),
+            ]
+            .into_iter()
+            .filter(|&(k, row, col)| k > 0.0 && row > 0.0 && col > 0.0)
+            .map(|(k, row, col)| k / n * (k * n / (row * col)).log2())
+            .sum()
+        }
+        Evaluation::NormalizedChiSquare => {
+            let denominator = a * c * (n - a) * (n - c);
+            if denominator <= 0.0 {
+                return false;
+            }
+            (r * n - a * c).powi(2) / denominator
+        }
+    };
+    value >= bound / 100.0
 }
 
 /// Union count is at least support × confidence of `n`.
@@ -925,13 +1257,6 @@ fn unique(names: &[String]) -> Vec<String> {
         }
     }
     out
-}
-
-fn same_names(left: &[String], right: &[String]) -> bool {
-    left.len() == right.len()
-        && left
-            .iter()
-            .all(|name| right.iter().any(|other| other == name))
 }
 
 fn field_position(table: &Table, name: &str) -> Result<usize, AlgoError> {
@@ -1145,15 +1470,18 @@ mod tests {
     }
 
     #[test]
-    fn false_flags_and_wide_antecedents_are_rejected() {
+    fn false_flags_supported_but_wide_antecedents_rejected() {
         let table = flags_table();
         let mut settings = settings(10.0, 80.0);
+        // `onlyTrueValues` false is supported (`trueflags_false`): `F` is its own item.
         settings.only_true_values = false;
-        assert!(train(&table, &settings).is_err());
+        assert!(train(&table, &settings).is_ok());
         settings.only_true_values = true;
         settings.max_antecedents = 33;
         assert!(train(&table, &settings).is_err());
         settings.max_antecedents = 5;
+        // Antecedent-only differing (antecedents not a subset of consequents) stays rejected;
+        // only the tabular subset omit (`antecons_diff_tab`) is supported.
         settings.consequents = vec!["bread".into()];
         assert!(train(&table, &settings).is_err());
     }

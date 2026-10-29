@@ -1,19 +1,23 @@
 //! PMML `AssociationModel` (Apriori). Items, itemsets and rules are kept by id.
 //! [`score_rules`] returns every rule whose antecedent items are in the basket.
 //!
-//! With `consequent_absent` (nugget `checkPredictions` `notInBasket`, `apriori_default`) the
-//! consequent must be absent. Hits are ordered by confidence descending, then rule id ascending
-//! (`apriori_thresholds` rows 9–10 keep rule 5 over rule 4). With `allow_repeats` false a hit
-//! whose consequent items were all predicted by earlier hits is skipped: one rule per single
-//! consequent (`apriori_default` row 14 keeps rule 2, jam ⇒ butter, over rule 4), and
-//! `jam & butter` after `butter` and `jam` (`carma_default` grid row 2).
+//! The nugget settings ([`ScoringOptions`]) were fixed on unlinked nuggets scoring the 128
+//! training baskets of probe `apriori_eval` (`score_matrix`, 20 rules; every setting matches
+//! all rows): `checkPredictions` `notInBasket` (default: the consequent must be absent),
+//! `inBasket` (it must be present) or `noCheck`; `ignoreUnmatchedItems` false makes the
+//! antecedent equal the whole basket (`score_trans_unmatched`: `{bread, jam}` fires only
+//! rule 17, a basket with the unknown `cheese` fires nothing). Hits are ordered by the
+//! [`RuleCriterion`] descending (equal confidences by antecedent length and item ids), then
+//! rule id ascending (`apriori_thresholds` rows 9–10 keep
+//! rule 5 over rule 4). With `allow_repeats` false a hit whose consequent items were all
+//! predicted by earlier hits is skipped: one rule per single consequent (`apriori_default`
+//! row 14 keeps rule 2, jam ⇒ butter, over rule 4), and `jam & butter` after `butter` and
+//! `jam` (`carma_default` grid row 2). With `allow_repeats` true both are kept.
 //!
 //! A consequent of several items (CARMA, `carma_default` rules 11, 14, 16) predicts their
 //! values joined by ` & ` in `ItemRef` order (`butter & bread`); with `consequent_absent` it is
 //! dropped only when every one of its items is in the basket (`carma_default` training row 3,
 //! butter and jam: rule 11, jam => butter & bread, is predicted).
-//! GAP: `repeatPredictions` true is accepted by this function; the nugget rejects it until an
-//! oracle shows the columns.
 
 use crate::parse::{self, parse_model_header};
 use crate::{ModelHeader, PmmlError};
@@ -66,6 +70,35 @@ pub struct AssociationModel {
 }
 
 impl AssociationModel {
+    /// The support of itemset `id`.
+    pub fn itemset_support(&self, id: &str) -> Result<f64, PmmlError> {
+        self.itemsets
+            .iter()
+            .find(|itemset| itemset.id == id)
+            .map(|itemset| itemset.support)
+            .ok_or_else(|| PmmlError::Score(format!("association model has no itemset {id:?}")))
+    }
+
+    /// The numeric item ids of itemset `id`, ascending.
+    pub fn itemset_item_ids(&self, id: &str) -> Result<Vec<u64>, PmmlError> {
+        let itemset = self
+            .itemsets
+            .iter()
+            .find(|itemset| itemset.id == id)
+            .ok_or_else(|| PmmlError::Score(format!("association model has no itemset {id:?}")))?;
+        let mut ids = itemset
+            .items
+            .iter()
+            .map(|item| {
+                item.parse::<u64>().map_err(|_| {
+                    PmmlError::Score(format!("association item id {item:?} is not an integer"))
+                })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        ids.sort_unstable();
+        Ok(ids)
+    }
+
     /// Item values of itemset `id`, in `ItemRef` order.
     pub fn itemset_values(&self, id: &str) -> Result<Vec<&str>, PmmlError> {
         let itemset = self
@@ -214,10 +247,49 @@ fn check_count(node: roxmltree::Node<'_, '_>, attr: &str, found: usize) -> Resul
     Ok(())
 }
 
-/// Rules that fire on `present` item values.
-///
-/// `consequent_absent` is nugget `checkPredictions=notInBasket`. `allow_repeats` false keeps
-/// the best confidence for each consequent (lower rule id on a tie).
+/// Nugget `ruleCriteria`: how fired rules are ranked. Modeler ranks from the rule values as
+/// its PMML stores them, so confidence enters with 15 significant digits: rule support is
+/// the antecedent support times that confidence, which puts `bread => butter`
+/// (0.75 x 0.5 = 0.375) ahead of `jam => butter` (0.4375 x 0.857142857142857 =
+/// 0.37499999999999994) in `score_matrix`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RuleCriterion {
+    Confidence,
+    /// `support`: the antecedent's support.
+    Support,
+    /// `ruleSupport`: antecedent support times confidence.
+    RuleSupport,
+    /// `lift`: confidence over the consequent's support.
+    Lift,
+    /// `deployability`: antecedent support minus rule support (antecedent without the
+    /// consequent).
+    Deployability,
+}
+
+/// Nugget `checkPredictions`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BasketCheck {
+    /// `notInBasket`: the consequent must be absent from the basket.
+    NotInBasket,
+    /// `inBasket`: the consequent must be present.
+    InBasket,
+    /// `noCheck`.
+    NoCheck,
+}
+
+/// The Apriori nugget's scoring settings.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ScoringOptions {
+    pub max_predictions: usize,
+    pub allow_repeats: bool,
+    pub check: BasketCheck,
+    pub criterion: RuleCriterion,
+    /// `ignoreUnmatchedItems` false: the antecedent must be the whole basket.
+    pub exact_antecedent: bool,
+}
+
+/// Rules that fire on `present` item values, with the default criterion and no exact match.
+/// `consequent_absent` is nugget `checkPredictions=notInBasket`.
 pub fn score_rules(
     model: &AssociationModel,
     present: &HashSet<String>,
@@ -225,6 +297,41 @@ pub fn score_rules(
     allow_repeats: bool,
     consequent_absent: bool,
 ) -> Result<Vec<ScoredAssociation>, PmmlError> {
+    score_rules_by(
+        model,
+        present,
+        &ScoringOptions {
+            max_predictions,
+            allow_repeats,
+            check: if consequent_absent {
+                BasketCheck::NotInBasket
+            } else {
+                BasketCheck::NoCheck
+            },
+            criterion: RuleCriterion::Confidence,
+            exact_antecedent: false,
+        },
+    )
+}
+
+/// A value with 15 significant digits, as Modeler's PMML stores rule statistics.
+fn stored(value: f64) -> f64 {
+    format!("{value:.14e}").parse().unwrap_or(value)
+}
+
+/// [`score_rules`] with every nugget setting.
+pub fn score_rules_by(
+    model: &AssociationModel,
+    present: &HashSet<String>,
+    options: &ScoringOptions,
+) -> Result<Vec<ScoredAssociation>, PmmlError> {
+    let ScoringOptions {
+        max_predictions,
+        allow_repeats,
+        check,
+        criterion,
+        exact_antecedent,
+    } = *options;
     if max_predictions == 0 {
         return Ok(Vec::new());
     }
@@ -238,11 +345,16 @@ pub fn score_rules(
                 rule.id
             )));
         }
-        if !antecedent.iter().all(|name| present.contains(*name)) {
+        if !antecedent.iter().all(|name| present.contains(*name))
+            || (exact_antecedent && antecedent.len() != present.len())
+        {
             continue;
         }
-        if consequent_absent && consequent.iter().all(|name| present.contains(*name)) {
-            continue;
+        let in_basket = consequent.iter().all(|name| present.contains(*name));
+        match check {
+            BasketCheck::NotInBasket if in_basket => continue,
+            BasketCheck::InBasket if !in_basket => continue,
+            _ => {}
         }
         let rule_id = rule.id.parse::<i64>().map_err(|_| {
             PmmlError::Score(format!(
@@ -251,24 +363,58 @@ pub fn score_rules(
             ))
         })?;
         let items: Vec<String> = consequent.iter().map(|name| (*name).to_string()).collect();
+        let rank = match criterion {
+            RuleCriterion::Confidence => rule.confidence,
+            RuleCriterion::Support => model.itemset_support(&rule.antecedent)?,
+            RuleCriterion::RuleSupport => {
+                model.itemset_support(&rule.antecedent)? * stored(rule.confidence)
+            }
+            RuleCriterion::Lift => {
+                stored(rule.confidence) / model.itemset_support(&rule.consequent)?
+            }
+            RuleCriterion::Deployability => model.itemset_support(&rule.antecedent)? - rule.support,
+        };
+        // Equal confidences follow the antecedents, shorter first, then by item ids, then the
+        // rule id (`trueflags_false` row 6, an all-false basket with 17 rules at confidence 1:
+        // Modeler predicts rules 71 {2,4}, 75 {2,8} and 17 {2,10}, where rule ids alone give
+        // 17, 21, 22; `score_matrix` `noCheck` row 6 keeps rule 5 before rule 8 on the same
+        // antecedent). Every other confidence-scored oracle row fits both orders. The other
+        // criteria break ties by rule id alone (this order changes 16 `score_matrix` rows
+        // under support).
+        let tie = if criterion == RuleCriterion::Confidence {
+            Some(model.itemset_item_ids(&rule.antecedent)?)
+        } else {
+            None
+        };
+        // `$AC-` holds the criterion's value (`score_matrix`: support writes 0.75, the
+        // antecedent support of `bread => jam`, not its confidence 0.4167).
         hits.push((
             ScoredAssociation {
                 item: items.join(" & "),
-                confidence: rule.confidence,
+                confidence: rank,
                 rule_id,
             },
             items,
+            (rank, tie),
         ));
     }
-    hits.sort_by(|(left, _), (right, _)| {
-        right
-            .confidence
-            .total_cmp(&left.confidence)
-            .then(left.rule_id.cmp(&right.rule_id))
-    });
+    hits.sort_by(
+        |(left, _, (left_rank, left_tie)), (right, _, (right_rank, right_tie))| {
+            right_rank
+                .total_cmp(left_rank)
+                .then_with(|| match (left_tie, right_tie) {
+                    (Some(left_ante), Some(right_ante)) => left_ante
+                        .len()
+                        .cmp(&right_ante.len())
+                        .then_with(|| left_ante.cmp(right_ante)),
+                    _ => std::cmp::Ordering::Equal,
+                })
+                .then(left.rule_id.cmp(&right.rule_id))
+        },
+    );
     let mut predicted: HashSet<String> = HashSet::new();
     let mut kept = Vec::new();
-    for (hit, items) in hits {
+    for (hit, items, _) in hits {
         if !allow_repeats && items.iter().all(|item| predicted.contains(item)) {
             continue;
         }
