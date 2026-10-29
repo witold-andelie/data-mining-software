@@ -42,7 +42,7 @@ pub fn build(node: &StreamNode) -> Result<Box<dyn Operator>, OperatorError> {
     }
     if expert && settings::flag(s, "use_winnowing")?.unwrap_or(false) {
         return Err(unsupported(
-            "winnowing (GAP c50_presets: selection criterion unresolved; no input subset reproduces drugtwice/wn or default/noglobal wn100 with the current learner)",
+            "winnowing (GAP c50_presets: all 20 oracles admit an exact input subset, but the tested selection rules still regress saved-model scoring)",
         ));
     }
     let rules = match settings::text(s, "modelFormat").as_deref() {

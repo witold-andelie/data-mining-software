@@ -238,45 +238,61 @@
 //!   using max(min_child, min(25, .1*N/classes)) does not resolve wn100 either.
 //!   These variants are not retained. All nine datasets' stream inputs equal
 //!   exported Type records numerically; loading different rows is not the cause.
-//! - GAP winnowing: examined all 19 presets winnowing trees plus models_ml/c50_winnow.
-//!   Exhaustively retraining every nonempty input subset with each case's pruning
-//!   settings gives 2,900 trials. Only 12/20 oracles admit any exact subset. None
-//!   matches drugtwice (all 3 settings), wn (all 3), or wn100 (default/noglobal).
-//!   Therefore a field-elimination rule alone cannot reproduce every oracle with
-//!   this learner. Keep winnowing rejected; do not install a data-specific selector.
-//! - Dropping only fields unused in the final unwinnowed tree is insufficient:
-//!   drug uses Sex but winnowing removes it; wn100 uses no a before winnowing but
-//!   does afterwards (11 vs 20 nodes). PMML active fields describe final splits,
-//!   not the full candidate set surviving selection. For example all eight subsets
-//!   with/without e1/e2/e3 and without Sex reproduce drugnoise, so those exports
-//!   cannot establish whether the three noise fields were eliminated.
-//! - A monotone threshold on a field's collapsed-subtree error contribution, even
-//!   relative to N, fails: in the 100-row drughalf ORACLE, collapsing Age adds 9
-//!   training errors (CF=.25 bound increase 7.216168), versus Cholesterol's 5
-//!   (3.999582), yet winnowing removes Age and retains Cholesterol. wn100 retains
-//!   c1 although collapsing it decreases that bound by 1.251574. These bounds sum
-//!   leaf estimates before/after collapsing every split on the indicated field.
-//! - Best tested partial rule: independently omit each field, retrain, then remove
-//!   fields whose omission does not increase total training error (or the sum of
-//!   CF=.25 leaf error bounds). Both reproduce only 8/20 exact trees: drug,
-//!   drugnoise at all three settings, grid, noisy, gw, and models_ml/c50_winnow.
-//!   In our drughalf baseline, dropping Age increases errors 5->8 (bound
-//!   17.851101->21.062915), Na 5->11 (21.268205); the oracle drops both. In our
-//!   wn100 baseline, dropping a improves errors 19->16 (bound 30.017739->28.721417),
-//!   yet the winnowed oracle uses a. These retraining numbers describe OUR learner,
-//!   whose remaining baseline GAPs must be resolved before inferring a selection rule.
-//! - Partial subset evidence, not an algorithm: excluding Sex exactly reproduces
-//!   drug and drugnoise; retaining K/BP/Cholesterol (with or without unused Sex)
-//!   reproduces all three drughalf winnowing settings. Pruning variants do not
-//!   disambiguate those sets; wn100 severity 90 admits 12 different exact subsets.
-//!   Sampling, a different preliminary tree, and selection-specific pruning remain
-//!   unsettled. Recorded final classifiers cannot identify those internal choices.
+//! - GAP winnowing, corrected-learner rerun (2026-10-29, recorded oracles only):
+//!   all 20 trees now admit an exact input subset, versus 12/20 in the old study.
+//!   All 2,900 nonempty subsets were retrained with the requested settings. Exact
+//!   means complete normalized nodes, not just equal predictions. The old wn100,
+//!   drughalf/drugtwice and wn learner obstructions no longer block selection.
+//!   Historical baseline notes above are superseded by the pruning fixes and
+//!   this rerun. No network, Modeler invocation or external learner source used.
+//! - Admissible sets: drug requires all inputs except Sex; drugnoise also permits
+//!   any subset of e1/e2/e3. Drughalf requires BP/Cholesterol/K, optionally Sex,
+//!   at all three settings. Drugtwice requires all inputs at all three settings.
+//!   wn100 default/noglobal uniquely require a/b/c1/c2/c3; severity 90 admits 11
+//!   sets. wn accepts a/b/c1 plus extras (noglobal excludes two such sets).
+//!   grid/noisy retain both inputs; gw requires g/z/n2; models_ml requires
+//!   x/cat/flag. Active MiningSchema fields do not identify unused candidates.
+//! - Best tested conservative partial candidate: before final training, omit
+//!   each input in order and require BOTH grown training errors and the locally
+//!   pruned leaf-bound sum (after symbolic sibling merging) not to increase.
+//!   Restart after each deletion, retain at least one input, then apply requested
+//!   final pruning. Forward/reverse order both match 15/20 trees and all scores,
+//!   preserving the 11 already exact full-input trees and adding drug/drugnoise.
+//!   This is an empirical approximation, not a published Modeler algorithm.
+//! - The candidate was NOT adopted: enabling the builder replaces saved nuggets
+//!   in streams. Its five misses (drughalf, all three settings; wn100 default and
+//!   noglobal) then become terminal-score regressions. The required filtered run
+//!   changes from 353 match / 13 statistical / 2 known GAP / 0 regressions to
+//!   348 / 13 / 2 / 5. Keep rejection rather than reclassify these as known gaps,
+//!   special-case the datasets, or change the saved-model replacement behavior.
+//! - Round 2 (probe `c50_winnow2`, 12 synthetic pairs, winnowing off and on): all 12 off
+//!   trees match exactly, but no frozen candidate fits every on tree. The best (N, U: the
+//!   conservative conjunction above) fit 9/12 and miss w02, w03 (Modeler winnows to a single
+//!   leaf) and w04; see the clone's `target/c50-winnow/ROUND2.md`.
+//! - Full-data single-metric candidates fit at most 12/20. Local bounds alone
+//!   drop wn's necessary c1 (51.50680 -> 50.44044) although grown errors rise
+//!   23 -> 26. Training errors alone drop drugtwice's necessary Sex (both zero)
+//!   although its bound rises 24.15857 -> 24.32665. The conservative conjunction
+//!   blocks drughalf's required Na deletion (grown errors 3 -> 7) and wn100's
+//!   c4/d deletions (8 -> 12/9). Simultaneous conjunction fits 14/20 and loses
+//!   wn_noglobal; sequential input deletion keeps that tree. These observations
+//!   reject simple non-degradation as the complete criterion.
+//! - Six half-data training splits and their paired two-fold criteria (52,200
+//!   preliminary models, 648 policies) fit at most 14/20, all losing an already
+//!   exact full-input tree. Together with 54 full-data single-metric/use policies
+//!   and 105 conjunction policies, none meets the complete adoption gate.
+//!   Public tutorial descriptions supplied with the task motivate marginal
+//!   relevance and selection before final training, but not these exact rules;
+//!   the cached Modeler 19 Algorithms Guide gives no elimination formula.
+//!   Every subset and candidate is recorded in target/c50-winnow/REPORT.md.
+//!   The next discriminating probe is c50_winnow2_streams (not run here), with
+//!   frozen per-candidate trees in target/c50-winnow/PREDICTIONS.md.
 //!
 //! Rejected settings (never silently substituted): boosting/trials
 //! (`c50_boost_tree`, `c50_boost_rules`: reweighting settled, weighted trees GAP; see `c50_boost`),
 //! costs combined with weights/rules/boosting (no combined oracle), case/frequency
 //! weights (`c50_weight`: GAP pruning and internal distributions), winnowing
-//! (`c50_presets`: GAP elimination criterion and wn100 baseline),
+//! (`c50_presets`: GAP elimination criterion; all 20 oracles admit exact subsets),
 //! unrecorded Simple presets/combinations (scope above), adjusted-propensity
 //! training (the nugget scores its saved test-partition tree, `exec::nodes::c50`;
 //! the builder does not yet write one), cross-validation, split-field training
