@@ -22,13 +22,13 @@
 //!
 //! Expert refits recorded family/order/transform/omitted lags only. Automatic
 //! selection remains GAP: Guide p.394 does not specify all search thresholds.
-//! Numerator-only transfer supports AR(1) noise, delay and predictor differences;
+//! Transfer functions support AR(1) noise, delay, predictor differences and denominators
+//! (start-up rule in `dms_algo::transfer`);
 //! persisted TF columns p/q/d mean numerator/difference/denominator, evidenced
 //! by the ts_tf_num/den/delay saved models and complete scores.
-//! Remaining cases: ts_sarlog_noconst linked rebuild (0.116627 SD), ts_tf_static
-//! (converged likelihood improves but scores differ 0.016416 SD), and denominator
-//! startup for ts_tf_diff/two (explicit unsupported). No claim of rule-3 parity
-//! for these four. Other GAPs: irregular/aggregated observations, missing data,
+//! Outside rule 3: ts_sarlog_noconst (0.116627 SD) and ts_tf_static (0.016416 SD), where
+//! Modeler's optimizer stops short of the likelihood optimum we reach (evidence in
+//! `dms_algo::time_series`). Other GAPs: irregular/aggregated observations, missing data,
 //! automatic outliers/Expert, other intervals/orders and long-horizon Winters.
 
 use super::field_util::field_list;
@@ -345,12 +345,8 @@ pub fn build(node: &StreamNode) -> Result<Box<dyn Operator>, OperatorError> {
         // ts_tf_num/den/delay PMML and scored prefixes establish this mapping.
         let (numerator, difference, denominator, delay) =
             (order("p")?, order("q")?, order("d")?, order("delay")?);
-        if denominator != 0 {
-            return Err(gap(
-                "transfer denominator initial state remains unverified (ts_tf_diff/ts_tf_two)",
-            ));
-        }
         if numerator > 4
+            || denominator > 4
             || difference > 1
             || delay > 64
             || order("sp")? != 0
@@ -365,6 +361,7 @@ pub fn build(node: &StreamNode) -> Result<Box<dyn Operator>, OperatorError> {
             delay,
             difference,
             numerator: vec![0.0; numerator + 1],
+            denominator: vec![0.0; denominator],
         });
     }
     if !effects.is_empty()
@@ -1165,26 +1162,21 @@ pub fn parse_saved_model(xml: &str) -> Result<SavedModel, OperatorError> {
         let numerator = factor("Numerator")
             .ok_or_else(|| OperatorError::Data("missing transfer numerator".into()))?;
         let den = factor("Denominator");
-        if den.is_some_and(|n| {
-            n.descendants()
-                .filter(|c| c.has_tag_name("Array"))
-                .any(|a| !a.text().unwrap_or("").trim().is_empty())
-        }) {
-            return Err(OperatorError::Settings(
-                "GAP: transfer denominator initial state remains unverified (ts_tf_diff/ts_tf_two)"
-                    .into(),
-            ));
-        }
+        let seasonal = |factor: Option<roxmltree::Node<'_, '_>>| {
+            factor.is_some_and(|f| {
+                f.children()
+                    .filter(|n| n.has_tag_name("SeasonFactor"))
+                    .any(|n| {
+                        n.descendants().any(|a| {
+                            a.has_tag_name("Array") && !a.text().unwrap_or("").trim().is_empty()
+                        })
+                    })
+            })
+        };
         if attr_usize(e, "seasonalDiff")? != 0
             || e.attribute("transformation").unwrap_or("none") != "none"
-            || numerator
-                .children()
-                .filter(|n| n.has_tag_name("SeasonFactor"))
-                .any(|n| {
-                    n.descendants().any(|a| {
-                        a.has_tag_name("Array") && !a.text().unwrap_or("").trim().is_empty()
-                    })
-                })
+            || seasonal(Some(numerator))
+            || seasonal(den)
         {
             return Err(OperatorError::Settings(
                 "GAP: seasonal/transformed transfer".into(),
@@ -1194,11 +1186,17 @@ pub fn parse_saved_model(xml: &str) -> Result<SavedModel, OperatorError> {
         for v in coefficients.iter_mut().skip(1) {
             *v = -*v;
         }
+        // Denominator values are used as stored (`ts_tf_diff`, see `dms_algo::transfer`).
+        let denominator = match den {
+            Some(den) => parse_coef_array(den, "NonseasonFactor", 0)?,
+            None => Vec::new(),
+        };
         effects.push(Effect {
             field: e.attribute("field").unwrap_or("").into(),
             difference: attr_usize(e, "nonSeasonalDiff")?,
             delay: attr_usize(e, "delay")?,
             numerator: coefficients,
+            denominator,
         });
     }
     if effects.is_empty() {

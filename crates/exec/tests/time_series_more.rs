@@ -321,6 +321,8 @@ fn ts_more_optimizer_rule_three() {
             "ts_tf_num",
             "ts_tf_den",
             "ts_tf_delay",
+            "ts_tf_diff",
+            "ts_tf_two",
             "ts_airline",
             "ts_airline_noconst",
             "ts_ar",
