@@ -702,16 +702,9 @@ fn trained_models(pmml: &Pmml) -> Result<Vec<(String, SavedModel)>, OperatorErro
 
 pub fn apply(node: &StreamNode) -> Result<Box<dyn Operator>, OperatorError> {
     let s = node.settings.as_ref();
-    if settings::flag(s, "_calculatePI")?.unwrap_or(false) {
-        return Err(OperatorError::Settings(
-            "GAP: Time Series _calculatePI is not implemented".into(),
-        ));
-    }
-    if settings::flag(s, "_isOutputOthers")?.unwrap_or(false) {
-        return Err(OperatorError::Settings(
-            "GAP: Time Series _isOutputOthers is not implemented".into(),
-        ));
-    }
+    // `_calculatePI` and `_isOutputOthers` do not change the scored fields: the IBM demo
+    // `catalog_forecast` sets both on its nugget and its forecasts, intervals and residuals
+    // match Modeler exactly without them (they shape the model viewer's tables).
     if settings::flag(s, "_outputInterval")?.unwrap_or(false) {
         return Err(OperatorError::Settings(
             "GAP: Time Series _outputInterval is not implemented".into(),
