@@ -8,8 +8,13 @@
 //! of `super::text_source` (no trimming by default), and embedded `filterTable`/`typeTable`
 //! rules.
 //!
-//! Not implemented: `multiBlankDelimiters`, `treatSquareBracketsAsLists`, `eolCommentChars`,
-//! `list` storage in `textImportTable`, and non-`None` `check` modes in `typeTable`.
+//! `multiBlankDelimiters` joins adjacent blank delimiters, so it has no effect unless a space or
+//! a tab is a delimiter: with comma delimiters only it reads the same table (`ibm-demos`
+//! `drugplot`, `goodsplot`, `goodslearn`, `cplex_goodslearn` match Modeler). With blank
+//! delimiters it is a `GAP:` (no oracle).
+//!
+//! Not implemented: `treatSquareBracketsAsLists`, `eolCommentChars`, `list` storage in
+//! `textImportTable`, and non-`None` `check` modes in `typeTable`.
 
 use super::text_source::{TextSettings, read_file};
 use super::r#type::{SourceTables, apply_source_tables, parse_source_tables};
@@ -36,9 +41,14 @@ pub fn build(node: &StreamNode) -> Result<Box<dyn Operator>, OperatorError> {
         .filter(|p| !p.trim().is_empty())
         .ok_or_else(|| OperatorError::Settings("Var. File: inputFileName is required".into()))?;
 
-    if settings::flag(s, "multiBlankDelimiters")?.unwrap_or(false) {
+    if settings::flag(s, "multiBlankDelimiters")?.unwrap_or(false)
+        && (settings::flag(s, "delimitOnSpace")?.unwrap_or(false)
+            || settings::flag(s, "delimitOnTab")?.unwrap_or(false)
+            || settings::text(s, "delimiterChars").is_some_and(|chars| chars.contains([' ', '\t'])))
+    {
         return Err(OperatorError::Settings(
-            "Var. File: multiBlankDelimiters is not supported yet".into(),
+            "Var. File: GAP: multiBlankDelimiters with space or tab delimiters has no oracle"
+                .into(),
         ));
     }
     if settings::flag(s, "treatSquareBracketsAsLists")?.unwrap_or(false) {

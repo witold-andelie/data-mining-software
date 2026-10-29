@@ -20,12 +20,14 @@
 - 不做的节点：CPLEX、Simulation Generate、Space-Time-Boxes；以后再做：SLRM、GLMM、Streaming TS、STP、地理空间导入
   （一个流可能同时用到几种未实现的节点或设置，这里只列节点）。
 - Excel 夹具里没有单元格的空行（15 个，Modeler 自身读取不一致，已知 GAP）。
-- **IBM 演示流里可修的缺口（没有 oracle，回归测不到）**：
-  - 可变文件源 `multiBlankDelimiters`：`drugplot`、`goodslearn`、`goodsplot`、`cplex_goodslearn`；
-  - SAV 读取过严：`broadband_1/2.sav`（`F w.0` 格式的变量含非整数值）、`employee_data.sav`（格式代码 4 无小数）；
-  - Time Series 使用 Type 节点角色（`autoModelFieldSelection`）：`catalog_forecast`、`catalog_streaming_timeseries`；
-  - Statistics 文件源 `readValues=labelsAsData`：`modelingintro`；可变文件源 `treatSquareBracketsAsLists`：`stp_server_demo`；
-  - `ADP_basic_demo`（模型块需要的字段 `callid` 不在输入里）、`telco_dataaudit`（模型块没有保存模型）、旧版 Auto 模型块 2 个。
+- **IBM 演示流里发现的缺口**（2026-10-29 补录 11 个演示流的 oracle 后处理）：
+  - 已修：可变文件源 `multiBlankDelimiters` 在没有空白分隔符时不起作用（`drugplot`、`goodsplot`、`goodslearn` 一致）；
+    SAV 的 `F w.0` 与 `DOLLAR w.0` 变量按整数读入并四舍五入（`broadband_apply_models`、`graphboard` 一致）。
+  - 仍缺：流日期格式 `format27`（MON YYYY）在 CLEM `to_date` 与导出中的使用、Time Series 的季节/变换传递函数
+    （`broadband_create_models`）；Time Series 的 `_isOutputOthers`（`catalog_forecast`）；Statistics 文件源
+    `labelsAsData`（`modelingintro`，Modeler 批处理本身也找不到可执行节点）；STP 与 `treatSquareBracketsAsLists`
+    （`stp_server_demo`）；Clementine 11 内联 `RuleTreeModel` 模型块（`telco_dataaudit`）；Auto Data Prep 在 telco 数据上
+    保留原字段（`ADP_basic_demo`，未查）；旧版 Auto 模型块 2 个。
 
 ## 速度
 

@@ -83,16 +83,6 @@ pub fn table_from_sav(
     let mut storages = Vec::with_capacity(file.variables.len());
     for (index, variable) in file.variables.iter().enumerate() {
         let storage = storage_of(variable, options.field_format_storage)?;
-        if storage == Storage::Integer
-            && file.rows.iter().any(|row| {
-                matches!(row.get(index), Some(dms_sav::Value::Number(x)) if x.is_finite() && x.fract() != 0.0)
-            })
-        {
-            return Err(StatisticsError::Sav(format!(
-                "variable {} has an F w.0 format but non-integral values (GAP: storage unknown)",
-                variable.name
-            )));
-        }
         storages.push(storage);
         let name = match (options.names, variable.label.as_deref()) {
             (NameMode::LabelsAsNames, Some(label)) if !label.trim().is_empty() => label.to_string(),
@@ -138,7 +128,9 @@ fn storage_of(variable: &Variable, field_format: bool) -> Result<Storage, Statis
         20 | 23 | 24 | 28..=30 | 38 | 39 => Storage::Date,
         22 | 41 => Storage::Timestamp,
         21 | 25 | 40 => Storage::Time,
-        5 if field_format && format.decimals == 0 => Storage::Integer,
+        // `F` (5) and `DOLLAR` (4) with no decimals read as integers (`ibm-demos/graphboard`:
+        // `employee_data.sav` SALARY `DOLLAR8.0` reads 57000); other formats have no oracle.
+        4 | 5 if field_format && format.decimals == 0 => Storage::Integer,
         code if field_format && format.decimals == 0 => {
             return Err(StatisticsError::Sav(format!(
                 "variable {}: storage from format code {code} with no decimals is unknown (GAP)",
@@ -171,10 +163,12 @@ fn convert(value: &dms_sav::Value, storage: Storage) -> Value {
                 Storage::Date => date_value(*number),
                 Storage::Timestamp => timestamp_value(*number),
                 Storage::Time => time_value(*number),
-                // Integral and finite (checked when the storage was chosen); larger magnitudes
-                // than i64 stay real.
+                // An `F w.0` variable holding fractions is rounded to the nearest integer
+                // (`ibm-demos/broadband_*`: `broadband_2.sav` Market_1 4009.80 reads 4010,
+                // 3750.18 reads 3750, Total 536412.83 reads 536413). Halves have no oracle.
+                // Larger magnitudes than i64 stay real.
                 #[allow(clippy::cast_possible_truncation)]
-                Storage::Integer if number.abs() < 9.0e18 => Value::Integer(*number as i64),
+                Storage::Integer if number.abs() < 9.0e18 => Value::Integer(number.round() as i64),
                 _ => Value::real(*number),
             }
         }
