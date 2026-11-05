@@ -22,6 +22,8 @@
 //!
 //! Expert refits recorded family/order/transform/omitted lags only. Automatic
 //! selection remains GAP: Guide p.394 does not specify all search thresholds.
+//! `ts_expert/pr_wn_ar` omits the zero-order NonseasonalComponent; `pr_i2_ar`
+//! scores d=2 with a constant through the existing integrated ARIMA recursion.
 //! Transfer functions support AR(1) noise, delay, predictor differences and denominators
 //! (start-up rule in `dms_algo::transfer`);
 //! persisted TF columns p/q/d mean numerator/difference/denominator, evidenced
@@ -1274,16 +1276,20 @@ fn parse_arima_model(model: roxmltree::Node<'_, '_>) -> Result<ArimaSpec, Operat
         .collect();
     let nonseasonal = arima
         .descendants()
-        .find(|n| n.has_tag_name("NonseasonalComponent"))
-        .ok_or_else(|| {
-            OperatorError::Data("Time Series ARIMA has no NonseasonalComponent".into())
-        })?;
-    let p = attr_usize(nonseasonal, "p")?;
-    let d = attr_usize(nonseasonal, "d")?;
-    let q = attr_usize(nonseasonal, "q")?;
-    if d > 1 {
+        .find(|n| n.has_tag_name("NonseasonalComponent"));
+    // Modeler omits this component for white noise (p=d=q=0).
+    let order = |name| {
+        nonseasonal
+            .map(|n| attr_usize(n, name))
+            .transpose()
+            .map(|v| v.unwrap_or(0))
+    };
+    let p = order("p")?;
+    let d = order("d")?;
+    let q = order("q")?;
+    if d > 2 {
         return Err(OperatorError::Settings(format!(
-            "GAP: ARIMA differencing order {d} is not implemented (oracle cases use d=1)"
+            "GAP: ARIMA differencing order {d} exceeds the supported maximum 2"
         )));
     }
     if let Some(stat) = arima
@@ -1299,8 +1305,14 @@ fn parse_arima_model(model: roxmltree::Node<'_, '_>) -> Result<ArimaSpec, Operat
             }
         }
     }
-    let ar = parse_coef_array(nonseasonal, "AR", p)?;
-    let ma_pmml = parse_coef_array(nonseasonal, "MA", q)?;
+    let ar = nonseasonal
+        .map(|n| parse_coef_array(n, "AR", p))
+        .transpose()?
+        .unwrap_or_default();
+    let ma_pmml = nonseasonal
+        .map(|n| parse_coef_array(n, "MA", q))
+        .transpose()?
+        .unwrap_or_default();
     let ma: Vec<f64> = ma_pmml.into_iter().map(|theta| -theta).collect();
     let sigma2 =
         sigma2.ok_or_else(|| OperatorError::Data("Time Series PMML has no errVariance".into()))?;
@@ -1974,6 +1986,62 @@ fn parse_future_inputs(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn arima_model(component: &str) -> String {
+        format!(
+            "<PMML><TimeSeriesModel algorithmName=\"ARIMA\" bestFit=\"ARIMA\"><Extension name=\"errVariance\" value=\"4\"/><Extension name=\"degreesOfFreedom\" value=\"20\"/><Extension><ARIMA constantTerm=\"2\" transformation=\"none\" seasonLength=\"1\">{component}</ARIMA></Extension></TimeSeriesModel></PMML>"
+        )
+    }
+
+    #[test]
+    fn scores_arima_without_nonseasonal_component() {
+        let SavedModel::Arima(spec) = parse_saved_model(&arima_model("")).unwrap() else {
+            panic!("expected ARIMA");
+        };
+        let explicit = parse_saved_model(&arima_model(
+            "<NonseasonalComponent p=\"0\" d=\"0\" q=\"0\"/>",
+        ))
+        .unwrap();
+        let SavedModel::Arima(explicit) = explicit else {
+            panic!("expected ARIMA");
+        };
+        assert_eq!(spec, explicit);
+        let scored = arima::score(&spec, &[1.0, 3.0, 2.0], 3, 95.0).unwrap();
+        for f in scored.fitted.into_iter().flatten().chain(scored.forecasts) {
+            assert_eq!(f.point, 2.0);
+            assert!(f.lower < 2.0 && f.upper > 2.0);
+        }
+    }
+
+    #[test]
+    fn scores_arima_second_difference_with_constant() {
+        let SavedModel::Arima(spec) = parse_saved_model(&arima_model(
+            "<NonseasonalComponent p=\"0\" d=\"2\" q=\"0\"/>",
+        ))
+        .unwrap() else {
+            panic!("expected ARIMA");
+        };
+        let scored = arima::score(&spec, &[1.0, 4.0, 9.0, 16.0], 3, 95.0).unwrap();
+        assert_eq!(scored.fitted[..2], [None, None]);
+        assert_eq!(scored.fitted[2].unwrap().point, 9.0);
+        assert_eq!(scored.fitted[3].unwrap().point, 16.0);
+        let width = scored.forecasts[0].upper - scored.forecasts[0].point;
+        for (i, (point, variance)) in [(25.0, 1.0_f64), (36.0, 5.0), (49.0, 14.0)]
+            .into_iter()
+            .enumerate()
+        {
+            let f = scored.forecasts[i];
+            assert_eq!(f.point, point);
+            assert!(((f.upper - point) / width - variance.sqrt()).abs() < 1e-12);
+            assert!(((point - f.lower) / width - variance.sqrt()).abs() < 1e-12);
+        }
+        assert!(
+            parse_saved_model(&arima_model(
+                "<NonseasonalComponent p=\"0\" d=\"3\" q=\"0\"/>"
+            ))
+            .is_err()
+        );
+    }
 
     fn model(body: &str) -> String {
         format!(

@@ -25,6 +25,15 @@
 //! Logarithmic transform (`ts_expert`): work on `ln y`, then the point is
 //! `exp(μ + se²/2)` (lognormal mean) and the limits are `exp(μ ± t se)`
 //! (no bias in the interval centre).
+//!
+//! Known scoring gap (`ts_expert`, 2026-11-05): future variances below use
+//! infinite-history psi weights. Finite-history Gaussian conditioning gives
+//! first-step variance/sigma2 = 1.03731293244 for `pr_seastr_ar` and
+//! 1.00000766665 for `pr_air_ar`, reproducing all six saved future points and
+//! bounds within 6.4e-10. These are formula differences, not optimizer noise;
+//! the latter also affects the lognormal mean. History uses exact innovations.
+//! White noise with a constant and d=2 scoring are covered by the Expert corpus
+//! regression in `dms-exec`; an omitted nonseasonal PMML component means d=p=q=0.
 
 use crate::stats::student_t_quantile;
 use std::fmt;
