@@ -3,6 +3,9 @@
 # label	stem	reason
 ibm-demos	bayes_bankloan	Bayes Net is license-blocked in Modeler 19 and not implemented, so the downstream filter cannot be compared
 ibm-demos	bayes_churn_retrain	Bayes Net is license-blocked in Modeler 19 and not implemented, so the downstream filter cannot be compared
+ibm-demos	broadband_create_models	Time Series: GAP: seasonal/transformed transfer function (one applyts terminal not produced); the stream date format27 (MON YYYY) is not supported, so the Type terminal reads DATE_ as $null$
+ibm-demos	catalog_streaming_timeseries	Streaming Time Series is not implemented (its terminal is not produced), so the downstream Time Series nugget scores $null$
+ibm-demos	cplex_goodslearn	CPLEX Optimization is out of scope and not implemented, so its terminal is not produced
 ibm-demos	pm_binaryclassifier	Auto Classifier nugget: legacy Auto model scoring is unverified; the oracle retrains a replacement-linked model, which is out of scope
 ibm-demos	svm_cancer	SVM is license-blocked in Modeler 19 and not implemented
 ibm-demos	telco_coxreg	Cox regression: this Modeler 19 install does not have the Cox node (the demo opens it as unknownterminal, extension spss.coxreg_id missing), so no oracle can be produced; not implemented
@@ -35,3 +38,4 @@ apriori_more	tie_twonew	Apriori equal-support item order: rules are ordered by i
 ibm-demos	modelingintro	Statistics File readValues=labelsAsData is not supported, and Modeler's batch run finds no executable nodes, so no oracle data exists
 ibm-demos	stp_server_demo	STP node and Var. File treatSquareBracketsAsLists are not implemented; Modeler's own run fails on the map visualisation (IOException), so the oracle is partial
 ibm-demos	telco_dataaudit	the supernode's C&R Tree rule nuggets hold a legacy Clementine 11 inline RuleTreeModel (no PMML container), which is not parsed
+ts_expert2	p2_alt18_es	Time Series: GAP: seasonal period/phase when scoring the saved 18-point simple seasonal nugget (three applyts terminals not produced)
