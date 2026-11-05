@@ -8,10 +8,13 @@
 //!   - `flags`: every flag field against every other, in field order; a cell counts the records
 //!     where both are true, the diagonal is empty, and `showTotals` adds row and column sums.
 //!   - `numbers`: every continuous numeric field against every other, in field order; a cell is
-//!     the sum of the products of the two fields over the records, printed as an integer when
+//!     the sum of the products of the two fields over the records where both are present
+//!     (pairwise; `oracle/outputs_more/matrix_numerics_missing`), printed as an integer when
 //!     both are integers and with 3 decimals otherwise; the diagonal is empty and there are no
 //!     totals. Row, column, cell-contents and function settings do not change it.
-//!   - Missing values in these matrices have no oracle and are a `GAP:` error.
+//!   - Missing values in flag matrices are treated as false for the both-true counts
+//!     (`oracle/outputs_more/matrix_flags_missing` matches); missing values in `specified`
+//!     cross-tabulations follow `includeMissingValues`.
 //! - `rowField`, `columnField`: categorical fields for the matrix rows and columns (required for
 //!   `specified`).
 //! - `cellContents`: `coincidences` (cross-tabulation) or `parameter` (a function of a field).
@@ -25,8 +28,15 @@
 //! - `includeMissingValues`: whether records with missing values (`$null$` or blanks) in the row
 //!   or column field are included as a category (default `true`).
 //! - Highlighting display settings (`useHighlightTop`, `highlightTop`, `useHighlightBottom`,
-//!   `highlightBottom`) are validated; `outputMode` values other than `screen` are rejected with
-//!   [`OperatorError::Settings`].
+//!   `highlightBottom`) are validated; `outputMode` (`screen`, `file`) with `outputFileType`
+//!   (`formatted` `.tab`, `delimited` `.csv`, `html`, `output_object` `.cou`) and `outputFilePath`
+//!   write the file Modeler writes (`oracle/outputs_more/matrix_file_*`). `Formatted` and
+//!   `Delimited` are the screen table with tab or comma separators and CRLF; `HTML` is the
+//!   screen table as a `clementine.css` page with a chi-square footer (counts with totals only).
+//!   The `.cou` output object (FastInfoset with a save timestamp) and paged HTML stay a `GAP:`.
+//!
+//! Files use CRLF; the HTML has no trailing newline. The `clementine.css` written beside an HTML
+//! file is Modeler's matrix page style (extra `selected`/`unselected` classes).
 
 use crate::context::ExecContext;
 use crate::error::OperatorError;
@@ -97,19 +107,50 @@ struct MatrixOp {
     crosstab: Vec<CrossTabItem>,
     show_totals: bool,
     include_missing: bool,
+    file: Option<(String, FileKind)>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FileKind {
+    Formatted,
+    Delimited,
+    Html,
+    Output,
 }
 
 pub fn build(node: &StreamNode) -> Result<Box<dyn Operator>, OperatorError> {
     let s = node.settings.as_ref();
 
-    match settings::text(s, "outputMode").as_deref().map(str::trim) {
-        None | Some("") | Some("screen") => {}
+    let file = match settings::text(s, "outputMode").as_deref().map(str::trim) {
+        None | Some("") | Some("screen") => None,
+        Some("file") => {
+            let path = settings::text(s, "outputFilePath")
+                .filter(|p| !p.trim().is_empty())
+                .ok_or_else(|| {
+                    OperatorError::Settings("Matrix outputFilePath is required in file mode".into())
+                })?;
+            let kind = match settings::text(s, "outputFileType")
+                .as_deref()
+                .map(str::trim)
+            {
+                None | Some("") | Some("formatted") => FileKind::Formatted,
+                Some("delimited") => FileKind::Delimited,
+                Some("html") => FileKind::Html,
+                Some("output_object") => FileKind::Output,
+                Some(other) => {
+                    return Err(OperatorError::Settings(format!(
+                        "Matrix outputFileType {other:?} is unknown"
+                    )));
+                }
+            };
+            Some((path, kind))
+        }
         Some(other) => {
             return Err(OperatorError::Settings(format!(
                 "Matrix outputMode {other:?} is not supported"
             )));
         }
-    }
+    };
 
     let _ = settings::flag(s, "useHighlightTop")?;
     let _ = settings::integer(s, "highlightTop")?;
@@ -204,6 +245,7 @@ pub fn build(node: &StreamNode) -> Result<Box<dyn Operator>, OperatorError> {
         crosstab,
         show_totals,
         include_missing,
+        file,
     }))
 }
 
@@ -252,7 +294,7 @@ impl Operator for MatrixOp {
         &self,
         inputs: &[Arc<Table>],
         _model: Option<Arc<dms_pmml::Pmml>>,
-        _context: &ExecContext,
+        context: &ExecContext,
     ) -> Result<NodeOutput, OperatorError> {
         let input = inputs
             .first()
@@ -263,10 +305,12 @@ impl Operator for MatrixOp {
             MatrixKind::Specified => None,
         };
         if let Some(table) = table {
-            return Ok(NodeOutput::Document(Arc::new(Document {
+            let doc = Document {
                 title: String::new(),
                 tables: vec![table],
-            })));
+            };
+            self.write_file(&doc, context)?;
+            return Ok(NodeOutput::Document(Arc::new(doc)));
         }
 
         let row_pos = position(input.model(), &self.row_field)?;
@@ -304,10 +348,78 @@ impl Operator for MatrixOp {
             }
         };
 
-        Ok(NodeOutput::Document(Arc::new(Document {
+        let doc = Document {
             title: String::new(),
             tables: vec![table],
-        })))
+        };
+        self.write_file(&doc, context)?;
+        Ok(NodeOutput::Document(Arc::new(doc)))
+    }
+}
+
+impl MatrixOp {
+    fn write_file(&self, doc: &Document, context: &ExecContext) -> Result<(), OperatorError> {
+        let Some((path, kind)) = &self.file else {
+            return Ok(());
+        };
+        // Screen checks (`evaluate_stream_output` with no export dir) must not overwrite the
+        // corpus file the stream was saved with; the CLI always redirects (`export_dir` is
+        // `Some`), and the file byte test does too.
+        if context.export_dir.is_none() {
+            if matches!(kind, FileKind::Output) {
+                return Err(OperatorError::Settings(
+                    "GAP: Matrix: Output (.cou) file is FastInfoset with a save timestamp and has no byte-stable oracle"
+                        .into(),
+                ));
+            }
+            if matches!(kind, FileKind::Html)
+                && (self.kind != MatrixKind::Specified
+                    || self.cell_mode != CellMode::Counts
+                    || self.crosstab != [CrossTabItem::Count])
+            {
+                return Err(OperatorError::Settings(
+                    "GAP: Matrix: HTML file for this matrix type has no oracle".into(),
+                ));
+            }
+            return Ok(());
+        }
+        match kind {
+            FileKind::Output => Err(OperatorError::Settings(
+                "GAP: Matrix: Output (.cou) file is FastInfoset with a save timestamp and has no byte-stable oracle"
+                    .into(),
+            )),
+            FileKind::Formatted | FileKind::Delimited => {
+                let delim = match kind {
+                    FileKind::Formatted => "\t",
+                    _ => ",",
+                };
+                let text = delimited_document(doc, delim);
+                write_bytes(&context.export_path(path), text.as_bytes())?;
+                Ok(())
+            }
+            FileKind::Html => {
+                if self.kind != MatrixKind::Specified
+                    || self.cell_mode != CellMode::Counts
+                    || self.crosstab != [CrossTabItem::Count]
+                {
+                    return Err(OperatorError::Settings(
+                        "GAP: Matrix: HTML file for this matrix type has no oracle".into(),
+                    ));
+                }
+                let table = &doc.tables[0];
+                let html = matrix_html(
+                    &self.row_field,
+                    &self.col_field,
+                    table,
+                    self.include_missing,
+                );
+                let out = context.export_path(path);
+                write_bytes(&out, html.as_bytes())?;
+                let css_path = out.with_file_name("clementine.css");
+                write_bytes(&css_path, MATRIX_CSS.as_bytes())?;
+                Ok(())
+            }
+        }
     }
 }
 
@@ -319,7 +431,9 @@ fn missing_gap(field: &Field) -> OperatorError {
     ))
 }
 
-/// The `numbers` matrix: sums of products of every pair of continuous numeric fields.
+/// The `numbers` matrix: sums of products of every pair of continuous numeric fields,
+/// pairwise over the records where both fields are present (`oracle/outputs_more/matrix_numerics_missing`:
+/// `n1` x `id` is `3700 - 386 = 3314`, the eight records where `n1` is missing excluded).
 fn numbers_table(input: &Table) -> Result<DocumentTable, OperatorError> {
     let fields: Vec<(usize, &Field)> = input
         .model()
@@ -331,40 +445,43 @@ fn numbers_table(input: &Table) -> Result<DocumentTable, OperatorError> {
                 && matches!(f.storage, Storage::Integer | Storage::Real)
         })
         .collect();
-    let mut columns: Vec<Vec<f64>> = Vec::with_capacity(fields.len());
-    for (index, field) in &fields {
-        let mut column = Vec::with_capacity(input.row_count());
-        for row in input.rows() {
-            match row.get(*index).and_then(Value::as_f64) {
-                Some(x) if !field.is_missing(&row[*index]) => column.push(x),
-                _ => return Err(missing_gap(field)),
-            }
-        }
-        columns.push(column);
-    }
     let names: Vec<String> = fields.iter().map(|(_, f)| f.name.clone()).collect();
     let mut header = vec![String::new()];
     header.extend(names.iter().cloned());
-    let rows = (0..fields.len())
-        .map(|i| {
-            let mut line = vec![names[i].clone()];
-            for j in 0..fields.len() {
-                if i == j {
-                    line.push(String::new());
+    let mut rows = Vec::with_capacity(fields.len());
+    for (i, (col_i, field_i)) in fields.iter().enumerate() {
+        let mut line = vec![names[i].clone()];
+        for (j, (col_j, field_j)) in fields.iter().enumerate() {
+            if i == j {
+                line.push(String::new());
+                continue;
+            }
+            let mut sum = 0.0f64;
+            for row in input.rows() {
+                let (Some(vi), Some(vj)) = (row.get(*col_i), row.get(*col_j)) else {
+                    continue;
+                };
+                if field_i.is_missing(vi) || field_j.is_missing(vj) {
                     continue;
                 }
-                let sum: f64 = columns[i].iter().zip(&columns[j]).map(|(a, b)| a * b).sum();
-                let integers = fields[i].1.storage == Storage::Integer
-                    && fields[j].1.storage == Storage::Integer;
-                line.push(if integers {
-                    format!("{}", sum.round() as i64)
-                } else {
-                    format_real(sum, MATRIX_DECIMALS)
-                });
+                let (Some(x), Some(y)) = (vi.as_f64(), vj.as_f64()) else {
+                    continue;
+                };
+                if !x.is_finite() || !y.is_finite() {
+                    continue;
+                }
+                sum += x * y;
             }
-            line
-        })
-        .collect();
+            let integers =
+                field_i.storage == Storage::Integer && field_j.storage == Storage::Integer;
+            line.push(if integers {
+                format!("{}", sum.round() as i64)
+            } else {
+                format_real(sum, MATRIX_DECIMALS)
+            });
+        }
+        rows.push(line);
+    }
     Ok(DocumentTable {
         title: None,
         header,
@@ -838,4 +955,153 @@ fn format_function_cell(values: &[f64], func: OverlayFunction) -> String {
         OverlayFunction::Min => values.iter().copied().fold(f64::INFINITY, f64::min),
     };
     format_real(val, MATRIX_DECIMALS)
+}
+
+fn delimited_document(doc: &Document, delim: &str) -> String {
+    let mut out = String::new();
+    for (ti, table) in doc.tables.iter().enumerate() {
+        if ti > 0 {
+            out.push_str("\r\n");
+        }
+        out.push_str(&table.header.join(delim));
+        out.push_str("\r\n");
+        for row in &table.rows {
+            out.push_str(&row.join(delim));
+            out.push_str("\r\n");
+        }
+    }
+    out
+}
+
+fn write_bytes(path: &std::path::Path, bytes: &[u8]) -> Result<(), OperatorError> {
+    if let Some(parent) = path.parent()
+        && !parent.as_os_str().is_empty()
+    {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| OperatorError::Io(format!("{}: {e}", parent.display())))?;
+    }
+    std::fs::write(path, bytes).map_err(|e| OperatorError::Io(format!("{}: {e}", path.display())))
+}
+
+const MATRIX_CSS: &str = "<STYLE>\r\n\r\n   .bodyStyle  {\r\n\t\t   font-family: Verdana, arial, geneva, helvetica, sans-serif;\r\n\t\t   font-style : normal;\r\n\t\t   font-size: 100%;\r\n\t\t   background-color: #ffffff;\r\n\t\t   color : #000000;\r\n   }\r\n\t\t   \r\n\r\n   .rowHeaderStyle  {\r\n\t\t   font-family: Verdana, arial, geneva, helvetica, sans-serif;\r\n\t\t   font-style : normal;\r\n\t\t   font-size: 100%;\r\n\t\t   background-color: #808080;\r\n\t\t   color : #ffffff;\r\n   }\r\n\t\t   \r\n\r\n   .colHeaderStyle  {\r\n\t\t   font-family: Verdana, arial, geneva, helvetica, sans-serif;\r\n\t\t   font-style : normal;\r\n\t\t   font-size: 100%;\r\n\t\t   background-color: #808080;\r\n\t\t   color : #ffffff;\r\n   }\r\n\t\t   \r\n\r\n   .blkTextWhiteBk  {\r\n\t\t   font-family: Verdana, arial, geneva, helvetica, sans-serif;\r\n\t\t   font-weight : bold;\r\n\t\t   font-style : normal;\r\n\t\t   font-size: 100%;\r\n\t\t   background-color: #ffffff;\r\n\t\t   color : #000000;\r\n   }\r\n\t\t   \r\n\r\n   .top  {\r\n\t\t   font-family: Verdana, arial, geneva, helvetica, sans-serif;\r\n\t\t   font-weight : bold;\r\n\t\t   font-style : normal;\r\n\t\t   font-size: 100%;\r\n\t\t   background-color: #ffffff;\r\n\t\t   color : #ff0000;\r\n   }\r\n\t\t   \r\n\r\n   .bottom  {\r\n\t\t   font-family: Verdana, arial, geneva, helvetica, sans-serif;\r\n\t\t   font-weight : bold;\r\n\t\t   font-style : normal;\r\n\t\t   font-size: 100%;\r\n\t\t   background-color: #ffffff;\r\n\t\t   color : #00ff00;\r\n   }\r\n\t\t   \r\n\r\n   .selected  {\r\n\t\t   font-family: Verdana, arial, geneva, helvetica, sans-serif;\r\n\t\t   font-weight : bold;\r\n\t\t   font-style : normal;\r\n\t\t   font-size: 100%;\r\n\t\t   background-color: #ffffff;\r\n\t\t   color : #ff0000;\r\n   }\r\n\t\t   \r\n\r\n   .unselected  {\r\n\t\t   font-family: Verdana, arial, geneva, helvetica, sans-serif;\r\n\t\t   font-weight : bold;\r\n\t\t   font-style : normal;\r\n\t\t   font-size: 100%;\r\n\t\t   background-color: #ffffff;\r\n\t\t   color : #000000;\r\n   }\r\n\t\t   \r\n</STYLE>\r\n";
+
+fn matrix_html(
+    row_field: &str,
+    col_field: &str,
+    table: &DocumentTable,
+    include_missing: bool,
+) -> String {
+    let mut lines = Vec::new();
+    lines.push("<HTML><HEAD>".to_string());
+    lines.push("<META HTTP-EQUIV=\"Cache-Control\" CONTENT=\"no-cache\">".to_string());
+    lines.push("<META HTTP-EQUIV=\"Pragma\" CONTENT=\"no-cache\">".to_string());
+    lines
+        .push("<META HTTP-EQUIV=\"Content-Type\" CONTENT=\"text/html;charset=UTF-8\">".to_string());
+    lines.push(
+        "<LINK REL=\"stylesheet\" HREF=\"clementine.css\" type=\"text/css\"></HEAD>".to_string(),
+    );
+    lines.push(format!(
+        "<CENTER><STRONG><FONT FACE=\"\" SIZE=5 COLOR=#000000>Matrix of {row_field} by {col_field}</FONT></STRONG></CENTER><BR><TABLE WIDTH=\"100%\" BORDER=\"2\" role=\"presentation\" cellspacing=\"0\" cellpadding=\"0\">"
+    ));
+    lines.push("<TR>".to_string());
+    for cell in &table.header {
+        lines.push(format!(
+            "<TD CLASS=\"colHeaderStyle\" ALIGN=\"CENTER\" NOWRAP><NOBR><FONT CLASS=\"colHeaderStyle\">{cell}</FONT></NOBR></TD>"
+        ));
+    }
+    lines.push("</TR>".to_string());
+    for row in &table.rows {
+        lines.push("<TR>".to_string());
+        for (ci, cell) in row.iter().enumerate() {
+            if ci == 0 {
+                lines.push(format!(
+                    "<TD CLASS=\"rowHeaderStyle\" ALIGN=\"CENTER\" NOWRAP><NOBR><FONT CLASS=\"rowHeaderStyle\">{cell}</FONT></NOBR></TD>"
+                ));
+            } else {
+                lines.push(format!(
+                    "<TD CLASS=\"unselected\" ALIGN=\"CENTER\" NOWRAP><NOBR><FONT CLASS=\"unselected\">{cell}</FONT></NOBR></TD>"
+                ));
+            }
+        }
+        lines.push("</TR>".to_string());
+    }
+    let (chi2, df, prob) = chi_square_footer(table);
+    let missing = if include_missing {
+        "including missing values"
+    } else {
+        "excluding missing values"
+    };
+    lines.push(format!(
+        "</TABLE><P>Cells contain: cross-tabulation of fields ({missing})"
+    ));
+    lines.push(format!(
+        "<BR>Chi-square = {chi2}, df = {df}, probability = {prob}</P>"
+    ));
+    lines.push("<P ALIGN=CENTER>&nbsp;&nbsp;&nbsp;</P></HTML>".to_string());
+    lines.join("\r\n")
+}
+
+fn chi_square_footer(table: &DocumentTable) -> (String, String, String) {
+    let ncols = table.header.len();
+    let nrows = table.rows.len();
+    let has_totals = ncols > 1
+        && nrows > 0
+        && table.header.last().is_some_and(|h| h == "Total")
+        && table
+            .rows
+            .last()
+            .is_some_and(|r| r.first().is_some_and(|c| c == "Total"));
+    if !has_totals || ncols < 3 || nrows < 2 {
+        return ("--".to_string(), "--".to_string(), "--".to_string());
+    }
+    let inner_cols = ncols - 2;
+    let inner_rows = nrows - 1;
+    let mut col_totals: Vec<f64> = vec![0.0; inner_cols];
+    let mut row_totals: Vec<f64> = vec![0.0; inner_rows];
+    let mut observed: Vec<Vec<f64>> = vec![vec![0.0; inner_cols]; inner_rows];
+    for (ri, row) in table.rows.iter().take(inner_rows).enumerate() {
+        for (ci, cell) in row.iter().skip(1).take(inner_cols).enumerate() {
+            let v: f64 = cell.parse().unwrap_or(0.0);
+            observed[ri][ci] = v;
+            row_totals[ri] += v;
+        }
+    }
+    if let Some(total_row) = table.rows.last() {
+        for (ci, cell) in total_row.iter().skip(1).take(inner_cols).enumerate() {
+            col_totals[ci] = cell.parse().unwrap_or(0.0);
+        }
+    }
+    let grand: f64 = row_totals.iter().sum();
+    if grand <= 0.0 {
+        return ("0".to_string(), "0".to_string(), "1".to_string());
+    }
+    let mut chi2 = 0.0f64;
+    for ri in 0..inner_rows {
+        for ci in 0..inner_cols {
+            let expected = row_totals[ri] * col_totals[ci] / grand;
+            if expected > 0.0 {
+                let diff = observed[ri][ci] - expected;
+                chi2 += diff * diff / expected;
+            }
+        }
+    }
+    let df = inner_rows.saturating_sub(1) * inner_cols.saturating_sub(1);
+    let prob = dms_algo::stats::chi_square_p(chi2, df as f64);
+    (trimmed(chi2), df.to_string(), trimmed(prob))
+}
+
+fn trimmed(value: f64) -> String {
+    if !value.is_finite() {
+        return "--".to_string();
+    }
+    let text = format_real(value, 3);
+    let Some((int_part, frac)) = text.split_once('.') else {
+        return text;
+    };
+    let frac = frac.trim_end_matches('0');
+    if frac.is_empty() {
+        int_part.to_string()
+    } else {
+        format!("{int_part}.{frac}")
+    }
 }

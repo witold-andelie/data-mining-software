@@ -13,8 +13,10 @@
 //!   `mediumProbabilityThreshold`, `weakCorrelationThreshold`, `mediumCorrelationThreshold`,
 //!   `showCorrelationLabels`, `weakCorrelationLabel`, `mediumCorrelationLabel`,
 //!   `strongCorrelationLabel`, `perfectCorrelationLabel`.
-//! - `outputMode` (`screen` only); `outputMode` values that write files (`file`, `printer`) are
-//!   rejected with [`OperatorError::Settings`].
+//! - `outputMode` (`screen`, `file`) with `outputFileType` (`text` `.txt`, `html` `.html`,
+//!   `output_object` `.cou`) and `outputFilePath` (`oracle/outputs_more/statistics_file_*`).
+//!   `Text` is the tables as tab-indented aligned text and `HTML` as `<dl>` pages (CRLF);
+//!   the `.cou` output object (FastInfoset with a save timestamp) stays a `GAP:`.
 
 use crate::context::ExecContext;
 use crate::error::OperatorError;
@@ -80,19 +82,50 @@ struct StatisticsOp {
     medium_label: String,
     strong_label: String,
     perfect_label: String,
+    file: Option<(String, FileKind)>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FileKind {
+    Text,
+    Html,
+    Output,
 }
 
 pub fn build(node: &StreamNode) -> Result<Box<dyn Operator>, OperatorError> {
     let s = node.settings.as_ref();
 
-    match settings::text(s, "outputMode").as_deref().map(str::trim) {
-        None | Some("") | Some("screen") => {}
+    let file = match settings::text(s, "outputMode").as_deref().map(str::trim) {
+        None | Some("") | Some("screen") => None,
+        Some("file") => {
+            let path = settings::text(s, "outputFilePath")
+                .filter(|p| !p.trim().is_empty())
+                .ok_or_else(|| {
+                    OperatorError::Settings(
+                        "Statistics outputFilePath is required in file mode".into(),
+                    )
+                })?;
+            let kind = match settings::text(s, "outputFileType")
+                .as_deref()
+                .map(str::trim)
+            {
+                None | Some("") | Some("text") => FileKind::Text,
+                Some("html") => FileKind::Html,
+                Some("output_object") => FileKind::Output,
+                Some(other) => {
+                    return Err(OperatorError::Settings(format!(
+                        "Statistics outputFileType {other:?} is unknown"
+                    )));
+                }
+            };
+            Some((path, kind))
+        }
         Some(other) => {
             return Err(OperatorError::Settings(format!(
                 "Statistics outputMode {other:?} is not supported"
             )));
         }
-    }
+    };
 
     let examine_fields = field_list(s, "examineFields");
     let correlation_fields = field_list(s, "correlationFields");
@@ -157,6 +190,7 @@ pub fn build(node: &StreamNode) -> Result<Box<dyn Operator>, OperatorError> {
         medium_label,
         strong_label,
         perfect_label,
+        file,
     }))
 }
 
@@ -237,10 +271,45 @@ impl Operator for StatisticsOp {
             });
         }
 
-        Ok(NodeOutput::Document(Arc::new(Document {
+        let doc = Document {
             title: String::new(),
             tables,
-        })))
+        };
+        self.write_file(&doc, context)?;
+        Ok(NodeOutput::Document(Arc::new(doc)))
+    }
+}
+
+impl StatisticsOp {
+    fn write_file(&self, doc: &Document, context: &ExecContext) -> Result<(), OperatorError> {
+        let Some((path, kind)) = &self.file else {
+            return Ok(());
+        };
+        if context.export_dir.is_none() {
+            if matches!(kind, FileKind::Output) {
+                return Err(OperatorError::Settings(
+                    "GAP: Statistics: Output (.cou) file is FastInfoset with a save timestamp and has no byte-stable oracle"
+                        .into(),
+                ));
+            }
+            return Ok(());
+        }
+        match kind {
+            FileKind::Output => Err(OperatorError::Settings(
+                "GAP: Statistics: Output (.cou) file is FastInfoset with a save timestamp and has no byte-stable oracle"
+                    .into(),
+            )),
+            FileKind::Text => {
+                let text = statistics_text(doc);
+                write_bytes(&context.export_path(path), text.as_bytes())?;
+                Ok(())
+            }
+            FileKind::Html => {
+                let html = statistics_html(doc);
+                write_bytes(&context.export_path(path), html.as_bytes())?;
+                Ok(())
+            }
+        }
     }
 }
 
@@ -333,7 +402,11 @@ fn compute_univariate(
         f64::NAN
     };
     let sdev = variance.sqrt();
-    let semean = if n >= 2 { sdev / n_f.sqrt() } else { f64::NAN };
+    let semean = if n >= 2 {
+        (squares / ((n_f - 1.0) * n_f)).sqrt()
+    } else {
+        f64::NAN
+    };
 
     let mut sorted = values.clone();
     sorted.sort_by(f64::total_cmp);
@@ -723,4 +796,180 @@ fn ln_gamma(z: f64) -> f64 {
     }
     let t = x + 7.5;
     0.5 * (2.0 * std::f64::consts::PI).ln() + (x + 0.5) * t.ln() - t + sum.ln()
+}
+
+fn write_bytes(path: &std::path::Path, bytes: &[u8]) -> Result<(), OperatorError> {
+    if let Some(parent) = path.parent()
+        && !parent.as_os_str().is_empty()
+    {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| OperatorError::Io(format!("{}: {e}", parent.display())))?;
+    }
+    std::fs::write(path, bytes)
+        .map_err(|e| OperatorError::Io(format!("{}: {e}", path.display())))?;
+    Ok(())
+}
+
+fn statistics_text(doc: &Document) -> String {
+    let mut out = String::new();
+    for table in &doc.tables {
+        let Some(title) = &table.title else {
+            continue;
+        };
+        if title == "Pearson Correlations" {
+            out.push_str("Pearson Correlations\r\n");
+            // Header: empty first cell plus field names, right-aligned to column widths.
+            let ncols = table.header.len();
+            let mut widths = vec![0usize; ncols];
+            widths[0] = table.rows.iter().map(|r| r[0].len()).max().unwrap_or(0);
+            for (ci, width) in widths.iter_mut().enumerate().skip(1) {
+                let mut w = table.header.get(ci).map(|h| h.len()).unwrap_or(0);
+                for row in &table.rows {
+                    if let Some(cell) = row.get(ci) {
+                        w = w.max(cell.len());
+                    }
+                }
+                *width = w;
+            }
+            out.push('\t');
+            for (ci, head) in table.header.iter().enumerate() {
+                if ci == 0 {
+                    out.push_str(&" ".repeat(widths[0] + 12));
+                } else {
+                    if ci > 1 {
+                        out.push_str("   ");
+                    }
+                    out.push_str(&" ".repeat(widths[ci].saturating_sub(head.len())));
+                    out.push_str(head);
+                }
+            }
+            out.push_str("\r\n");
+            for row in &table.rows {
+                out.push('\t');
+                out.push_str(&row[0]);
+                out.push_str(&" ".repeat(widths[0] - row[0].len() + 12));
+                for (ci, cell) in row.iter().enumerate().skip(1) {
+                    if ci > 1 {
+                        out.push_str("   ");
+                    }
+                    out.push_str(&" ".repeat(widths[ci].saturating_sub(cell.len())));
+                    out.push_str(cell);
+                }
+                out.push_str("\r\n");
+            }
+            out.push_str("\r\n");
+            continue;
+        }
+        // Univariate table: title, "Statistics" sub-title, then label/value rows.
+        out.push_str(title);
+        out.push_str("\r\n");
+        out.push_str("\tStatistics\r\n");
+        let label_width = table.rows.iter().map(|r| r[0].len()).max().unwrap_or(0);
+        let value_width = table.rows.iter().map(|r| r[1].len()).max().unwrap_or(0);
+        for row in &table.rows {
+            out.push_str("\t\t");
+            out.push_str(&row[0]);
+            out.push_str(&" ".repeat(label_width - row[0].len() + 12));
+            out.push_str(&" ".repeat(value_width.saturating_sub(row[1].len())));
+            out.push_str(&row[1]);
+            out.push_str("\r\n");
+        }
+        out.push_str("\r\n");
+        // Footnote for tied modes, as Modeler writes it.
+        if table.rows.iter().any(|r| r[1].ends_with('*')) {
+            out.push_str("\t\t*Multiple modes exist.  The smallest value is shown.\r\n");
+        }
+    }
+    out
+}
+
+fn statistics_html(doc: &Document) -> String {
+    let mut lines = vec![
+        "<HTML><HEAD>".to_string(),
+        "<META HTTP-EQUIV=\"Cache-Control\" CONTENT=\"no-cache\">".to_string(),
+        "<META HTTP-EQUIV=\"Pragma\" CONTENT=\"no-cache\">".to_string(),
+        "<META HTTP-EQUIV=\"Content-Type\" CONTENT=\"text/html;charset=UTF-8\">".to_string(),
+        "</HEAD>".to_string(),
+        "<dl>".to_string(),
+    ];
+    for table in &doc.tables {
+        let Some(title) = &table.title else {
+            continue;
+        };
+        if title == "Pearson Correlations" {
+            lines.push(format!("<dt>{title}</dt>"));
+            lines.push("<dd><dl>".to_string());
+            let ncols = table.header.len();
+            let mut widths = vec![0usize; ncols];
+            widths[0] = table.rows.iter().map(|r| r[0].len()).max().unwrap_or(0);
+            for (ci, width) in widths.iter_mut().enumerate().skip(1) {
+                let mut w = table.header.get(ci).map(|h| h.len()).unwrap_or(0);
+                for row in &table.rows {
+                    if let Some(cell) = row.get(ci) {
+                        w = w.max(cell.len());
+                    }
+                }
+                *width = w;
+            }
+            let mut header_line = String::new();
+            for (ci, head) in table.header.iter().enumerate() {
+                if ci == 0 {
+                    header_line.push_str(&" ".repeat(widths[0] + 12));
+                } else {
+                    if ci > 1 {
+                        header_line.push_str("   ");
+                    }
+                    header_line.push_str(&" ".repeat(widths[ci].saturating_sub(head.len())));
+                    header_line.push_str(head);
+                }
+            }
+            lines.push(format!("<pre>{header_line}"));
+            for row in &table.rows {
+                let mut line = String::new();
+                line.push_str(&row[0]);
+                line.push_str(&" ".repeat(widths[0] - row[0].len() + 12));
+                for (ci, cell) in row.iter().enumerate().skip(1) {
+                    if ci > 1 {
+                        line.push_str("   ");
+                    }
+                    line.push_str(&" ".repeat(widths[ci].saturating_sub(cell.len())));
+                    line.push_str(cell);
+                }
+                lines.push(line);
+            }
+            lines.push("</pre>".to_string());
+            lines.push("</dl>".to_string());
+            lines.push("</dd>".to_string());
+            continue;
+        }
+        lines.push(format!("<dt>{title}</dt>"));
+        lines.push("<dd><dl>".to_string());
+        lines.push("<dt>Statistics</dt>".to_string());
+        lines.push("<dd><dl>".to_string());
+        let label_width = table.rows.iter().map(|r| r[0].len()).max().unwrap_or(0);
+        let value_width = table.rows.iter().map(|r| r[1].len()).max().unwrap_or(0);
+        for (ri, row) in table.rows.iter().enumerate() {
+            let mut line = String::new();
+            line.push_str(&row[0]);
+            line.push_str(&" ".repeat(label_width - row[0].len() + 12));
+            line.push_str(&" ".repeat(value_width.saturating_sub(row[1].len())));
+            line.push_str(&row[1]);
+            if ri == 0 {
+                lines.push(format!("<pre>{line}"));
+            } else {
+                lines.push(line);
+            }
+        }
+        lines.push("</pre>".to_string());
+        if table.rows.iter().any(|r| r[1].ends_with('*')) {
+            lines.push("<dt>*Multiple modes exist.  The smallest value is shown.</dt>".to_string());
+        }
+        lines.push("</dl>".to_string());
+        lines.push("</dd>".to_string());
+        lines.push("</dl>".to_string());
+        lines.push("</dd>".to_string());
+    }
+    lines.push("</dl>".to_string());
+    lines.push("</HTML>".to_string());
+    lines.join("\r\n")
 }
