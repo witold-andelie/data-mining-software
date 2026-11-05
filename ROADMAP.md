@@ -8,8 +8,8 @@
 |---|---|---|
 | MVP 节点覆盖 | 85 / 85（其中 10 个按统计等价验收） | 实测（`cargo xtask parity`，2026-10-20） |
 | 以后再做 / 许可证受阻 / 不做 | 已做 3 / 25；0 / 5；0 / 34 | 实测（`cargo xtask parity`） |
-| 回归（全部带标准答案的流） | 1244 个流：1119 完全一致、90 统计等价、35 已知 GAP、0 回归 | 实测（`cargo xtask regress`，2026-10-29） |
-| 语料 | `xtask/corpus.tsv` 登记 1360 个文件，66 个 oracle 标签 | 实测 |
+| 回归（全部带标准答案的流） | 1268 个流：1145 完全一致、89 统计等价、34 已知 GAP、0 回归 | 实测（`cargo xtask regress`，2026-11-05） |
+| 语料 | `xtask/corpus.tsv` 登记 1384 个文件，67 个 oracle 标签 | 实测 |
 
 ## 阶段
 
@@ -26,6 +26,7 @@
 
 ## 进度日志
 
+- 2026-11-05：输出节点写文件模式（Matrix、Means、Analysis、Statistics、Data Audit 的 .tab/.csv/.txt/.html 与 Modeler 逐字节或 1e-12 一致）、Matrix/Means 缺失值、Evaluation 成本/收益/权重字段，`outputs_more` 27 例中 21 例一致（.cou 与 Data Audit 图片 HTML 保留 GAP）。ADP 数值型名义/flag 输入原样保留（`ADP_basic_demo` 一致）；TS `_calculatePI`/`_isOutputOthers` 不影响打分（`catalog_forecast` 一致）；C5.0 winnowing 以修正后的学习器重做：20 个 oracle 均有精确子集，但最佳规则 15/20 会造成回归，`c50_winnow2` 探针最佳候选 9/12，仍为 GAP。
 - 2026-10-29（续二）：记分卡（`docs/scorecard.md`）：1234 个带终端的流中 94.2% 全部跑通、96.5% 与 Modeler 行为一致（含同样报错）；每流中位数 0.010 s，对比 Modeler 批处理 7.2 s。由此补录 11 个 IBM 演示流的 oracle 并修复可变文件源 `multiBlankDelimiters`（无空白分隔符时）与 SAV `F w.0`/`DOLLAR w.0` 整数读入（四舍五入）；新探针 `outputs_more`（27 例，输出节点写文件模式、缺失值矩阵、Evaluation 成本字段）。
 - 2026-10-29（续）：Time Series 30 例中 28 例达到统计等价（传递函数分母按指南的稳态初值实现；`ts_tf_static`、`ts_sarlog_noconst` 两例经独立精确似然确认为 Modeler 优化器提前停止）。Apriori 新探针 `apriori_eval`（17 例）：四种评价度量公式、模型块评分设置（检查方式、五种排序准则、`$AC-` 写准则值、不忽略未匹配项时前件须等于购物篮）、相连模型块按默认评分、置信度平局按前件长度与项 id、事务数据忽略字段列表；`apriori_more` 19 例中 17 例、`apriori_eval` 全部一致，剩等支持度项目排序 2 例。
 - 2026-10-29：三个新探针：`adp_rest`（24 例）、`graphboard_more`（12 例）、`ts_more`（30 例）。Auto Data Prep 剩余步骤全部实现（字符串序数按名义重编码、几乎恒定筛除、显式字段、频率权重、目标异常值设缺失与组合步骤、含缺失的监督合并/分箱、分类目标与日期特征选择、日期 Min-Max、时长与时间元素并存、构造特征位置），ADP 71 个流全部一致；Modeler 本身拒绝分析权重。Graphboard 直方图分箱改为约 (32n)^(1/3) 箱并在增幅 <10% 时取整跨度、超过 2000 条仍分箱，箱线图四分位改为 R-3，颜色/分面/动画/坐标地图可用，12 例中 11 例一致（2500 条散点为随机抽样）。Time Series 新探针覆盖 Brown、阻尼、季节、Winters、变换、季节 ARIMA、传递函数和 Expert，实现进行中。
