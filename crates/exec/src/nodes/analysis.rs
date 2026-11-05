@@ -6,7 +6,12 @@
 //! that set fails [`OperatorError::Settings`].
 //!
 //! Counts, percents, confidence figures and AUC/Gini use fixed precisions. Stream
-//! `decimal_places` does not change them.
+//! `decimal_places` does not change them. In `file` mode (`outputMode` `file` with
+//! `outputFileType` `text` `.txt`, `html` `.html` or `output_object` `.cou` and `outputFilePath`,
+//! `oracle/outputs_more/analysis_file_*`) the accuracy tables are written as Modeler's
+//! tab-indented text or `<dl>` HTML (CRLF, no trailing newline for HTML); coincidence,
+//! confidence, partition, breakdown and evaluation tables in file mode stay a `GAP:`
+//! (no oracle). The `.cou` output object (FastInfoset with a save timestamp) stays a `GAP:`.
 
 use crate::context::ExecContext;
 use crate::error::OperatorError;
@@ -83,6 +88,14 @@ struct AnalysisOp {
     improve_accuracy: f64,
     binary_evaluation: bool,
     breakdown_by: Vec<String>,
+    file: Option<(String, FileKind)>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FileKind {
+    Text,
+    Html,
+    Output,
 }
 
 #[derive(Debug, Clone)]
@@ -104,14 +117,37 @@ pub fn build(node: &StreamNode) -> Result<Box<dyn Operator>, OperatorError> {
     let s = node.settings.as_ref();
     reject_unknown(s)?;
 
-    match settings::text(s, "outputMode").as_deref().map(str::trim) {
-        None | Some("") | Some("screen") => {}
+    let file = match settings::text(s, "outputMode").as_deref().map(str::trim) {
+        None | Some("") | Some("screen") => None,
+        Some("file") => {
+            let path = settings::text(s, "outputFilePath")
+                .filter(|p| !p.trim().is_empty())
+                .ok_or_else(|| {
+                    OperatorError::Settings(
+                        "Analysis outputFilePath is required in file mode".into(),
+                    )
+                })?;
+            let kind = match settings::text(s, "outputFileType")
+                .as_deref()
+                .map(str::trim)
+            {
+                None | Some("") | Some("text") => FileKind::Text,
+                Some("html") => FileKind::Html,
+                Some("output_object") => FileKind::Output,
+                Some(other) => {
+                    return Err(OperatorError::Settings(format!(
+                        "Analysis outputFileType {other:?} is unknown"
+                    )));
+                }
+            };
+            Some((path, kind))
+        }
         Some(other) => {
             return Err(OperatorError::Settings(format!(
                 "Analysis outputMode {other:?} is not supported"
             )));
         }
-    }
+    };
     match settings::text(s, "outputFileType")
         .as_deref()
         .map(str::trim)
@@ -177,6 +213,7 @@ pub fn build(node: &StreamNode) -> Result<Box<dyn Operator>, OperatorError> {
         improve_accuracy,
         binary_evaluation: settings::flag(s, "analysisBinaryEvaluation")?.unwrap_or(false),
         breakdown_by: field_list(s, "analysisBreakdownBy"),
+        file,
     }))
 }
 
@@ -340,14 +377,64 @@ impl Operator for AnalysisOp {
             }
         }
 
-        Ok(NodeOutput::Document(Arc::new(Document {
+        let doc = Document {
             title: String::new(),
             tables,
-        })))
+        };
+        self.write_file(&doc, context)?;
+        Ok(NodeOutput::Document(Arc::new(doc)))
     }
 }
 
 impl AnalysisOp {
+    fn write_file(&self, doc: &Document, context: &ExecContext) -> Result<(), OperatorError> {
+        let Some((path, kind)) = &self.file else {
+            return Ok(());
+        };
+        if context.export_dir.is_none() {
+            if matches!(kind, FileKind::Output) {
+                return Err(OperatorError::Settings(
+                    "GAP: Analysis: Output (.cou) file is FastInfoset with a save timestamp and has no byte-stable oracle"
+                        .into(),
+                ));
+            }
+            if !analysis_file_supported(doc) {
+                return Err(OperatorError::Settings(
+                    "GAP: Analysis: file output for coincidence, confidence, partition, breakdown or evaluation tables has no oracle"
+                        .into(),
+                ));
+            }
+            return Ok(());
+        }
+        match kind {
+            FileKind::Output => Err(OperatorError::Settings(
+                "GAP: Analysis: Output (.cou) file is FastInfoset with a save timestamp and has no byte-stable oracle"
+                    .into(),
+            )),
+            FileKind::Text => {
+                if !analysis_file_supported(doc) {
+                    return Err(OperatorError::Settings(
+                        "GAP: Analysis: file output for coincidence, confidence, partition, breakdown or evaluation tables has no oracle"
+                            .into(),
+                    ));
+                }
+                let text = analysis_text(doc);
+                write_bytes(&context.export_path(path), text.as_bytes())?;
+                Ok(())
+            }
+            FileKind::Html => {
+                if !analysis_file_supported(doc) {
+                    return Err(OperatorError::Settings(
+                        "GAP: Analysis: file output for coincidence, confidence, partition, breakdown or evaluation tables has no oracle"
+                            .into(),
+                    ));
+                }
+                let html = analysis_html(doc);
+                write_bytes(&context.export_path(path), html.as_bytes())?;
+                Ok(())
+            }
+        }
+    }
     fn partition_column(&self, input: &Table) -> Option<usize> {
         if !self.split_by_partition {
             return None;
@@ -1497,4 +1584,162 @@ fn format_fold(value: f64) -> String {
     } else {
         format!("{text}.0")
     }
+}
+
+fn write_bytes(path: &std::path::Path, bytes: &[u8]) -> Result<(), OperatorError> {
+    if let Some(parent) = path.parent()
+        && !parent.as_os_str().is_empty()
+    {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| OperatorError::Io(format!("{}: {e}", parent.display())))?;
+    }
+    std::fs::write(path, bytes)
+        .map_err(|e| OperatorError::Io(format!("{}: {e}", path.display())))?;
+    Ok(())
+}
+
+/// Only accuracy-only tables with no partition header are written in file mode.
+fn analysis_file_supported(doc: &Document) -> bool {
+    if doc.tables.is_empty() {
+        return false;
+    }
+    for table in &doc.tables {
+        let Some(title) = &table.title else {
+            return false;
+        };
+        if title.contains("Coincidence")
+            || title.contains("Confidence")
+            || title.contains("Evaluation Metrics")
+            || title.contains("Agreement")
+            || title.contains("Overall Results")
+            || title.contains("Individual Models")
+            || title.contains("splitting by")
+        {
+            return false;
+        }
+        if !table.header.is_empty() {
+            return false;
+        }
+        if table.rows.len() != 3 || table.rows.iter().any(|r| r.len() != 3) {
+            return false;
+        }
+    }
+    true
+}
+
+fn analysis_text(doc: &Document) -> String {
+    let mut out = String::new();
+    for table in &doc.tables {
+        let Some(title) = &table.title else {
+            continue;
+        };
+        let levels: Vec<&str> = title.split(" | ").collect();
+        for (depth, level) in levels.iter().enumerate() {
+            out.push_str(&"\t".repeat(depth));
+            out.push_str(level);
+            out.push_str("\r\n");
+        }
+        let depth = levels.len();
+        let indent = "\t".repeat(depth);
+        // Column widths from the data: label padded to the longest label plus a fixed gap,
+        // counts and percents right-aligned to their longest values.
+        let label_width = table.rows.iter().map(|r| r[0].len()).max().unwrap_or(0);
+        let count_width = table.rows.iter().map(|r| r[1].len()).max().unwrap_or(0);
+        let pct_width = table.rows.iter().map(|r| r[2].len()).max().unwrap_or(0);
+        for row in &table.rows {
+            let label_pad = label_width - row[0].len() + 12;
+            let count_pad = count_width.saturating_sub(row[1].len());
+            let pct_pad = pct_width.saturating_sub(row[2].len());
+            out.push_str(&indent);
+            out.push_str(&row[0]);
+            out.push_str(&" ".repeat(label_pad));
+            out.push_str(&" ".repeat(count_pad));
+            out.push_str(&row[1]);
+            out.push_str("   ");
+            out.push_str(&" ".repeat(pct_pad));
+            out.push_str(&row[2]);
+            out.push_str("\r\n");
+        }
+        out.push_str("\r\n");
+    }
+    out
+}
+
+fn analysis_html(doc: &Document) -> String {
+    let mut lines = vec![
+        "<HTML><HEAD>".to_string(),
+        "<META HTTP-EQUIV=\"Cache-Control\" CONTENT=\"no-cache\">".to_string(),
+        "<META HTTP-EQUIV=\"Pragma\" CONTENT=\"no-cache\">".to_string(),
+        "<META HTTP-EQUIV=\"Content-Type\" CONTENT=\"text/html;charset=UTF-8\">".to_string(),
+        "</HEAD>".to_string(),
+        "<dl>".to_string(),
+    ];
+    // Group tables by their first title level ("Results for output field ...").
+    let mut i = 0;
+    while i < doc.tables.len() {
+        let Some(title) = doc.tables[i].title.clone() else {
+            i += 1;
+            continue;
+        };
+        let levels: Vec<String> = title.split(" | ").map(|s| s.to_string()).collect();
+        if levels.is_empty() {
+            i += 1;
+            continue;
+        }
+        lines.push(format!("<dt>{}</dt>", levels[0]));
+        lines.push("<dd><dl>".to_string());
+        // All tables in the oracle file case share the same first level; emit each second level.
+        let first = levels[0].clone();
+        while i < doc.tables.len() {
+            let Some(t) = doc.tables[i].title.clone() else {
+                i += 1;
+                continue;
+            };
+            let lv: Vec<String> = t.split(" | ").map(|s| s.to_string()).collect();
+            if lv.is_empty() || lv[0] != first {
+                break;
+            }
+            if lv.len() >= 2 {
+                lines.push(format!("<dt>{}</dt>", lv[1]));
+                lines.push("<dd><dl>".to_string());
+            }
+            let table = &doc.tables[i];
+            // Same alignment as the text file but without leading tabs; the first row shares
+            // its line with `<pre>`.
+            let label_width = table.rows.iter().map(|r| r[0].len()).max().unwrap_or(0);
+            let count_width = table.rows.iter().map(|r| r[1].len()).max().unwrap_or(0);
+            let pct_width = table.rows.iter().map(|r| r[2].len()).max().unwrap_or(0);
+            for (ri, row) in table.rows.iter().enumerate() {
+                let label_pad = label_width - row[0].len() + 12;
+                let count_pad = count_width.saturating_sub(row[1].len());
+                let pct_pad = pct_width.saturating_sub(row[2].len());
+                let mut line = String::new();
+                line.push_str(&row[0]);
+                line.push_str(&" ".repeat(label_pad));
+                line.push_str(&" ".repeat(count_pad));
+                line.push_str(&row[1]);
+                line.push_str("   ");
+                line.push_str(&" ".repeat(pct_pad));
+                line.push_str(&row[2]);
+                if ri == 0 {
+                    lines.push(format!("<pre>{line}"));
+                } else {
+                    lines.push(line);
+                }
+            }
+            // The oracle <pre> block ends with spaces on the Total line then a line of spaces?
+            // Actually the Total line is padded as above; no extra blank inside <pre>.
+            lines.push("</pre>".to_string());
+            if lv.len() >= 2 {
+                lines.push("</dl>".to_string());
+                lines.push("</dd>".to_string());
+            }
+            i += 1;
+        }
+        lines.push("</dl>".to_string());
+        lines.push("</dd>".to_string());
+    }
+    lines.push("</dl>".to_string());
+    lines.push("</HTML>".to_string());
+    lines.join("\r\n")
 }

@@ -12,8 +12,13 @@
 //! `dataAuditUserSpecifiedOverlayField`, `dataAuditBasicStatistics` (must be true),
 //! `dataAuditAdvancedStatistics`, `dataAuditMedianAndMode`, `qualityCalculateValues`
 //! (`records`, `breakdown`), `qualityInvalidValues` (all four kinds), `dataAuditOutlierDetectionMethod`
-//! (`std`), `dataAuditStdOutlier`, `dataAuditStdExtreme`. Graphs and sampling settings only affect
-//! the on-screen graphs and are ignored; other choices fail with [`OperatorError::Settings`].
+//! (`std`), `dataAuditStdOutlier`, `dataAuditStdExtreme`, `outputMode` (`screen`, `file`) with
+//! `outputFileType` (`formatted` `.tab`, `delimited` `.csv`, `html`, `output_object` `.cou`) and
+//! `outputFilePath` (`oracle/outputs_more/dataaudit_file_*`). `Formatted` and `Delimited` are
+//! the two screen tables with tab or comma separators and CRLF; `HTML` draws the same tables
+//! with graph images and stays a `GAP:` (the `.jpg` files cannot be reproduced), as does the
+//! `.cou` output object (FastInfoset with a save timestamp). Graphs and sampling settings only
+//! affect the on-screen graphs and are ignored; other choices fail with [`OperatorError::Settings`].
 
 use crate::context::ExecContext;
 use crate::error::OperatorError;
@@ -132,17 +137,50 @@ struct DataAuditOp {
     quality_cols: Vec<QualityBreakCol>,
     std_outlier: f64,
     std_extreme: f64,
+    file: Option<(String, FileKind)>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FileKind {
+    Formatted,
+    Delimited,
+    Html,
+    Output,
 }
 
 pub fn build(node: &StreamNode) -> Result<Box<dyn Operator>, OperatorError> {
     let s = node.settings.as_ref();
     let choice = |name: &str| settings::text(s, name).map(|t| t.trim().to_string());
 
-    if let Some(mode) = choice("outputMode").filter(|m| !m.is_empty() && m != "screen") {
-        return Err(OperatorError::Settings(format!(
-            "Data Audit outputMode {mode:?} is not supported"
-        )));
-    }
+    let file = match choice("outputMode").as_deref().map(str::trim) {
+        None | Some("") | Some("screen") => None,
+        Some("file") => {
+            let path = choice("outputFilePath")
+                .filter(|p| !p.trim().is_empty())
+                .ok_or_else(|| {
+                    OperatorError::Settings(
+                        "Data Audit outputFilePath is required in file mode".into(),
+                    )
+                })?;
+            let kind = match choice("outputFileType").as_deref().map(str::trim) {
+                None | Some("") | Some("formatted") => FileKind::Formatted,
+                Some("delimited") => FileKind::Delimited,
+                Some("html") => FileKind::Html,
+                Some("output_object") => FileKind::Output,
+                Some(other) => {
+                    return Err(OperatorError::Settings(format!(
+                        "Data Audit outputFileType {other:?} is unknown"
+                    )));
+                }
+            };
+            Some((path, kind))
+        }
+        Some(other) => {
+            return Err(OperatorError::Settings(format!(
+                "Data Audit outputMode {other:?} is not supported"
+            )));
+        }
+    };
 
     let field_mode = if settings::flag(s, "dataAuditUseCustomFields")?.unwrap_or(false) {
         FieldMode::Selected(
@@ -249,6 +287,7 @@ pub fn build(node: &StreamNode) -> Result<Box<dyn Operator>, OperatorError> {
         quality_cols,
         std_outlier,
         std_extreme,
+        file,
     }))
 }
 
@@ -374,14 +413,45 @@ impl Operator for DataAuditOp {
             });
         }
 
-        Ok(NodeOutput::Document(Arc::new(Document {
+        let doc = Document {
             title: String::new(),
             tables,
-        })))
+        };
+        self.write_file(&doc, context)?;
+        Ok(NodeOutput::Document(Arc::new(doc)))
     }
 }
 
 impl DataAuditOp {
+    fn write_file(&self, doc: &Document, context: &ExecContext) -> Result<(), OperatorError> {
+        let Some((path, kind)) = &self.file else {
+            return Ok(());
+        };
+        if context.export_dir.is_none() {
+            if matches!(kind, FileKind::Output | FileKind::Html) {
+                return Err(OperatorError::Settings(
+                    "GAP: Data Audit: HTML (graph images) and Output (.cou, FastInfoset with a save timestamp) have no byte-stable oracle"
+                        .into(),
+                ));
+            }
+            return Ok(());
+        }
+        match kind {
+            FileKind::Output | FileKind::Html => Err(OperatorError::Settings(
+                "GAP: Data Audit: HTML (graph images) and Output (.cou, FastInfoset with a save timestamp) have no byte-stable oracle"
+                    .into(),
+            )),
+            FileKind::Formatted | FileKind::Delimited => {
+                let delim = match kind {
+                    FileKind::Formatted => "\t",
+                    _ => ",",
+                };
+                let text = delimited_document(doc, delim);
+                write_bytes(&context.export_path(path), text.as_bytes())?;
+                Ok(())
+            }
+        }
+    }
     fn resolve_audited_fields(&self, input: &Table) -> Result<Vec<usize>, OperatorError> {
         let model = input.model();
         match &self.field_mode {
@@ -1161,6 +1231,34 @@ fn count_distinct_values(values: &[Value]) -> usize {
     sorted.sort_by(|a, b| a.total_cmp(b));
     sorted.dedup_by(|a, b| a.total_cmp(b) == Ordering::Equal);
     sorted.len()
+}
+
+fn delimited_document(doc: &Document, delim: &str) -> String {
+    let mut out = String::new();
+    for (ti, table) in doc.tables.iter().enumerate() {
+        if ti > 0 {
+            out.push_str("\r\n");
+        }
+        out.push_str(&table.header.join(delim));
+        out.push_str("\r\n");
+        for row in &table.rows {
+            out.push_str(&row.join(delim));
+            out.push_str("\r\n");
+        }
+    }
+    out
+}
+
+fn write_bytes(path: &std::path::Path, bytes: &[u8]) -> Result<(), OperatorError> {
+    if let Some(parent) = path.parent()
+        && !parent.as_os_str().is_empty()
+    {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| OperatorError::Io(format!("{}: {e}", parent.display())))?;
+    }
+    std::fs::write(path, bytes)
+        .map_err(|e| OperatorError::Io(format!("{}: {e}", path.display())))?;
+    Ok(())
 }
 
 #[allow(dead_code)]

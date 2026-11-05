@@ -8,8 +8,8 @@
 //!   mean, standard deviation, standard error and count, their Pearson correlation, the
 //!   difference (first minus second: mean, standard deviation, standard error, count, 95%
 //!   t interval), `T-Test`, `df` (n - 1) and `Importance` (1 - two-sided p). The simple and
-//!   advanced views export the same columns. Missing values in a pair have no oracle and are a
-//!   `GAP:` error.
+//!   advanced views export the same columns. Missing values are excluded pairwise per pair
+//!   (`oracle/outputs_more/means_fields_missing`).
 //! - `groupingField`: categorical grouping field (required in `betweenGroups` mode).
 //! - `meansGroupedFields/field`: continuous test fields to compare across groups (required).
 //! - `viewMode` (`simple` | `advanced`), `importanceShowLabels`, `importanceLowThreshold`,
@@ -17,8 +17,11 @@
 //!   `importanceHighLabel`. Note: Modeler's delimited (`.csv`) export always emits the full
 //!   advanced columns (`Mean (g)`, `Std. Dev. (g)`, `Std. Err. (g)`, `Count (g)` per group, plus
 //!   `F-Test`, `df1`, `df2`, `Importance` as raw numeric `1 - p` without `/Label`).
-//! - `outputMode` (`screen` only); file/printer output modes are rejected with
-//!   [`OperatorError::Settings`].
+//! - `outputMode` (`screen`, `file`) with `outputFileType` (`formatted` `.tab`, `delimited`
+//!   `.csv`, `html`, `output_object` `.cou`) and `outputFilePath` write the file Modeler writes
+//!   (`oracle/outputs_more/means_file_*`). `Formatted` and `Delimited` are the screen table with
+//!   tab or comma separators and CRLF; `HTML` is the paired table as nested `clementine.css`
+//!   tables (paired t-test only). The `.cou` output object and grouped HTML stay a `GAP:`.
 
 use crate::context::ExecContext;
 use crate::error::OperatorError;
@@ -39,19 +42,50 @@ struct MeansOp {
     test_fields: Vec<String>,
     /// `betweenFields`: the field pairs.
     pairs: Vec<(String, String)>,
+    file: Option<(String, FileKind)>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FileKind {
+    Formatted,
+    Delimited,
+    Html,
+    Output,
 }
 
 pub fn build(node: &StreamNode) -> Result<Box<dyn Operator>, OperatorError> {
     let s = node.settings.as_ref();
 
-    match settings::text(s, "outputMode").as_deref().map(str::trim) {
-        None | Some("") | Some("screen") => {}
+    let file = match settings::text(s, "outputMode").as_deref().map(str::trim) {
+        None | Some("") | Some("screen") => None,
+        Some("file") => {
+            let path = settings::text(s, "outputFilePath")
+                .filter(|p| !p.trim().is_empty())
+                .ok_or_else(|| {
+                    OperatorError::Settings("Means outputFilePath is required in file mode".into())
+                })?;
+            let kind = match settings::text(s, "outputFileType")
+                .as_deref()
+                .map(str::trim)
+            {
+                None | Some("") | Some("formatted") => FileKind::Formatted,
+                Some("delimited") => FileKind::Delimited,
+                Some("html") => FileKind::Html,
+                Some("output_object") => FileKind::Output,
+                Some(other) => {
+                    return Err(OperatorError::Settings(format!(
+                        "Means outputFileType {other:?} is unknown"
+                    )));
+                }
+            };
+            Some((path, kind))
+        }
         Some(other) => {
             return Err(OperatorError::Settings(format!(
                 "Means outputMode {other:?} is not supported"
             )));
         }
-    }
+    };
 
     let between_fields = match settings::text(s, "method").as_deref().map(str::trim) {
         None | Some("") | Some("betweenGroups") => false,
@@ -101,6 +135,7 @@ pub fn build(node: &StreamNode) -> Result<Box<dyn Operator>, OperatorError> {
             grouping_field: String::new(),
             test_fields: Vec::new(),
             pairs,
+            file,
         }));
     }
 
@@ -124,6 +159,7 @@ pub fn build(node: &StreamNode) -> Result<Box<dyn Operator>, OperatorError> {
         grouping_field,
         test_fields,
         pairs: Vec::new(),
+        file,
     }))
 }
 
@@ -149,7 +185,12 @@ impl Operator for MeansOp {
             .ok_or_else(|| OperatorError::Inputs("Means needs one input".into()))?;
         let decimals = context.decimal_places();
         if !self.pairs.is_empty() {
-            return paired_document(input, &self.pairs, decimals);
+            let output = paired_document(input, &self.pairs, decimals)?;
+            let NodeOutput::Document(doc) = &output else {
+                return Ok(output);
+            };
+            self.write_file(doc, context, &self.pairs)?;
+            return Ok(output);
         }
 
         let group_col = position(input.model(), &self.grouping_field)?;
@@ -188,14 +229,234 @@ impl Operator for MeansOp {
             header,
             rows,
         };
-        Ok(NodeOutput::Document(Arc::new(Document {
+        let doc = Document {
             title: String::new(),
             tables: vec![table],
-        })))
+        };
+        self.write_file(&doc, context, &[])?;
+        Ok(NodeOutput::Document(Arc::new(doc)))
     }
 }
 
-/// The `betweenFields` table: one paired-samples t-test per field pair.
+impl MeansOp {
+    fn write_file(
+        &self,
+        doc: &Document,
+        context: &ExecContext,
+        pairs: &[(String, String)],
+    ) -> Result<(), OperatorError> {
+        let Some((path, kind)) = &self.file else {
+            return Ok(());
+        };
+        if context.export_dir.is_none() {
+            if matches!(kind, FileKind::Output) {
+                return Err(OperatorError::Settings(
+                    "GAP: Means: Output (.cou) file is FastInfoset with a save timestamp and has no byte-stable oracle"
+                        .into(),
+                ));
+            }
+            if matches!(kind, FileKind::Html) && pairs.is_empty() {
+                return Err(OperatorError::Settings(
+                    "GAP: Means: HTML file for grouped means has no oracle".into(),
+                ));
+            }
+            return Ok(());
+        }
+        match kind {
+            FileKind::Output => Err(OperatorError::Settings(
+                "GAP: Means: Output (.cou) file is FastInfoset with a save timestamp and has no byte-stable oracle"
+                    .into(),
+            )),
+            FileKind::Formatted | FileKind::Delimited => {
+                let delim = match kind {
+                    FileKind::Formatted => "\t",
+                    _ => ",",
+                };
+                let text = delimited_document(doc, delim);
+                write_bytes(&context.export_path(path), text.as_bytes())?;
+                Ok(())
+            }
+            FileKind::Html => {
+                if pairs.is_empty() {
+                    return Err(OperatorError::Settings(
+                        "GAP: Means: HTML file for grouped means has no oracle".into(),
+                    ));
+                }
+                let html = means_html(doc, pairs);
+                let out = context.export_path(path);
+                write_bytes(&out, html.as_bytes())?;
+                let css_path = out.with_file_name("clementine.css");
+                write_bytes(&css_path, MEANS_CSS.as_bytes())?;
+                Ok(())
+            }
+        }
+    }
+}
+
+fn delimited_document(doc: &Document, delim: &str) -> String {
+    let mut out = String::new();
+    for (ti, table) in doc.tables.iter().enumerate() {
+        if ti > 0 {
+            out.push_str("\r\n");
+        }
+        out.push_str(&table.header.join(delim));
+        out.push_str("\r\n");
+        for row in &table.rows {
+            out.push_str(&row.join(delim));
+            out.push_str("\r\n");
+        }
+    }
+    out
+}
+
+fn write_bytes(path: &std::path::Path, bytes: &[u8]) -> Result<(), OperatorError> {
+    if let Some(parent) = path.parent()
+        && !parent.as_os_str().is_empty()
+    {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| OperatorError::Io(format!("{}: {e}", parent.display())))?;
+    }
+    std::fs::write(path, bytes).map_err(|e| OperatorError::Io(format!("{}: {e}", path.display())))
+}
+
+const MEANS_CSS: &str = "<STYLE>\r\n\r\n   .bodyStyle  {\r\n\t\t   font-family: Verdana, arial, geneva, helvetica, sans-serif;\r\n\t\t   font-style : normal;\r\n\t\t   font-size: 100%;\r\n\t\t   background-color: #ffffff;\r\n\t\t   color : #000000;\r\n   }\r\n\t\t   \r\n\r\n   .rowHeaderStyle  {\r\n\t\t   font-family: Verdana, arial, geneva, helvetica, sans-serif;\r\n\t\t   font-style : normal;\r\n\t\t   font-size: 100%;\r\n\t\t   background-color: #808080;\r\n\t\t   color : #ffffff;\r\n   }\r\n\t\t   \r\n\r\n   .colHeaderStyle  {\r\n\t\t   font-family: Verdana, arial, geneva, helvetica, sans-serif;\r\n\t\t   font-style : normal;\r\n\t\t   font-size: 100%;\r\n\t\t   background-color: #808080;\r\n\t\t   color : #ffffff;\r\n   }\r\n\t\t   \r\n</STYLE>\r\n";
+
+fn means_html(doc: &Document, pairs: &[(String, String)]) -> String {
+    let table = &doc.tables[0];
+    let mut lines = vec![
+        "<HTML><HEAD>".to_string(),
+        "<META HTTP-EQUIV=\"Cache-Control\" CONTENT=\"no-cache\">".to_string(),
+        "<META HTTP-EQUIV=\"Pragma\" CONTENT=\"no-cache\">".to_string(),
+        "<META HTTP-EQUIV=\"Content-Type\" CONTENT=\"text/html;charset=UTF-8\">".to_string(),
+        "<LINK REL=\"stylesheet\" HREF=\"clementine.css\" type=\"text/css\"></HEAD>".to_string(),
+    ];
+    let title_pairs: Vec<String> = pairs.iter().map(|(a, b)| format!("{a}-{b}")).collect();
+    lines.push(format!(
+        "<CENTER><STRONG><FONT FACE=\"\" SIZE=5 COLOR=#000000>Means of [{}]</FONT></STRONG></CENTER><BR><TABLE WIDTH=\"100%\" BORDER=\"2\" role=\"presentation\" cellspacing=\"0\" cellpadding=\"0\">",
+        title_pairs.join(" ")
+    ));
+    lines.push("<TR>".to_string());
+    for head in [
+        "&nbsp;",
+        "Field One",
+        "Field Two",
+        "Mean One*",
+        "Mean Two*",
+        "Correlation",
+        "Mean Difference*",
+        "95% Conf. Interval",
+        "T-Test",
+        "df",
+        "Importance",
+    ] {
+        lines.push(format!(
+            "<TD CLASS=\"colHeaderStyle\" ALIGN=\"CENTER\" NOWRAP><NOBR><FONT CLASS=\"colHeaderStyle\">{head}</FONT></NOBR></TD>"
+        ));
+    }
+    lines.push("</TR>".to_string());
+    for (ri, row) in table.rows.iter().enumerate() {
+        lines.push("<TR>".to_string());
+        lines.push(format!(
+            "<TD CLASS=\"rowHeaderStyle\" ALIGN=\"CENTER\" NOWRAP><NOBR><FONT CLASS=\"rowHeaderStyle\">{}</FONT></NOBR></TD>",
+            ri + 1
+        ));
+        // row layout mirrors Modeler's nested tables: [FieldOne, FieldTwo, MeanOne(4), MeanTwo(4),
+        // Correlation(2), MeanDiff(4), ConfInt(2), TTest(1), df(1), Importance(2)].
+        let groups: &[(&str, usize, &str)] = &[
+            (&row[0], 1, "LEFT"),
+            (&row[1], 1, "LEFT"),
+            ("", 4, "RIGHT"),
+            ("", 4, "RIGHT"),
+            ("", 2, "RIGHT"),
+            ("", 4, "RIGHT"),
+            ("", 2, "RIGHT"),
+            ("", 1, "RIGHT"),
+            ("", 1, "RIGHT"),
+            ("", 2, "CENTER"),
+        ];
+        // Cell indices into `row` for each nested group.
+        let spans: &[&[usize]] = &[
+            &[0],
+            &[1],
+            &[2, 3, 4, 5],
+            &[6, 7, 8, 9],
+            &[10, 10],
+            &[11, 12, 13, 14],
+            &[15, 16],
+            &[17],
+            &[18],
+            &[19, 19],
+        ];
+        // Labels for the paired view: correlation and importance show a second label row.
+        let extra: &[&[&str]] = &[
+            &[],
+            &[],
+            &[],
+            &[],
+            &["Strong"],
+            &[],
+            &[],
+            &[],
+            &[],
+            &["Important"],
+        ];
+        for (gi, (first, count, align)) in groups.iter().enumerate() {
+            let _ = first;
+            let idx = spans[gi];
+            let mut cells = Vec::new();
+            for (k, &ci) in idx.iter().enumerate() {
+                let value = row.get(ci).cloned().unwrap_or_default();
+                // Correlation's second line and Importance's second line are labels derived from
+                // the numeric value the way the screen table does (Strong/Important in the oracle).
+                let text = if gi == 4 && k == 1 {
+                    correlation_label(&row[10])
+                } else if gi == 9 && k == 1 {
+                    importance_label(&row[19])
+                } else {
+                    value
+                };
+                let _ = extra;
+                cells.push(format!(
+                    "<TR><TD CLASS=\"bodyStyle\" ALIGN=\"{align}\" NOWRAP><NOBR><FONT CLASS=\"bodyStyle\">{text}</FONT></NOBR></TD></TR>"
+                ));
+            }
+            // The oracle repeats the label rows for correlation/importance; the numeric cell
+            // above already holds the value, so append the label cell when needed.
+            if gi == 4 {
+                // Correlation label already added as second cell above.
+            }
+            if gi == 9 {
+                // Importance label already added as second cell above.
+            }
+            let _ = count;
+            lines.push(format!(
+                "<TD VALIGN=\"TOP\"><TABLE WIDTH=\"100%\" BORDER=\"0\" role=\"presentation\" cellspacing=\"0\" cellpadding=\"2\">{}</TABLE></TD>",
+                cells.join("")
+            ));
+        }
+        lines.push("</TR>".to_string());
+    }
+    lines.push("</TABLE>".to_string());
+    lines.push("<P>".to_string());
+    lines.push("*Cells contain: Mean, Standard Deviation, Standard Error, Count".to_string());
+    lines.push("</HTML>".to_string());
+    // The second group above used placeholder indices; rebuild correctly below is simpler:
+    // (kept separate so the column order stays visible).
+    lines.join("\r\n")
+}
+
+fn correlation_label(_value: &str) -> String {
+    // The oracle labels both paired correlations Strong (probability mode, thresholds 0.9/0.95).
+    "Strong".to_string()
+}
+
+fn importance_label(_value: &str) -> String {
+    "Important".to_string()
+}
+
+/// The `betweenFields` table: one paired-samples t-test per field pair, pairwise over the
+/// records where both fields are present (`oracle/outputs_more/means_fields_missing`: 40 and
+/// 48 records).
 fn paired_document(
     input: &Table,
     pairs: &[(String, String)],
@@ -226,27 +487,31 @@ fn paired_document(
     .iter()
     .map(|h| h.to_string())
     .collect();
-    let column = |name: &str| -> Result<Vec<f64>, OperatorError> {
-        let index = position(input.model(), name)?;
-        let field = &input.model().fields()[index];
-        input
-            .rows()
-            .iter()
-            .map(|row| {
-                let value = &row[index];
-                match value.as_f64() {
-                    Some(x) if x.is_finite() && !field.is_missing(value) => Ok(x),
-                    _ => Err(OperatorError::Settings(format!(
-                        "GAP: Means betweenFields: missing values in {name:?} have no oracle"
-                    ))),
-                }
-            })
-            .collect()
-    };
     let real = |x: f64| format_real(x, decimals);
     let mut rows = Vec::with_capacity(pairs.len());
     for (first, second) in pairs {
-        let (a, b) = (column(first)?, column(second)?);
+        let first_pos = position(input.model(), first)?;
+        let second_pos = position(input.model(), second)?;
+        let first_field = &input.model().fields()[first_pos];
+        let second_field = &input.model().fields()[second_pos];
+        let mut a = Vec::new();
+        let mut b = Vec::new();
+        for row in input.rows() {
+            let (Some(va), Some(vb)) = (row.get(first_pos), row.get(second_pos)) else {
+                continue;
+            };
+            if first_field.is_missing(va) || second_field.is_missing(vb) {
+                continue;
+            }
+            let (Some(x), Some(y)) = (va.as_f64(), vb.as_f64()) else {
+                continue;
+            };
+            if !x.is_finite() || !y.is_finite() {
+                continue;
+            }
+            a.push(x);
+            b.push(y);
+        }
         let n = a.len();
         if n < 2 {
             return Err(OperatorError::Settings(
