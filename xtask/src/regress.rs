@@ -3,10 +3,13 @@
 //!
 //! Classes:
 //! - `match`: every terminal input matches the oracle export;
-//! - `statistical`: a mismatch, but the stream trains a builder held to statistical parity
-//!   (`dms_exec::registry::is_statistical`, `docs/statistical-parity.md`);
-//! - `known-gap`: a mismatch listed in `xtask/known-gaps.tsv` with its reason;
-//! - `regression`: any other mismatch, or a stream that cannot be run.
+//! - `statistical`: every terminal input was produced and compared, at least one differs, and the
+//!   stream trains a builder held to statistical parity (`dms_exec::registry::is_statistical`,
+//!   `docs/statistical-parity.md`);
+//! - `known-gap`: a mismatch (or missing terminal output) listed in `xtask/known-gaps.tsv` with
+//!   its reason;
+//! - `regression`: any other mismatch, a missing terminal output on an unlisted stream, or a
+//!   stream that cannot be run.
 //!
 //! The command exits non-zero on a regression, and on a `known-gaps.tsv` entry whose stream now
 //! matches (a stale entry). `--label` limits the run to some corpus labels (and the stale check
@@ -154,13 +157,14 @@ impl StreamResult {
 /// The class of one stream. A run failure is a regression even when the stream is listed;
 /// otherwise a known-gap entry, which names the cause, takes precedence over a statistical
 /// builder: `team/decision_trees_heart` trains a statistical C&R Tree, but its records already
-/// differ upstream at the unseeded Balance node.
+/// differ upstream at the unseeded Balance node. A statistical builder only explains value
+/// differences in produced terminal inputs (`all_produced`), not missing outputs or read errors.
 fn classify(comparison: &Result<StreamComparison>, statistical: bool, listed: bool) -> Class {
     match comparison {
         Err(_) => Class::Regression,
         Ok(comparison) if comparison.is_match() => Class::Match,
         Ok(_) if listed => Class::KnownGap,
-        Ok(_) if statistical => Class::Statistical,
+        Ok(comparison) if statistical && comparison.all_produced() => Class::Statistical,
         Ok(_) => Class::Regression,
     }
 }
@@ -480,12 +484,30 @@ fn tsv_field(text: &str) -> String {
 mod tests {
     use super::*;
 
-    fn comparison(matched: usize, total: usize) -> StreamComparison {
+    fn comparison_with_statuses(statuses: &[&str]) -> StreamComparison {
+        let matched = statuses.iter().filter(|&&status| status == "match").count();
+        let nodes = statuses
+            .iter()
+            .enumerate()
+            .map(|(index, status)| {
+                serde_json::json!({
+                    "uid": format!("n{index}"),
+                    "type": "table",
+                    "result": { "status": status }
+                })
+            })
+            .collect();
         StreamComparison {
             matched,
-            total,
-            nodes: Vec::new(),
+            total: statuses.len(),
+            nodes,
         }
+    }
+
+    fn comparison(matched: usize, total: usize) -> StreamComparison {
+        let mut statuses = vec!["match"; matched];
+        statuses.resize(total, "mismatch");
+        comparison_with_statuses(&statuses)
     }
 
     #[test]
@@ -502,6 +524,32 @@ mod tests {
         // A manifest with no export matches, like `cargo xtask compare` reports 0/0.
         let empty: Result<StreamComparison> = Ok(comparison(0, 0));
         assert_eq!(classify(&empty, false, false), Class::Match);
+    }
+
+    #[test]
+    fn statistical_requires_all_terminals_produced() {
+        let missing_only: Result<StreamComparison> =
+            Ok(comparison_with_statuses(&["not produced"]));
+        let mixed_missing: Result<StreamComparison> = Ok(comparison_with_statuses(&[
+            "match",
+            "mismatch",
+            "not produced",
+        ]));
+        let read_error: Result<StreamComparison> =
+            Ok(comparison_with_statuses(&["match", "error"]));
+        let all_compared: Result<StreamComparison> =
+            Ok(comparison_with_statuses(&["match", "mismatch"]));
+
+        for unproduced in [&missing_only, &mixed_missing, &read_error] {
+            assert!(!unproduced.as_ref().expect("ok").all_produced());
+            assert_eq!(classify(unproduced, true, false), Class::Regression);
+            assert_eq!(classify(unproduced, true, true), Class::KnownGap);
+            assert_eq!(classify(unproduced, false, false), Class::Regression);
+            assert_eq!(classify(unproduced, false, true), Class::KnownGap);
+        }
+        assert!(all_compared.as_ref().expect("ok").all_produced());
+        assert_eq!(classify(&all_compared, true, false), Class::Statistical);
+        assert_eq!(classify(&all_compared, true, true), Class::KnownGap);
     }
 
     #[test]

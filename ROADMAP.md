@@ -1,6 +1,6 @@
 # Roadmap
 
-> 阶段：**P1、P2 完成；P3 除 Python 桥外完成；P0 只差 Mac 上的 CI；P4 放到最后** · 更新：2026-10-29
+> 阶段：**P1、P2 完成；P3 除 Python 桥外完成；P0 只差 Mac 上的 CI；P4 放到最后** · 更新：2026-11-06
 
 ## 核心数字
 
@@ -8,8 +8,8 @@
 |---|---|---|
 | MVP 节点覆盖 | 85 / 85（其中 10 个按统计等价验收） | 实测（`cargo xtask parity`，2026-10-20） |
 | 以后再做 / 许可证受阻 / 不做 | 已做 3 / 25；0 / 5；0 / 34 | 实测（`cargo xtask parity`） |
-| 回归（全部带标准答案的流） | 1268 个流：1145 完全一致、89 统计等价、34 已知 GAP、0 回归 | 实测（`cargo xtask regress`，2026-11-05） |
-| 语料 | `xtask/corpus.tsv` 登记 1384 个文件，67 个 oracle 标签 | 实测 |
+| 回归（全部带标准答案的流） | 1324 个流：1197 完全一致、89 统计等价、38 已知 GAP、0 回归 | 实测（`cargo xtask regress`，2026-11-06） |
+| 语料 | `xtask/corpus.tsv` 登记 1444 个文件，69 个 oracle 标签 | 实测 |
 
 ## 阶段
 
@@ -26,6 +26,7 @@
 
 ## 进度日志
 
+- 2026-11-06：`cargo xtask regress` 不再把统计等价构建节点所在流里未产出的终端算作统计等价（只有全部终端都产出、仅数值不同才算），由此暴露的 4 个流（Time Series 季节/变换传递函数、Streaming TS、CPLEX、18 点季节平滑相位）登记为已知 GAP。Time Series Expert：两个判别探针 `ts_expert`、`ts_expert2`（各 30 例，平滑/ARIMA/全部模型）及其 oracle；模型块打分支持白噪声 ARIMA（无 `NonseasonalComponent`）与 d=2，两标签 60 例中 56 例一致；自动选择仍为 GAP：平滑专家按归一化 BIC 取最小在 22 个记录中吻合 19 个，ARIMA 专家尚未确定。
 - 2026-11-05：输出节点写文件模式（Matrix、Means、Analysis、Statistics、Data Audit 的 .tab/.csv/.txt/.html 与 Modeler 逐字节或 1e-12 一致）、Matrix/Means 缺失值、Evaluation 成本/收益/权重字段，`outputs_more` 27 例中 21 例一致（.cou 与 Data Audit 图片 HTML 保留 GAP）。ADP 数值型名义/flag 输入原样保留（`ADP_basic_demo` 一致）；TS `_calculatePI`/`_isOutputOthers` 不影响打分（`catalog_forecast` 一致）；C5.0 winnowing 以修正后的学习器重做：20 个 oracle 均有精确子集，但最佳规则 15/20 会造成回归，`c50_winnow2` 探针最佳候选 9/12，仍为 GAP。
 - 2026-10-29（续二）：记分卡（`docs/scorecard.md`）：1234 个带终端的流中 94.2% 全部跑通、96.5% 与 Modeler 行为一致（含同样报错）；每流中位数 0.010 s，对比 Modeler 批处理 7.2 s。由此补录 11 个 IBM 演示流的 oracle 并修复可变文件源 `multiBlankDelimiters`（无空白分隔符时）与 SAV `F w.0`/`DOLLAR w.0` 整数读入（四舍五入）；新探针 `outputs_more`（27 例，输出节点写文件模式、缺失值矩阵、Evaluation 成本字段）。
 - 2026-10-29（续）：Time Series 30 例中 28 例达到统计等价（传递函数分母按指南的稳态初值实现；`ts_tf_static`、`ts_sarlog_noconst` 两例经独立精确似然确认为 Modeler 优化器提前停止）。Apriori 新探针 `apriori_eval`（17 例）：四种评价度量公式、模型块评分设置（检查方式、五种排序准则、`$AC-` 写准则值、不忽略未匹配项时前件须等于购物篮）、相连模型块按默认评分、置信度平局按前件长度与项 id、事务数据忽略字段列表；`apriori_more` 19 例中 17 例、`apriori_eval` 全部一致，剩等支持度项目排序 2 例。

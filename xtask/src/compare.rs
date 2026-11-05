@@ -46,6 +46,20 @@ impl StreamComparison {
         self.matched == self.total
     }
 
+    /// Whether every terminal input was produced and its values were compared (`"match"` or
+    /// `"mismatch"`, never `"not produced"` or `"error"`).
+    pub fn all_produced(&self) -> bool {
+        self.nodes.len() == self.total
+            && self.nodes.iter().all(|node| {
+                matches!(
+                    node.get("result")
+                        .and_then(|result| result.get("status"))
+                        .and_then(Value::as_str),
+                    Some("match" | "mismatch")
+                )
+            })
+    }
+
     /// One line per terminal input that does not match: `uid (type): status [problem]`.
     pub fn problems(&self) -> Vec<String> {
         self.nodes
