@@ -23,8 +23,9 @@
 //! Expert selects Exponential Smoothing (`_expertModelTypeList == "Exsmooth"`) by
 //! minimum NBIC and refits recorded ARIMA/AllModels structure/transform/omitted lags.
 //! Without a recorded specification, ARIMA-only Expert selects with the Algorithms Guide
-//! appendix "Time Series Algorithm: Expert Modeler" (`arima::expert_arima`); automatic
-//! AllModels selection remains GAP.
+//! appendix "Time Series Algorithm: Expert Modeler" (`arima::expert_arima`); AllModels also
+//! fits Expert smoothing and keeps the smaller original-scale NBIC
+//! (`time_series::normalized_bic`).
 //! `ts_expert/pr_wn_ar` omits the zero-order NonseasonalComponent; `pr_i2_ar`
 //! scores d=2 with a constant through the existing integrated ARIMA recursion.
 //! Transfer functions support AR(1) noise, delay, predictor differences and denominators
@@ -153,7 +154,7 @@ fn add_residuals(table: Table, targets: &[String]) -> Result<Table, OperatorErro
     .map_err(|e| OperatorError::Data(e.to_string()))
 }
 
-/// Statistical parity (optimizer). Unrecorded AllModels Expert selection is explicitly GAP.
+/// Statistical parity (optimizer).
 pub fn build(node: &StreamNode) -> Result<Box<dyn Operator>, OperatorError> {
     let s = node.settings.as_ref();
     let gap = |what: &str| OperatorError::Settings(format!("GAP: Time Series {what}"));
@@ -329,19 +330,22 @@ pub fn build(node: &StreamNode) -> Result<Box<dyn Operator>, OperatorError> {
         .iter()
         .find(|c| c.name.as_deref() == Some("PMML"))
         .map(|c| c.member.clone());
-    // ARIMA-only Expert without a recorded specification selects with the Guide appendix
-    // procedure (`arima::expert_arima`); the season length follows Expert smoothing.
-    let expert_arima_period = if method.is_none()
+    // Expert ARIMA/AllModels without a recorded specification selects with the Guide appendix
+    // procedure (`arima::expert_arima`); AllModels also fits Expert smoothing and keeps the
+    // smaller original-scale NBIC. The season length follows Expert smoothing.
+    let expert_family = settings::text(s, "_expertModelTypeList");
+    let expert_all_models = expert_family.as_deref() == Some("AllModels");
+    let expert_period = if method.is_none()
         && selected_member.is_none()
         && settings::text(s, "_method").as_deref() == Some("ExpertModeler")
-        && settings::text(s, "_expertModelTypeList").as_deref() == Some("Arima")
+        && matches!(expert_family.as_deref(), Some("Arima" | "AllModels"))
     {
         let consider_seasonal = settings::flag(s, "_isConsiderSeasonalModels")?.unwrap_or(true);
         Some(if monthly && consider_seasonal { 12 } else { 1 })
     } else {
         None
     };
-    if method.is_none() && selected_member.is_none() && expert_arima_period.is_none() {
+    if method.is_none() && selected_member.is_none() && expert_period.is_none() {
         return Err(gap(
             "Expert automatic transformation/order selection; no recorded specification to refit",
         ));
@@ -406,7 +410,8 @@ pub fn build(node: &StreamNode) -> Result<Box<dyn Operator>, OperatorError> {
         targets,
         period,
         selected_member,
-        expert_arima_period,
+        expert_period,
+        expert_all_models,
         monthly,
     }))
 }
@@ -417,8 +422,11 @@ struct TimeSeriesBuild {
     targets: Vec<String>,
     period: String,
     selected_member: Option<String>,
-    /// Season length for automatic ARIMA Expert selection (no recorded specification).
-    expert_arima_period: Option<usize>,
+    /// Season length for automatic Expert ARIMA/AllModels selection (no recorded
+    /// specification).
+    expert_period: Option<usize>,
+    /// AllModels: compare Expert smoothing with Expert ARIMA by original-scale NBIC.
+    expert_all_models: bool,
     monthly: bool,
 }
 
@@ -460,7 +468,7 @@ impl Operator for TimeSeriesBuild {
             .position(&self.period)
             .ok_or_else(|| OperatorError::Data("Time Series period absent".into()))?;
         validate_period(input, period, self.monthly)?;
-        let selected = if self.method.is_none() && self.expert_arima_period.is_none() {
+        let selected = if self.method.is_none() && self.expert_period.is_none() {
             let member = self
                 .selected_member
                 .as_deref()
@@ -496,49 +504,70 @@ impl Operator for TimeSeriesBuild {
                 })
                 .collect();
             let y = y?;
-            let method = match (self.method, self.expert_arima_period) {
-                (Some(method), _) => method,
-                (None, Some(period)) => selected_arima_method(
-                    &arima::expert_arima(&y, period)
-                        .map_err(|e| OperatorError::Data(format!("Expert ARIMA selection: {e}")))?,
-                ),
-                (None, None) => selected
-                    .iter()
-                    .find(|(name, _)| name == target)
-                    .map(|(_, method)| *method)
-                    .ok_or_else(|| {
-                        OperatorError::Settings(format!(
-                            "GAP: Expert has no selected specification for {target}"
-                        ))
-                    })?,
+            let fit = match (self.method, self.expert_period) {
+                (None, Some(period)) => {
+                    let selected = arima::expert_arima(&y, period)
+                        .map_err(|e| OperatorError::Data(format!("Expert ARIMA selection: {e}")))?;
+                    let arima_fit = estimation::fit(&y, selected_arima_method(&selected))
+                        .map_err(score_message)?;
+                    if self.expert_all_models {
+                        // AllModels keeps the family with the smaller original-scale NBIC.
+                        let smooth_fit = estimation::fit(&y, Method::ExpertSmooth { period })
+                            .map_err(score_message)?;
+                        let nbic = |fit: &estimation::Fit| {
+                            estimation::normalized_bic(&fit.spec, &y).map_err(score_message)
+                        };
+                        if nbic(&arima_fit)? < nbic(&smooth_fit)? {
+                            arima_fit
+                        } else {
+                            smooth_fit
+                        }
+                    } else {
+                        arima_fit
+                    }
+                }
+                (method, _) => {
+                    let method = match method {
+                        Some(method) => method,
+                        None => selected
+                            .iter()
+                            .find(|(name, _)| name == target)
+                            .map(|(_, method)| *method)
+                            .ok_or_else(|| {
+                                OperatorError::Settings(format!(
+                                    "GAP: Expert has no selected specification for {target}"
+                                ))
+                            })?,
+                    };
+                    if self.effects.is_empty() {
+                        estimation::fit(&y, method)
+                    } else {
+                        let x = self
+                            .effects
+                            .iter()
+                            .map(|e| numeric_column(input, &e.field))
+                            .collect::<Result<Vec<_>, _>>()?;
+                        let template = TransferSpec {
+                            noise: ArimaSpec {
+                                seasonal_d: 0,
+                                period: 1,
+                                seasonal_ar: vec![],
+                                seasonal_ma: vec![],
+                                transform: Transform::None,
+                                constant: 0.0,
+                                d: 0,
+                                ar: vec![0.0],
+                                ma: vec![],
+                                sigma2: 1.0,
+                                df: 1.0,
+                            },
+                            effects: self.effects.clone(),
+                        };
+                        transfer::fit(&y, &x, &template)
+                    }
+                    .map_err(score_message)?
+                }
             };
-            let fit = if self.effects.is_empty() {
-                estimation::fit(&y, method)
-            } else {
-                let x = self
-                    .effects
-                    .iter()
-                    .map(|e| numeric_column(input, &e.field))
-                    .collect::<Result<Vec<_>, _>>()?;
-                let template = TransferSpec {
-                    noise: ArimaSpec {
-                        seasonal_d: 0,
-                        period: 1,
-                        seasonal_ar: vec![],
-                        seasonal_ma: vec![],
-                        transform: Transform::None,
-                        constant: 0.0,
-                        d: 0,
-                        ar: vec![0.0],
-                        ma: vec![],
-                        sigma2: 1.0,
-                        df: 1.0,
-                    },
-                    effects: self.effects.clone(),
-                };
-                transfer::fit(&y, &x, &template)
-            }
-            .map_err(score_message)?;
             segments.push_str(&format!(
                 "<Segment><True/>{}</Segment>",
                 fit.to_xml(target, input.row_count())

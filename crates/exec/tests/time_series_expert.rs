@@ -713,10 +713,109 @@ fn expert_arima_builder_selects_without_saved_pmml() {
         other_family.len(),
         fit_gaps.join("\n")
     );
-    // 9 reproduced selections come from AllModels builders (automatic AllModels selection is
-    // GAP). 8 select structures the fitter rejects: d = 2, or more than four AR or MA lags.
+    // 9 of the built selections come from AllModels builders, where the ARIMA candidate also
+    // wins the NBIC comparison. 8 select structures the fitter rejects: d = 2, or more than
+    // four AR or MA lags.
     assert_eq!(
         (built.len(), fit_gaps.len(), other_family.len()),
-        (68, 8, 9)
+        (77, 8, 0)
     );
+}
+
+/// Expert AllModels without a saved model: the builder selects ARIMA with
+/// `arima::expert_arima`, fits Expert smoothing, and keeps the smaller original-scale NBIC.
+/// Every recorded AllModels stream is run with its saved containers stripped. The outcome is
+/// compared with Modeler's saved family and structure: the smoothing kind, or the ARIMA
+/// signature.
+#[test]
+fn expert_all_models_builder_selects_without_saved_pmml() {
+    let mut cases = Vec::new();
+    for label in [
+        "ts_expert",
+        "ts_expert2",
+        "ts_expert3",
+        "ts_expert4",
+        "ts_expert5",
+        "ts_expert6",
+    ] {
+        let dir = support::repo_root().join("corpus").join(label);
+        for entry in std::fs::read_dir(&dir).unwrap() {
+            let name = entry.unwrap().file_name().into_string().unwrap();
+            if let Some(case) = name.strip_suffix("_all.str") {
+                cases.push((label.to_string(), format!("{case}_all")));
+            }
+        }
+    }
+    cases.sort();
+    let (mut matched, mut mismatched, mut gaps) = (Vec::new(), Vec::new(), Vec::new());
+    for (label, case) in &cases {
+        let dir = support::repo_root().join("corpus").join(label);
+        let (archive, mut stream) = open_case(label, case);
+        let saved = saved_spec(&archive, &stream);
+        let builder = stream
+            .diagram
+            .nodes
+            .iter_mut()
+            .find(|n| n.type_identifier() == "spss.ts!ts_builder")
+            .unwrap();
+        builder.containers.clear();
+        let builder_uid = builder.uid.clone();
+        let context = ExecContext {
+            files: FileResolver {
+                data_dirs: vec![dir],
+            },
+            attachments: Arc::new(Default::default()),
+            stream_properties: stream.properties.clone().map(Arc::new),
+            ..ExecContext::default()
+        };
+        let results = Plan::new(&stream).evaluate(&[&builder_uid], &context);
+        let ours = match results.get(&builder_uid) {
+            Some(Ok(NodeOutput::Model(pmml))) => {
+                let dms_pmml::Model::Mining(m) = &pmml.model else {
+                    panic!("{label}/{case}: expected mining model");
+                };
+                let dms_pmml::Model::TimeSeries { xml, .. } = m.segments[0].model.as_ref() else {
+                    panic!("{label}/{case}: expected TimeSeries segment");
+                };
+                dms_exec::nodes::time_series::parse_saved_model(xml).unwrap()
+            }
+            Some(Err(e)) if e.to_string().contains("GAP") => {
+                gaps.push(format!("{label}/{case}: {e}"));
+                continue;
+            }
+            other => panic!("{label}/{case}: {other:?}"),
+        };
+        let same = match (&ours, &saved) {
+            (FittedSpec::Arima(a), FittedSpec::Arima(b)) => signature(a) == signature(b),
+            (FittedSpec::Smooth(_), FittedSpec::Smooth(_)) => kind_of(&ours) == kind_of(&saved),
+            _ => false,
+        };
+        let describe = |spec: &FittedSpec| match spec {
+            FittedSpec::Arima(a) => format!("{:?}", signature(a)),
+            FittedSpec::Smooth(_) => format!("{:?}", kind_of(spec)),
+            FittedSpec::Transfer(_) => "transfer".to_string(),
+        };
+        if same {
+            matched.push(format!("{label}/{case}"));
+        } else {
+            mismatched.push(format!(
+                "{label}/{case}: ours {} / Modeler {}",
+                describe(&ours),
+                describe(&saved)
+            ));
+        }
+    }
+    eprintln!(
+        "AllModels: {} cases, {} match, {} differ, {} GAP",
+        cases.len(),
+        matched.len(),
+        mismatched.len(),
+        gaps.len()
+    );
+    for line in mismatched.iter().chain(&gaps) {
+        eprintln!("  {line}");
+    }
+    // The 2 GAPs select d = 2 ARIMA (pr_i2_all, p2_i2_all), which the fitter rejects.
+    assert!(mismatched.is_empty(), "{mismatched:?}");
+    assert_eq!((matched.len(), gaps.len()), (26, 2));
 }

@@ -345,9 +345,9 @@ fn unsupported_time_series_settings_are_gaps() {
         .unwrap()
         .clone();
     node.containers.clear();
-    assert!(
-        matches!(dms_exec::nodes::time_series::build(&node),Err(dms_exec::OperatorError::Settings(s)) if s.contains("GAP:")&&s.contains("selection"))
-    );
+    // Without a recorded specification, Expert AllModels now selects automatically
+    // (`time_series_expert.rs`), so the builder is accepted.
+    assert!(dms_exec::nodes::time_series::build(&node).is_ok());
     assert!(dms_exec::registry::is_statistical("time_series"));
 }
 

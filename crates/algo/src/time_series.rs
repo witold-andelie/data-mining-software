@@ -171,6 +171,52 @@ pub fn objective(spec: &FittedSpec, y: &[f64]) -> Result<f64, AlgoError> {
     }
 }
 
+/// Modeler's normalized BIC on the original scale, which Expert AllModels uses to choose
+/// between the smoothing and the ARIMA candidate: `ln(SSE / (n - k)) + k ln(n) / n`.
+/// SSE sums the squared original-scale one-step errors over the `n` fitted observations
+/// (all of them for smoothing; those after the `d + D s` differences for ARIMA), and
+/// `k = n - df`. With recorded structures refitted, it picks Modeler's family on all 28
+/// AllModels records of `ts_expert` rounds 1-4.
+pub fn normalized_bic(spec: &FittedSpec, y: &[f64]) -> Result<f64, AlgoError> {
+    validate(y)?;
+    let (sse, n, df) = match spec {
+        FittedSpec::Smooth(SmoothSpec::General(g)) if g.transform == Transform::None => {
+            (objective(spec, y)?, y.len(), g.df)
+        }
+        FittedSpec::Arima(a) => {
+            let degree = a.d.saturating_add(a.seasonal_d.saturating_mul(a.period));
+            let n = y.len().saturating_sub(degree);
+            let scores = arima::score(a, y, 0, 95.0).map_err(data)?;
+            let start = scores.fitted.len().saturating_sub(n);
+            let sse = scores
+                .fitted
+                .iter()
+                .zip(y)
+                .skip(start)
+                .map(|(f, v)| {
+                    f.as_ref()
+                        .map(|f| (f.point - v).powi(2))
+                        .ok_or_else(|| data("ARIMA fitted value missing after differencing"))
+                })
+                .sum::<Result<f64, _>>()?;
+            (sse, n, a.df)
+        }
+        _ => {
+            return Err(AlgoError::Unsupported(
+                "GAP: normalized BIC for this model family".into(),
+            ));
+        }
+    };
+    let n = count(n);
+    let k = n - df;
+    if !(df > 0.0 && k >= 0.0 && sse > 0.0 && sse.is_finite()) {
+        return Err(data(
+            "normalized BIC needs positive SSE and degrees of freedom",
+        ));
+    }
+    Ok((sse / df).ln() + k * n.ln() / n)
+}
+
 fn smooth_spec(y: &[f64], holt: bool, weights: &[f64]) -> Result<SmoothSpec, AlgoError> {
     let alpha = weights
         .first()
