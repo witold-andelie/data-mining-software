@@ -44,6 +44,19 @@ impl ExecContext {
             .unwrap_or(3)
     }
 
+    /// How exports print Date values when the field sets no format of its own: the stream's
+    /// `dateFormat` `format27` prints `Jan 1999` (`ibm-demos/broadband_create_models`). Other
+    /// stream date formats keep the plain rendering.
+    pub fn date_display(&self) -> Option<dms_types::DisplayFormat> {
+        match crate::settings::text(self.stream_properties.as_deref(), "dateFormat")
+            .as_deref()
+            .map(str::trim)
+        {
+            Some("format27" | "MON YYYY") => Some(dms_types::DisplayFormat::MonthYear),
+            _ => None,
+        }
+    }
+
     /// The calendar day (days since 1970-01-01) of an instant saved as epoch milliseconds, in
     /// the stream's `timeZone`: `server` (the default) is this machine's zone, as Modeler uses
     /// its server's; `UTC`/`GMT` and IANA names are themselves. Date settings saved from

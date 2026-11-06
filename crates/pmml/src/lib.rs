@@ -22,6 +22,7 @@ mod expr;
 mod neural;
 mod parse;
 mod regression;
+mod rule_tree;
 mod rules;
 mod score;
 mod sequence;
@@ -586,6 +587,12 @@ impl Pmml {
     /// Reads a PMML document (the root element must be `PMML`; versions 4.x).
     pub fn parse(xml: &str) -> Result<Pmml, PmmlError> {
         parse::parse(xml)
+    }
+
+    /// Clementine 11 inline `RuleTreeModel` (no PMML container). Maps onto the same
+    /// [`TreeModel`] [`Pmml::parse`] produces, so scoring is shared.
+    pub fn parse_rule_tree(xml: &str) -> Result<Pmml, PmmlError> {
+        rule_tree::parse(xml)
     }
 
     /// Prepares scoring records whose values come in the order of `inputs` (field names).

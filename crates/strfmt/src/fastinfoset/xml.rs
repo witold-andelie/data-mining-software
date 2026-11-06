@@ -3,6 +3,47 @@
 use super::{Document, Element, Node, QualifiedName};
 use std::fmt::Write as _;
 
+pub fn write_element(element: &Element) -> String {
+    let mut out = String::new();
+    write_one_element(&mut out, element);
+    out
+}
+
+fn write_one_element(out: &mut String, element: &Element) {
+    open_tag(out, element);
+    if element.children.is_empty() {
+        out.push_str("/>");
+        return;
+    }
+    out.push('>');
+    let mut stack: Vec<Frame<'_>> =
+        vec![Frame::Close(element), Frame::Nodes(element.children.iter())];
+    while let Some(frame) = stack.last_mut() {
+        match frame {
+            Frame::Close(element) => {
+                let _ = write!(out, "</{}>", name(&element.name));
+                stack.pop();
+            }
+            Frame::Nodes(nodes) => match nodes.next() {
+                None => {
+                    stack.pop();
+                }
+                Some(Node::Element(element)) => {
+                    open_tag(out, element);
+                    if element.children.is_empty() {
+                        out.push_str("/>");
+                    } else {
+                        out.push('>');
+                        stack.push(Frame::Close(element));
+                        stack.push(Frame::Nodes(element.children.iter()));
+                    }
+                }
+                Some(node) => write_leaf(out, node),
+            },
+        }
+    }
+}
+
 pub fn write_document(document: &Document) -> String {
     let mut out = String::new();
     // Writing to a String cannot fail.

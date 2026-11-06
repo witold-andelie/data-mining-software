@@ -387,7 +387,7 @@ fn run(path: &Path, args: &[String]) -> Result<(), String> {
                     std::fs::File::create(&file)
                         .map_err(|e| format!("cannot create {}: {e}", file.display()))?,
                 );
-                dms_io::csv::write_table(table, &mut writer)
+                dms_io::csv::write_table(table, &mut writer, context.date_display())
                     .and_then(|()| std::io::Write::flush(&mut writer))
                     .map_err(|e| format!("cannot write {}: {e}", file.display()))?;
                 report_ok.push(

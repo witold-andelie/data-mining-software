@@ -11,6 +11,7 @@ use dms_exec::nodes::{derive, filler, filter, partition, reclassify};
 use dms_exec::{ExecContext, Factory, OperatorError};
 use dms_stream::StreamNode;
 use dms_strfmt::fastinfoset::{Element, Node, QualifiedName};
+use dms_types::calendar;
 use dms_types::{
     DataModel, Field, Measurement, MissingSpec, Role, Storage, Table, Value, ValueSpec,
 };
@@ -643,6 +644,37 @@ fn filler_changes_storage_with_the_new_values() {
     .unwrap();
     assert_eq!(out.model().field("income").unwrap().storage, Storage::Real);
     assert_eq!(col(&out, "income")[1], Value::Real(1.0));
+}
+
+#[test]
+fn filler_to_date_parses_mon_yyyy() {
+    let input = table(
+        vec![Field::new("DATE_", Storage::String)],
+        vec![
+            vec![s("Jan 1999")],
+            vec![s("DEC 2019")],
+            vec![s("not a date")],
+        ],
+    );
+    let out = run(
+        filler::build,
+        vec![
+            list("fillerSelectedFields", &["DATE_"]),
+            p("fillerReplaceMode", "always"),
+            p("fillerReplaceExpression", "to_date(@FIELD)"),
+        ],
+        input,
+    )
+    .unwrap();
+    assert_eq!(out.model().field("DATE_").unwrap().storage, Storage::Date);
+    assert_eq!(
+        col(&out, "DATE_"),
+        vec![
+            Value::Date(calendar::days_from_civil(1999, 1, 1).unwrap()),
+            Value::Date(calendar::days_from_civil(2019, 12, 1).unwrap()),
+            Value::Null,
+        ]
+    );
 }
 
 #[test]

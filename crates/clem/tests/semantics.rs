@@ -599,6 +599,9 @@ fn date_and_time_functions() {
     assert_eq!(eval("to_string(to_date(\"31-01-00\"))"), text("2000-01-31"));
     assert_eq!(eval("to_string(to_date(\"31-01-99\"))"), text("1999-01-31"));
     assert_eq!(eval("to_date(\"50-01-31\")"), Datum::NULL);
+    assert_eq!(eval("to_string(to_date(\"Jan 1999\"))"), text("1999-01-01"));
+    assert_eq!(eval("to_string(to_date(\"JAN 1999\"))"), text("1999-01-01"));
+    assert_eq!(eval("to_date(\"January 1999\")"), Datum::NULL);
     assert_eq!(
         eval("date_days_difference(to_date(\"2020-01-31\"), to_date(\"2021-03-01\"))"),
         int(395)

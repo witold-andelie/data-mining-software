@@ -177,7 +177,7 @@ fn check(base: &str, path: &Path, problems: &mut Vec<String>) {
         );
     }
     let mut out = Vec::new();
-    dms_io::csv::write_table(&table, &mut out).unwrap();
+    dms_io::csv::write_table(&table, &mut out, None).unwrap();
     let ours = parse_csv(&String::from_utf8(out).unwrap());
     let theirs = parse_csv(&std::fs::read_to_string(dir.join(format!("{base}.csv"))).unwrap());
     if ours.len() != theirs.len() {

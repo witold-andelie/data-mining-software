@@ -4,12 +4,17 @@
 //! `$null$` is an empty field. Inner quotes are doubled (RFC 4180); Modeler leaves them as they
 //! are, which `xtask compare` reads as Modeler's dialect.
 //! Reals use the shortest text that reads back to the same value. A field's
-//! [`dms_types::DisplayFormat`] overrides the plain rendering (`Dec 2019`).
+//! [`dms_types::DisplayFormat`] overrides the plain rendering (`Dec 2019`); otherwise `dates`,
+//! the stream's date print format, applies to Date values (`format27`: `Jan 1999`).
 
-use dms_types::{Table, Value};
+use dms_types::{DisplayFormat, Storage, Table, Value};
 use std::io::{self, Write};
 
-pub fn write_table(table: &Table, out: &mut impl Write) -> io::Result<()> {
+pub fn write_table(
+    table: &Table,
+    out: &mut impl Write,
+    dates: Option<DisplayFormat>,
+) -> io::Result<()> {
     let header: Vec<String> = table
         .model()
         .fields()
@@ -17,7 +22,12 @@ pub fn write_table(table: &Table, out: &mut impl Write) -> io::Result<()> {
         .map(|field| header_name(&field.name))
         .collect();
     writeln!(out, "{}", header.join(","))?;
-    let formats: Vec<_> = table.model().fields().iter().map(|f| f.display).collect();
+    let formats: Vec<_> = table
+        .model()
+        .fields()
+        .iter()
+        .map(|f| f.display.or(dates.filter(|_| f.storage == Storage::Date)))
+        .collect();
     for row in table.rows() {
         let cells: Vec<String> = row
             .iter()
@@ -83,7 +93,7 @@ mod tests {
         )
         .unwrap();
         let mut out = Vec::new();
-        write_table(&table, &mut out).unwrap();
+        write_table(&table, &mut out, None).unwrap();
         assert_eq!(
             String::from_utf8(out).unwrap(),
             "name,n,x,d\n\"MALE  \"\"x\"\"\",23,0.1,1995-01-05\n,,2,\n"

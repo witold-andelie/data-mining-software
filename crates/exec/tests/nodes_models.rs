@@ -597,3 +597,175 @@ fn imported_model_scores_saved_outputs_and_refuses_unknown_roles() {
     assert!(message.starts_with("GAP:"), "{message}");
     assert!(factory(&model(vec![])).is_err());
 }
+
+fn classed(local: &str, class: &str, children: Vec<Node>) -> Node {
+    Node::Element(element(local, vec![("class", class)], children))
+}
+
+fn typed(local: &str, type_tag: &str, text: &str) -> Node {
+    Node::Element(element(
+        local,
+        vec![("type", type_tag)],
+        vec![Node::Text(Arc::from(text))],
+    ))
+}
+
+fn leaf(score: &str, id: &str, condition: Node) -> Node {
+    classed(
+        "child",
+        "com.spss.clementine.component.model.DecisionRuleNode",
+        vec![
+            Node::Element(element("children", Vec::new(), Vec::new())),
+            typed("result", "D", score),
+            p("recordCount", "10.0"),
+            p("id", id),
+            p("biggestChild", "-1"),
+            condition,
+        ],
+    )
+}
+
+fn true_condition() -> Node {
+    classed(
+        "condition",
+        "com.spss.clementine.component.model.TrueCondition",
+        Vec::new(),
+    )
+}
+
+fn split_side(score: &str, id: &str, primary: Node, surrogate: Node) -> Node {
+    classed(
+        "child",
+        "com.spss.clementine.component.model.DecisionRuleNode",
+        vec![
+            Node::Element(element(
+                "children",
+                Vec::new(),
+                vec![leaf(score, "-1", true_condition())],
+            )),
+            typed("result", "D", score),
+            p("recordCount", "10.0"),
+            p("id", id),
+            p("biggestChild", "-1"),
+            classed(
+                "condition",
+                "com.spss.clementine.component.model.LogicalCondition",
+                vec![
+                    Node::Element(element("children", Vec::new(), vec![primary, surrogate])),
+                    p("op", "surrogate"),
+                ],
+            ),
+        ],
+    )
+}
+
+fn simple(field: &str, op: &str, value: &str) -> Node {
+    classed(
+        "child",
+        "com.spss.clementine.component.model.SimpleCondition",
+        vec![p("field", field), p("op", op), typed("value", "D", value)],
+    )
+}
+
+/// Clementine 11 inline `RuleTreeModel` (no `model@pmml`) scores through the PMML tree walker.
+#[test]
+fn legacy_rule_tree_nugget_scores() {
+    let model = classed(
+        "model",
+        "com.spss.clementine.component.model.RuleTreeModel",
+        vec![
+            p("name", "y"),
+            p("algorithmName", "C&R Tree"),
+            Node::Element(element(
+                "inputs",
+                Vec::new(),
+                vec![Node::Element(element(
+                    "input",
+                    Vec::new(),
+                    vec![
+                        p("name", "x"),
+                        Node::Element(element(
+                            "type",
+                            Vec::new(),
+                            vec![p("storage", "real"), p("measure", "range")],
+                        )),
+                    ],
+                ))],
+            )),
+            Node::Element(element(
+                "outputs",
+                Vec::new(),
+                vec![classed(
+                    "output",
+                    "com.spss.clementine.component.Model$Output",
+                    vec![
+                        p("name", "$R-y"),
+                        Node::Element(element(
+                            "type",
+                            Vec::new(),
+                            vec![p("storage", "real"), p("measure", "range")],
+                        )),
+                        Node::Element(element(
+                            "modelFieldInfo",
+                            vec![("role", "predictedValue"), ("targetField", "y")],
+                            Vec::new(),
+                        )),
+                    ],
+                )],
+            )),
+            classed(
+                "root",
+                "com.spss.clementine.component.model.Rule",
+                vec![
+                    Node::Element(element(
+                        "children",
+                        Vec::new(),
+                        vec![
+                            split_side(
+                                "1.0",
+                                "1",
+                                simple("x", "lessOrEqual", "0.5"),
+                                simple("x", "lessOrEqual", "0.5"),
+                            ),
+                            split_side(
+                                "2.0",
+                                "2",
+                                simple("x", "greaterThan", "0.5"),
+                                simple("x", "greaterThan", "0.5"),
+                            ),
+                        ],
+                    )),
+                    typed("result", "D", "1.5"),
+                    p("recordCount", "20.0"),
+                    p("id", "0"),
+                    p("biggestChild", "0"),
+                ],
+            ),
+        ],
+    );
+    let operator = apply::build(&nugget(
+        "ApplyCartRuleNode",
+        vec![
+            p("calculateConfidences", "false"),
+            p("calculateRawPropensities", "false"),
+            model,
+        ],
+    ))
+    .unwrap();
+    let input = Table::new(
+        DataModel::new(vec![Field::new("x", Storage::Real)]).unwrap(),
+        vec![
+            vec![Value::Real(0.0)],
+            vec![Value::Real(1.0)],
+            vec![Value::Null],
+        ],
+    )
+    .unwrap();
+    let out = operator
+        .run(&[Arc::new(input)], &ExecContext::default())
+        .unwrap();
+    assert_eq!(
+        column(&out, "$R-y"),
+        [Value::Real(1.0), Value::Real(2.0), Value::Real(1.0)]
+    );
+}

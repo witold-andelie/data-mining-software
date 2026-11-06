@@ -15,7 +15,9 @@ use dms_exec::{ExecContext, Factory, FileResolver, OperatorError};
 use dms_stream::StreamNode;
 use dms_strfmt::fastinfoset::{Attribute, Element, Node, QualifiedName};
 use dms_types::calendar;
-use dms_types::{CheckMode, DataModel, Field, Measurement, Role, Storage, Table, Value, ValueSpec};
+use dms_types::{
+    CheckMode, DataModel, DisplayFormat, Field, Measurement, Role, Storage, Table, Value, ValueSpec,
+};
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -1251,4 +1253,32 @@ fn sas_import_reads_corpus_files_and_runs_corpus_streams() {
             "{stream_file} rows mismatch"
         );
     }
+}
+
+#[test]
+fn stream_mon_yyyy_date_format_prints_dates() {
+    let days = calendar::days_from_civil(1999, 1, 1).unwrap();
+    let table = Table::new(
+        DataModel::new(vec![
+            Field::new("DATE_", Storage::Date),
+            Field::new("n", Storage::Integer),
+        ])
+        .unwrap(),
+        vec![vec![Value::Date(days), Value::Integer(3)]],
+    )
+    .unwrap();
+    let context = ExecContext {
+        stream_properties: Some(stream_props(vec![p("dateFormat", "format27")])),
+        ..ExecContext::default()
+    };
+    assert_eq!(context.date_display(), Some(DisplayFormat::MonthYear));
+    assert_eq!(ExecContext::default().date_display(), None);
+    let mut csv = Vec::new();
+    dms_io::csv::write_table(&table, &mut csv, context.date_display()).unwrap();
+    assert_eq!(
+        String::from_utf8(csv).unwrap(),
+        "DATE_,n
+Jan 1999,3
+"
+    );
 }

@@ -474,5 +474,22 @@ mod tests {
             column(&table, "d"),
             [Value::Date(calendar::days_from_civil(1997, 2, 15).unwrap())]
         );
+
+        // MON YYYY (format27).
+        let mon_yyyy = DelimitedOptions {
+            text: TextOptions {
+                date_format: DateFormat::from_modeler_id("format27").unwrap(),
+                ..TextOptions::default()
+            },
+            ..DelimitedOptions::default()
+        };
+        let table = read("d\nJan 1999\nDEC 2019\n", &mon_yyyy);
+        assert_eq!(
+            column(&table, "d"),
+            [
+                Value::Date(calendar::days_from_civil(1999, 1, 1).unwrap()),
+                Value::Date(calendar::days_from_civil(2019, 12, 1).unwrap()),
+            ]
+        );
     }
 }

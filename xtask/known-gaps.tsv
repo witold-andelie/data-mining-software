@@ -3,7 +3,7 @@
 # label	stem	reason
 ibm-demos	bayes_bankloan	Bayes Net is license-blocked in Modeler 19 and not implemented, so the downstream filter cannot be compared
 ibm-demos	bayes_churn_retrain	Bayes Net is license-blocked in Modeler 19 and not implemented, so the downstream filter cannot be compared
-ibm-demos	broadband_create_models	Time Series: GAP: seasonal/transformed transfer function (one applyts terminal not produced); the stream date format27 (MON YYYY) is not supported, so the Type terminal reads DATE_ as $null$
+ibm-demos	broadband_create_models	applyts terminal not produced: GAP: seasonal/transformed transfer
 ibm-demos	catalog_streaming_timeseries	Streaming Time Series is not implemented (its terminal is not produced), so the downstream Time Series nugget scores $null$
 ibm-demos	cplex_goodslearn	CPLEX Optimization is out of scope and not implemented, so its terminal is not produced
 ibm-demos	pm_binaryclassifier	Auto Classifier nugget: legacy Auto model scoring is unverified; the oracle retrains a replacement-linked model, which is out of scope
@@ -37,4 +37,3 @@ apriori_more	tie_equal	Apriori equal-support item order: rules are ordered by it
 apriori_more	tie_twonew	Apriori equal-support item order: rules are ordered by itemset size, then the item ranks, with consequents from the highest rank, but Modeler ranks items of equal support in an order no tested rule reproduces (all five equal: fields 3,4,1,2,0; two equal: 1,0); see crates/algo/src/apriori.rs
 ibm-demos	modelingintro	Statistics File readValues=labelsAsData is not supported, and Modeler's batch run finds no executable nodes, so no oracle data exists
 ibm-demos	stp_server_demo	STP node and Var. File treatSquareBracketsAsLists are not implemented; Modeler's own run fails on the map visualisation (IOException), so the oracle is partial
-ibm-demos	telco_dataaudit	the supernode's C&R Tree rule nuggets hold a legacy Clementine 11 inline RuleTreeModel (no PMML container), which is not parsed

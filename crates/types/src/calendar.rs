@@ -86,6 +86,36 @@ pub fn time_from_micros(micros: i64) -> Option<(u32, u32, u32, u32)> {
     ))
 }
 
+/// `MON YYYY` (`Jan 1999`, `DEC 2019`): first day of that month. Case-insensitive 3-letter
+/// English month abbreviation and a 4-digit year, separated by whitespace.
+pub fn parse_month_year(text: &str) -> Option<i64> {
+    let mut parts = text.split_whitespace();
+    let month = month_from_abbrev(parts.next()?)?;
+    let year = parts.next()?;
+    if parts.next().is_some() || year.len() != 4 || !year.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    days_from_civil(year.parse().ok()?, month, 1)
+}
+
+fn month_from_abbrev(text: &str) -> Option<u32> {
+    match text.to_ascii_uppercase().as_str() {
+        "JAN" => Some(1),
+        "FEB" => Some(2),
+        "MAR" => Some(3),
+        "APR" => Some(4),
+        "MAY" => Some(5),
+        "JUN" => Some(6),
+        "JUL" => Some(7),
+        "AUG" => Some(8),
+        "SEP" => Some(9),
+        "OCT" => Some(10),
+        "NOV" => Some(11),
+        "DEC" => Some(12),
+        _ => None,
+    }
+}
+
 /// Splits a timestamp into its day number and time of day.
 pub fn split_timestamp(micros: i64) -> (i64, i64) {
     (
@@ -134,5 +164,16 @@ mod tests {
         let t = micros_from_time(13, 5, 9, 250_000).unwrap();
         assert_eq!(time_from_micros(t), Some((13, 5, 9, 250_000)));
         assert_eq!(split_timestamp(-1), (-1, MICROS_PER_DAY - 1));
+    }
+
+    #[test]
+    fn month_year_strings() {
+        assert_eq!(parse_month_year("Jan 1999"), days_from_civil(1999, 1, 1));
+        assert_eq!(parse_month_year("JAN 1999"), days_from_civil(1999, 1, 1));
+        assert_eq!(parse_month_year("Dec 2019"), days_from_civil(2019, 12, 1));
+        assert_eq!(parse_month_year("Feb  2000"), days_from_civil(2000, 2, 1));
+        assert_eq!(parse_month_year("Jan1999"), None);
+        assert_eq!(parse_month_year("January 1999"), None);
+        assert_eq!(parse_month_year("Jan 99"), None);
     }
 }
