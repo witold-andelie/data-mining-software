@@ -12,6 +12,11 @@ pub fn is_statistical(catalog_id: &str) -> bool {
     dms_exec::registry::is_statistical(catalog_id)
 }
 
+/// Implemented, but Modeler cannot export the node's own output in batch to compare it.
+pub fn is_output_unverified(catalog_id: &str) -> bool {
+    dms_exec::registry::is_output_unverified(catalog_id)
+}
+
 pub fn coverage(scope: Scope) -> Coverage {
     dms_catalog::coverage(scope, is_implemented)
 }

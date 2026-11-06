@@ -4,10 +4,12 @@
 
 Status `done (statistical)`: trained to statistical, not exact, parity with Modeler (`docs/statistical-parity.md`).
 
+Status `done (output unverified)`: settings and the records reaching the node match Modeler, but Modeler cannot export the node's own output in batch.
+
 | Scope | Implemented | Total |
 |---|---|---|
 | MVP | 85 | 85 |
-| later | 3 | 24 |
+| later | 4 | 24 |
 | license blocked | 0 | 6 |
 | out of scope | 0 | 34 |
 
@@ -95,7 +97,7 @@ Status `done (statistical)`: trained to statistical, not exact, parity with Mode
 | Collection | `collection` | MVP | done | `CollectionNode` |
 | Web | `web` | MVP | done | `WebNode` |
 | Evaluation | `evaluation` | MVP | done | `EvaluationNode` |
-| E-Plot | `eplot` | later | missing | `EPlotNode` |
+| E-Plot | `eplot` | later | done (output unverified) | `EPlotNode` |
 | t-SNE (Python) | `tsne` | later | missing | `tsne!spss.tsne` |
 | Map Visualization | `map_visualization` | out of scope | missing | `MapVisualizationNode` |
 

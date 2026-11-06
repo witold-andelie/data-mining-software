@@ -20,6 +20,7 @@ pub mod derive;
 pub mod distinct;
 pub mod distribution;
 pub mod ensemble;
+pub mod eplot;
 pub mod evaluation;
 pub mod excel_export;
 pub mod excel_import;
