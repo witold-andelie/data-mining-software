@@ -38,4 +38,3 @@ apriori_more	tie_twonew	Apriori equal-support item order: rules are ordered by i
 ibm-demos	modelingintro	Statistics File readValues=labelsAsData is not supported, and Modeler's batch run finds no executable nodes, so no oracle data exists
 ibm-demos	stp_server_demo	STP node and Var. File treatSquareBracketsAsLists are not implemented; Modeler's own run fails on the map visualisation (IOException), so the oracle is partial
 ibm-demos	telco_dataaudit	the supernode's C&R Tree rule nuggets hold a legacy Clementine 11 inline RuleTreeModel (no PMML container), which is not parsed
-ts_expert2	p2_alt18_es	Time Series: GAP: seasonal period/phase when scoring the saved 18-point simple seasonal nugget (three applyts terminals not produced)

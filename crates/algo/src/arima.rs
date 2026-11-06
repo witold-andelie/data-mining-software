@@ -26,12 +26,12 @@
 //! `exp(μ + se²/2)` (lognormal mean) and the limits are `exp(μ ± t se)`
 //! (no bias in the interval centre).
 //!
-//! Known scoring gap (`ts_expert`, 2026-11-05): future variances below use
-//! infinite-history psi weights. Finite-history Gaussian conditioning gives
-//! first-step variance/sigma2 = 1.03731293244 for `pr_seastr_ar` and
-//! 1.00000766665 for `pr_air_ar`, reproducing all six saved future points and
-//! bounds within 6.4e-10. These are formula differences, not optimizer noise;
-//! the latter also affects the lognormal mean. History uses exact innovations.
+//! Forecast rows (`ts_expert`, `ts_expert2`): future means and variances use
+//! finite-history Gaussian conditioning from the innovations recursion extended
+//! across the forecast horizon. For `pr_seastr_ar`, `pr_air_ar` and
+//! `p2_seastr_ar`, first-step `Var/sigma2` is `v_n > 1` (e.g. `1.03731293244`
+//! for `pr_seastr_ar` and `1.00000766665` for `pr_air_ar`), reproducing all
+//! saved future points and bounds (including the lognormal mean `exp(mu + Var/2)`).
 //! White noise with a constant and d=2 scoring are covered by the Expert corpus
 //! regression in `dms-exec`; an omitted nonseasonal PMML component means d=p=q=0.
 
@@ -40,6 +40,7 @@ use std::fmt;
 
 const MAX_HISTORY: usize = 100_000;
 const MAX_HORIZON: usize = 10_000;
+const MAX_INNOVATIONS: usize = 4_096;
 const MAX_ORDER: usize = 64;
 const MAX_PSI: usize = 10_000;
 
@@ -144,8 +145,8 @@ pub fn score(
     let w: Vec<f64> = differenced.iter().map(|v| v - spec.constant).collect();
     let gamma_lags = w.len().saturating_add(horizon).saturating_add(2).max(2);
     let gamma = arma_gamma(&spec.ar, &spec.ma, gamma_lags)?;
-    let (hats, v) = innovations(&w, &gamma)?;
-    let psi = integrated_psi(spec, horizon.saturating_add(1))?;
+    let (hats, v, w_forecasts, var_factors) =
+        innovations_with_forecasts(&spec.ar, spec.ma.len(), &w, &gamma, &diff, horizon)?;
 
     let mut fitted = vec![None; z.len()];
     for (t, slot) in fitted.iter_mut().enumerate().skip(degree) {
@@ -167,13 +168,16 @@ pub fn score(
     }
 
     let mut forecasts = Vec::with_capacity(horizon);
-    let w_forecasts = future_w(spec, &w, &hats, horizon)?;
     let mut extended = z.clone();
-    for (h, what) in w_forecasts.iter().enumerate() {
+    for (what, var_factor) in w_forecasts.iter().zip(&var_factors) {
         let zhat = invert_difference(&diff, &extended, extended.len(), spec.constant + what)?;
         extended.push(zhat);
-        let sum_psi2: f64 = psi.iter().take(h.saturating_add(1)).map(|p| p * p).sum();
-        let se = (spec.sigma2 * sum_psi2).sqrt();
+        if *var_factor < 0.0 || !var_factor.is_finite() {
+            return Err(ArimaError::Data(
+                "Time Series forecast variance is not positive".into(),
+            ));
+        }
+        let se = (spec.sigma2 * var_factor).sqrt();
         forecasts.push(back_transform(spec.transform, zhat, se, tcrit)?);
     }
     Ok(SeriesScore { fitted, forecasts })
@@ -531,11 +535,34 @@ pub fn likelihood_residuals(spec: &ArimaSpec, y: &[f64]) -> Result<(Vec<f64>, f6
     Ok((residuals, log_det))
 }
 
+type ForecastInnovations = (Vec<f64>, Vec<f64>, Vec<f64>, Vec<f64>);
+
 /// Innovations algorithm. `hats[i]` predicts `w[i]` (`hats[0] = 0`); `hats[n]`
 /// is the one-step predictor beyond the sample. `v[i]` is its MSE with σ² = 1.
 fn innovations(w: &[f64], gamma: &[f64]) -> Result<(Vec<f64>, Vec<f64>), ArimaError> {
+    let (hats, v, _, _) = innovations_with_forecasts(&[], 0, w, gamma, &[1.0], 0)?;
+    Ok((hats, v))
+}
+
+/// The innovations recursion continued over `horizon` future steps: one-step predictors and
+/// MSEs, then finite-history forecasts of `w` and their variance factors (σ² = 1) for the
+/// expanded ARMA with AR coefficients `ar` and MA order `q_deg`, integrated by `diff`.
+fn innovations_with_forecasts(
+    ar: &[f64],
+    q_deg: usize,
+    w: &[f64],
+    gamma: &[f64],
+    diff: &[f64],
+    horizon: usize,
+) -> Result<ForecastInnovations, ArimaError> {
     let n = w.len();
-    let mut v = vec![0.0; n.saturating_add(1)];
+    let total = n.saturating_add(horizon);
+    if total > MAX_INNOVATIONS {
+        return Err(ArimaError::Settings(format!(
+            "GAP: ARIMA series + horizon {total} exceeds {MAX_INNOVATIONS} for exact innovations"
+        )));
+    }
+    let mut v = vec![0.0; total.saturating_add(1)];
     let g0 = *gamma
         .first()
         .ok_or_else(|| ArimaError::Data("ARMA autocovariance is empty".into()))?;
@@ -543,9 +570,12 @@ fn innovations(w: &[f64], gamma: &[f64]) -> Result<(Vec<f64>, Vec<f64>), ArimaEr
         *slot = g0;
     }
     let mut hats = vec![0.0; n.saturating_add(1)];
-    let mut thetas: Vec<Vec<f64>> = Vec::with_capacity(n);
-    for n_obs in 1..=n {
+    let mut thetas: Vec<Vec<f64>> = Vec::with_capacity(total);
+    for n_obs in 1..=total {
         let mut th = vec![0.0; n_obs.saturating_add(1)];
+        if let Some(slot) = th.first_mut() {
+            *slot = 1.0;
+        }
         for k in 0..n_obs {
             let lag = n_obs.saturating_sub(k);
             let mut acc = gamma.get(lag).copied().unwrap_or(0.0);
@@ -577,96 +607,123 @@ fn innovations(w: &[f64], gamma: &[f64]) -> Result<(Vec<f64>, Vec<f64>), ArimaEr
         if let Some(slot) = v.get_mut(n_obs) {
             *slot = vn;
         }
-        thetas.push(th.clone());
-        let mut hat = 0.0;
-        for j in 1..=n_obs {
-            let idx = n_obs.saturating_sub(j);
+        if n_obs <= n {
+            let mut hat = 0.0;
+            for j in 1..=n_obs {
+                let idx = n_obs.saturating_sub(j);
+                let w_idx = w.get(idx).copied().unwrap_or(0.0);
+                let h_idx = hats.get(idx).copied().unwrap_or(0.0);
+                let thj = th.get(j).copied().unwrap_or(0.0);
+                hat += thj * (w_idx - h_idx);
+            }
+            if let Some(slot) = hats.get_mut(n_obs) {
+                *slot = hat;
+            }
+        }
+        thetas.push(th);
+    }
+
+    let mut w_forecasts = Vec::with_capacity(horizon);
+    for a in 0..horizon {
+        let m = n.saturating_add(a);
+        let mut pred = 0.0;
+        for idx in 0..n {
+            let lag = m.saturating_sub(idx);
+            let th_val = if m == 0 {
+                0.0
+            } else {
+                thetas
+                    .get(m.saturating_sub(1))
+                    .and_then(|row| row.get(lag))
+                    .copied()
+                    .unwrap_or(0.0)
+            };
             let w_idx = w.get(idx).copied().unwrap_or(0.0);
             let h_idx = hats.get(idx).copied().unwrap_or(0.0);
-            let thj = th.get(j).copied().unwrap_or(0.0);
-            hat += thj * (w_idx - h_idx);
+            pred += th_val * (w_idx - h_idx);
         }
-        if let Some(slot) = hats.get_mut(n_obs) {
-            *slot = hat;
-        }
+        w_forecasts.push(pred);
     }
-    Ok((hats, v))
-}
 
-fn integrated_psi(spec: &ArimaSpec, hmax: usize) -> Result<Vec<f64>, ArimaError> {
-    let hmax = hmax.clamp(1, MAX_PSI);
-    let mut ar_poly = vec![1.0];
-    for coef in &spec.ar {
+    let mut ar_poly = Vec::with_capacity(ar.len().saturating_add(1));
+    ar_poly.push(1.0);
+    for coef in ar {
         ar_poly.push(-coef);
     }
-    ar_poly = polynomial_product(&ar_poly, &spec.difference_polynomial()?);
-    let mut ma_poly = vec![1.0];
-    ma_poly.extend_from_slice(&spec.ma);
-    let mut psi = vec![0.0; hmax];
+    let ar_diff = polynomial_product(&ar_poly, diff);
+    let psi_ad = difference_inverse(&ar_diff, horizon);
+    let p_deg = ar.len();
+    let theta_x = |m: usize, j: usize| -> f64 {
+        if j == 0 {
+            return 1.0;
+        }
+        let mut val = 0.0;
+        for i in 0..=p_deg.min(j) {
+            let lag = j.saturating_sub(i);
+            let row_idx = m.saturating_sub(i);
+            let th_w = if lag == 0 {
+                1.0
+            } else if row_idx == 0 {
+                0.0
+            } else {
+                thetas
+                    .get(row_idx.saturating_sub(1))
+                    .and_then(|row| row.get(lag))
+                    .copied()
+                    .unwrap_or(0.0)
+            };
+            let ar_i = ar_poly.get(i).copied().unwrap_or(0.0);
+            val += ar_i * th_w;
+        }
+        val
+    };
+
+    let mut var_factors = Vec::with_capacity(horizon);
+    for a in 0..horizon {
+        let mut acc_var = 0.0;
+        for r_idx in 0..=a {
+            let base_r = r_idx.max(a.saturating_sub(q_deg));
+            let mut c_ar = 0.0;
+            for j in 0..=a.saturating_sub(r_idx).min(q_deg) {
+                let m_lookup = n.saturating_add(if j == 0 {
+                    r_idx
+                } else {
+                    base_r.saturating_add(j)
+                });
+                let pd = psi_ad
+                    .get(a.saturating_sub(r_idx).saturating_sub(j))
+                    .copied()
+                    .unwrap_or(0.0);
+                c_ar += pd * theta_x(m_lookup, j);
+            }
+            let vr = v.get(n.saturating_add(r_idx)).copied().unwrap_or(0.0);
+            acc_var += c_ar * c_ar * vr;
+        }
+        var_factors.push(acc_var);
+    }
+
+    Ok((hats, v, w_forecasts, var_factors))
+}
+
+fn difference_inverse(diff: &[f64], horizon: usize) -> Vec<f64> {
+    let len = horizon.clamp(1, MAX_PSI);
+    let mut psi = vec![0.0; len];
     if let Some(slot) = psi.first_mut() {
         *slot = 1.0;
     }
-    for k in 1..hmax {
-        let mut acc = ma_poly.get(k).copied().unwrap_or(0.0);
-        let last = k.min(ar_poly.len().saturating_sub(1));
-        for i in 1..=last {
-            let ar_i = ar_poly.get(i).copied().unwrap_or(0.0);
-            let psi_prev = psi.get(k.saturating_sub(i)).copied().unwrap_or(0.0);
-            acc -= ar_i * psi_prev;
+    let degree = diff.len().saturating_sub(1);
+    for j in 1..len {
+        let mut acc = 0.0;
+        for i in 1..=j.min(degree) {
+            let d_i = diff.get(i).copied().unwrap_or(0.0);
+            let prev = psi.get(j.saturating_sub(i)).copied().unwrap_or(0.0);
+            acc -= d_i * prev;
         }
-        if let Some(slot) = psi.get_mut(k) {
+        if let Some(slot) = psi.get_mut(j) {
             *slot = acc;
         }
     }
-    Ok(psi)
-}
-
-fn future_w(
-    spec: &ArimaSpec,
-    w: &[f64],
-    hats: &[f64],
-    horizon: usize,
-) -> Result<Vec<f64>, ArimaError> {
-    let mut out = Vec::with_capacity(horizon);
-    let residuals: Vec<f64> = w
-        .iter()
-        .enumerate()
-        .map(|(i, value)| value - hats.get(i).copied().unwrap_or(0.0))
-        .collect();
-    for h in 1..=horizon {
-        let wf = if h == 1 {
-            hats.get(w.len()).copied().unwrap_or(0.0)
-        } else {
-            let mut acc = 0.0;
-            for (i, phi) in spec.ar.iter().enumerate() {
-                let idx = w
-                    .len()
-                    .saturating_add(h)
-                    .saturating_sub(1)
-                    .saturating_sub(i.saturating_add(1));
-                let val = if idx < w.len() {
-                    w.get(idx).copied().unwrap_or(0.0)
-                } else {
-                    out.get(idx.saturating_sub(w.len())).copied().unwrap_or(0.0)
-                };
-                acc += phi * val;
-            }
-            for j in h..=spec.ma.len() {
-                let idx = w
-                    .len()
-                    .saturating_add(h)
-                    .saturating_sub(1)
-                    .saturating_sub(j);
-                if let Some(a) = residuals.get(idx) {
-                    let theta = spec.ma.get(j.saturating_sub(1)).copied().unwrap_or(0.0);
-                    acc += theta * a;
-                }
-            }
-            acc
-        };
-        out.push(wf);
-    }
-    Ok(out)
+    psi
 }
 
 #[cfg(test)]
@@ -766,5 +823,36 @@ mod tests {
         let h2 = scored.forecasts[1];
         assert!(close(h2.point, 41.629610787216457, 1e-12));
         assert!(close(h2.lower, 36.868925585806707, 1e-12));
+    }
+
+    #[test]
+    fn finite_history_forecast_conditioning_uses_innovations_variance() {
+        let spec = ArimaSpec {
+            seasonal_d: 1,
+            period: 12,
+            seasonal_ar: vec![],
+            seasonal_ma: vec![-0.8183351823458053],
+            transform: Transform::None,
+            constant: -0.014048492884527525,
+            d: 1,
+            ar: vec![],
+            ma: vec![-0.9929555033480911],
+            sigma2: 2.915957104462519,
+            df: 80.0,
+        };
+        let y: Vec<f64> = (0..96).map(|t| 50.0 + 0.5 * f64::from(t)).collect();
+        let expanded = spec.expanded().unwrap();
+        let diff = expanded.difference_polynomial().unwrap();
+        let w: Vec<f64> = filter_difference(&y, &diff)
+            .iter()
+            .map(|v| v - expanded.constant)
+            .collect();
+        let gamma = arma_gamma(&expanded.ar, &expanded.ma, w.len() + 8).unwrap();
+        let (_, v, _, var_factors) =
+            innovations_with_forecasts(&expanded.ar, expanded.ma.len(), &w, &gamma, &diff, 6)
+                .unwrap();
+        assert!(close(v[w.len()], 1.0373129324449755, 1e-12));
+        assert!(close(var_factors[0], v[w.len()], 1e-15));
+        assert!(var_factors[0] > 1.03);
     }
 }
