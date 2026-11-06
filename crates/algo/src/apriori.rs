@@ -15,7 +15,9 @@
 //! 80 percent of 16 do not depend on binary fractions.
 //!
 //! Generation order (`apriori_default` rules 1–5 and `apriori_thresholds` rules 1–7): items are
-//! ranked by ascending support, then by their original index, then by name. Itemsets are grown
+//! ranked ascending by (support, number of frequent itemsets containing the item). The sort is
+//! an insertion sort with a sentinel over field order (see [`sentinel_insertion_order`]), which
+//! settles equal keys (`apriori_tie`, `apriori_tie2`, `tie_equal`, `tie_twonew`). Itemsets are grown
 //! level by level in lexicographic order of that rank. For each itemset of size at least 2,
 //! each member is tried as the single consequent, most frequent first. The antecedent must
 //! meet the minimum support, fit in `maxRuleAntecedents`, and every antecedent item must be an
@@ -46,25 +48,6 @@
 //! Tabular differing sets (`antecons_diff_tab`): antecedents omit `jam`, so `jam=>butter`
 //! and `jam+bread=>butter` are dropped (3 rules, 4 items).
 //!
-//! GAP: the rank of items with equal support when they fall in separate co-occurrence blocks
-//! (`tie_equal`, `tie_twonew`, and the saved rule order of `apriori_tie/k5_two*` and
-//! `apriori_tie/food_two`). In `apriori_tie` every rule has confidence 1, so the scored
-//! outputs, and therefore the regression, still match. The rule order model itself holds
-//! there (itemsets by size, then by rank; consequents from the highest rank).
-//! Probe `apriori_tie` (12 cases) separates the cases:
-//! - Equal items that always occur together keep field (column) order for k = 2..6. This holds
-//!   whatever the names (`k5_revnames`, `k5_shuffle`), so the rule is field order.
-//! - With a 3-item block in columns 0-2 and a 2-item block in columns 3-4, Modeler ranks
-//!   3, 4, 1, 2, 0: the 2-block first, and the 3-block rotated. The data order of the blocks
-//!   does not matter (`k5_two_swapblocks`).
-//! - With the 2-block in columns 0-1 the rank is plain field order (`food_two_perm`).
-//!
-//! So the tie break depends on co-occurrence structure, not on names or row order. A
-//! java.util.PriorityQueue keyed by (support, number of frequent pairs) reproduces every
-//! two-block case but scrambles the one-block cases. Heap, selection, shell, Hoare and
-//! Lomuto sorts fail some case when scripted (`rea-work/apriori-tie/pq.py`, `sorts3.py`).
-//! Hash-map iteration of itemset keys and FP-growth or Eclat discovery orders were checked
-//! by hand on k3 and k5_two only, and fail one of them.
 //! GAP: rules with an empty antecedent and events are rejected.
 //! GAP: `Item` / `Itemset` element order in Modeler's file is not id order and is not
 //! reproduced. Comparison is by id.
@@ -643,74 +626,44 @@ fn mine(
             (name, count, index)
         })
         .collect();
-    ranked.sort_by(|left, right| {
-        left.1
-            .cmp(&right.1)
-            .then(left.2.cmp(&right.2))
-            .then(left.0.cmp(&right.0))
-    });
-    let names: Vec<String> = ranked.iter().map(|(name, _, _)| name.clone()).collect();
-    let rank_of: HashMap<&str, u16> = names
-        .iter()
-        .enumerate()
-        .map(|(index, name)| {
-            let rank = u16::try_from(index).unwrap_or(u16::MAX);
-            (name.as_str(), rank)
-        })
-        .collect();
-    let mut baskets = Vec::with_capacity(prepared.transactions.len());
-    for basket in &prepared.transactions {
-        let mut ranks = Vec::new();
-        for name in basket {
-            if let Some(rank) = rank_of.get(name.as_str()) {
-                ranks.push(*rank);
-            }
-        }
-        ranks.sort_unstable();
-        ranks.dedup();
-        baskets.push(ranks);
-    }
-    let mut tids: Vec<Vec<u32>> = vec![Vec::new(); names.len()];
-    for (row, basket) in baskets.iter().enumerate() {
-        let Some(row) = u32::try_from(row).ok() else {
-            return Err(AlgoError::Data("too many transactions".into()));
-        };
-        for &rank in basket {
-            if let Some(list) = tids.get_mut(usize::from(rank)) {
-                list.push(row);
-            }
-        }
-    }
-    let mut counts_of: HashMap<Vec<u16>, u64> = HashMap::new();
-    let mut frequent: HashSet<Vec<u16>> = HashSet::new();
-    let mut level = Vec::new();
-    for (rank, list) in tids.into_iter().enumerate() {
-        let Some(rank) = u16::try_from(rank).ok() else {
-            return Err(AlgoError::Data("too many items".into()));
-        };
-        let key = vec![rank];
-        let count = u64::try_from(list.len()).unwrap_or(u64::MAX);
-        counts_of.insert(key.clone(), count);
-        frequent.insert(key.clone());
-        level.push(Node {
-            items: key,
-            tids: list,
-        });
-    }
+    // Start from field (first-seen) order, then name.
+    ranked.sort_by(|left, right| left.2.cmp(&right.2).then(left.0.cmp(&right.0)));
     let max_size = usize::try_from(settings.max_antecedents)
         .unwrap_or(32)
         .saturating_add(1);
-    let mut levels = vec![level];
-    while levels.len() < max_size {
-        let next = join(levels.last(), &frequent, supp, conf, n, &mut counts_of)?;
-        if next.is_empty() {
-            break;
+    // The set of frequent itemsets does not depend on the rank, so a provisional rank
+    // (ascending support, field order) yields the secondary key: how many frequent itemsets of
+    // two or more items contain each item.
+    let mut provisional: Vec<usize> = (0..ranked.len()).collect();
+    provisional.sort_by_key(|&at| ranked.get(at).map_or(0, |(_, count, _)| *count));
+    let provisional_names: Vec<String> = provisional
+        .iter()
+        .filter_map(|&at| ranked.get(at).map(|(name, _, _)| name.clone()))
+        .collect();
+    let (provisional_counts, _) =
+        frequent_levels(prepared, &provisional_names, supp, conf, n, max_size)?;
+    let mut in_sets = vec![0usize; ranked.len()];
+    for items in provisional_counts.keys().filter(|items| items.len() >= 2) {
+        for &rank in items {
+            if let Some(slot) = provisional
+                .get(usize::from(rank))
+                .and_then(|&at| in_sets.get_mut(at))
+            {
+                *slot = slot.saturating_add(1);
+            }
         }
-        for node in &next {
-            frequent.insert(node.items.clone());
-        }
-        levels.push(next);
     }
+    let keys: Vec<(u64, usize)> = ranked
+        .iter()
+        .zip(&in_sets)
+        .map(|((_, count, _), sets)| (*count, *sets))
+        .collect();
+    let order = sentinel_insertion_order(&keys);
+    let names: Vec<String> = order
+        .iter()
+        .filter_map(|&at| ranked.get(at).map(|(name, _, _)| name.clone()))
+        .collect();
+    let (counts_of, levels) = frequent_levels(prepared, &names, supp, conf, n, max_size)?;
     let mut rules = Vec::new();
     for level in levels.iter().skip(1) {
         for node in level {
@@ -779,6 +732,80 @@ fn mine(
         }
     }
     Ok((names, rules, n))
+}
+
+/// Itemset counts and the levels of nodes built under one item rank.
+type Levels = (HashMap<Vec<u16>, u64>, Vec<Vec<Node>>);
+
+/// Frequent itemsets under one item rank: their counts, and the levels of nodes (singletons
+/// first) that rule generation walks.
+fn frequent_levels(
+    prepared: &Prepared,
+    names: &[String],
+    supp: u128,
+    conf: u128,
+    n: u64,
+    max_size: usize,
+) -> Result<Levels, AlgoError> {
+    let rank_of: HashMap<&str, u16> = names
+        .iter()
+        .enumerate()
+        .map(|(index, name)| {
+            let rank = u16::try_from(index).unwrap_or(u16::MAX);
+            (name.as_str(), rank)
+        })
+        .collect();
+    let mut baskets = Vec::with_capacity(prepared.transactions.len());
+    for basket in &prepared.transactions {
+        let mut ranks = Vec::new();
+        for name in basket {
+            if let Some(rank) = rank_of.get(name.as_str()) {
+                ranks.push(*rank);
+            }
+        }
+        ranks.sort_unstable();
+        ranks.dedup();
+        baskets.push(ranks);
+    }
+    let mut tids: Vec<Vec<u32>> = vec![Vec::new(); names.len()];
+    for (row, basket) in baskets.iter().enumerate() {
+        let Some(row) = u32::try_from(row).ok() else {
+            return Err(AlgoError::Data("too many transactions".into()));
+        };
+        for &rank in basket {
+            if let Some(list) = tids.get_mut(usize::from(rank)) {
+                list.push(row);
+            }
+        }
+    }
+    let mut counts_of: HashMap<Vec<u16>, u64> = HashMap::new();
+    let mut frequent: HashSet<Vec<u16>> = HashSet::new();
+    let mut level = Vec::new();
+    for (rank, list) in tids.into_iter().enumerate() {
+        let Some(rank) = u16::try_from(rank).ok() else {
+            return Err(AlgoError::Data("too many items".into()));
+        };
+        let key = vec![rank];
+        let count = u64::try_from(list.len()).unwrap_or(u64::MAX);
+        counts_of.insert(key.clone(), count);
+        frequent.insert(key.clone());
+        level.push(Node {
+            items: key,
+            tids: list,
+        });
+    }
+    let mut levels = vec![level];
+    while levels.len() < max_size {
+        let next = join(levels.last(), &frequent, supp, conf, n, &mut counts_of)?;
+        if next.is_empty() {
+            break;
+        }
+        for node in &next {
+            frequent.insert(node.items.clone());
+        }
+        levels.push(next);
+    }
+    Ok((counts_of, levels))
 }
 
 fn join(
@@ -1234,6 +1261,43 @@ fn floor_ok(count: u64, supp: u128, conf: u128, n: u64) -> bool {
         return false;
     };
     left >= right
+}
+
+/// Modeler's item rank: an insertion sort with a sentinel, ascending by key. The first
+/// minimum is swapped into position 0, then the rest is insertion-sorted (stable). The one
+/// swap makes equal keys unstable in a specific way: the item first in field order moves to
+/// where the minimum was.
+///
+/// The key is (support, number of frequent itemsets of two or more items containing the
+/// item). It reproduces all 23 `apriori_tie`/`apriori_tie2` layouts, plus
+/// `apriori_more/tie_equal`, `tie_twonew` and `trueflags_false`. Support alone fits only
+/// 14 of the 23. The count of frequent pairs fits the 23 but breaks `trueflags_false`
+/// (butter=T before butter=F). The size of the largest frequent itemset containing the item
+/// fits everything too; no recorded case separates it from the count.
+fn sentinel_insertion_order<K: Ord>(keys: &[K]) -> Vec<usize> {
+    let mut order: Vec<usize> = (0..keys.len()).collect();
+    let key = |at: usize| keys.get(at);
+    let mut min = 0usize;
+    for (position, &at) in order.iter().enumerate().skip(1) {
+        if key(at) < key(order.get(min).copied().unwrap_or(0)) {
+            min = position;
+        }
+    }
+    order.swap(0, min);
+    for i in 2..order.len() {
+        let mut j = i;
+        while j > 1 {
+            let (Some(&before), Some(&here)) = (order.get(j - 1), order.get(j)) else {
+                break;
+            };
+            if key(before) <= key(here) {
+                break;
+            }
+            order.swap(j - 1, j);
+            j -= 1;
+        }
+    }
+    order
 }
 
 fn ratio(numer: u64, denom: u64) -> f64 {
