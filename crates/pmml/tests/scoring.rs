@@ -433,6 +433,90 @@ fn general_regression_and_regression_models() {
     assert_close(pred.probabilities[0].1, 1.0 - p1);
     assert_close(pred.probabilities[1].1, p1);
 
+    // 2b. generalizedLinear binomial classification (GLE Phase I)
+    let gle_xml = r#"
+<PMML version="4.3" xmlns="http://www.dmg.org/PMML-4_3">
+  <DataDictionary>
+    <DataField name="y" optype="categorical" dataType="string">
+      <Value value="F"/>
+      <Value value="T"/>
+    </DataField>
+    <DataField name="x" optype="continuous" dataType="double"/>
+  </DataDictionary>
+  <GeneralRegressionModel modelType="generalizedLinear" functionName="classification" linkFunction="logit" targetReferenceCategory="T">
+    <MiningSchema>
+      <MiningField name="x"/>
+      <MiningField name="y" usageType="target"/>
+    </MiningSchema>
+    <ParameterList>
+      <Parameter name="p0"/>
+      <Parameter name="p1"/>
+    </ParameterList>
+    <CovariateList>
+      <Predictor name="x"/>
+    </CovariateList>
+    <PPMatrix>
+      <PPCell value="1" predictorName="x" parameterName="p1"/>
+    </PPMatrix>
+    <ParamMatrix>
+      <PCell parameterName="p0" beta="0"/>
+      <PCell parameterName="p1" beta="0"/>
+    </ParamMatrix>
+  </GeneralRegressionModel>
+</PMML>
+"#;
+    let pmml = Pmml::parse(gle_xml).unwrap();
+    let pred = pmml
+        .bind(&["x"])
+        .unwrap()
+        .score(&[Value::Number(1.0)])
+        .unwrap();
+    assert_eq!(pred.value, Value::Text("T".into()));
+    assert_close(pred.confidence.unwrap(), 0.5);
+    assert_eq!(pred.probabilities[0].0, "F");
+    assert_close(pred.probabilities[0].1, 0.5);
+
+    // 2c. binomial identity: class from unclamped μ, confidence is μ or 1−μ (`oracle/gle`)
+    let gle_id_xml = r#"
+<PMML version="4.3" xmlns="http://www.dmg.org/PMML-4_3">
+  <DataDictionary>
+    <DataField name="y" optype="categorical" dataType="string">
+      <Value value="T"/>
+      <Value value="F"/>
+    </DataField>
+    <DataField name="x" optype="continuous" dataType="double"/>
+  </DataDictionary>
+  <GeneralRegressionModel modelType="generalizedLinear" functionName="classification" distribution="binomial" linkFunction="identity" targetReferenceCategory="T">
+    <MiningSchema>
+      <MiningField name="x"/>
+      <MiningField name="y" usageType="target"/>
+    </MiningSchema>
+    <ParameterList>
+      <Parameter name="p0"/>
+      <Parameter name="p1"/>
+    </ParameterList>
+    <CovariateList>
+      <Predictor name="x"/>
+    </CovariateList>
+    <PPMatrix>
+      <PPCell value="1" predictorName="x" parameterName="p1"/>
+    </PPMatrix>
+    <ParamMatrix>
+      <PCell targetCategory="F" parameterName="p0" beta="4.931565618627143"/>
+      <PCell targetCategory="F" parameterName="p1" beta="-0.5163625892162619"/>
+    </ParamMatrix>
+  </GeneralRegressionModel>
+</PMML>
+"#;
+    let pmml = Pmml::parse(gle_id_xml).unwrap();
+    let pred = pmml
+        .bind(&["x"])
+        .unwrap()
+        .score(&[Value::Number(0.5)])
+        .unwrap();
+    assert_eq!(pred.value, Value::Text("F".into()));
+    assert_close(pred.confidence.unwrap(), 4.673384324019012);
+
     // 3. RegressionModel (regression + classification with softmax and logit)
     let reg_xml = r#"
 <PMML version="4.3" xmlns="http://www.dmg.org/PMML-4_3">

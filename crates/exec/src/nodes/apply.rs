@@ -20,6 +20,7 @@
 //! | C&R Tree, CHAID | `$R-<target>` prediction; `$RC-<target>` confidence (`calculateConfidences`); `$RRP-<target>` raw propensity, the probability of the second (true) category (`calculateRawPropensities`) |
 //! | Logistic | `$L-<target>` prediction; `$LP-<target>` confidence (`calculateConfidences`); `$LRP-<target>` raw propensity (`calculateRawPropensities`); `$LP-<category>` for every target category when enabled (below) |
 //! | Linear | `$L-<target>` prediction (`models/linear_enter`, `team/linear_regression`) |
+//! | GLE | regression `$G-<target>`; binomial logit `$L-<target>` `$LC-<target>`; binomial identity/log `$G-<target>` `$GC-<target>` (`oracle/gle`) |
 //! | Regression | `$E-<target>` prediction (`models/regression_enter`) |
 //! | K-Means | `$KM-<model name>`: `cluster-<cluster name>`; `$KMD-<model name>`: the Euclidean distance to that center, when the nugget's `buildSettings` set `generateDistanceField` |
 //! | TwoStep | `$T-<model name>`: the cluster name (`cluster-<n>`), by the log-likelihood distance; an integer with numeric labels (`buildSettings` `clusterLabelType` `NUMBER`) |
@@ -81,6 +82,8 @@ enum Kind {
     LinearSvm,
     /// Logistic regression: `$L-`, `$LP-`, `$LRP-`, and `$LP-<category>` when enabled.
     Logistic,
+    /// GLE: `$G-<target>` for regression and binomial identity/log; `$L-`/`$LC-` for logit.
+    Gle,
     /// Linear (ALM) nugget: `$L-<target>` only.
     Linear,
     /// Classic Regression nugget: `$E-<target>` only.
@@ -107,6 +110,10 @@ enum Kind {
     DecisionList,
     /// Apriori: `$A-`, `$AC-`, `$A-Rule_ID-`.
     Apriori,
+}
+
+fn is_gle_nugget(id: &str) -> bool {
+    id == "spss.gle!gle_applier"
 }
 
 pub fn build(node: &StreamNode) -> Result<Box<dyn Operator>, OperatorError> {
@@ -138,7 +145,55 @@ pub fn build(node: &StreamNode) -> Result<Box<dyn Operator>, OperatorError> {
         return super::time_series::apply(node);
     }
     let s = node.settings.as_ref();
-    let kind = match node.type_identifier().as_str() {
+    let type_id = node.type_identifier();
+    if is_gle_nugget(&type_id) {
+        match settings::text(s, "_GenerateSQL").as_deref().map(str::trim) {
+            None | Some("" | "false" | "udf" | "native") => {}
+            Some(other) => {
+                return Err(OperatorError::Settings(format!(
+                    "GAP: GLE _GenerateSQL={other:?}"
+                )));
+            }
+        }
+        let kind = Kind::Gle;
+        let model_name = settings::text(s, "modelName")
+            .filter(|name| !name.trim().is_empty())
+            .or_else(|| node.name.clone())
+            .unwrap_or_else(|| "GLE".to_string());
+        let model_el = settings::element(s, "model");
+        let pmml_member = model_el
+            .and_then(|model| model.attribute("pmml"))
+            .map(str::to_string)
+            .or_else(|| {
+                node.containers
+                    .iter()
+                    .find(|container| {
+                        matches!(container.name.as_deref(), Some("PMML" | "ANOMALY_XML"))
+                    })
+                    .map(|container| container.member.clone())
+            });
+        return Ok(Box::new(Apply {
+            kind,
+            pmml_member,
+            confidences: true,
+            raw_propensities: false,
+            all_probabilities: false,
+            distance: false,
+            numeric_labels: false,
+            decision_fields: (false, false),
+            tree_id: false,
+            cluster_label: false,
+            model_name,
+            properties: node.properties_attachment.clone(),
+            anomaly: None,
+            apriori: AprioriOptions {
+                max_predictions: 0,
+                ..APRIORI_DEFAULTS
+            },
+            inline_model_xml: None,
+        }));
+    }
+    let kind = match type_id.as_str() {
         "ApplyCartRuleNode" | "ApplyChaidRuleNode" | "ApplyQuestRuleNode" | "ApplyC5RuleNode" => {
             Kind::Rule
         }
@@ -889,7 +944,22 @@ impl Apply {
             )]);
         }
         let target = target_name(pmml)?;
+        let gle_regression = self.kind == Kind::Gle
+            && matches!(
+                &pmml.model,
+                dms_pmml::Model::GeneralRegression(model)
+                    if model.header.function == dms_pmml::MiningFunction::Regression
+            );
+        let gle_glm_class = self.kind == Kind::Gle
+            && matches!(
+                &pmml.model,
+                dms_pmml::Model::GeneralRegression(model)
+                    if model.header.function == dms_pmml::MiningFunction::Classification
+                        && model.model_type == dms_pmml::GeneralModelType::GeneralizedLinear
+            );
         let (value_prefix, confidence_prefix, propensity_prefix) = match self.kind {
+            Kind::Gle if gle_regression || gle_glm_class => ("$G", "$GC", "$GRP"),
+            Kind::Gle => ("$L", "$LC", "$LRP"),
             Kind::Logistic | Kind::Linear => ("$L", "$LP", "$LRP"),
             Kind::LinearSvm => ("$L", "$LC", "$LRP"),
             Kind::Regression => ("$E", "$EC", "$ERP"),
@@ -912,6 +982,7 @@ impl Apply {
             }
         };
         let continuous_only = matches!(self.kind, Kind::Linear | Kind::Regression)
+            || gle_regression
             || (matches!(
                 self.kind,
                 Kind::RandomTrees | Kind::TreeAs | Kind::LinearSvm
@@ -924,7 +995,13 @@ impl Apply {
             .map(|n: usize| if n == 0 { String::new() } else { n.to_string() })
             .find(|n| !taken(&format!("{value_prefix}{n}-{target}")))
             .unwrap_or_default();
-        let storage = target_storage(pmml, &target);
+        // A GLE regression predicts a mean, real even for an integer (count) target
+        // (`gle/gle_poisson_*`: `$G-y_poisson` 1.0768...).
+        let storage = if gle_regression {
+            Storage::Real
+        } else {
+            target_storage(pmml, &target)
+        };
         let mut columns = vec![column(
             &format!("{value_prefix}{index}-{target}"),
             storage,
