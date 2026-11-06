@@ -347,6 +347,88 @@ pub fn expert_seasonal_difference(z: &[f64], period: usize) -> usize {
     usize::from(population_variance(&seasonal) < population_variance(z))
 }
 
+/// Whether the Expert Modeler keeps the constant of a model with the ARMA part of `spec`:
+/// always when the model has no AR or MA terms, otherwise when the constant's t statistic
+/// ([`expert_constant_t`]) exceeds 1.96 in absolute value.
+///
+/// Inferred from Modeler's selections, not documented: all recorded ARIMA selections agree
+/// (dropped constants have |t| <= 1.25 and all have ARMA terms; kept ones with ARMA terms have
+/// |t| >= 2.76; `crates/exec/tests/time_series_expert.rs`).
+pub fn expert_keeps_constant(spec: &ArimaSpec, y: &[f64]) -> Result<bool, ArimaError> {
+    let terms = [&spec.ar, &spec.ma, &spec.seasonal_ar, &spec.seasonal_ma]
+        .iter()
+        .flat_map(|coefficients| coefficients.iter())
+        .filter(|c| **c != 0.0)
+        .count();
+    Ok(terms == 0 || expert_constant_t(spec, y)?.abs() > 1.96)
+}
+
+/// The t statistic of the mean of the differenced (transformed) series, with the ARMA
+/// coefficients of `spec` held fixed: the GLS estimate `1'Σ⁻¹w / 1'Σ⁻¹1` over its standard
+/// error, the residual variance on `n − k` degrees of freedom (`k` counts the nonzero ARMA
+/// coefficients and the constant). `spec.constant` is ignored.
+pub fn expert_constant_t(spec: &ArimaSpec, y: &[f64]) -> Result<f64, ArimaError> {
+    spec.check()?;
+    let parameters = 1 + [&spec.ar, &spec.ma, &spec.seasonal_ar, &spec.seasonal_ma]
+        .iter()
+        .flat_map(|coefficients| coefficients.iter())
+        .filter(|c| **c != 0.0)
+        .count();
+    let expanded = spec.expanded()?;
+    if y.len() > 512 || y.iter().any(|v| !v.is_finite()) {
+        return Err(ArimaError::Data(
+            "ARIMA constant test requires at most 512 finite observations".into(),
+        ));
+    }
+    let z = transform(expanded.transform, y)?;
+    let w = filter_difference(&z, &expanded.difference_polynomial()?);
+    let n = w.len();
+    if n <= parameters {
+        return Err(ArimaError::Data(
+            "too few observations for the constant test".into(),
+        ));
+    }
+    let gamma = arma_gamma(&expanded.ar, &expanded.ma, n.saturating_add(2))?;
+    let standardized = |series: &[f64]| -> Result<Vec<f64>, ArimaError> {
+        let (hats, variances) = innovations(series, &gamma)?;
+        series
+            .iter()
+            .zip(hats)
+            .zip(variances)
+            .map(|((value, hat), variance)| {
+                if variance > 0.0 && variance.is_finite() {
+                    Ok((value - hat) / variance.sqrt())
+                } else {
+                    Err(ArimaError::Data(
+                        "ARIMA innovation variance is not positive".into(),
+                    ))
+                }
+            })
+            .collect()
+    };
+    let e_w = standardized(&w)?;
+    let e_one = standardized(&vec![1.0; n])?;
+    let information: f64 = e_one.iter().map(|v| v * v).sum();
+    if information <= 0.0 || !information.is_finite() {
+        return Err(ArimaError::Data(
+            "constant test information is not positive".into(),
+        ));
+    }
+    let mean = e_w.iter().zip(&e_one).map(|(a, b)| a * b).sum::<f64>() / information;
+    let sse: f64 = e_w
+        .iter()
+        .zip(&e_one)
+        .map(|(a, b)| (a - mean * b) * (a - mean * b))
+        .sum();
+    let sigma2 = sse / (n - parameters) as f64;
+    if sigma2 <= 0.0 || !sigma2.is_finite() {
+        return Err(ArimaError::Data(
+            "constant test residual variance is not positive".into(),
+        ));
+    }
+    Ok(mean * (information / sigma2).sqrt())
+}
+
 fn population_variance(x: &[f64]) -> f64 {
     let n = x.len() as f64;
     let mean = x.iter().sum::<f64>() / n;
