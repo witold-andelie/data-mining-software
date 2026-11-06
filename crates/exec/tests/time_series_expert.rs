@@ -398,3 +398,58 @@ fn expert_exponential_smoothing_selects_all_22_oracle_models_without_saved_pmml(
         );
     }
 }
+
+/// The constant: kept for a model without AR or MA terms, otherwise exactly when its t
+/// statistic (ARMA part held fixed) exceeds 1.96, for every recorded ARIMA selection.
+#[test]
+fn expert_arima_constant_matches_every_recorded_arima_selection() {
+    let mut checked = 0;
+    let mut dropped = 0;
+    let (mut max_dropped, mut min_kept_arma) = (0.0_f64, f64::INFINITY);
+    for label in [
+        "ts_expert",
+        "ts_expert2",
+        "ts_expert3",
+        "ts_expert4",
+        "ts_expert5",
+    ] {
+        let dir = support::repo_root().join("corpus").join(label);
+        let mut cases: Vec<String> = std::fs::read_dir(&dir)
+            .unwrap()
+            .filter_map(|entry| {
+                let name = entry.unwrap().file_name().into_string().unwrap();
+                name.strip_suffix(".str").map(str::to_string)
+            })
+            .collect();
+        cases.sort();
+        for case in cases {
+            let (archive, stream) = open_case(label, &case);
+            let FittedSpec::Arima(spec) = saved_spec(&archive, &stream) else {
+                continue;
+            };
+            let y = input_series(label, &stream, "y");
+            let kept = spec.constant != 0.0;
+            let t = arima::expert_constant_t(&spec, &y).unwrap();
+            assert_eq!(
+                arima::expert_keeps_constant(&spec, &y).unwrap(),
+                kept,
+                "{label}/{case}: constant kept={kept}, t={t}"
+            );
+            checked += 1;
+            dropped += usize::from(!kept);
+            let has_arma = [&spec.ar, &spec.ma, &spec.seasonal_ar, &spec.seasonal_ma]
+                .iter()
+                .any(|c| c.iter().any(|v| *v != 0.0));
+            if kept && has_arma {
+                min_kept_arma = min_kept_arma.min(t.abs());
+            } else if !kept {
+                max_dropped = max_dropped.max(t.abs());
+            }
+        }
+    }
+    eprintln!(
+        "{checked} ARIMA selections, {dropped} dropped constants; max |t| dropped {max_dropped:.3}; min |t| kept with ARMA terms {min_kept_arma:.3}"
+    );
+    assert!(checked >= 60, "{checked} ARIMA selections checked");
+    assert!(dropped >= 10, "{dropped} dropped constants checked");
+}
