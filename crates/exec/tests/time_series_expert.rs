@@ -825,3 +825,80 @@ fn expert_arima_agrees_with_python_reference() {
     );
     assert!(exceptions.len() <= 2, "too many documented exceptions");
 }
+
+/// The Time Series builder, with its saved containers stripped, selects ARIMA-only Expert
+/// models through `arima::expert_arima` and fits the selected structure. Every reproduced
+/// selection whose builder is ARIMA-only must come out of the node with Modeler's structure,
+/// unless the fitter rejects the structure as a GAP.
+#[test]
+fn expert_arima_builder_selects_without_saved_pmml() {
+    let frozen = reproduced_cases();
+    let mut cases: Vec<_> = frozen.iter().cloned().collect();
+    cases.sort();
+    let (mut built, mut fit_gaps, mut other_family) = (Vec::new(), Vec::new(), Vec::new());
+    for (label, case) in cases {
+        let dir = support::repo_root().join("corpus").join(&label);
+        let (archive, mut stream) = open_case(&label, &case);
+        let FittedSpec::Arima(saved) = saved_spec(&archive, &stream) else {
+            panic!("{label}/{case}: saved model is not ARIMA");
+        };
+        let builder = stream
+            .diagram
+            .nodes
+            .iter_mut()
+            .find(|n| n.type_identifier() == "spss.ts!ts_builder")
+            .unwrap();
+        builder.containers.clear();
+        let builder_uid = builder.uid.clone();
+        let context = ExecContext {
+            files: FileResolver {
+                data_dirs: vec![dir],
+            },
+            attachments: Arc::new(Default::default()),
+            stream_properties: stream.properties.clone().map(Arc::new),
+            ..ExecContext::default()
+        };
+        let results = Plan::new(&stream).evaluate(&[&builder_uid], &context);
+        match results.get(&builder_uid) {
+            Some(Ok(NodeOutput::Model(pmml))) => {
+                let dms_pmml::Model::Mining(m) = &pmml.model else {
+                    panic!("{label}/{case}: expected mining model");
+                };
+                let dms_pmml::Model::TimeSeries { xml, .. } = m.segments[0].model.as_ref() else {
+                    panic!("{label}/{case}: expected TimeSeries segment");
+                };
+                let FittedSpec::Arima(ours) =
+                    dms_exec::nodes::time_series::parse_saved_model(xml).unwrap()
+                else {
+                    panic!("{label}/{case}: built model is not ARIMA");
+                };
+                assert_eq!(
+                    signature(&ours),
+                    signature(&saved),
+                    "{label}/{case}: built structure differs from Modeler's"
+                );
+                built.push(format!("{label}/{case}"));
+            }
+            Some(Err(e)) if e.to_string().contains("no recorded specification") => {
+                other_family.push(format!("{label}/{case}"));
+            }
+            Some(Err(e)) if e.to_string().contains("GAP") => {
+                fit_gaps.push(format!("{label}/{case}: {e}"));
+            }
+            other => panic!("{label}/{case}: {other:?}"),
+        }
+    }
+    eprintln!(
+        "built {} / fit GAP {} / AllModels {}\n{}",
+        built.len(),
+        fit_gaps.len(),
+        other_family.len(),
+        fit_gaps.join("\n")
+    );
+    // 8 reproduced selections come from AllModels builders (automatic AllModels selection is
+    // GAP). 8 select structures the fitter rejects: d = 2, or more than four AR or MA lags.
+    assert_eq!(
+        (built.len(), fit_gaps.len(), other_family.len()),
+        (66, 8, 8)
+    );
+}
