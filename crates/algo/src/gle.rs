@@ -620,46 +620,24 @@ fn estimate(
         Estimation::FisherScoring => settings.max_iterations.saturating_add(1),
         Estimation::Hybrid { fisher_iterations } => fisher_iterations,
     };
-    // The first iteration is a Fisher step only when K >= 1 (Newton-only uses the observed
-    // Hessian from the start: `gle4/g4_id_d_newton`).
+    // Guide 3.1.3 steps 2 and 6: H(i) uses the expected (Fisher) weights when i <= K, so
+    // with K >= 1 both H(0) and H(1) are Fisher and the default hybrid (K = 1) takes two
+    // Fisher steps; K = 0 is Newton-Raphson from the start (`gle4/g4_id_d_newton`).
     let Some((mut loglik, mut score, mut xtwx)) = derivatives(work, &beta, k_fisher >= 1) else {
         return Err(AlgoError::Data(
             "GLE starting log-likelihood is not finite".into(),
         ));
     };
-    // Hybrid estimation stops one Fisher iteration earlier than the limit: with one Fisher
-    // step Modeler's non-converging 3-cycle ends at iterate 99, Newton-only at 100
-    // (`gle4/g4_id_d_*`, `gle3/g3_id_d_def`).
-    let limit = match settings.estimation {
-        Estimation::Hybrid { fisher_iterations } => settings
-            .max_iterations
-            .saturating_sub(fisher_iterations)
-            .max(1),
-        _ => settings.max_iterations,
-    };
     let mut converged = false;
     let mut iterations = 0usize;
-    let mut need_newton_confirm = false;
-    let mut force_fisher = false;
-    loop {
-        if iterations >= limit {
-            break;
-        }
+    while iterations < settings.max_iterations {
         iterations = iterations.saturating_add(1);
-        let fisher_step = force_fisher || iterations <= k_fisher;
         let Some(delta) = sweep_solve(&xtwx, &score, p, settings.singularity) else {
             break;
         };
         match step_halve(work, &beta, &delta, loglik, settings.max_step_halving) {
             Some((new_beta, _)) => {
-                // The Hessian computed here serves the NEXT iteration, which is a Fisher
-                // step only while its number is at most K (Guide 3.1.3 step 6).
-                let use_fisher = if need_newton_confirm {
-                    false
-                } else {
-                    force_fisher || iterations.saturating_add(1) <= k_fisher
-                };
-                let Some((ll, s, a)) = derivatives(work, &new_beta, use_fisher) else {
+                let Some((ll, s, a)) = derivatives(work, &new_beta, iterations <= k_fisher) else {
                     break;
                 };
                 let param_ok = parameter_converged(&beta, &new_beta, settings);
@@ -674,27 +652,11 @@ fn estimate(
                     break;
                 }
                 if param_ok && like_ok && hess_ok {
-                    if matches!(settings.estimation, Estimation::Hybrid { .. })
-                        && iterations <= k_fisher
-                        && !need_newton_confirm
-                        && !force_fisher
-                    {
-                        need_newton_confirm = true;
-                        continue;
-                    }
                     converged = true;
                     break;
                 }
             }
-            None if !fisher_step => {
-                let Some((_, s, a)) = derivatives(work, &beta, true) else {
-                    break;
-                };
-                score = s;
-                xtwx = a;
-                force_fisher = true;
-                iterations = iterations.saturating_sub(1);
-            }
+            // Guide 3.1.3 step 5: step-halving exhausted without improvement stops.
             None => break,
         }
     }
@@ -1921,8 +1883,8 @@ mod tests {
                 "gle_gamma_inverse" => &[0.5710022328477902, -0.027836844753388417],
                 "gle_binom_logit" => &[22.429759271389315, -2.565075472490318],
                 // Ours, not Modeler's: these two remain gaps (xtask/known-gaps.tsv).
-                "gle_binom_identity" => &[-0.055134788184932226, 0.0636235591374231],
-                "gle_binom_log" => &[39.119061036382845, -4.115935218805453],
+                "gle_binom_identity" => &[-0.7414606021657878, 0.1582715062153454],
+                "gle_binom_log" => &[42.30870992073972, -4.453177950033853],
                 "gle_binom_factor" => &[
                     126.13034812751488,
                     -12.938444031206005,
