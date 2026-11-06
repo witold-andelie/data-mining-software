@@ -453,3 +453,48 @@ fn expert_arima_constant_matches_every_recorded_arima_selection() {
     assert!(checked >= 60, "{checked} ARIMA selections checked");
     assert!(dropped >= 10, "{dropped} dropped constants checked");
 }
+
+/// The transform (Guide appendix Step 2: OLS high-order AR on y, ln y and sqrt y, 4% gates) for
+/// every recorded ARIMA selection.
+#[test]
+fn expert_arima_transform_matches_every_recorded_arima_selection() {
+    let mut checked = 0;
+    let mut logged = 0;
+    for label in [
+        "ts_expert",
+        "ts_expert2",
+        "ts_expert3",
+        "ts_expert4",
+        "ts_expert5",
+        "ts_expert6",
+    ] {
+        let dir = support::repo_root().join("corpus").join(label);
+        let mut cases: Vec<String> = std::fs::read_dir(&dir)
+            .unwrap()
+            .filter_map(|entry| {
+                let name = entry.unwrap().file_name().into_string().unwrap();
+                name.strip_suffix(".str").map(str::to_string)
+            })
+            .collect();
+        cases.sort();
+        for case in cases {
+            let (archive, stream) = open_case(label, &case);
+            let FittedSpec::Arima(spec) = saved_spec(&archive, &stream) else {
+                continue;
+            };
+            let y = input_series(label, &stream, "y");
+            assert_eq!(
+                arima::expert_transform(&y, spec.period),
+                spec.transform,
+                "{label}/{case}: transform"
+            );
+            checked += 1;
+            logged += usize::from(spec.transform == arima::Transform::Log);
+        }
+    }
+    eprintln!("{checked} ARIMA selections, {logged} logged");
+    assert!(
+        checked >= 80 && logged >= 15,
+        "{checked} checked, {logged} logged"
+    );
+}

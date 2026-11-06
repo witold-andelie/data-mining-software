@@ -327,6 +327,110 @@ pub(crate) fn transform(kind: Transform, y: &[f64]) -> Result<Vec<f64>, ArimaErr
     }
 }
 
+/// The Expert Modeler's transform for the series `y` with seasonal period `period` (1 when
+/// nonseasonal), Guide appendix "Time Series Algorithm: Expert Modeler", Step 2. A high-order
+/// AR is fitted by OLS on `y`, `ln y` and `sqrt y`. Each is scored by the log-likelihood of the
+/// untransformed series, `-N/2 ln(sigma^2) + sum ln|dz/dy|`, with `sigma^2` the residual
+/// variance on its degrees of freedom and `N` the number of cases. The best one is used when
+/// both `(l_max - l_y)/N` and `|(l_max - l_y)/l_y|` exceed 4%. These likelihood conventions are
+/// not printed in the Guide; they are the ones that reproduce all 95 recorded transform
+/// decisions (`crates/exec/tests/time_series_expert.rs`).
+pub fn expert_transform(y: &[f64], period: usize) -> Transform {
+    let n = y.len();
+    let lags: Vec<usize> = if period <= 3 {
+        (1..=10).collect()
+    } else if period <= 11 {
+        // "AR(10) if there are not enough data"
+        if n > 14 + 20 {
+            (1..=14).collect()
+        } else {
+            (1..=10).collect()
+        }
+    } else {
+        let s = period;
+        (1..=6)
+            .chain(s..=s + 3)
+            .chain(2 * s..=2 * s + 2)
+            .filter(|lag| n >= 50 || *lag < 2 * s)
+            .collect()
+    };
+    let likelihood = |z: &[f64], jacobian: f64| -> Option<f64> {
+        let sigma2 = ols_ar_variance(z, &lags)?;
+        Some(-0.5 * n as f64 * sigma2.ln() + jacobian)
+    };
+    if y.iter().any(|v| !v.is_finite() || *v < 0.0) {
+        return Transform::None;
+    }
+    let Some(l_y) = likelihood(y, 0.0) else {
+        return Transform::None;
+    };
+    let mut best = (Transform::None, l_y);
+    if y.iter().all(|v| *v > 0.0) {
+        let logs: Vec<f64> = y.iter().map(|v| v.ln()).collect();
+        let roots: Vec<f64> = y.iter().map(|v| v.sqrt()).collect();
+        let jac_log = -logs.iter().sum::<f64>();
+        let jac_sqrt = -logs
+            .iter()
+            .map(|l| std::f64::consts::LN_2 + 0.5 * l)
+            .sum::<f64>();
+        for (kind, z, jac) in [
+            (Transform::Log, &logs, jac_log),
+            (Transform::Sqrt, &roots, jac_sqrt),
+        ] {
+            if let Some(l) = likelihood(z, jac)
+                && l > best.1
+            {
+                best = (kind, l);
+            }
+        }
+    }
+    let gain = best.1 - l_y;
+    if best.0 != Transform::None && gain / n as f64 > 0.04 && (gain / l_y).abs() > 0.04 {
+        best.0
+    } else {
+        Transform::None
+    }
+}
+
+/// Residual variance of an OLS AR fit with intercept on the given lags, on `n - p - k` degrees
+/// of freedom; `None` when there are not enough cases.
+fn ols_ar_variance(z: &[f64], lags: &[usize]) -> Option<f64> {
+    let p = *lags.iter().max()?;
+    let rows = z.len().checked_sub(p)?;
+    let k = lags.len() + 1;
+    if rows <= k {
+        return None;
+    }
+    let design = |t: usize| -> Vec<f64> {
+        std::iter::once(1.0)
+            .chain(lags.iter().map(|lag| z[t - lag]))
+            .collect()
+    };
+    let mut xtx = vec![vec![0.0; k]; k];
+    let mut xtz = vec![0.0; k];
+    for (t, target) in z.iter().enumerate().skip(p) {
+        let x = design(t);
+        for (a, xa) in x.iter().enumerate() {
+            xtz[a] += xa * target;
+            for (b, xb) in x.iter().enumerate() {
+                xtx[a][b] += xa * xb;
+            }
+        }
+    }
+    let beta = crate::time_series::solve(xtx, xtz).ok()?;
+    let sse: f64 = z
+        .iter()
+        .enumerate()
+        .skip(p)
+        .map(|(t, target)| {
+            let fit: f64 = design(t).iter().zip(&beta).map(|(x, b)| x * b).sum();
+            (target - fit) * (target - fit)
+        })
+        .sum();
+    let sigma2 = sse / (rows - k) as f64;
+    (sigma2 > 0.0 && sigma2.is_finite()).then_some(sigma2)
+}
+
 /// The Expert Modeler's seasonal differencing order for the (transformed) series `z`: `1` when
 /// one seasonal difference lowers the variance of the undifferenced series, else `0`.
 ///
