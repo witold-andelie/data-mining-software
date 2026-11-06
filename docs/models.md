@@ -22,6 +22,7 @@
 | CHAID | `$R-`、`$RC-`、`$RRP-` |
 | Logistic | `$L-`、`$LP-`、`$LRP-`；每个目标类别一个 `$LP-<类别>`（`appendProbabilities` 为真，或二项过程时总是输出） |
 | Linear | `$L-` |
+| GLE | regression `$G-<target>`；二项 logit `$L-<target>`、`$LC-<target>`；二项 identity/log `$G-<target>`、`$GC-<target>`（`oracle/gle`；标识 `spss.gle!gle_builder` / `spss.gle!gle_applier`） |
 | K-Means | `$KM-<模型名>` |
 | TwoStep | `$T-<模型名>` |
 | Apriori | `$A-<模型名>-k` 后件、`$AC-<模型名>-k` 置信度、`$A-Rule_ID-k` 规则号（k = 1..=`associationMaxPredictions`，三个样例都是 3）。前件都在且后件不在篮里才命中；同一后件只留置信度最高的一条。事务数据写在每个连续 id 的最后一行（`apriori_transactional` 篮子 14） |

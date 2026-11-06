@@ -1368,6 +1368,8 @@ fn parse_general_regression_model(
                     | "LocalTransformations"
                     | "EventValues"
                     | "BaseCumHazardTables"
+                    // Parameter covariances (GLE nuggets): standard errors, not scoring.
+                    | "PCovMatrix"
             )
         {
             continue;

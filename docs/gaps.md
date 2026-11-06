@@ -12,7 +12,7 @@ Decision List 采用 phase-3 `estimates-01822`，固定 21 例中 20 例完整 R
 2. **P2：节点设置映射**：每个节点的脚本属性名 ↔ 文件元素名 ↔ 取值形式，用探针逐个确定（`docs/formats/str.md` 第 5 节），按团队流的使用频率排序（Type、Statistics File、Table、Var. File、Derive、Filter、Select、Data Audit……）。
 3. **P2：执行器和第一批数据节点**：参考执行器 + Polars 执行器；`dms-cli run` 跑流，结果与 `oracle/` 标准答案比对。
 4. **附件格式**：PMML（标准，P3 用）、StatXML、PSMData、扩展节点设置附件、`SCF\x01` 二进制、长度前缀格式。
-5. **节点目录里仍未映射的标识**：没有样例的节点（如 GLE、Extension Output）。Random Trees、Tree-AS、Linear-AS、LSVM 的 builder 和 nugget 标识已映射（`models_as`）；Tree-AS 已支持默认设置与深度 3/5 的训练，其余三个仍为显式 `GAP:`。
+5. **节点目录里仍未映射的标识**：没有样例的节点（如 Extension Output）。GLE 已按 `.str` 标识 `spss.gle!gle_builder` / `spss.gle!gle_applier` 登记；nugget 从 `contentContainers` 的 `PMML`（长度前缀 ZIP）评分。Random Trees、Tree-AS、Linear-AS、LSVM 的 builder 和 nugget 标识已映射（`models_as`）；Tree-AS 已支持默认设置与深度 3/5 的训练，其余三个仍为显式 `GAP:`。
 6. **在 Mac 上跑通 `cargo xtask ci`**（P0 完成标准，用户安排在后面）。
 7. **Python 桥设计**（Python 节点已移到“以后”，暂缓）：Python 环境检测、Arrow 交换格式、模型持久化、错误和取消。
 8. **CI**：私有仓库用 GitHub Actions 要消耗分钟数（macOS 机器按 10 倍计）。目前做法是本地 Windows 和 Mac 各跑 `cargo xtask ci`。

@@ -70,6 +70,7 @@ const BUILT_IN: &[(&str, Factory)] = &[
     ("twostep", model_node),
     ("logistic", model_node),
     ("linear", model_node),
+    ("gle", model_node),
     ("neural_net", model_node),
     ("regression", model_node),
     ("pca_factor", model_node),
@@ -193,8 +194,10 @@ pub fn implemented() -> impl Iterator<Item = &'static str> {
 /// A model nugget: classic `Apply*` nodes and extension-framework nuggets (`CFApplyModelNode`,
 /// whose type is the model's, such as `LinearRegressionModel!spss.alm-extension`).
 fn is_nugget(node: &StreamNode) -> bool {
-    node.type_identifier().starts_with("Apply")
+    let id = node.type_identifier();
+    id.starts_with("Apply")
+        || id == "spss.gle!gle_applier"
         || node.class.ends_with(".CFApplyModelNode")
         || node.class.ends_with(".ExtensionApplyModelNode")
-        || node.type_identifier() == "FeatureSelectionModelNode"
+        || id == "FeatureSelectionModelNode"
 }

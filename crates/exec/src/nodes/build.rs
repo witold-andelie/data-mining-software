@@ -43,6 +43,12 @@
 //! (`STRING`, `NUMBER`) and `clusterLabel`; inputs as for K-Means. Outlier handling
 //! (`excludeOutliers`) and the Euclidean distance are rejected.
 //!
+//! GLE (`spss.gle!gle_builder` / `spss.gle!gle_applier`) trains Phase I generalised linear
+//! models (`dms_algo::gle`): normal, binomial, Poisson and gamma with canonical links plus
+//! identity and log, main effects and an intercept. Settings are the saved `_` names
+//! (`_distribution`, `_useIntercept`, …). Other distributions, links, trials, offset,
+//! weights, interactions, penalties and model selection return `GAP:`.
+//!
 //! Logistic (`BuildLogisticNode`) keeps its settings in the node's XML
 //! (`docs/formats/nodes/logreg.md`): `logisticProcedure` (`Multinomial` default, `Binomial`),
 //! `includeConstant`, `LogregMethod` / `LogregBinomialMethod` (Enter only), `modelType`
@@ -83,6 +89,10 @@ use dms_algo::cart::{self, CartSettings, Impurity, MinSize};
 use dms_algo::chaid::{self, ChaidSettings, ChiSquare, Method};
 use dms_algo::decision_list::{self, DecisionListSettings};
 use dms_algo::factor::{self, FactorCount, FactorSettings};
+use dms_algo::gle::{
+    self, Distribution as GleDistribution, Estimation as GleEstimation, GleSettings,
+    Link as GleLink,
+};
 use dms_algo::kmeans::{self, KMeansSettings};
 use dms_algo::kohonen::{self, KohonenSettings, Phase as KohonenPhase};
 use dms_algo::linear::{self, LinearSettings, Selection, Style};
@@ -143,7 +153,23 @@ fn build_with(
         return super::auto_build::build(node);
     }
     let s = node.settings.as_ref();
-    let algorithm = match node.type_identifier().as_str() {
+    let type_id = node.type_identifier();
+    if is_gle_builder(&type_id) {
+        let algorithm = Algorithm::Gle(gle_settings(node)?);
+        if settings::flag(s, "useFrequency")?.unwrap_or(false)
+            || settings::flag(s, "useWeight")?.unwrap_or(false)
+        {
+            return Err(OperatorError::Settings(
+                "GAP: GLE frequency or weight fields".into(),
+            ));
+        }
+        return Ok(Box::new(Build {
+            algorithm,
+            parameters,
+            use_partition: settings::flag(s, "usePartitionedData")?.unwrap_or(true),
+        }));
+    }
+    let algorithm = match type_id.as_str() {
         "Cart!spss.tree-extension" => Algorithm::Cart,
         "Quest!spss.tree-extension" => Algorithm::Quest,
         "Chaid!spss.tree-extension" => Algorithm::Chaid,
@@ -206,6 +232,8 @@ enum Algorithm {
     TwoStep((TwoStepSettings, Option<Vec<String>>)),
     /// The settings, an optional custom target, and optional custom inputs.
     Logistic(LogisticSpec),
+    /// Generalized Linear Engine (`spss.gle!gle_builder`).
+    Gle(GleSpec),
     /// Extension parameters, read when training.
     Linear,
     /// Neural Net (statistical parity); extension parameters, read when training.
@@ -228,6 +256,7 @@ enum Algorithm {
 type RegressionSpec = (LinearSettings, Option<String>, Option<Vec<String>>);
 
 type LogisticSpec = (LogisticSettings, Option<String>, Option<Vec<String>>);
+type GleSpec = (GleSettings, Option<String>, Option<Vec<String>>);
 type DecisionListSpec = (DecisionListSettings, Option<String>, Option<Vec<String>>);
 
 struct Build {
@@ -464,6 +493,22 @@ impl Operator for Build {
                 .map_err(|error| OperatorError::Data(format!("Logistic: {error}")))?;
             return Ok(NodeOutput::Model(Arc::new(pmml)));
         }
+        if let Algorithm::Gle((settings, target, inputs)) = &self.algorithm {
+            let (target, fields) = supervised_fields(&table, target.as_deref(), inputs.as_deref())?;
+            let dataset = Dataset {
+                table: &table,
+                target,
+                inputs: &fields,
+                frequency: None,
+            };
+            let pmml = gle::train(&dataset, settings).map_err(|error| match error {
+                dms_algo::AlgoError::Unsupported(_) | dms_algo::AlgoError::Settings(_) => {
+                    OperatorError::Settings(format!("GAP: {error}"))
+                }
+                _ => OperatorError::Data(format!("GLE: {error}")),
+            })?;
+            return Ok(NodeOutput::Model(Arc::new(pmml)));
+        }
         if let Algorithm::Regression((settings, target, inputs)) = &self.algorithm {
             let (target, fields) = supervised_fields(&table, target.as_deref(), inputs.as_deref())?;
             let dataset = Dataset {
@@ -531,6 +576,7 @@ impl Operator for Build {
             | Algorithm::RandomTrees(_)
             | Algorithm::TwoStep(_)
             | Algorithm::Logistic(_)
+            | Algorithm::Gle(_)
             | Algorithm::Regression(_)
             | Algorithm::Factor(_)
             | Algorithm::Anomaly(_)
@@ -1903,6 +1949,159 @@ fn neural_settings(p: &Parameters) -> Result<dms_algo::neural_net::NeuralSetting
 }
 
 /// Linear settings from the extension parameters; unsupported settings fail explicitly.
+fn is_gle_builder(id: &str) -> bool {
+    id == "spss.gle!gle_builder"
+}
+
+/// GLE settings from the saved `_` property names (`corpus/gle/*.str`).
+fn gle_settings(node: &StreamNode) -> Result<GleSpec, OperatorError> {
+    let s = node.settings.as_ref();
+    let gap = |what: &str| OperatorError::Settings(format!("GAP: GLE {what}"));
+    for name in [
+        "_useTrials",
+        "_useTrialsFieldOrValue",
+        "_useTargetRefValue",
+        "_useVariableSelection",
+        "_detectTwoWayInteraction",
+        "_nonNegLeastSquares",
+        "_moreTargetFieldOptions",
+        "_analysisType",
+    ] {
+        if settings::flag(s, name)?.unwrap_or(false) {
+            return Err(gap(name));
+        }
+    }
+    if !settings::flag(s, "_usePredefinedInputs")?.unwrap_or(true) {
+        return Err(gap("_usePredefinedInputs=false (custom _fixedEffectList)"));
+    }
+    if !settings::children(s, "_fixedEffectList/rows", "row").is_empty() {
+        return Err(gap("custom _fixedEffectList"));
+    }
+    match settings::text(s, "_useOffset").as_deref().map(str::trim) {
+        None | Some("" | "None" | "none") => {}
+        Some(other) => return Err(gap(&format!("_useOffset={other}"))),
+    }
+    if settings::text(s, "_regressionWeightField").is_some_and(|v| !v.trim().is_empty()) {
+        return Err(gap("_regressionWeightField"));
+    }
+    match settings::text(s, "_targetSortOrder")
+        .as_deref()
+        .map(str::trim)
+    {
+        None | Some("") => {}
+        Some(value) if value.eq_ignore_ascii_case("ASCENDING") => {}
+        Some(other) => return Err(gap(&format!("_targetSortOrder={other}"))),
+    }
+    match settings::text(s, "_factorSortOrder")
+        .as_deref()
+        .map(str::trim)
+    {
+        None | Some("") => {}
+        Some(value) if value.eq_ignore_ascii_case("ASCENDING") => {}
+        Some(other) => return Err(gap(&format!("_factorSortOrder={other}"))),
+    }
+    if let Some(value) = settings::real(s, "_scaleParaFixedValue")?
+        && (value - 1.0).abs() > 1e-12
+    {
+        return Err(gap("_scaleParaFixedValue other than 1"));
+    }
+
+    // A node left at the declared default `NORMAL` (no combination chosen) is fitted by Modeler
+    // as inverse Gaussian with identity link (`gle/gle_batch_probe`: PMML distribution="igauss"),
+    // which is not implemented.
+    let combo = settings::text(s, "_distribution").unwrap_or_default();
+    let (distribution, link) = match combo.trim() {
+        "" | "NORMAL" => {
+            return Err(gap(
+                "_distribution left at its default (Modeler fits inverse Gaussian, identity)",
+            ));
+        }
+        "NormalIdentity" => (GleDistribution::Normal, GleLink::Identity),
+        "GammaLog" => (GleDistribution::Gamma, GleLink::Log),
+        "PoissonLog" => (GleDistribution::Poisson, GleLink::Log),
+        "BinomialLogit" => (GleDistribution::Binomial, GleLink::Logit),
+        "CUSTOM" => {
+            let distribution = match settings::text(s, "_distributionOfTarget")
+                .as_deref()
+                .map(str::trim)
+            {
+                None | Some("" | "UNKNOWN" | "NORMAL") => GleDistribution::Normal,
+                Some("BINOMIAL") => GleDistribution::Binomial,
+                Some("GAMMA") => GleDistribution::Gamma,
+                Some("POISSON") => GleDistribution::Poisson,
+                Some(other) => return Err(gap(&format!("_distributionOfTarget={other}"))),
+            };
+            let link = match settings::text(s, "_linkFunction").as_deref().map(str::trim) {
+                None | Some("" | "UNKNOWN" | "IDENTITY") => GleLink::Identity,
+                Some("LOG") => GleLink::Log,
+                Some("LOGIT") => GleLink::Logit,
+                Some("POWER") => {
+                    let alpha = settings::real(s, "_linkParam")?.unwrap_or(-1.0);
+                    GleLink::Power { alpha }
+                }
+                Some(other) => return Err(gap(&format!("_linkFunction={other}"))),
+            };
+            (distribution, link)
+        }
+        other => return Err(gap(&format!("_distribution={other}"))),
+    };
+
+    let estimation = match settings::text(s, "_hessianMethod")
+        .as_deref()
+        .map(str::trim)
+    {
+        None | Some("" | "HYBRID") => {
+            let fisher = settings::integer(s, "_nFisherIter")?
+                .and_then(|n| usize::try_from(n).ok())
+                .unwrap_or(1);
+            GleEstimation::Hybrid {
+                fisher_iterations: fisher,
+            }
+        }
+        Some("FISHER_SCORING" | "FISHER") => GleEstimation::FisherScoring,
+        Some("NEWTON_RAPHSON" | "NEWTON") => GleEstimation::NewtonRaphson,
+        Some(other) => return Err(gap(&format!("_hessianMethod={other}"))),
+    };
+
+    let custom_target = settings::text(s, "_targetField").filter(|n| !n.trim().is_empty());
+    let name = if settings::flag(s, "autoModelName")?.unwrap_or(true) {
+        None
+    } else {
+        settings::text(s, "modelName").filter(|n| !n.trim().is_empty())
+    };
+
+    let defaults = GleSettings::default();
+    let likelihood = if settings::flag(s, "_useObjFunCriterion")?.unwrap_or(false) {
+        Some(settings::real(s, "_objFunConverCrit")?.unwrap_or(1e-6))
+    } else {
+        None
+    };
+    Ok((
+        GleSettings {
+            distribution,
+            link,
+            intercept: settings::flag(s, "_useIntercept")?.unwrap_or(true),
+            estimation,
+            max_iterations: settings::integer(s, "_interEffMaxOuterIters")?
+                .and_then(|n| usize::try_from(n).ok())
+                .unwrap_or(defaults.max_iterations),
+            max_step_halving: defaults.max_step_halving,
+            parameter_convergence: settings::real(s, "_paramConverCrit")?
+                .unwrap_or(defaults.parameter_convergence),
+            parameter_relative: !settings::flag(s, "_paramAbsChange")?.unwrap_or(true),
+            likelihood_convergence: likelihood,
+            likelihood_relative: !settings::flag(s, "_objFunAbsChange")?.unwrap_or(true),
+            hessian_convergence: settings::real(s, "_hessianConverCrit")?
+                .unwrap_or(defaults.hessian_convergence),
+            hessian_relative: !settings::flag(s, "_hessianAbsChange")?.unwrap_or(true),
+            singularity: settings::real(s, "_testSingTol")?.unwrap_or(defaults.singularity),
+            name,
+        },
+        custom_target,
+        None,
+    ))
+}
+
 fn linear_settings(p: &Parameters) -> Result<LinearSettings, OperatorError> {
     for (key, expected) in [
         ("linreg.MaxCategoryNumber", "1000"),

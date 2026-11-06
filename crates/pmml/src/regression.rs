@@ -25,6 +25,9 @@ pub(crate) fn score_general(
         param_values.entry(cell.parameter.as_str()).or_insert(1.0);
     }
 
+    // Factors whose value matched one of their PPCells (generalizedLinear: a value outside the
+    // listed levels, such as a blank, scores missing; `gle/gle_normal_factor` row 16).
+    let mut factor_seen: HashMap<&str, bool> = HashMap::new();
     for pp in &model.pp_matrix {
         let val = env
             .get(&pp.predictor)
@@ -45,11 +48,9 @@ pub(crate) fn score_general(
         };
 
         let term = if is_factor {
-            if value_matches_str(val, &pp.value) {
-                1.0
-            } else {
-                0.0
-            }
+            let hit = value_matches_str(val, &pp.value);
+            *factor_seen.entry(pp.predictor.as_str()).or_insert(false) |= hit;
+            if hit { 1.0 } else { 0.0 }
         } else {
             let x = as_f64(val, &pp.predictor)?;
             let exp = pp.value.trim().parse::<f64>().map_err(|_| {
@@ -67,6 +68,12 @@ pub(crate) fn score_general(
 
         let entry = param_values.entry(pp.parameter.as_str()).or_insert(1.0);
         *entry *= term;
+    }
+
+    if model.model_type == GeneralModelType::GeneralizedLinear
+        && factor_seen.values().any(|hit| !hit)
+    {
+        return Ok(empty_prediction());
     }
 
     match &model.model_type {
@@ -101,13 +108,17 @@ pub(crate) fn score_general(
                 model.link_function.as_deref().unwrap_or("identity"),
                 model.link_parameter,
             )?;
-            Ok(Prediction {
-                value: Value::Number(y),
-                confidence: None,
-                probabilities: Vec::new(),
-                entity_id: None,
-                affinity: None,
-            })
+            if model.header.function == MiningFunction::Classification {
+                gle_binomial_prediction(pmml, model, y)
+            } else {
+                Ok(Prediction {
+                    value: Value::Number(y),
+                    confidence: None,
+                    probabilities: Vec::new(),
+                    entity_id: None,
+                    affinity: None,
+                })
+            }
         }
         GeneralModelType::MultinomialLogistic => {
             let mut categories: Vec<String> = target_categories(pmml, &model.header)
@@ -363,6 +374,66 @@ fn classification_prediction(probabilities: Vec<(String, f64)>) -> Result<Predic
     Ok(Prediction {
         value: Value::Text(winner),
         confidence: Some(confidence),
+        probabilities,
+        entity_id: None,
+        affinity: None,
+    })
+}
+
+fn gle_binomial_prediction(
+    pmml: &Pmml,
+    model: &GeneralRegressionModel,
+    mu: f64,
+) -> Result<Prediction, PmmlError> {
+    let mut categories: Vec<String> = target_categories(pmml, &model.header)
+        .into_iter()
+        .map(str::to_string)
+        .collect();
+    if categories.is_empty() {
+        return Err(PmmlError::Score(
+            "binomial generalizedLinear model has no target categories".into(),
+        ));
+    }
+    let reference = model
+        .target_reference_category
+        .clone()
+        .or_else(|| categories.last().cloned())
+        .ok_or_else(|| {
+            PmmlError::Score("binomial generalizedLinear model has no reference category".into())
+        })?;
+    if !categories
+        .iter()
+        .any(|c| value_matches_str(&Value::Text(c.clone()), &reference))
+    {
+        categories.push(reference.clone());
+    }
+    let success = categories
+        .iter()
+        .find(|c| !value_matches_str(&Value::Text((*c).clone()), &reference))
+        .cloned()
+        .unwrap_or_else(|| reference.clone());
+    let p_success = if mu.is_finite() {
+        mu
+    } else {
+        return Ok(empty_prediction());
+    };
+    let mut probabilities = Vec::with_capacity(categories.len());
+    for cat in &categories {
+        let p = if value_matches_str(&Value::Text(cat.clone()), &success) {
+            p_success
+        } else {
+            1.0 - p_success
+        };
+        probabilities.push((cat.clone(), p));
+    }
+    let winner = if p_success > 0.5 { success } else { reference };
+    let confidence = probabilities
+        .iter()
+        .find(|(c, _)| value_matches_str(&Value::Text(c.clone()), &winner))
+        .map(|(_, p)| *p);
+    Ok(Prediction {
+        value: Value::Text(winner),
+        confidence,
         probabilities,
         entity_id: None,
         affinity: None,

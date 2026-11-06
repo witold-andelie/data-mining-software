@@ -9,7 +9,7 @@ Status `done (output unverified)`: settings and the records reaching the node ma
 | Scope | Implemented | Total |
 |---|---|---|
 | MVP | 85 | 85 |
-| later | 4 | 24 |
+| later | 5 | 24 |
 | license blocked | 0 | 6 |
 | out of scope | 0 | 34 |
 
@@ -131,7 +131,7 @@ Status `done (output unverified)`: settings and the records reaching the node ma
 | Time Series | `time_series` | MVP | done (statistical) | `BuildTimeSeriesNode`, `ApplyTimeSeriesNode`, `spss.ts!ts_builder`, `spss.ts!ts_applier` |
 | Imported PMML model | `pmml_model` | MVP | done | `ApplyImportedNode` |
 | GLMM | `glmm` | later | missing | `GLMM!spss.glmm-extension` |
-| GLE | `gle` | later | missing | (unmapped) |
+| GLE | `gle` | later | done | `spss.gle!gle_builder`, `spss.gle!gle_applier` |
 | Cox | `cox` | later | missing | `spss.coxreg_id!buildcoxreg` |
 | LSVM | `lsvm` | later | done (statistical) | `spss.linearSVM!linearSVM`, `spss.linearSVM!applyLinearSVM` |
 | Self-Learning Response Model | `slrm` | license blocked | missing | `spss.selflearning!selflearning` |

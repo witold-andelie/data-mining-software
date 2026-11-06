@@ -207,7 +207,7 @@ pub const NODES: &[NodeSpec] = &[
     n("time_series", "Time Series", Modeling, Mvp, &["BuildTimeSeriesNode", "ApplyTimeSeriesNode", "spss.ts!ts_builder", "spss.ts!ts_applier"]),
     n("pmml_model", "Imported PMML model", Modeling, Mvp, &["ApplyImportedNode"]),
     n("glmm", "GLMM", Modeling, Later, &["GLMM!spss.glmm-extension"]),
-    n("gle", "GLE", Modeling, Later, &[]),
+    n("gle", "GLE", Modeling, Later, &["spss.gle!gle_builder", "spss.gle!gle_applier"]),
     n("cox", "Cox", Modeling, Later, &["spss.coxreg_id!buildcoxreg"]),
     n("lsvm", "LSVM", Modeling, Later, &["spss.linearSVM!linearSVM", "spss.linearSVM!applyLinearSVM"]),
     n("slrm", "Self-Learning Response Model", Modeling, LicenseBlocked, &["spss.selflearning!selflearning"]),
