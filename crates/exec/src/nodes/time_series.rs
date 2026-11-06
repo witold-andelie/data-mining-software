@@ -22,7 +22,9 @@
 //!
 //! Expert selects Exponential Smoothing (`_expertModelTypeList == "Exsmooth"`) by
 //! minimum NBIC and refits recorded ARIMA/AllModels structure/transform/omitted lags.
-//! Automatic ARIMA/AllModels selection remains GAP: Guide p.394 omits search thresholds.
+//! Without a recorded specification, ARIMA-only Expert selects with the Algorithms Guide
+//! appendix "Time Series Algorithm: Expert Modeler" (`arima::expert_arima`); automatic
+//! AllModels selection remains GAP.
 //! `ts_expert/pr_wn_ar` omits the zero-order NonseasonalComponent; `pr_i2_ar`
 //! scores d=2 with a constant through the existing integrated ARIMA recursion.
 //! Transfer functions support AR(1) noise, delay, predictor differences and denominators
@@ -151,7 +153,7 @@ fn add_residuals(table: Table, targets: &[String]) -> Result<Table, OperatorErro
     .map_err(|e| OperatorError::Data(e.to_string()))
 }
 
-/// Statistical parity (optimizer). Unrecorded Expert selection is explicitly GAP.
+/// Statistical parity (optimizer). Unrecorded AllModels Expert selection is explicitly GAP.
 pub fn build(node: &StreamNode) -> Result<Box<dyn Operator>, OperatorError> {
     let s = node.settings.as_ref();
     let gap = |what: &str| OperatorError::Settings(format!("GAP: Time Series {what}"));
@@ -327,7 +329,19 @@ pub fn build(node: &StreamNode) -> Result<Box<dyn Operator>, OperatorError> {
         .iter()
         .find(|c| c.name.as_deref() == Some("PMML"))
         .map(|c| c.member.clone());
-    if method.is_none() && selected_member.is_none() {
+    // ARIMA-only Expert without a recorded specification selects with the Guide appendix
+    // procedure (`arima::expert_arima`); the season length follows Expert smoothing.
+    let expert_arima_period = if method.is_none()
+        && selected_member.is_none()
+        && settings::text(s, "_method").as_deref() == Some("ExpertModeler")
+        && settings::text(s, "_expertModelTypeList").as_deref() == Some("Arima")
+    {
+        let consider_seasonal = settings::flag(s, "_isConsiderSeasonalModels")?.unwrap_or(true);
+        Some(if monthly && consider_seasonal { 12 } else { 1 })
+    } else {
+        None
+    };
+    if method.is_none() && selected_member.is_none() && expert_arima_period.is_none() {
         return Err(gap(
             "Expert automatic transformation/order selection; no recorded specification to refit",
         ));
@@ -392,6 +406,7 @@ pub fn build(node: &StreamNode) -> Result<Box<dyn Operator>, OperatorError> {
         targets,
         period,
         selected_member,
+        expert_arima_period,
         monthly,
     }))
 }
@@ -402,6 +417,8 @@ struct TimeSeriesBuild {
     targets: Vec<String>,
     period: String,
     selected_member: Option<String>,
+    /// Season length for automatic ARIMA Expert selection (no recorded specification).
+    expert_arima_period: Option<usize>,
     monthly: bool,
 }
 
@@ -443,7 +460,7 @@ impl Operator for TimeSeriesBuild {
             .position(&self.period)
             .ok_or_else(|| OperatorError::Data("Time Series period absent".into()))?;
         validate_period(input, period, self.monthly)?;
-        let selected = if self.method.is_none() {
+        let selected = if self.method.is_none() && self.expert_arima_period.is_none() {
             let member = self
                 .selected_member
                 .as_deref()
@@ -454,18 +471,6 @@ impl Operator for TimeSeriesBuild {
         };
         let mut segments = String::new();
         for target in &self.targets {
-            let method = match self.method {
-                Some(method) => method,
-                None => selected
-                    .iter()
-                    .find(|(name, _)| name == target)
-                    .map(|(_, method)| *method)
-                    .ok_or_else(|| {
-                        OperatorError::Settings(format!(
-                            "GAP: Expert has no selected specification for {target}"
-                        ))
-                    })?,
-            };
             // Explicit builders use their persisted settings. Keyed transforms absent
             // from these streams are not recovered from a pre-rebuild nugget.
             let at = input.model().position(target).ok_or_else(|| {
@@ -491,6 +496,22 @@ impl Operator for TimeSeriesBuild {
                 })
                 .collect();
             let y = y?;
+            let method = match (self.method, self.expert_arima_period) {
+                (Some(method), _) => method,
+                (None, Some(period)) => selected_arima_method(
+                    &arima::expert_arima(&y, period)
+                        .map_err(|e| OperatorError::Data(format!("Expert ARIMA selection: {e}")))?,
+                ),
+                (None, None) => selected
+                    .iter()
+                    .find(|(name, _)| name == target)
+                    .map(|(_, method)| *method)
+                    .ok_or_else(|| {
+                        OperatorError::Settings(format!(
+                            "GAP: Expert has no selected specification for {target}"
+                        ))
+                    })?,
+            };
             let fit = if self.effects.is_empty() {
                 estimation::fit(&y, method)
             } else {
@@ -548,6 +569,49 @@ impl Operator for TimeSeriesBuild {
                     .collect();
         }
         Ok(NodeOutput::Model(Arc::new(pmml)))
+    }
+}
+
+/// The fit method for an automatic Expert ARIMA selection: its structure only (lags with a
+/// zero coefficient are omitted), mapped like a recorded selection in `expert_specifications`.
+fn selected_arima_method(spec: &ArimaSpec) -> Method {
+    let zero_mask = |coefficients: &[f64]| -> u64 {
+        coefficients
+            .iter()
+            .take(64)
+            .enumerate()
+            .fold(
+                0,
+                |mask, (i, v)| if *v == 0.0 { mask | (1u64 << i) } else { mask },
+            )
+    };
+    let (p, q) = (spec.ar.len(), spec.ma.len());
+    let (zero_ar, zero_ma) = (zero_mask(&spec.ar), zero_mask(&spec.ma));
+    let period = spec.period.max(1);
+    let constant = spec.constant != 0.0;
+    if period == 1 && constant && zero_ar == 0 && zero_ma == 0 && p <= 1 && q <= 1 {
+        Method::Arima {
+            p,
+            d: spec.d,
+            q,
+            transform: spec.transform,
+        }
+    } else {
+        Method::SparseArima {
+            order: estimation::ArimaOrder {
+                p,
+                d: spec.d,
+                q,
+                sp: spec.seasonal_ar.len(),
+                sd: spec.seasonal_d,
+                sq: spec.seasonal_ma.len(),
+                period,
+                constant,
+                transform: spec.transform,
+            },
+            zero_ar,
+            zero_ma,
+        }
     }
 }
 
