@@ -211,7 +211,7 @@ impl ArimaSpec {
         Ok(poly)
     }
 
-    fn expanded(&self) -> Result<Self, ArimaError> {
+    pub(crate) fn expanded(&self) -> Result<Self, ArimaError> {
         let mut spec = self.clone();
         spec.ar = expand_coefficients(&self.ar, &self.seasonal_ar, self.period, -1.0)?;
         spec.ma = expand_coefficients(&self.ma, &self.seasonal_ma, self.period, 1.0)?;
@@ -993,6 +993,8 @@ fn arma_gamma(phi: &[f64], theta: &[f64], lags: usize) -> Result<Vec<f64>, Arima
 /// Returns standardized innovations and log determinant (innovation variance at sigma²=1).
 pub fn likelihood_residuals(spec: &ArimaSpec, y: &[f64]) -> Result<(Vec<f64>, f64), ArimaError> {
     spec.check()?;
+    // Preserve the innovations arithmetic for all previously fitted structures.
+    let extended = spec.d > 1 || spec.ar.len() > 4 || spec.ma.len() > 4;
     let expanded = spec.expanded()?;
     let spec = &expanded;
     if y.len() < 5 || y.len() > 512 || y.iter().any(|v| !v.is_finite()) {
@@ -1002,7 +1004,7 @@ pub fn likelihood_residuals(spec: &ArimaSpec, y: &[f64]) -> Result<(Vec<f64>, f6
     }
     if spec.d > 2 || spec.ar.len() > MAX_ORDER || spec.ma.len() > MAX_ORDER {
         return Err(ArimaError::Settings(
-            "GAP: estimation supports d=1, p/q <= 1".into(),
+            "GAP: estimation supports d <= 2 and expanded p/q <= 64".into(),
         ));
     }
     let z = transform(spec.transform, y)?;
@@ -1012,6 +1014,9 @@ pub fn likelihood_residuals(spec: &ArimaSpec, y: &[f64]) -> Result<(Vec<f64>, f6
         .map(|v| v - spec.constant)
         .collect();
     let gamma = arma_gamma(&spec.ar, &spec.ma, w.len().saturating_add(2))?;
+    if extended {
+        return toeplitz_likelihood(&w, &gamma);
+    }
     let (hats, variances) = innovations(&w, &gamma)?;
     let mut residuals = Vec::with_capacity(w.len());
     let mut log_det = 0.0;
@@ -1023,6 +1028,51 @@ pub fn likelihood_residuals(spec: &ArimaSpec, y: &[f64]) -> Result<(Vec<f64>, f6
         }
         residuals.push((value - hat) / variance.sqrt());
         log_det += variance.ln();
+    }
+    Ok((residuals, log_det))
+}
+
+/// Exact Gaussian innovations via Durbin-Levinson, O(n^2) time and O(n) space.
+/// The stationary covariance is Toeplitz: the order-m predictor's reflection
+/// coefficient is (gamma[m] - sum a[j] gamma[m-j]) / v[m-1]. This is the same
+/// conditional Gaussian likelihood as `innovations`, without its cubic work.
+fn toeplitz_likelihood(w: &[f64], gamma: &[f64]) -> Result<(Vec<f64>, f64), ArimaError> {
+    let mut variance = gamma.first().copied().unwrap_or(0.0);
+    let mut coefficients: Vec<f64> = Vec::new();
+    let mut residuals = Vec::with_capacity(w.len());
+    let mut log_det = 0.0;
+    for (t, value) in w.iter().enumerate() {
+        if variance <= 0.0 || !variance.is_finite() {
+            return Err(ArimaError::Data(
+                "ARIMA innovation variance is not positive".into(),
+            ));
+        }
+        let hat = coefficients
+            .iter()
+            .enumerate()
+            .map(|(j, a)| a * w.get(t - j - 1).copied().unwrap_or(0.0))
+            .sum::<f64>();
+        residuals.push((value - hat) / variance.sqrt());
+        log_det += variance.ln();
+        if t + 1 == w.len() {
+            break;
+        }
+        let m = t + 1;
+        let reflection = (gamma.get(m).copied().unwrap_or(0.0)
+            - coefficients
+                .iter()
+                .enumerate()
+                .map(|(j, a)| a * gamma.get(m - j - 1).copied().unwrap_or(0.0))
+                .sum::<f64>())
+            / variance;
+        let mut next: Vec<_> = coefficients
+            .iter()
+            .zip(coefficients.iter().rev())
+            .map(|(a, b)| a - reflection * b)
+            .collect();
+        next.push(reflection);
+        coefficients = next;
+        variance *= 1.0 - reflection * reflection;
     }
     Ok((residuals, log_det))
 }
@@ -1232,6 +1282,33 @@ mod tests {
         assert!((g[0] - variance).abs() < 1e-9);
         assert!((g[12] - 0.999 * variance).abs() < 1e-9);
         assert_eq!(g[1], 0.0);
+    }
+
+    #[test]
+    fn toeplitz_likelihood_matches_innovations() {
+        let w: Vec<_> = (0..64).map(|i| (f64::from(i) * 1.731).sin()).collect();
+        let mut sparse_ar = vec![0.0; 24];
+        sparse_ar[0] = 0.2;
+        sparse_ar[23] = -0.35;
+        let mut sparse_ma = vec![0.0; 24];
+        sparse_ma[4] = 0.25;
+        sparse_ma[23] = -0.3;
+        for (ar, ma) in [
+            (vec![], vec![]),
+            (vec![0.999], vec![-0.8]),
+            (vec![], sparse_ma.clone()),
+            (sparse_ar, sparse_ma),
+        ] {
+            let gamma = arma_gamma(&ar, &ma, w.len() + 2).unwrap();
+            let (hats, variances) = innovations(&w, &gamma).unwrap();
+            let (r, ld) = toeplitz_likelihood(&w, &gamma).unwrap();
+            let expected_ld: f64 = variances.iter().take(w.len()).map(|v| v.ln()).sum();
+            assert!((ld - expected_ld).abs() < 1e-9, "{ld} vs {expected_ld}");
+            for (((value, hat), variance), r) in w.iter().zip(hats).zip(variances).zip(r) {
+                let expected = (value - hat) / variance.sqrt();
+                assert!((r - expected).abs() < 1e-9, "{r} vs {expected}");
+            }
+        }
     }
 
     #[test]

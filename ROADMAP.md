@@ -26,6 +26,7 @@
 
 ## 进度日志
 
+- 2026-11-06（续十六）：Time Series 拟合器扩展到 d ≤ 2、稀疏 AR/MA 滞后至 24 阶（Codex gpt-6.1-sol；完整 AR/MA 多项式根检验，新结构用 Durbin-Levinson 计算精确新息），原先超出范围的 8 个 ARIMA 专家选型可以拟合，目标函数不劣于 Modeler 保存参数、预测最大偏差 0.0021 个标准差；去掉保存容器后 85 个已复现的 ARIMA 选型全部经节点输出与 Modeler 结构一致，28 个“全部模型”录制流全部选对。
 - 2026-11-06（续十五）：Time Series Expert“全部模型”自动选型：没有保存规格时分别拟合 ARIMA 专家与指数平滑专家，取原始尺度归一化 BIC = ln(SSE/(n−k)) + k ln(n)/n 较小者（`time_series::normalized_bic`，SSE 为原始尺度一步预测误差）；28 个“全部模型”录制流去掉保存容器后 26 个模型族与结构一致、0 个不一致，2 个因 d=2 拟合仍为 GAP。
 - 2026-11-06（续十四）：移植 Codex 第 7b 轮的三条 ARIMA 专家规则（EACF 用 Bartlett 标准误；ML 剪枝 t 值取加权残差雅可比的联合协方差；Step 6 诊断用 Step 5 局部拟合的未加权残差），完整规格由 82/93 升到 85/93（`p2_ma2_ar`、`p2_ma2_all`、`p4_ma4_ar`），已吻合的无一退化；构建节点无保存规格时 68 个经节点输出与 Modeler 结构一致。
 - 2026-11-06（续十三）：ARIMA 专家的 Step 4 定阶、Step 5 剪枝与 ML 重拟合、Step 6 Ljung-Box 修正移植为 `arima::expert_arima`（`crates/algo/src/expert.rs`，由 opencode hy4 子代理按 Python 参考移植），93 个录制选型中完整规格 82 个吻合（`ts_expert5` 全部、`ts_expert6` 16 例中 13 例）；仅 ARIMA 的 Expert 构建节点在没有保存规格时用它选型并拟合，去掉保存容器后 66 个经节点输出与 Modeler 结构一致，其余为全部模型（8 个，仍为 GAP）与拟合器不支持的结构（8 个：d=2 或滞后超过 4 阶）；未吻合的 11 个见 `docs/gaps.md`。`ts_expert6` 16 例并入全量回归。

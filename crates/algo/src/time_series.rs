@@ -14,13 +14,16 @@
 //! in `exec/tests/time_series_more.rs`: converged SSE/likelihood no worse than
 //! saved Modeler parameters (1e-9 relative), all scored points, bounds and
 //! residuals within 0.01 target sample SD (worst accepted: 0.008378 SD).
-//! Supports d=0, seasonal ARIMA products, simple/Holt/Brown/damped/seasonal/
+//! Supports d<=2, D<=1, sparse nonseasonal AR/MA lags <=24, seasonal P/Q<=1,
+//! seasonal ARIMA products, simple/Holt/Brown/damped/seasonal/
 //! Winters smoothing, log/sqrt, and transfer functions with numerator and denominator
 //! (`transfer`, whose docs give the denominator start-up evidence).
 //! Expert refits recorded ARIMA/AllModels structure including omitted AR lags, and
 //! selects untransformed Exponential Smoothing models by minimum NBIC = ln(SSE/(n-k)) +
-//! k*ln(n)/n; automatic ARIMA/AllModels transform/order selection remains GAP (the guide
-//! omits decision thresholds).
+//! k*ln(n)/n. ARIMA-only Expert selects through `arima::expert_arima`; automatic
+//! AllModels selection remains GAP. New sparse/high-order fits check the roots of
+//! the full AR/MA products and use an equivalent quadratic exact likelihood;
+//! previously supported structures retain their original fitting arithmetic.
 //! The four keyed ARIMA transform recordings have different saved and rebuilt
 //! specifications: detached-model refits are tested separately from linked scores.
 //! Two cases stay outside rule 3 because Modeler's estimate is not the optimum of the
@@ -36,7 +39,7 @@
 //!
 //! Passing the objective alone is not acceptance.
 //! Other limits: <=512 fitting observations, monthly regular dates, bounded
-//! orders; no outlier detection, missing values, aggregation or automatic Expert.
+//! orders; no outlier detection, missing values, aggregation or automatic AllModels.
 
 use crate::{AlgoError, arima, smooth};
 use arima::{ArimaSpec, Transform};
@@ -505,17 +508,17 @@ fn fit_seasonal_arima(
     zero_ar: u64,
     zero_ma: u64,
 ) -> Result<Fit, AlgoError> {
-    if o.p > 4
-        || o.q > 4
+    if o.p > 24
+        || o.q > 24
         || o.sp > 1
         || o.sq > 1
-        || o.d > 1
+        || o.d > 2
         || o.sd > 1
         || o.period > 24
         || o.period == 0
     {
         return Err(AlgoError::Unsupported(
-            "GAP: estimation ARIMA factor orders exceed one".into(),
+            "GAP: estimation supports p/q <= 24, d <= 2, P/D/Q <= 1, period 1..=24".into(),
         ));
     }
     let degree = o.d + o.sd * o.period;
@@ -526,6 +529,11 @@ fn fit_seasonal_arima(
     let n = count(y.len() - degree);
     let active = |order: usize, zeros: u64| (0..order).filter(|i| zeros & (1u64 << i) == 0).count();
     let k = usize::from(o.constant) + active(o.p, zero_ar) + active(o.q, zero_ma) + o.sp + o.sq;
+    if n <= count(k) {
+        return Err(data("insufficient ARIMA residual degrees of freedom"));
+    }
+    // Keep every previously supported structure on its original numerical path.
+    let extended = o.p > 4 || o.q > 4 || o.d > 1;
     let make = |x: &[f64]| {
         let mut i = usize::from(o.constant);
         let mut take = |len: usize, zeros: u64| {
@@ -560,7 +568,11 @@ fn fit_seasonal_arima(
         }
     };
     let residuals = |x: &[f64]| {
-        let (r, ld) = arima::likelihood_residuals(&make(x), y).map_err(data)?;
+        let spec = make(x);
+        if extended && !admissible_arima(&spec)? {
+            return Err(data("ARIMA roots must lie outside the unit circle"));
+        }
+        let (r, ld) = arima::likelihood_residuals(&spec, y).map_err(data)?;
         let scale = (ld / (2.0 * n)).exp();
         Ok(r.into_iter().map(|v| v * scale).collect::<Vec<_>>())
     };
@@ -581,6 +593,18 @@ fn fit_seasonal_arima(
             } else {
                 0.0
             };
+        }
+        if extended {
+            // A common coefficient start need not be stationary/invertible at high
+            // orders. Contract towards the white-noise interior, preserving masks.
+            for _ in 0..32 {
+                if admissible_arima(&make(&x))? {
+                    break;
+                }
+                for v in x.iter_mut().skip(usize::from(o.constant)) {
+                    *v *= 0.5;
+                }
+            }
         }
         if let Ok((x, iterations)) = lm(x, &bounds, residuals) {
             let r = residuals(&x)?;
@@ -605,6 +629,45 @@ fn fit_seasonal_arima(
         final_trend: 0.0,
         rmse,
     })
+}
+
+/// Schur's recursion on the reciprocal polynomial tests *all* roots, including
+/// complex roots. `1 + coefficients[0] B + ...` has all roots outside |B|=1
+/// iff each reflection coefficient has modulus < 1. Normalize at every step to
+/// avoid underflow for long, sparse polynomials. No numerical root solver needed.
+fn roots_outside_unit(coefficients: &[f64]) -> bool {
+    if coefficients.iter().any(|v| !v.is_finite()) {
+        return false;
+    }
+    let mut b = vec![1.0];
+    b.extend_from_slice(coefficients);
+    while b.len() > 1 {
+        let n = b.len() - 1;
+        let reflection = b.get(n).copied().unwrap_or(f64::NAN);
+        if !reflection.is_finite() || reflection.abs() >= 1.0 {
+            return false;
+        }
+        let divisor = 1.0 - reflection * reflection;
+        let mut next = Vec::with_capacity(n);
+        next.push(1.0);
+        for j in 1..n {
+            let value = (b.get(j).copied().unwrap_or(0.0)
+                - reflection * b.get(n - j).copied().unwrap_or(0.0))
+                / divisor;
+            if !value.is_finite() {
+                return false;
+            }
+            next.push(value);
+        }
+        b = next;
+    }
+    true
+}
+
+fn admissible_arima(spec: &ArimaSpec) -> Result<bool, AlgoError> {
+    let expanded = spec.expanded().map_err(data)?;
+    let ar: Vec<_> = expanded.ar.iter().map(|v| -v).collect();
+    Ok(roots_outside_unit(&ar) && roots_outside_unit(&expanded.ma))
 }
 
 fn fit_arima(
@@ -1052,6 +1115,109 @@ impl Fit {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn full_polynomial_root_constraints() {
+        assert!(roots_outside_unit(&[]));
+        assert!(roots_outside_unit(&[-1.6, 0.81])); // complex roots, modulus 1/0.9
+        assert!(roots_outside_unit(&[0.8, 0.8]));
+        assert!(!roots_outside_unit(&[-0.8, -0.8])); // each coefficient inside box
+        assert!(!roots_outside_unit(&[1.0]));
+        assert!(!roots_outside_unit(&[f64::NAN]));
+        let mut sparse = vec![0.0; 24];
+        sparse[23] = 0.999;
+        assert!(roots_outside_unit(&sparse));
+        sparse[23] = 1.001;
+        assert!(!roots_outside_unit(&sparse));
+        let spec = ArimaSpec {
+            ar: vec![0.8, 0.8],
+            ma: vec![],
+            seasonal_ar: vec![0.3],
+            seasonal_ma: vec![],
+            constant: 0.0,
+            d: 2,
+            seasonal_d: 1,
+            period: 12,
+            transform: Transform::None,
+            sigma2: 1.0,
+            df: 50.0,
+        };
+        assert!(!admissible_arima(&spec).unwrap());
+        let mut stable = spec;
+        stable.ar = vec![0.2, 0.3];
+        stable.seasonal_ma = vec![0.4];
+        assert!(admissible_arima(&stable).unwrap());
+        stable.seasonal_ma = vec![1.1];
+        assert!(!admissible_arima(&stable).unwrap());
+    }
+
+    #[test]
+    fn sparse_lag_24_and_double_seasonal_difference() {
+        let y: Vec<_> = (0..96)
+            .map(|i| {
+                20.0 + 0.01 * f64::from(i * i)
+                    + (f64::from(i) * 1.731).sin()
+                    + 0.3 * (f64::from(i) * 0.419).cos()
+            })
+            .collect();
+        let order = ArimaOrder {
+            p: 24,
+            q: 24,
+            d: 2,
+            sp: 0,
+            sd: 1,
+            sq: 0,
+            period: 12,
+            constant: true,
+            transform: Transform::None,
+        };
+        // Only lag 24 is free; all lower coefficients must remain exactly zero.
+        let zeros = (1u64 << 23) - 1;
+        let fitted = fit(
+            &y,
+            Method::SparseArima {
+                order,
+                zero_ar: zeros,
+                zero_ma: zeros,
+            },
+        )
+        .unwrap();
+        let FittedSpec::Arima(spec) = fitted.spec else {
+            panic!("ARIMA")
+        };
+        assert_eq!(spec.df, 96.0 - 2.0 - 12.0 - 3.0);
+        assert!(
+            spec.ar
+                .iter()
+                .take(23)
+                .chain(spec.ma.iter().take(23))
+                .all(|v| *v == 0.0)
+        );
+        assert!(admissible_arima(&spec).unwrap());
+        assert!(arima::score(&spec, &y, 6, 95.0).is_ok());
+        for invalid in [
+            ArimaOrder {
+                p: usize::MAX,
+                ..order
+            },
+            ArimaOrder { d: 3, ..order },
+            ArimaOrder { sd: 2, ..order },
+            ArimaOrder { sp: 2, ..order },
+        ] {
+            assert!(
+                fit(
+                    &y,
+                    Method::SparseArima {
+                        order: invalid,
+                        zero_ar: 0,
+                        zero_ma: 0
+                    }
+                )
+                .is_err()
+            );
+        }
+    }
+
     #[test]
     fn backcast_line_and_boundary_optimum() {
         let y: Vec<_> = (1..=48).map(|i| 20.0 + 0.5 * f64::from(i)).collect();

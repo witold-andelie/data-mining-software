@@ -714,11 +714,10 @@ fn expert_arima_builder_selects_without_saved_pmml() {
         fit_gaps.join("\n")
     );
     // 9 of the built selections come from AllModels builders, where the ARIMA candidate also
-    // wins the NBIC comparison. 8 select structures the fitter rejects: d = 2, or more than
-    // four AR or MA lags.
+    // wins the NBIC comparison. All 85 structures fit, including d = 2 and sparse high lags.
     assert_eq!(
         (built.len(), fit_gaps.len(), other_family.len()),
-        (77, 8, 0)
+        (85, 0, 0)
     );
 }
 
@@ -815,7 +814,168 @@ fn expert_all_models_builder_selects_without_saved_pmml() {
     for line in mismatched.iter().chain(&gaps) {
         eprintln!("  {line}");
     }
-    // The 2 GAPs select d = 2 ARIMA (pr_i2_all, p2_i2_all), which the fitter rejects.
     assert!(mismatched.is_empty(), "{mismatched:?}");
-    assert_eq!((matched.len(), gaps.len()), (26, 2));
+    assert_eq!((matched.len(), gaps.len()), (28, 0));
+}
+
+/// New fitter coverage: select and fit without saved PMML, then compare exact
+/// likelihoods and score *our* model on every recorded oracle row. Prediction
+/// outliers remain visible even when Modeler's stopping point has worse likelihood.
+#[test]
+fn expert_sparse_refits_objective_and_forecasts() {
+    let root = support::repo_root();
+    let mut metrics = Vec::new();
+    for (label, case) in [
+        ("ts_expert", "pr_i2_ar"),
+        ("ts_expert2", "p2_i2_ar"),
+        ("ts_expert4", "p4_ma5_ar"),
+        ("ts_expert4", "p4_weakma1_ar"),
+        ("ts_expert6", "p6_ma8n144_ar"),
+        ("ts_expert6", "p6_ma9n144_ar"),
+        ("ts_expert6", "p6_ma12n144_ar"),
+        ("ts_expert6", "p6_ma12n240_ar"),
+    ] {
+        let (archive, mut stream) = open_case(label, case);
+        let saved = saved_spec(&archive, &stream);
+        let y = input_series(label, &stream, "y");
+        let input_uid = stream
+            .diagram
+            .nodes
+            .iter()
+            .find(|n| n.type_identifier() == "TypeNode")
+            .unwrap()
+            .uid
+            .clone();
+        let builder = stream
+            .diagram
+            .nodes
+            .iter_mut()
+            .find(|n| n.type_identifier() == "spss.ts!ts_builder")
+            .unwrap();
+        builder.containers.clear();
+        let builder_uid = builder.uid.clone();
+        let context = ExecContext {
+            files: FileResolver {
+                data_dirs: vec![root.join("corpus").join(label)],
+            },
+            attachments: Arc::new(Default::default()),
+            stream_properties: stream.properties.clone().map(Arc::new),
+            ..ExecContext::default()
+        };
+        let start = std::time::Instant::now();
+        let results = Plan::new(&stream).evaluate(&[&builder_uid, &input_uid], &context);
+        let elapsed = start.elapsed().as_secs_f64();
+        let Some(Ok(NodeOutput::Model(pmml))) = results.get(&builder_uid) else {
+            panic!("{label}/{case}: {:?}", results.get(&builder_uid));
+        };
+        let Some(Ok(NodeOutput::Data(table))) = results.get(&input_uid) else {
+            panic!("{label}/{case}: missing input");
+        };
+        let dms_pmml::Model::Mining(m) = &pmml.model else {
+            panic!("mining model")
+        };
+        let dms_pmml::Model::TimeSeries { xml, .. } = m.segments[0].model.as_ref() else {
+            panic!("time series segment")
+        };
+        let ours = dms_exec::nodes::time_series::parse_saved_model(xml).unwrap();
+        if let (FittedSpec::Arima(a), FittedSpec::Arima(b)) = (&ours, &saved) {
+            assert_eq!(signature(a), signature(b), "{label}/{case}: structure");
+        } else {
+            panic!("ARIMA expected")
+        }
+        let our_objective = time_series::objective(&ours, &y).unwrap();
+        let modeler_objective = time_series::objective(&saved, &y).unwrap();
+        let mean = y.iter().sum::<f64>() / y.len() as f64;
+        let sd = (y.iter().map(|v| (v - mean).powi(2)).sum::<f64>() / (y.len() - 1) as f64).sqrt();
+        let mut worst = [0.0_f64; 3]; // point, interval, residual
+        let mut cells = 0;
+        let mut rows = 0;
+        for node in stream
+            .diagram
+            .nodes
+            .iter()
+            .filter(|n| n.type_identifier() == "spss.ts!ts_applier")
+        {
+            let NodeOutput::Data(actual) = dms_exec::nodes::time_series::apply(node)
+                .unwrap()
+                .produce(std::slice::from_ref(table), Some(pmml.clone()), &context)
+                .unwrap()
+            else {
+                panic!("scoring output")
+            };
+            let path = std::fs::read_dir(root.join(format!("oracle/{label}/{case}/data")))
+                .unwrap()
+                .map(|e| e.unwrap().path())
+                .find(|p| p.to_string_lossy().ends_with(&format!("_{}.csv", node.uid)))
+                .unwrap();
+            let text = std::fs::read_to_string(path).unwrap();
+            let mut lines = text.lines().filter(|l| !l.is_empty());
+            let header = support::parse_csv_line(lines.next().unwrap());
+            let expected: Vec<_> = lines.map(support::parse_csv_line).collect();
+            let names: Vec<_> = actual
+                .model()
+                .fields()
+                .iter()
+                .map(|f| f.name.clone())
+                .collect();
+            assert_eq!(names, header, "{label}/{case}: schema");
+            assert_eq!(actual.row_count(), expected.len(), "{label}/{case}: rows");
+            rows += expected.len();
+            for (row, exp) in actual.rows().iter().zip(&expected) {
+                for ((v, e), name) in row.iter().zip(exp).zip(&header) {
+                    match (v.as_f64(), e.parse::<f64>()) {
+                        (Some(a), Ok(b)) if name.starts_with("$TS") => {
+                            let index = if name.starts_with("$TS-") {
+                                0
+                            } else if name.starts_with("$TSLCI-") || name.starts_with("$TSUCI-") {
+                                1
+                            } else {
+                                2
+                            };
+                            worst[index] = worst[index].max((a - b).abs());
+                            cells += 1;
+                        }
+                        (Some(a), Ok(b)) => assert!((a - b).abs() <= 1e-9 * b.abs().max(1.0)),
+                        _ => assert_eq!(
+                            if v.is_null() {
+                                String::new()
+                            } else {
+                                v.to_string()
+                            },
+                            *e,
+                            "{label}/{case}: {name}"
+                        ),
+                    }
+                }
+            }
+        }
+        assert!(cells > 0);
+        let max = worst.into_iter().fold(0.0_f64, f64::max);
+        let objective_pass = our_objective <= modeler_objective + 1e-6 * modeler_objective.abs();
+        println!(
+            "{label}/{case}: ours={our_objective:.12} Modeler={modeler_objective:.12}\n  ours: {ours:?}\n  Modeler: {saved:?}\n  worst={max:.12} ({:.9} SD), point/interval/residual={worst:?}, rule3={}, rows={rows}, cells={cells}, build={elapsed:.3}s",
+            max / sd,
+            max <= 0.01 * sd
+        );
+        metrics.push(serde_json::json!({
+            "label": label, "case": case, "observations": y.len(), "build_seconds": elapsed,
+            "our_objective": our_objective, "modeler_objective": modeler_objective,
+            "our_parameters": format!("{ours:?}"), "modeler_parameters": format!("{saved:?}"),
+            "objective_pass": objective_pass, "target_sd": sd, "worst_absolute": max,
+            "worst_sd": max / sd, "point_absolute": worst[0], "interval_absolute": worst[1],
+            "residual_absolute": worst[2], "rule3": max <= 0.01 * sd, "rows": rows, "cells": cells,
+        }));
+        if std::env::var_os("DMS_TS_FIT_REPORT").is_some() {
+            std::fs::create_dir_all(root.join("target/ts-fit")).unwrap();
+            std::fs::write(
+                root.join("target/ts-fit/metrics.json"),
+                serde_json::to_string_pretty(&metrics).unwrap(),
+            )
+            .unwrap();
+        }
+        assert!(
+            objective_pass,
+            "{label}/{case}: {our_objective} > {modeler_objective}"
+        );
+    }
 }
