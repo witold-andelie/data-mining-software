@@ -42,6 +42,13 @@ gle	gle_binom_identity	GLE binomial identity link: Modeler stops at 4.9316 - 0.5
 gle	gle_binom_log	GLE binomial log link: Modeler stops at exp(34.33 - 3.513 x) ($GC-y_flag 1.39e14 at row 1), not a root of the score equations; the same IRLS, clipping and step-halving variants as for the identity link do not reproduce it (closest 16.96 - 1.997 x)
 gle3	g3_id_c_def	GLE binomial identity link, 2 of 20 starting means outside (0, 1): Modeler's estimate is not a root of the score over any subset of records, so it stops early on a path with up to 7 out-of-range records; excluding out-of-range records (which matches g3_id_b and g3_log_a exactly) converges elsewhere
 gle3	g3_id_c_it1	as g3_id_c_def; Modeler's estimate also changes with _interEffMaxOuterIters (1 here), whose meaning is not reproduced
-gle3	g3_id_d_def	GLE binomial identity link, 3 of 20 starting means outside (0, 1): Modeler stops early (not a score root); our exclusion path ends 2.4e-3 away
-gle3	g3_id_d_it1	as g3_id_d_def (_interEffMaxOuterIters 1 gives the same Modeler estimate)
 gle3	g3_log_d_it1	GLE binomial log link with several starting means at or above 1: Modeler stops early (not a score root); our exclusion path converges elsewhere
+gle4	g4_id_c_mi2	GLE binomial identity link, dataset C: out-of-range means on both sides make the full-step iteration chaotic; Modeler's estimate lies on our path within 1e-6 at varying iterates (24-48) but the 99-iterate end is not reproducible to rounding; see rea-work/gle-lab/NOTES.md
+gle4	g4_id_c_mi3	as g4_id_c_mi2 (chaotic path)
+gle4	g4_id_c_mi4	as g4_id_c_mi2 (chaotic path)
+gle4	g4_id_c_mi5	as g4_id_c_mi2 (chaotic path)
+gle4	g4_id_c_mi10	as g4_id_c_mi2 (chaotic path)
+gle4	g4_id_c_newton	as g4_id_c_mi2, Newton-only (Modeler's estimate is iterate 39 of our Newton-only path exactly, but the end of the run is not reproducible)
+gle4	g4_log_d_mi2	GLE binomial log link with means far above 1: Modeler's estimate is on none of our full-step, halving or Fisher paths
+gle4	g4_log_d_mi3	as g4_log_d_mi2
+gle4	g4_log_d_mi5	as g4_log_d_mi2

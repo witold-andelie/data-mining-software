@@ -620,17 +620,29 @@ fn estimate(
         Estimation::FisherScoring => settings.max_iterations.saturating_add(1),
         Estimation::Hybrid { fisher_iterations } => fisher_iterations,
     };
-    let Some((mut loglik, mut score, mut xtwx)) = derivatives(work, &beta, true) else {
+    // The first iteration is a Fisher step only when K >= 1 (Newton-only uses the observed
+    // Hessian from the start: `gle4/g4_id_d_newton`).
+    let Some((mut loglik, mut score, mut xtwx)) = derivatives(work, &beta, k_fisher >= 1) else {
         return Err(AlgoError::Data(
             "GLE starting log-likelihood is not finite".into(),
         ));
+    };
+    // Hybrid estimation stops one Fisher iteration earlier than the limit: with one Fisher
+    // step Modeler's non-converging 3-cycle ends at iterate 99, Newton-only at 100
+    // (`gle4/g4_id_d_*`, `gle3/g3_id_d_def`).
+    let limit = match settings.estimation {
+        Estimation::Hybrid { fisher_iterations } => settings
+            .max_iterations
+            .saturating_sub(fisher_iterations)
+            .max(1),
+        _ => settings.max_iterations,
     };
     let mut converged = false;
     let mut iterations = 0usize;
     let mut need_newton_confirm = false;
     let mut force_fisher = false;
     loop {
-        if iterations >= settings.max_iterations {
+        if iterations >= limit {
             break;
         }
         iterations = iterations.saturating_add(1);
@@ -640,10 +652,12 @@ fn estimate(
         };
         match step_halve(work, &beta, &delta, loglik, settings.max_step_halving) {
             Some((new_beta, _)) => {
+                // The Hessian computed here serves the NEXT iteration, which is a Fisher
+                // step only while its number is at most K (Guide 3.1.3 step 6).
                 let use_fisher = if need_newton_confirm {
                     false
                 } else {
-                    force_fisher || iterations <= k_fisher
+                    force_fisher || iterations.saturating_add(1) <= k_fisher
                 };
                 let Some((ll, s, a)) = derivatives(work, &new_beta, use_fisher) else {
                     break;
@@ -792,6 +806,11 @@ fn step_halve(
         }
         if trial.iter().all(|v| v.is_finite()) {
             match log_likelihood(work, &trial) {
+                // An undefined likelihood on either side compares false, so Modeler
+                // never halves: the full step stands (`gle3/g3_id_d`).
+                Some(ll) if j == 0 && (ll.is_nan() || loglik.is_nan()) => {
+                    return Some((trial, ll));
+                }
                 Some(ll) if ll.is_finite() && ll >= loglik - 1e-14 * (1.0 + loglik.abs()) => {
                     return Some((trial, ll));
                 }
@@ -866,12 +885,14 @@ fn derivatives(work: &Work, beta: &[f64], fisher: bool) -> Option<(f64, Vec<f64>
     let mut loglik = 0.0;
     let mut score = vec![0.0; p];
     let mut xtwx = vec![0.0; len];
+    let mut undefined = false;
     for i in 0..n {
         let y = *work.y.get(i)?;
         let x = work.x.get(i)?;
         let eta = dot(x, beta)?;
         let raw = mu_of(eta, work.link)?;
         if excluded(raw, work) {
+            undefined |= undefined_likelihood(raw, work);
             continue;
         }
         let mu = project_mu(raw, work)?;
@@ -915,7 +936,9 @@ fn derivatives(work: &Work, beta: &[f64], fisher: bool) -> Option<(f64, Vec<f64>
             }
         }
     }
-    if !loglik.is_finite() {
+    if undefined {
+        loglik = f64::NAN;
+    } else if !loglik.is_finite() {
         return None;
     }
     Some((loglik, score, xtwx))
@@ -927,6 +950,9 @@ fn log_likelihood(work: &Work, beta: &[f64]) -> Option<f64> {
         let eta = dot(x, beta)?;
         let raw = mu_of(eta, work.link)?;
         if excluded(raw, work) {
+            if undefined_likelihood(raw, work) {
+                return Some(f64::NAN);
+            }
             continue;
         }
         let mu = project_mu(raw, work)?;
@@ -958,6 +984,14 @@ fn excluded(mu: f64, work: &Work) -> bool {
     work.distribution == Distribution::Binomial
         && !matches!(work.link, Link::Logit)
         && !(mu > 0.0 && mu < 1.0)
+}
+
+/// An excluded binomial mean at or below 0 makes the log-likelihood undefined (`ln mu`), so no
+/// step-halving comparison can be made and the full step is taken. A mean at or above 1 is only
+/// excluded. This asymmetry separates Modeler's converged `gle3/g3_id_b` (means above 1) from
+/// its 3-cycle `gle3/g3_id_d` (means below 0); `gle-lab/NOTES.md`, rounds 3-5.
+fn undefined_likelihood(mu: f64, work: &Work) -> bool {
+    excluded(mu, work) && (mu <= 0.0 || mu.is_nan())
 }
 
 fn project_mu(mu: f64, work: &Work) -> Option<f64> {
@@ -1887,8 +1921,8 @@ mod tests {
                 "gle_gamma_inverse" => &[0.5710022328477902, -0.027836844753388417],
                 "gle_binom_logit" => &[22.429759271389315, -2.565075472490318],
                 // Ours, not Modeler's: these two remain gaps (xtask/known-gaps.tsv).
-                "gle_binom_identity" => &[6.330847864017046, -0.6664234923410987],
-                "gle_binom_log" => &[42.30870992073972, -4.453177950033853],
+                "gle_binom_identity" => &[-0.055134788184932226, 0.0636235591374231],
+                "gle_binom_log" => &[39.119061036382845, -4.115935218805453],
                 "gle_binom_factor" => &[
                     126.13034812751488,
                     -12.938444031206005,
