@@ -496,7 +496,7 @@ fn c50_winnowing_remains_rejected_for_every_recorded_case() {
             dms_exec::Plan::new(&fixture.stream).evaluate(&[&fixture.uid], &fixture.context);
         let error = results.get(&fixture.uid).unwrap().as_ref().unwrap_err();
         assert!(
-            error.to_string().contains("winnowing (GAP c50_presets"),
+            error.to_string().contains("winnowing (GAP"),
             "{label}/{case}: {error}"
         );
     }

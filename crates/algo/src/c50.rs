@@ -63,13 +63,12 @@
 //!   23 rows), raising `c1 = T`'s child `c4` and pruning its regrown branches collapses
 //!   `c4 = T` (12 rows) to a leaf while keeping `d <= 47.605` under `c4 = F` (11 rows,
 //!   3-leaf bound 10.149265); raising that remaining internal child `d <= 47.605` onto all
-//!   23 rows reduces the bound to 9.186232. Global pruning ranks subtrees by the training
-//!   errors added by collapsing them, counted in records (costs under misclassification
-//!   costs), and breaks equal-error ties by largest leaf count (`auto_train/ac_*`: at 41
-//!   errors against limit 45.962848, collapsing the 4-leaf `member = N` split adds 2 errors
-//!   before the 2-leaf `income <= 28` split under `region = east`, exposing `income > 59.5`
-//!   as another 2-error, 2-leaf candidate; tied at `(2, 2)`, both together would reach
-//!   47 > 45.962848 and are rejected), see `global_prune`. Plain multiway splits have a
+//!   23 rows reduces the bound to 9.186232. Global pruning follows the C5.0 functional
+//!   specification (two-team clean room, 2026-11-06; see `global_prune`): every internal node
+//!   is scored by the training errors its collapse adds per leaf removed, tied disjoint
+//!   subtrees go together, and a group that exceeds the remaining allowance ends pruning.
+//!   This explains the earlier black-box rules (`auto_train/ac_*`, `c50_global/wn89_noC4F`,
+//!   `wn150_prefix`) and also `c50_global/wn100_mc3`. Plain multiway splits have a
 //!   branch for every declared value, and a nominal field with too many values is never used
 //!   (see `MANY_VALUES`). GAP `c50_weight`, `c50_cw_sev50`: global pruning there
 //!   removes `red, code = 3, flag = T`'s `x <= 9` split but keeps `code = 1, x > 11`'s
@@ -89,8 +88,9 @@
 //!   3 positive tests) and `c3 = F / c2 = T` (negative gain), 13 -> 19 errors; the budget
 //!   19 + 3.92 then takes the `c2 = T` refinement and its parent split (22 errors). The test
 //!   is skipped under misclassification costs (no oracle). It replaces a deferred-replacement
-//!   rule that fixed only `wn100_sev85`. After a refused tie group only the subtrees that
-//!   enclose it are tried (`c50_global/wn89_noC4F`, see `global_prune`).
+//!   rule that fixed only `wn100_sev85`. The specification has no such test; its MDL
+//!   condition acts during growth and has weight zero below 500 records per class. Dropping
+//!   ours loses 25 recorded streams, so Modeler keeps something like it.
 //!   GAP `c50_global/wn100_mc5`: Modeler's `d <= 47.865` (also with global pruning off; ours
 //!   `d <= 47.605`) was grown on other records, and Modeler keeps it where the test collapses
 //!   ours (0.20 bits, 4 positive tests).
@@ -238,6 +238,14 @@
 //!   using max(min_child, min(25, .1*N/classes)) does not resolve wn100 either.
 //!   These variants are not retained. All nine datasets' stream inputs equal
 //!   exported Type records numerically; loading different rows is not the cause.
+//! - Winnowing from the C5.0 functional specification (two-team clean room, 2026-11-06):
+//!   [`winnow_columns`] reproduces all 20 recorded `c50_presets`/`models_ml` winnowing trees
+//!   exactly and 11 of the 12 `c50_winnow2` on-cases. The exception is `w03`, where Modeler
+//!   returns a single leaf. Enabling it in the node would turn `w03`, which now scores
+//!   through its saved model, into a regression, so the node still rejects winnowing as GAP.
+//!   Growth now also collapses a split whose grown subtrees err at least 99.9% as much as
+//!   the node as a leaf; the winnowing usage evidence needs it, and no other tree changes.
+//!   The notes below record the earlier black-box search.
 //! - GAP winnowing, corrected-learner rerun (2026-10-29, recorded oracles only):
 //!   all 20 trees now admit an exact input subset, versus 12/20 in the old study.
 //!   All 2,900 nonempty subsets were retrained with the requested settings. Exact
@@ -345,6 +353,10 @@ pub struct C50Settings {
     pub rules: bool,
     /// Boosting trials (`useBoosting` with `boostingTrials`): [`crate::c50_boost`].
     pub boost_trials: Option<usize>,
+    /// Attribute winnowing before the final tree (`use_winnowing`): [`winnow_columns`].
+    pub winnow: bool,
+    /// The growth-time average-gain condition; off only for winnowing trial trees.
+    pub growth_threshold: bool,
 }
 
 impl Default for C50Settings {
@@ -358,6 +370,8 @@ impl Default for C50Settings {
             costs: None,
             rules: false,
             boost_trials: None,
+            winnow: false,
+            growth_threshold: true,
         }
     }
 }
@@ -416,6 +430,7 @@ impl MisclassificationCosts {
     }
 }
 
+#[derive(Clone)]
 enum Column {
     Numeric {
         name: String,
@@ -430,6 +445,7 @@ enum Column {
     },
 }
 
+#[derive(Clone)]
 struct Data {
     columns: Vec<Column>,
     classes: Vec<String>,
@@ -1079,7 +1095,7 @@ fn grow(
     // P: only positive corrected gains enter the mean; compare that same gain
     // with the mean before maximizing gain ratio. Costs retain their recorded
     // bypass (`c50_costs` node 5 grows `x`).
-    let average = if data.costs.is_some() {
+    let average = if data.costs.is_some() || !settings.growth_threshold {
         f64::NEG_INFINITY
     } else {
         let mut positive = 0usize;
@@ -1106,13 +1122,38 @@ fn grow(
         }
     }
     if let Some(split) = best {
+        let mut children_errors = 0.0;
         for (predicate, group) in split.groups {
             let mut child = grow(data, &group, settings, class, depth + 1, budget)?;
             child.predicate = predicate;
+            children_errors += grown_errors(data, &child, &group);
             node.children.push(child);
+        }
+        // Specification section 2: a split whose children together err at least 99.9% as
+        // much as the node would as a leaf collapses back during growth.
+        if children_errors >= 0.999 * record_errors(data, &node, rows) {
+            node.children.clear();
         }
     }
     Ok(node)
+}
+
+/// Training errors summed over the leaves of a grown subtree, by record count.
+fn grown_errors(data: &Data, node: &Node, rows: &[usize]) -> f64 {
+    if node.children.is_empty() {
+        return record_errors(data, node, rows);
+    }
+    node.children
+        .iter()
+        .map(|child| {
+            let sub: Vec<usize> = rows
+                .iter()
+                .copied()
+                .filter(row_matcher(data, &child.predicate))
+                .collect();
+            grown_errors(data, child, &sub)
+        })
+        .sum()
 }
 
 fn validate_settings(dataset: &Dataset<'_>, settings: &C50Settings) -> Result<(), AlgoError> {
@@ -1606,112 +1647,346 @@ fn collapse_uninformative(data: &Data, node: &mut Node, rows: &[usize], settings
     }
 }
 
-/// Global pruning ranks whole subtrees by added training errors, without dividing
-/// by removed leaves (`c50_presets/c50_drughalf_expert`: Age adds 2, Na/K adds 3),
-/// and breaks equal-error ties by largest leaf count (`auto_train/ac_*`: the
-/// four-branch `member = N` split goes before the two-branch `income <= 28` split).
-/// Equal `(added_errors, leaves)` are tried together; cumulative errors must stay
-/// within one standard error of the errors after [`collapse_uninformative`] (`c50_globalprune`:
-/// exception blocks correcting one record go, two stay, at every severity and with case
-/// weights; `models/c50_default`: `BP = HIGH` goes; `c50_min_child`: the equal increases
-/// `green`, `red` would reach 87 > 79 + 7.92 together and stay).
-/// A refused group is not the end: the subtrees that enclose a refused subtree are tried
-/// next, cheapest first, and an accepted one restarts the full ranking; subtrees elsewhere
-/// are not tried (`c50_global/wn89_noC4F`: the `c2 = T / b > 5.9` refinement and `c3 = F`
-/// tie at (2, 2) and would reach 19 > 18.53, then the enclosing `c2 = T` split adds 3 and
-/// goes, 18; `wn150_prefix`: after three tied (2, 2) twigs are refused, an unrelated
-/// (3, 2) twig that would fit, 18 < 18.67, stays).
+/// Global pruning (C5.0 functional specification, section 1).
+///
+/// - The allowance is sqrt(b (1 - b/n)) over the observed training errors b of the locally
+///   pruned tree.
+/// - Each round scores every internal node by the errors its collapse adds per counted leaf
+///   it removes, d / (l - 1). A node is a candidate only when d fits the remaining allowance;
+///   traversal enters only children with mass above 0.1.
+/// - The best score is retained in single precision. A strictly smaller score starts a new
+///   group, and an equal one joins it.
+/// - A tied ancestor replaces the tied members inside its subtree. It supersedes the whole
+///   group only when it improves on the best score from before its subtree was scanned.
+/// - The disjoint group, in post-order, is collapsed as a whole when its summed increase fits
+///   the remaining allowance. Otherwise global pruning stops.
 fn global_prune(data: &Data, root: &mut Node) {
     let rows: Vec<usize> = (0..data.targets.len()).collect();
     let n = rows.len() as f64;
-    let mut errors = subtree_errors(data, root, &rows).1;
-    let limit = errors + (errors * (n - errors) / n).max(0.0).sqrt();
-    let mut refused: Vec<Vec<usize>> = Vec::new();
+    let errors = subtree_errors(data, root, &rows).1;
+    let mut remaining = (errors * (1.0 - errors / n)).max(0.0).sqrt();
     loop {
-        let mut steps = Vec::new();
-        collapse_candidates(data, root, &rows, &mut Vec::new(), &mut steps);
-        if !refused.is_empty() {
-            steps.retain(|step| {
-                !refused.contains(&step.path)
-                    && refused
-                        .iter()
-                        .any(|r| r.len() > step.path.len() && r.starts_with(&step.path))
-            });
-        }
-        let Some(best) = steps.iter().map(|s| (s.added, s.leaves)).reduce(|b, a| {
-            if a.0 < b.0 - 1e-9 || ((a.0 - b.0).abs() <= 1e-9 && a.1 > b.1) {
-                a
-            } else {
-                b
-            }
-        }) else {
+        if remaining <= 0.0 {
             break;
-        };
-        let group: Vec<&CollapseStep> = steps
-            .iter()
-            .filter(|s| (s.added - best.0).abs() <= 1e-9 && s.leaves == best.1)
-            .collect();
-        // Outermost first: a tied descendant goes with its tied ancestor.
-        let outer: Vec<&CollapseStep> = group
-            .iter()
-            .copied()
-            .filter(|s| {
-                !group
-                    .iter()
-                    .any(|o| o.path.len() < s.path.len() && s.path.starts_with(&o.path))
-            })
-            .collect();
-        let added: f64 = outer.iter().map(|s| s.added).sum();
-        if errors + added > limit + 1e-9 {
-            refused.extend(outer.iter().map(|s| s.path.clone()));
-            continue;
         }
-        for step in &outer {
+        let mut scan = PruneScan {
+            best: f32::MAX,
+            group: Vec::new(),
+        };
+        scan_candidates(data, root, &rows, &mut Vec::new(), remaining, &mut scan);
+        if scan.group.is_empty() {
+            break;
+        }
+        let added: f64 = scan.group.iter().map(|step| step.added).sum();
+        if added > remaining {
+            break;
+        }
+        for step in &scan.group {
             let mut node = &mut *root;
             for &child in &step.path {
                 node = &mut node.children[child];
             }
             node.children.clear();
+            remaining -= step.added;
         }
-        errors += added;
-        refused.clear();
     }
 }
 
-/// One internal node as a global-pruning candidate: its child-index path from the root,
-/// the training errors collapsing it adds, and its leaves.
+/// One internal node selected for collapse: its child-index path from the root and the
+/// training errors collapsing it adds.
 struct CollapseStep {
     path: Vec<usize>,
     added: f64,
-    leaves: usize,
 }
 
-fn collapse_candidates(
+struct PruneScan {
+    /// The best score so far, kept in single precision as the specification requires.
+    best: f32,
+    group: Vec<CollapseStep>,
+}
+
+/// Errors of the node as a leaf, errors summed over its leaves, and its counted leaves
+/// (leaves with mass above 0.001).
+fn counted_errors(data: &Data, node: &Node, rows: &[usize]) -> (f64, f64, usize) {
+    let leaf = record_errors(data, node, rows);
+    if node.children.is_empty() {
+        let counted = usize::from(data.weight(rows) > 0.001);
+        return (leaf, leaf, counted);
+    }
+    let mut errors = 0.0;
+    let mut leaves = 0usize;
+    for child in &node.children {
+        let sub: Vec<usize> = rows
+            .iter()
+            .copied()
+            .filter(row_matcher(data, &child.predicate))
+            .collect();
+        let (_, e, l) = counted_errors(data, child, &sub);
+        errors += e;
+        leaves = leaves.saturating_add(l);
+    }
+    (leaf, errors, leaves)
+}
+
+fn scan_candidates(
     data: &Data,
     node: &Node,
     rows: &[usize],
     path: &mut Vec<usize>,
-    out: &mut Vec<CollapseStep>,
+    remaining: f64,
+    scan: &mut PruneScan,
 ) {
     if node.children.is_empty() {
         return;
     }
-    let (leaf, sub, leaves) = subtree_errors(data, node, rows);
-    out.push(CollapseStep {
-        path: path.clone(),
-        added: leaf - sub,
-        leaves,
-    });
+    let best_before = scan.best;
     for (index, child) in node.children.iter().enumerate() {
         let sub: Vec<usize> = rows
             .iter()
             .copied()
             .filter(row_matcher(data, &child.predicate))
             .collect();
+        if data.weight(&sub) <= 0.1 {
+            continue;
+        }
         path.push(index);
-        collapse_candidates(data, child, &sub, path, out);
+        scan_candidates(data, child, &sub, path, remaining, scan);
         path.pop();
     }
+    let (leaf, sub, leaves) = counted_errors(data, node, rows);
+    let added = leaf - sub;
+    if added > remaining || leaves < 2 {
+        return;
+    }
+    let score = added / (leaves - 1) as f64;
+    let best = f64::from(scan.best);
+    if score < best {
+        scan.best = score as f32;
+        scan.group.clear();
+    } else if score <= best {
+        if score < f64::from(best_before) {
+            scan.group.clear();
+        } else {
+            let inside = path.clone();
+            scan.group.retain(|step| !step.path.starts_with(&inside));
+        }
+    } else {
+        return;
+    }
+    scan.group.push(CollapseStep {
+        path: path.clone(),
+        added,
+    });
+}
+
+fn column_name(column: &Column) -> &str {
+    match column {
+        Column::Numeric { name, .. } | Column::Symbolic { name, .. } => name,
+    }
+}
+
+impl Data {
+    /// The same records with only the columns whose `keep` flag is set.
+    fn with_columns(&self, keep: &[bool]) -> Data {
+        let mut out = self.clone();
+        out.columns = self
+            .columns
+            .iter()
+            .zip(keep)
+            .filter(|(_, keep)| **keep)
+            .map(|(column, _)| column.clone())
+            .collect();
+        out
+    }
+}
+
+fn split_field(predicate: &Predicate) -> Option<&str> {
+    match predicate {
+        Predicate::Simple { field, .. } | Predicate::SimpleSet { field, .. } => Some(field),
+        _ => None,
+    }
+}
+
+/// Fields tested anywhere in the tree.
+fn tested_fields(node: &Node, out: &mut std::collections::HashSet<String>) {
+    for child in &node.children {
+        if let Some(field) = split_field(&child.predicate) {
+            out.insert(field.to_string());
+        }
+        tested_fields(child, out);
+    }
+}
+
+/// Class contributions of one record (specification section 6): a reached leaf adds its
+/// normalised class distribution, an empty leaf its parent's. A suppressed field, or a value
+/// no branch takes, follows every branch with mass above 0.0001 in proportion to its mass.
+fn contribute(
+    data: &Data,
+    node: &Node,
+    parent: &Node,
+    row: usize,
+    suppressed: Option<&str>,
+    fraction: f64,
+    out: &mut [f64],
+) {
+    if node.children.is_empty() {
+        let source = if node.record_count.unwrap_or(0.0) < 0.0001 {
+            parent
+        } else {
+            node
+        };
+        let total: f64 = source.distribution.iter().map(|d| d.record_count).sum();
+        if total > 0.0 {
+            for (slot, d) in out.iter_mut().zip(&source.distribution) {
+                *slot += fraction * d.record_count / total;
+            }
+        }
+        return;
+    }
+    let field = node
+        .children
+        .first()
+        .and_then(|c| split_field(&c.predicate));
+    let taken = if field.is_some() && field == suppressed {
+        None
+    } else {
+        node.children
+            .iter()
+            .find(|child| row_matcher(data, &child.predicate)(&row))
+    };
+    match taken {
+        Some(child) => contribute(data, child, node, row, suppressed, fraction, out),
+        None => {
+            let mass: f64 = node
+                .children
+                .iter()
+                .map(|c| c.record_count.unwrap_or(0.0))
+                .filter(|m| *m > 0.0001)
+                .sum();
+            if mass <= 0.0 {
+                return;
+            }
+            for child in &node.children {
+                let m = child.record_count.unwrap_or(0.0);
+                if m > 0.0001 {
+                    contribute(data, child, node, row, suppressed, fraction * m / mass, out);
+                }
+            }
+        }
+    }
+}
+
+/// Misclassified evaluation records (or their costs), with one field optionally suppressed.
+fn evaluation_errors(data: &Data, tree: &Node, rows: &[usize], suppressed: Option<&str>) -> f64 {
+    let mut errors = 0.0;
+    for &row in rows {
+        let mut scores = vec![0.0; data.classes.len()];
+        contribute(data, tree, tree, row, suppressed, 1.0, &mut scores);
+        let mut predicted = 0usize;
+        for (class, score) in scores.iter().enumerate() {
+            if *score > scores.get(predicted).copied().unwrap_or(f64::NEG_INFINITY) {
+                predicted = class;
+            }
+        }
+        let Some(&actual) = data.targets.get(row) else {
+            continue;
+        };
+        if actual != predicted {
+            errors += match data.costs.as_deref() {
+                Some(costs) => costs
+                    .get(actual)
+                    .and_then(|r| r.get(predicted))
+                    .copied()
+                    .unwrap_or(1.0),
+                None => 1.0,
+            };
+        }
+    }
+    errors
+}
+
+/// A winnowing trial tree on `rows`: the fields it tests before local pruning, and the
+/// locally pruned tree.
+fn trial_tree(
+    data: &Data,
+    rows: &[usize],
+    settings: &C50Settings,
+) -> Result<(std::collections::HashSet<String>, Node), AlgoError> {
+    let mut budget = 0;
+    let mut tree = grow(data, rows, settings, 0, 0, &mut budget)?;
+    let mut grown = std::collections::HashSet::new();
+    tested_fields(&tree, &mut grown);
+    prune(data, rows, &mut tree, settings, 0, &mut budget)?;
+    Ok((grown, tree))
+}
+
+/// Attribute winnowing (C5.0 functional specification, section 3; two-team clean room).
+///
+/// 1. Split the records class by class: odd occurrences go to a front group in record order,
+///    even ones to a rear group in reverse order. The first floor(n/2) of front-then-rear
+///    train a trial tree; the rest evaluate it. The trial tree uses minimum cases
+///    max(m/2, 2), no average-gain threshold, local pruning and no global pruning.
+/// 2. A field used by the pruned trial tree is harmful when suppressing it strictly lowers
+///    the evaluation errors.
+/// 3. The harmful fields are dropped together unless a second trial tree without them errs
+///    strictly more than the first.
+/// 4. Fields the first tree did not test before pruning are dropped.
+fn winnow_columns(data: &Data, settings: &C50Settings) -> Result<Vec<bool>, AlgoError> {
+    let n = data.targets.len();
+    let mut seen = vec![0usize; data.classes.len()];
+    let (mut front, mut rear) = (Vec::new(), Vec::new());
+    for (row, &class) in data.targets.iter().enumerate() {
+        let Some(count) = seen.get_mut(class) else {
+            continue;
+        };
+        *count = count.saturating_add(1);
+        if *count % 2 == 1 {
+            front.push(row);
+        } else {
+            rear.push(row);
+        }
+    }
+    rear.reverse();
+    let order: Vec<usize> = front.into_iter().chain(rear).collect();
+    let (train, evaluate) = order.split_at((n / 2).min(order.len()));
+    let trial = C50Settings {
+        min_child_records: (settings.min_child_records / 2).max(2),
+        global_pruning: false,
+        growth_threshold: false,
+        winnow: false,
+        ..settings.clone()
+    };
+    let (grown, tree) = trial_tree(data, train, &trial)?;
+    let baseline = evaluation_errors(data, &tree, evaluate, None);
+    let mut used = std::collections::HashSet::new();
+    tested_fields(&tree, &mut used);
+    let mut used: Vec<String> = used.into_iter().collect();
+    used.sort();
+    let harmful: Vec<String> = used
+        .into_iter()
+        .filter(|field| evaluation_errors(data, &tree, evaluate, Some(field)) < baseline)
+        .collect();
+    let mut dropped: std::collections::HashSet<String> = std::collections::HashSet::new();
+    if !harmful.is_empty() {
+        let keep: Vec<bool> = data
+            .columns
+            .iter()
+            .map(|c| !harmful.iter().any(|h| h == column_name(c)))
+            .collect();
+        let reduced = data.with_columns(&keep);
+        let (_, second) = trial_tree(&reduced, train, &trial)?;
+        if evaluation_errors(&reduced, &second, evaluate, None) <= baseline {
+            dropped.extend(harmful);
+        }
+    }
+    Ok(data
+        .columns
+        .iter()
+        .map(|c| {
+            let name = column_name(c);
+            !dropped.contains(name) && grown.contains(name)
+        })
+        .collect())
 }
 
 fn number(node: &mut Node, next: &mut usize) {
@@ -1870,6 +2145,10 @@ pub fn train_tree(dataset: &Dataset<'_>, settings: &C50Settings) -> Result<Pmml,
         .as_ref()
         .map(|c| c.matrix(&data.classes))
         .transpose()?;
+    if settings.winnow {
+        let keep = winnow_columns(&data, settings)?;
+        data = data.with_columns(&keep);
+    }
     let rows: Vec<usize> = (0..data.targets.len()).collect();
     let mut budget = 0;
     let mut root = grow(&data, &rows, settings, 0, 0, &mut budget)?;
