@@ -8,8 +8,8 @@
 |---|---|---|
 | MVP 节点覆盖 | 85 / 85（其中 10 个按统计等价验收） | 实测（`cargo xtask parity`，2026-10-20） |
 | 以后再做 / 许可证受阻 / 不做 | 已做 5 / 24；0 / 6；0 / 34 | 实测（`cargo xtask parity`） |
-| 回归（全部带标准答案的流） | 1455 个流：1318 完全一致、86 统计等价、51 已知 GAP、0 回归 | 实测（`cargo xtask regress`，2026-11-06） |
-| 语料 | `xtask/corpus.tsv` 登记 1575 个文件，76 个 oracle 标签 | 实测 |
+| 回归（全部带标准答案的流） | 1471 个流：1334 完全一致、86 统计等价、51 已知 GAP、0 回归 | 实测（`cargo xtask regress`，2026-11-06） |
+| 语料 | `xtask/corpus.tsv` 登记 1591 个文件，77 个 oracle 标签 | 实测 |
 
 ## 阶段
 
@@ -26,6 +26,7 @@
 
 ## 进度日志
 
+- 2026-11-06（续十三）：ARIMA 专家的 Step 4 定阶、Step 5 剪枝与 ML 重拟合、Step 6 Ljung-Box 修正移植为 `arima::expert_arima`（`crates/algo/src/expert.rs`，由 opencode hy4 子代理按 Python 参考移植），93 个录制选型中完整规格 82 个吻合（`ts_expert5` 全部、`ts_expert6` 16 例中 13 例）；仅 ARIMA 的 Expert 构建节点在没有保存规格时用它选型并拟合，去掉保存容器后 66 个经节点输出与 Modeler 结构一致，其余为全部模型（8 个，仍为 GAP）与拟合器不支持的结构（8 个：d=2 或滞后超过 4 阶）；未吻合的 11 个见 `docs/gaps.md`。`ts_expert6` 16 例并入全量回归。
 - 2026-11-06（续十二）：ARIMA 专家的差分按指南附录 Step 3 实现（`arima::expert_differencing`，93 个记录 (d, D) 全部吻合，关键细节为步骤 (b) 条件最小二乘的样本前值取 0），取代经验季节差分规则；定阶、剪枝与诊断的 Python 参考实现已复现 51/67 个完整规格。
 - 2026-11-06（续十一）：在算法指南附录（PDF 第 768–786 页）找到 Expert Modeler 的完整公开算法；ARIMA 专家的变换判定按其 Step 2 实现（`arima::expert_transform`），91 个 ARIMA 记录全部吻合（此前黑箱反推的所有规则都未能解释 off500/scale500、sqrthet、linehet）。
 - 2026-11-06（续十）：GLE 二项 identity/log 越界的分界：均值 ≤ 0 时对数似然无定义、不做步长减半而取整步（Modeler 的 `gle3`/`gle4` D 组为非收敛 3 周期、混合法止于第 99 步、纯 Newton 止于第 100 步），均值 ≥ 1 仅排除、仍做步长减半（B 组收敛）；修正混合法下一步 Hessian 的类型判定差一与纯 Newton 首步；新探针 `gle4`（18 例）；三标签 49 流中 34 例精确一致，C 组（两侧越界、混沌路径）与对数链接深度越界仍为已知 GAP。
