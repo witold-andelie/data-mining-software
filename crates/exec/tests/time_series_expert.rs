@@ -177,6 +177,126 @@ fn expert_finite_history_conditioning_and_short_seasonal_scores() {
     }
 }
 
+/// The case's stream archive and decoded stream.
+fn open_case(
+    label: &str,
+    case: &str,
+) -> (dms_strfmt::container::StreamArchive, dms_stream::Stream) {
+    let dir = support::repo_root().join("corpus").join(label);
+    let archive = dms_strfmt::container::read_archive(
+        &std::fs::read(dir.join(format!("{case}.str"))).unwrap(),
+        &ArchiveLimits::default(),
+    )
+    .unwrap();
+    let stream = dms_stream::Stream::from_document(&archive.document).unwrap();
+    (archive, stream)
+}
+
+/// The specification Modeler selected, from the nugget's saved PMML.
+fn saved_spec(
+    archive: &dms_strfmt::container::StreamArchive,
+    stream: &dms_stream::Stream,
+) -> FittedSpec {
+    let nugget = stream
+        .diagram
+        .nodes
+        .iter()
+        .find(|n| n.type_identifier() == "spss.ts!ts_applier")
+        .unwrap();
+    let member = &nugget
+        .containers
+        .iter()
+        .find(|c| c.name.as_deref() == Some("PMML"))
+        .unwrap()
+        .member;
+    let bytes = &archive
+        .attachments
+        .iter()
+        .find(|a| &a.name == member)
+        .unwrap()
+        .bytes;
+    let entries = read_length_prefixed_zip(bytes, &ArchiveLimits::default()).unwrap();
+    let xml =
+        std::str::from_utf8(&entries.iter().find(|e| e.name == "0.xml").unwrap().bytes).unwrap();
+    dms_exec::nodes::time_series::parse_saved_model(xml).unwrap()
+}
+
+/// The target series reaching the builder (its Type node's output, field `target`).
+fn input_series(label: &str, stream: &dms_stream::Stream, target: &str) -> Vec<f64> {
+    let dir = support::repo_root().join("corpus").join(label);
+    let type_uid = stream
+        .diagram
+        .nodes
+        .iter()
+        .find(|n| n.type_identifier() == "TypeNode")
+        .unwrap()
+        .uid
+        .clone();
+    let context = ExecContext {
+        files: FileResolver {
+            data_dirs: vec![dir],
+        },
+        attachments: Arc::new(Default::default()),
+        stream_properties: stream.properties.clone().map(Arc::new),
+        ..ExecContext::default()
+    };
+    let results = Plan::new(stream).evaluate(&[&type_uid], &context);
+    let Some(Ok(NodeOutput::Data(table))) = results.get(&type_uid) else {
+        panic!("missing input: {:?}", results.get(&type_uid));
+    };
+    let at = table.model().position(target).unwrap();
+    table
+        .rows()
+        .iter()
+        .map(|r| r[at].as_f64().unwrap())
+        .collect()
+}
+
+/// Seasonal differencing: D = 1 exactly when one seasonal difference lowers the variance of the
+/// undifferenced (transformed) series, for every recorded seasonal ARIMA selection.
+#[test]
+fn expert_arima_seasonal_difference_matches_all_16_seasonal_oracle_models() {
+    let cases = [
+        ("ts_expert", "pr_seas_ar"),
+        ("ts_expert", "pr_seastr_ar"),
+        ("ts_expert", "pr_seasmul_ar"),
+        ("ts_expert", "pr_air_ar"),
+        ("ts_expert", "pr_alt96_all"),
+        ("ts_expert2", "p2_seastr_ar"),
+        ("ts_expert2", "p2_alt60_ar"),
+        ("ts_expert2", "p2_alt60_all"),
+        ("ts_expert3", "p3_seas36_ar"),
+        ("ts_expert3", "p3_seas48_ar"),
+        ("ts_more", "ts_expert_arima_seasonal"),
+        ("ts_expert4", "p4_seasonweak_ar"),
+        ("ts_expert4", "p4_seasonmid_ar"),
+        ("ts_expert4", "p4_difforder_ar"),
+        ("ts_expert4", "p4_airzero_ar"),
+        ("ts_expert4", "p4_gate36_ar"),
+    ];
+    let mut seen_zero = 0;
+    for (label, case) in cases {
+        let (archive, stream) = open_case(label, case);
+        let FittedSpec::Arima(spec) = saved_spec(&archive, &stream) else {
+            panic!("{label}/{case}: Modeler did not select ARIMA");
+        };
+        assert_eq!(spec.period, 12, "{label}/{case}: period");
+        let y = input_series(label, &stream, "y");
+        let z: Vec<f64> = match spec.transform {
+            arima::Transform::Log => y.iter().map(|v| v.ln()).collect(),
+            arima::Transform::Sqrt => y.iter().map(|v| v.sqrt()).collect(),
+            arima::Transform::None => y,
+        };
+        assert_eq!(
+            arima::expert_seasonal_difference(&z, 12),
+            spec.seasonal_d,
+            "{label}/{case}: seasonal D"
+        );
+        seen_zero += usize::from(spec.seasonal_d == 0);
+    }
+    assert_eq!(seen_zero, 4, "both outcomes are covered");
+}
+
 fn kind_of(spec: &FittedSpec) -> Kind {
     match spec {
         FittedSpec::Smooth(SmoothSpec::Simple { .. }) => Kind::Simple,
@@ -214,35 +334,8 @@ fn expert_exponential_smoothing_selects_all_22_oracle_models_without_saved_pmml(
     ];
     for (label, case, expected_kind) in cases {
         let dir = support::repo_root().join("corpus").join(label);
-        let archive = dms_strfmt::container::read_archive(
-            &std::fs::read(dir.join(format!("{case}.str"))).unwrap(),
-            &ArchiveLimits::default(),
-        )
-        .unwrap();
-        let mut stream = dms_stream::Stream::from_document(&archive.document).unwrap();
-        let nugget = stream
-            .diagram
-            .nodes
-            .iter()
-            .find(|n| n.type_identifier() == "spss.ts!ts_applier")
-            .unwrap()
-            .clone();
-        let member = &nugget
-            .containers
-            .iter()
-            .find(|c| c.name.as_deref() == Some("PMML"))
-            .unwrap()
-            .member;
-        let bytes = &archive
-            .attachments
-            .iter()
-            .find(|a| &a.name == member)
-            .unwrap()
-            .bytes;
-        let entries = read_length_prefixed_zip(bytes, &ArchiveLimits::default()).unwrap();
-        let xml = std::str::from_utf8(&entries.iter().find(|e| e.name == "0.xml").unwrap().bytes)
-            .unwrap();
-        let saved = dms_exec::nodes::time_series::parse_saved_model(xml).unwrap();
+        let (archive, mut stream) = open_case(label, case);
+        let saved = saved_spec(&archive, &stream);
         assert_eq!(kind_of(&saved), expected_kind, "{label}/{case} saved kind");
 
         let builder = stream
