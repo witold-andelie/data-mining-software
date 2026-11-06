@@ -489,21 +489,6 @@ fn recorded_winnowing_cases() -> Vec<(&'static str, String)> {
 }
 
 #[test]
-fn c50_winnowing_remains_rejected_for_every_recorded_case() {
-    for (label, case) in recorded_winnowing_cases() {
-        let fixture = Fixture::load(label, &case);
-        let results =
-            dms_exec::Plan::new(&fixture.stream).evaluate(&[&fixture.uid], &fixture.context);
-        let error = results.get(&fixture.uid).unwrap().as_ref().unwrap_err();
-        assert!(
-            error.to_string().contains("winnowing (GAP"),
-            "{label}/{case}: {error}"
-        );
-    }
-}
-
-#[test]
-#[ignore = "GAP: all 20 admit exact subsets, but tested selectors fail the zero-regression adoption gate"]
 fn c50_all_winnowing_trees_match_exactly() {
     let mut mismatches = Vec::new();
     for (label, case) in recorded_winnowing_cases() {

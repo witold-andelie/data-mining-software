@@ -49,3 +49,4 @@ gle4	g4_id_c_newton	as g4_id_c_mi2, Newton-only (Modeler's estimate is iterate 3
 gle4	g4_log_d_mi2	GLE binomial log link with means far above 1: Modeler's estimate is on none of our full-step, halving or Fisher paths
 gle4	g4_log_d_mi3	as g4_log_d_mi2
 gle4	g4_log_d_mi5	as g4_log_d_mi2
+c50_winnow2	w03_on	C5.0 winnowing (functional specification): Modeler returns a single leaf, while our first trial tree tests a, b, c and d before pruning and keeps b, c, d after dropping the harmful a; see crates/algo/src/c50.rs

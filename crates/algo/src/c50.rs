@@ -241,8 +241,8 @@
 //! - Winnowing from the C5.0 functional specification (two-team clean room, 2026-11-06):
 //!   [`winnow_columns`] reproduces all 20 recorded `c50_presets`/`models_ml` winnowing trees
 //!   exactly and 11 of the 12 `c50_winnow2` on-cases. The exception is `w03`, where Modeler
-//!   returns a single leaf. Enabling it in the node would turn `w03`, which now scores
-//!   through its saved model, into a regression, so the node still rejects winnowing as GAP.
+//!   returns a single leaf, a known GAP. The node enables winnowing (user decision
+//!   2026-11-06); `w03` was matching only through its saved model.
 //!   Growth now also collapses a split whose grown subtrees err at least 99.9% as much as
 //!   the node as a leaf; the winnowing usage evidence needs it, and no other tree changes.
 //!   The notes below record the earlier black-box search.
