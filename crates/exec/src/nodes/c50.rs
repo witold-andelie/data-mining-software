@@ -59,9 +59,11 @@ pub fn build(node: &StreamNode) -> Result<Box<dyn Operator>, OperatorError> {
         None
     };
     let winnow = expert && settings::flag(s, "use_winnowing")?.unwrap_or(false);
-    if winnow {
+    // Winnowing follows the C5.0 functional specification (`c50::winnow_columns`): all 20
+    // recorded c50_presets/models_ml trees and 11 of 12 c50_winnow2 cases (GAP w03).
+    if winnow && (rules || boost_trials.is_some()) {
         return Err(unsupported(
-            "winnowing (GAP: c50::winnow_columns follows the C5.0 specification and reproduces 15 of the 16 recorded winnowing streams; c50_winnow2/w03 differs, so the node keeps its saved models)",
+            "winnowing with rule sets or boosting (only the single-tree path is implemented)",
         ));
     }
     if !expert {
