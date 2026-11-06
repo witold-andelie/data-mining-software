@@ -618,7 +618,7 @@ fn selected_arima_method(spec: &ArimaSpec) -> Method {
     let (zero_ar, zero_ma) = (zero_mask(&spec.ar), zero_mask(&spec.ma));
     let period = spec.period.max(1);
     let constant = spec.constant != 0.0;
-    if period == 1 && constant && zero_ar == 0 && zero_ma == 0 && p <= 1 && q <= 1 {
+    if period == 1 && constant && zero_ar == 0 && zero_ma == 0 && p <= 1 && q <= 1 && spec.d <= 1 {
         Method::Arima {
             p,
             d: spec.d,
@@ -736,7 +736,7 @@ fn expert_specifications(
             };
             let zero_ar = zero_mask(parse_coef_array(ns, "AR", p)?);
             let zero_ma = zero_mask(parse_coef_array(ns, "MA", q)?);
-            if period == 1 && zero_ar == 0 && zero_ma == 0 && p <= 1 && q <= 1 {
+            if period == 1 && zero_ar == 0 && zero_ma == 0 && p <= 1 && q <= 1 && d <= 1 {
                 Method::Arima { p, d, q, transform }
             } else {
                 Method::SparseArima {
