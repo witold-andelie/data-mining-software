@@ -7,9 +7,9 @@
 | 数字 | 值 | 类型 |
 |---|---|---|
 | MVP 节点覆盖 | 85 / 85（其中 10 个按统计等价验收） | 实测（`cargo xtask parity`，2026-10-20） |
-| 以后再做 / 许可证受阻 / 不做 | 已做 4 / 24；0 / 6；0 / 34 | 实测（`cargo xtask parity`） |
-| 回归（全部带标准答案的流） | 1394 个流：1272 完全一致、86 统计等价、36 已知 GAP、0 回归 | 实测（`cargo xtask regress`，2026-11-06） |
-| 语料 | `xtask/corpus.tsv` 登记 1514 个文件，72 个 oracle 标签 | 实测 |
+| 以后再做 / 许可证受阻 / 不做 | 已做 5 / 24；0 / 6；0 / 34 | 实测（`cargo xtask parity`） |
+| 回归（全部带标准答案的流） | 1411 个流：1286 完全一致、86 统计等价、39 已知 GAP、0 回归 | 实测（`cargo xtask regress`，2026-11-06） |
+| 语料 | `xtask/corpus.tsv` 登记 1531 个文件，73 个 oracle 标签 | 实测 |
 
 ## 阶段
 
@@ -26,6 +26,7 @@
 
 ## 进度日志
 
+- 2026-11-06（续五）：GLE 第一期（normal、binomial、Poisson、gamma，典范连接及 identity/log，主效应）：建模按混合 IRLS，模型块按 Modeler 保存的 PMML 打分；因子空白值按缺失、模型外类别打分为 $null$，计数目标的均值输出实数；`gle` 探针 17 例中 14 例一致，二项 identity/log 链接与带因子的 logit 收敛差异 3 例为已知 GAP，节点保持默认分布（Modeler 实际按逆高斯拟合）时建模为 GAP。
 - 2026-11-06（续四）：E-Plot（Beta）节点：设置按 Modeler 保存的元素名读取（`eplot` 探针 16 例），记录选择与 Plot 同形输出；Modeler 批处理能运行该节点但五种格式都无法导出其输出（Unsupported for windowed rendering），故 oracle 只比对到达节点的记录，清单新增状态 `done (output unverified)`。Self-Learning Response Model：本机 Modeler 已装扩展但脚本报 unknown node type（与 Bayes Net、GenLin 相同），改为许可证受阻，未验证的实现不合并。
 - 2026-11-06（续三）：Clementine 11 内联 `RuleTreeModel` C&R Tree 模型块映射到 PMML 树打分（`telco_dataaudit` 一致，移出已知 GAP）；流日期格式 `format27`（MON YYYY）的读入、`to_date` 与终端导出（`broadband_create_models` 的 Type 终端一致）。Time Series Expert 第四个探针 `ts_expert4`（24 例，由冻结的成对假设设计）及其 oracle，模型块打分全部一致；已确认 3s 季节门槛、全部模型按原始尺度归一化 BIC 比较、初始 MA 扫描可达稀疏第 5/7 阶，对数变换门槛不具尺度不变性，常数项按拟合决定；ARIMA 专家选型仍为 GAP。
 - 2026-11-06（续二）：Time Series Expert 第三个判别探针 `ts_expert3`（30 例：平方根异方差、偏移 200/1000、线性异方差、近单位根 AR、无漂移 IMA、AR 第 2 阶、MA 第 1/3 阶、36/48 个月季节）及其 oracle，30 例模型块打分全部一致；平滑专家 10/10 吻合；ARIMA 专家确认：从不取平方根，取对数不只看最大/最小比，常数始终保留，36 个月即启用季节差分，近单位根序列取 MA(4)，选型规则仍为 GAP。
