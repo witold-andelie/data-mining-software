@@ -91,7 +91,10 @@
 //!   rule that fixed only `wn100_sev85`. The specification has no such test; its MDL
 //!   condition acts during growth and has weight zero below 500 records per class. Dropping
 //!   ours loses 25 recorded streams, so Modeler keeps something like it.
-//!   GAP `c50_global/wn100_mc5`: Modeler's `d <= 47.865` (also with global pruning off; ours
+//!   GAP `c50_global/wn100_mc5` (2026-11-06 checks): at its 23-record node the test sees 4
+//!   positive tests (a, c1 0.0111; d 0.0087; c4 0.0021) and 0.20 bits. Exempting raised tests
+//!   from it fixes mc5 but breaks 6 other streams, and the specification's tie-break and
+//!   confidence table change nothing. Modeler's `d <= 47.865` (also with global pruning off; ours
 //!   `d <= 47.605`) was grown on other records, and Modeler keeps it where the test collapses
 //!   ours (0.20 bits, 4 positive tests).
 //! - Pruning confidence (probe `c50_conf_streams`, 17 one-split trees at severities 65-85):
