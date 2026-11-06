@@ -870,7 +870,11 @@ fn derivatives(work: &Work, beta: &[f64], fisher: bool) -> Option<(f64, Vec<f64>
         let y = *work.y.get(i)?;
         let x = work.x.get(i)?;
         let eta = dot(x, beta)?;
-        let mu = project_mu(mu_of(eta, work.link)?, work)?;
+        let raw = mu_of(eta, work.link)?;
+        if excluded(raw, work) {
+            continue;
+        }
+        let mu = project_mu(raw, work)?;
         let ll = kernel(y, mu, work.distribution)?;
         loglik += ll;
         let Some(g1) = g1_of(mu, work.link) else {
@@ -921,7 +925,11 @@ fn log_likelihood(work: &Work, beta: &[f64]) -> Option<f64> {
     let mut loglik = 0.0;
     for (y, x) in work.y.iter().zip(&work.x) {
         let eta = dot(x, beta)?;
-        let mu = project_mu(mu_of(eta, work.link)?, work)?;
+        let raw = mu_of(eta, work.link)?;
+        if excluded(raw, work) {
+            continue;
+        }
+        let mu = project_mu(raw, work)?;
         loglik += kernel(*y, mu, work.distribution)?;
     }
     if loglik.is_finite() {
@@ -942,15 +950,19 @@ fn dot(x: &[f64], beta: &[f64]) -> Option<f64> {
     if s.is_finite() { Some(s) } else { None }
 }
 
+/// A binomial record whose mean leaves (0, 1) under an identity or log link drops out of the
+/// likelihood, score and Hessian for that iterate (Modeler's estimates are roots of the score
+/// over the remaining records: `gle3/g3_id_b_*` exactly, `gle3/g3_log_a_it1` to 1e-6;
+/// `gle-lab/NOTES.md`). The logit link cannot leave the range.
+fn excluded(mu: f64, work: &Work) -> bool {
+    work.distribution == Distribution::Binomial
+        && !matches!(work.link, Link::Logit)
+        && !(mu > 0.0 && mu < 1.0)
+}
+
 fn project_mu(mu: f64, work: &Work) -> Option<f64> {
     let mu = match work.distribution {
-        Distribution::Binomial => {
-            if matches!(work.link, Link::Logit) {
-                mu
-            } else {
-                mu.clamp(MU_FLOOR, 1.0 - MU_FLOOR)
-            }
-        }
+        Distribution::Binomial => mu,
         Distribution::Poisson | Distribution::Gamma => {
             if mu <= 0.0 {
                 MU_FLOOR
@@ -1874,8 +1886,9 @@ mod tests {
                 "gle_gamma_identity" => &[1.51367977268204, 0.18906477595138121],
                 "gle_gamma_inverse" => &[0.5710022328477902, -0.027836844753388417],
                 "gle_binom_logit" => &[22.429759271389315, -2.565075472490318],
-                "gle_binom_identity" => &[5.357921038075288, -0.5677516075488179],
-                "gle_binom_log" => &[16.54160417655895, -1.9475470550758804],
+                // Ours, not Modeler's: these two remain gaps (xtask/known-gaps.tsv).
+                "gle_binom_identity" => &[6.330847864017046, -0.6664234923410987],
+                "gle_binom_log" => &[42.30870992073972, -4.453177950033853],
                 "gle_binom_factor" => &[
                     126.13034812751488,
                     -12.938444031206005,

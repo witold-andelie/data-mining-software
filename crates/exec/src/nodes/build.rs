@@ -2082,9 +2082,11 @@ fn gle_settings(node: &StreamNode) -> Result<GleSpec, OperatorError> {
             link,
             intercept: settings::flag(s, "_useIntercept")?.unwrap_or(true),
             estimation,
-            max_iterations: settings::integer(s, "_interEffMaxOuterIters")?
-                .and_then(|n| usize::try_from(n).ok())
-                .unwrap_or(defaults.max_iterations),
+            // Scripting `max_iterations` is saved as `_interEffMaxOuterIters`, but it does not
+            // bound these iterations: with 1, 2 or 3 Modeler returns the converged estimates
+            // (`gle3/g3_id_a_it1..3`, `g3_log_e_it1`). It changes only the out-of-range
+            // binomial case `gle3/g3_id_c_it1`, which is a known gap.
+            max_iterations: defaults.max_iterations,
             max_step_halving: defaults.max_step_halving,
             parameter_convergence: settings::real(s, "_paramConverCrit")?
                 .unwrap_or(defaults.parameter_convergence),
