@@ -650,12 +650,10 @@ fn kalman(ar: &[f64], ma: &[f64], w: &[f64], constant: bool) -> Option<Kalman> {
 }
 
 struct NllOut {
-    e_std: Vec<f64>,
+    /// Unweighted innovations N_t - Nhat_t (the mean removed).
+    e_raw: Vec<f64>,
+    /// The GLS-profiled mean (zero without a constant).
     mu: f64,
-    s: f64,
-    information: f64,
-    n: usize,
-    k: usize,
 }
 
 /// `lab.arima_nll`: exact concentrated Gaussian negative log likelihood, with the constant
@@ -686,7 +684,7 @@ fn arima_nll(x: &[f64], spec: &Spec, y: &[f64]) -> (f64, Option<NllOut>) {
         e_std.push(v0);
         log_det += fval.ln();
     }
-    let (mu, information, s, k) = if spec.constant {
+    let (mu, s) = if spec.constant {
         let mut e_one = Vec::with_capacity(n);
         for (t, fval) in kal.f.iter().enumerate() {
             let root = fval.sqrt();
@@ -705,26 +703,21 @@ fn arima_nll(x: &[f64], spec: &Spec, y: &[f64]) -> (f64, Option<NllOut>) {
         for (slot, one) in e_std.iter_mut().zip(&e_one) {
             *slot -= mu * one;
         }
-        (mu, information, s, spec.kc().saturating_add(1))
+        (mu, s)
     } else {
         let s: f64 = e_std.iter().map(|v| v * v).sum();
-        (0.0, 0.0, s, spec.kc())
+        (0.0, s)
     };
     if !s.is_finite() || s <= 0.0 {
         return (1e9, None);
     }
     let nll = 0.5 * (n as f64 * (s / n as f64).ln() + log_det);
-    (
-        nll,
-        Some(NllOut {
-            e_std,
-            mu,
-            s,
-            information,
-            n,
-            k,
-        }),
-    )
+    let e_raw = e_std
+        .iter()
+        .zip(&kal.f)
+        .map(|(e, fval)| e * fval.sqrt())
+        .collect();
+    (nll, Some(NllOut { e_raw, mu }))
 }
 
 fn nll_value(x: &[f64], spec: &Spec, y: &[f64]) -> f64 {
@@ -1102,49 +1095,64 @@ fn ml_t(
     let x = ml_local(y, &spec, x_start)?;
     let (_, out) = arima_nll(&x, &spec, y);
     let out = out?;
-    let obj = |xx: &[f64]| nll_value(xx, &spec, y);
-    let mut tv = Vec::with_capacity(kc);
-    if kc > 0 {
-        let h = 1e-4_f64;
-        let mut hess = vec![vec![0.0; kc]; kc];
-        for i in 0..kc {
-            for j in i..kc {
-                // Python: (f(x+e_i+e_j) - f(x+e_i-e_j) - f(x-e_i+e_j) + f(x-e_i-e_j))/(4h^2)
-                // with e_i = h at index i. Applied at index i and j (equal when i == j).
-                let eval = |ci: f64, cj: f64| -> f64 {
-                    let mut xx = x.clone();
-                    if let Some(v) = xx.get_mut(i) {
-                        *v += ci * h;
-                    }
-                    if let Some(v) = xx.get_mut(j) {
-                        *v += cj * h;
-                    }
-                    obj(&xx)
-                };
-                let v = (eval(1.0, 1.0) - eval(1.0, -1.0) - eval(-1.0, 1.0) + eval(-1.0, -1.0))
-                    / (4.0 * h * h);
-                if let Some(cell) = hess.get_mut(i).and_then(|r| r.get_mut(j)) {
-                    *cell = v;
-                }
-                if let Some(cell) = hess.get_mut(j).and_then(|r| r.get_mut(i)) {
-                    *cell = v;
-                }
+    // t statistics from the joint mean/ARMA covariance sigma2 * inv(J'J), where J is the
+    // Jacobian of the weighted residuals R*_t = (N_t - Nhat_t) / sqrt(eta_t) (Guide ARIMA
+    // appendix pp. 739-742), with the documented 1e-4 perturbation toward zero.
+    let c = usize::from(model.constant);
+    let w = difference(y, d, dd, s);
+    let mut b = Vec::with_capacity(kc.saturating_add(c));
+    if model.constant {
+        b.push(out.mu);
+    }
+    b.extend_from_slice(&x);
+    let weighted = |b: &[f64]| -> Option<Vec<f64>> {
+        let (ar, ma) = polys(&spec, b.get(c..).unwrap_or(&[]));
+        let mean = if model.constant {
+            b.first().copied().unwrap_or(0.0)
+        } else {
+            0.0
+        };
+        let centered: Vec<f64> = w.iter().map(|v| v - mean).collect();
+        let kal = kalman(&ar, &ma, &centered, false)?;
+        Some(
+            kal.f
+                .iter()
+                .zip(&kal.v)
+                .map(|(f, v)| v.first().copied().unwrap_or(0.0) / f.sqrt())
+                .collect(),
+        )
+    };
+    let mut tv = vec![0.0; b.len()];
+    if let Some(base) = weighted(&b) {
+        let mut jac = Vec::with_capacity(b.len());
+        for (i, bi) in b.iter().enumerate() {
+            let delta = if *bi > 0.0 { -1e-4 } else { 1e-4 };
+            let mut moved = b.clone();
+            if let Some(v) = moved.get_mut(i) {
+                *v += delta;
+            }
+            let Some(r) = weighted(&moved) else {
+                jac.clear();
+                break;
+            };
+            jac.push(
+                r.iter()
+                    .zip(&base)
+                    .map(|(a, z)| (a - z) / delta)
+                    .collect::<Vec<f64>>(),
+            );
+        }
+        let sigma2 = base.iter().map(|v| v * v).sum::<f64>()
+            / base.len().saturating_sub(b.len()).max(1) as f64;
+        if jac.len() == b.len()
+            && let Some(diag) = inverse_diag(&mat_t_j(&jac))
+        {
+            for ((slot, bi), di) in tv.iter_mut().zip(&b).zip(&diag) {
+                *slot = bi / (sigma2 * di).max(1e-300).sqrt();
             }
         }
-        let diag = inverse_diag(&hess);
-        for i in 0..kc {
-            let cov = diag
-                .as_ref()
-                .and_then(|d| d.get(i).copied())
-                .unwrap_or(f64::NEG_INFINITY);
-            let var = cov.max(1e-300);
-            let value = if cov.is_finite() {
-                x.get(i).copied().unwrap_or(0.0) / var.sqrt()
-            } else {
-                f64::INFINITY
-            };
-            tv.push(value);
-        }
+    }
+    if kc > 0 {
         // MA boundary rule, judging the nonseasonal and seasonal MA polynomials separately.
         let na = model.ar.len();
         let nm = model.ma.len();
@@ -1159,20 +1167,20 @@ fn ml_t(
                     .unwrap_or(0)
                     .saturating_add(1)
             ];
-            if let Some(c) = poly.first_mut() {
-                *c = 1.0;
+            if let Some(first) = poly.first_mut() {
+                *first = 1.0;
             }
             let mut malags = model.ma.clone();
             malags.sort_unstable();
             for (idx, lag) in malags.iter().enumerate() {
                 let v = x.get(na.saturating_add(idx)).copied().unwrap_or(0.0);
-                if let Some(c) = poly.get_mut(*lag) {
-                    *c = v;
+                if let Some(slot) = poly.get_mut(*lag) {
+                    *slot = v;
                 }
             }
             if at_boundary(&poly) {
                 for i in na..na.saturating_add(nm) {
-                    if let Some(v) = tv.get_mut(i) {
+                    if let Some(v) = tv.get_mut(c.saturating_add(i)) {
                         *v = 0.0;
                     }
                 }
@@ -1180,11 +1188,11 @@ fn ml_t(
         }
         if model.qs > 0 {
             let mut poly = vec![0.0; s.saturating_add(1)];
-            if let Some(c) = poly.first_mut() {
-                *c = 1.0;
+            if let Some(first) = poly.first_mut() {
+                *first = 1.0;
             }
-            if let Some(c) = poly.get_mut(s) {
-                *c = x.last().copied().unwrap_or(0.0);
+            if let Some(slot) = poly.get_mut(s) {
+                *slot = x.last().copied().unwrap_or(0.0);
             }
             if at_boundary(&poly)
                 && let Some(v) = tv.last_mut()
@@ -1193,29 +1201,23 @@ fn ml_t(
             }
         }
     }
-    // Names in lab order (without the constant).
-    let mut names: Vec<Term> = {
+    // Names in parameter order: the constant first, then lab order.
+    let names: Vec<Term> = {
         let mut ar = model.ar.clone();
         let mut ma = model.ma.clone();
         ar.sort_unstable();
         ma.sort_unstable();
-        ar.into_iter()
-            .map(Term::Ar)
+        model
+            .constant
+            .then_some(Term::C)
+            .into_iter()
+            .chain(ar.into_iter().map(Term::Ar))
             .chain(ma.into_iter().map(Term::Ma))
             .chain((model.ps > 0).then_some(Term::Sar))
             .chain((model.qs > 0).then_some(Term::Sma))
             .collect()
     };
-    let mut result: Vec<(Term, f64)> = names.drain(..).zip(tv).collect();
-    if model.constant {
-        let sigma2 = out.s / (out.n.saturating_sub(out.k)).max(1) as f64;
-        let tc = if sigma2 > 0.0 && out.information > 0.0 {
-            out.mu * (out.information / sigma2).sqrt()
-        } else {
-            0.0
-        };
-        result.push((Term::C, tc));
-    }
+    let result: Vec<(Term, f64)> = names.into_iter().zip(tv).collect();
     trace(format!(
         "ml_t [{}] t={{{}}} x={:?} x_start={:?}",
         model_desc(model),
@@ -1442,25 +1444,12 @@ fn eacf_sig(w: &[f64], m: usize, crit: f64) -> Vec<Vec<bool>> {
             if lag >= u.len() {
                 continue;
             }
-            let um = if u.is_empty() {
-                0.0
-            } else {
-                u.iter().sum::<f64>() / u.len() as f64
-            };
-            let uu: Vec<f64> = u.iter().map(|v| v - um).collect();
-            let den: f64 = uu.iter().map(|v| v * v).sum();
-            if den <= 0.0 {
-                continue;
-            }
-            let rr = uu
-                .iter()
-                .zip(uu.iter().skip(lag))
-                .map(|(a, b)| a * b)
-                .sum::<f64>()
-                / den;
-            let threshold = crit / (n.saturating_sub(k).saturating_sub(j).max(1) as f64).sqrt();
+            // The EACF entry is the lag-(j+1) autocorrelation of the AR(k)-filtered series,
+            // judged with Bartlett's standard error (Guide ARIMA appendix p. 744) rather than
+            // the white-noise 1/sqrt(n).
+            let t = acf_t(&u, lag).last().copied().unwrap_or(0.0);
             if let Some(cell) = sig.get_mut(k).and_then(|r| r.get_mut(j)) {
-                *cell = rr.abs() > threshold;
+                *cell = t.abs() > crit;
             }
         }
     }
@@ -1579,93 +1568,24 @@ fn chi2_ppf_95(dof: f64) -> f64 {
 }
 
 /// Approximate `lab4.fit`: a small multistart bounded quasi-Newton global fit.
-fn global_fit(y: &[f64], spec: &Spec) -> Option<Vec<f64>> {
-    let kc = spec.kc();
-    if kc == 0 {
-        return Some(Vec::new());
-    }
-    let obj = |x: &[f64]| nll_value(x, spec, y);
-    let mut best: Option<(f64, Vec<f64>)> = None;
-    if kc == 1 {
-        // Scalar bracketing over the admissible range (lab4 refines 33 brackets): a fine grid
-        // plus a local golden-section refinement around the best grid point.
-        let steps = 200_usize;
-        let lo = -0.9994_f64;
-        let hi = 0.9994_f64;
-        let mut grid: Vec<(f64, f64)> = Vec::with_capacity(steps + 1);
-        for i in 0..=steps {
-            let xi = lo + (hi - lo) * i as f64 / steps as f64;
-            grid.push((xi, obj(&[xi])));
-        }
-        let mut bx = lo;
-        let mut bf = f64::INFINITY;
-        let mut bi = 0usize;
-        for (i, (xi, fi)) in grid.iter().enumerate() {
-            if *fi < bf {
-                bf = *fi;
-                bx = *xi;
-                bi = i;
-            }
-        }
-        let a = grid
-            .get(bi.saturating_sub(1))
-            .map(|(x, _)| *x)
-            .unwrap_or(lo);
-        let b = grid
-            .get(bi.saturating_add(1))
-            .map(|(x, _)| *x)
-            .unwrap_or(hi);
-        let gl = a.min(b);
-        let gh = a.max(b);
-        let mut cleft = gl;
-        let mut cright = gh;
-        for _ in 0..80 {
-            let m1 = cleft + (cright - cleft) / 3.0;
-            let m2 = cright - (cright - cleft) / 3.0;
-            if obj(&[m1]) < obj(&[m2]) {
-                cright = m2;
-            } else {
-                cleft = m1;
-            }
-        }
-        let xm = 0.5 * (cleft + cright);
-        let fm = obj(&[xm]);
-        if fm < bf {
-            bf = fm;
-            bx = xm;
-        }
-        best = Some((bf, vec![bx]));
-    } else {
-        let starts: Vec<Vec<f64>> = [0.0_f64, 0.1, -0.1, 0.5, -0.5]
-            .into_iter()
-            .map(|v| vec![v; kc])
-            .collect();
-        for start in starts {
-            if let Some(x) = ml_local(y, spec, &start) {
-                let f = obj(&x);
-                if best.as_ref().is_none_or(|(b, _)| f < *b) {
-                    best = Some((f, x.clone()));
-                }
-                let f0 = obj(&start);
-                if best.as_ref().is_none_or(|(b, _)| f0 < *b) {
-                    best = Some((f0, start));
-                }
-            }
-        }
-    }
-    best.map(|(_, x)| x)
-}
-
-fn standardized_residuals(y: &[f64], spec: &Spec) -> Option<(Vec<f64>, usize)> {
-    let x = global_fit(y, spec)?;
-    let (_, out) = arima_nll(&x, spec, y);
-    let out = out?;
-    Some((out.e_std, spec.kc()))
+/// Step 6 diagnoses the Step 5 model as fitted there: the same local ML fit from the CLS
+/// start, with unweighted noise residuals N_t - Nhat_t (Guide ARIMA appendix p. 744).
+fn fitted_residuals(
+    y: &[f64],
+    model: &Model,
+    d: usize,
+    dd: usize,
+    s: usize,
+) -> Option<(Vec<f64>, usize)> {
+    let spec = model.to_spec(d, dd, s);
+    let w = difference(y, d, dd, s);
+    let x = ml_local(y, &spec, &cls_start(&w, model, s))?;
+    let (_, out) = arima_nll(&x, &spec, y);
+    Some((out?.e_raw, spec.kc()))
 }
 
 fn diagnose(y: &[f64], model: &Model, d: usize, dd: usize, s: usize) -> Vec<(AddKind, usize)> {
-    let spec = model.to_spec(d, dd, s);
-    let Some((r, npar)) = standardized_residuals(y, &spec) else {
+    let Some((r, npar)) = fitted_residuals(y, model, d, dd, s) else {
         return Vec::new();
     };
     let n = r.len();
