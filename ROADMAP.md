@@ -26,6 +26,7 @@
 
 ## 进度日志
 
+- 2026-11-06（续十二）：ARIMA 专家的差分按指南附录 Step 3 实现（`arima::expert_differencing`，93 个记录 (d, D) 全部吻合，关键细节为步骤 (b) 条件最小二乘的样本前值取 0），取代经验季节差分规则；定阶、剪枝与诊断的 Python 参考实现已复现 51/67 个完整规格。
 - 2026-11-06（续十一）：在算法指南附录（PDF 第 768–786 页）找到 Expert Modeler 的完整公开算法；ARIMA 专家的变换判定按其 Step 2 实现（`arima::expert_transform`），91 个 ARIMA 记录全部吻合（此前黑箱反推的所有规则都未能解释 off500/scale500、sqrthet、linehet）。
 - 2026-11-06（续十）：GLE 二项 identity/log 越界的分界：均值 ≤ 0 时对数似然无定义、不做步长减半而取整步（Modeler 的 `gle3`/`gle4` D 组为非收敛 3 周期、混合法止于第 99 步、纯 Newton 止于第 100 步），均值 ≥ 1 仅排除、仍做步长减半（B 组收敛）；修正混合法下一步 Hessian 的类型判定差一与纯 Newton 首步；新探针 `gle4`（18 例）；三标签 49 流中 34 例精确一致，C 组（两侧越界、混沌路径）与对数链接深度越界仍为已知 GAP。
 - 2026-11-06（续九）：GLE 二项 identity/log 链接：拟合均值越出 (0, 1) 的记录在该次迭代的似然、得分与 Hessian 中排除（Modeler 的估计正是剩余记录得分方程的根），脚本 `max_iterations`（存为 `_interEffMaxOuterIters`）不再当作 IRLS 迭代上限；新探针 `gle3`（14 例，起始均值 0–3 个越界）9 例一致，其余 5 例与原两例为 Modeler 在越界区中途停止的路径，仍为已知 GAP。
