@@ -20,6 +20,7 @@ pub mod chaid;
 pub mod cluster_evaluation;
 mod common;
 pub mod decision_list;
+pub mod expert;
 pub mod factor;
 pub mod feature_selection;
 pub mod gle;
