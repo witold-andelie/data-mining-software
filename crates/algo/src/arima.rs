@@ -327,6 +327,32 @@ pub(crate) fn transform(kind: Transform, y: &[f64]) -> Result<Vec<f64>, ArimaErr
     }
 }
 
+/// The Expert Modeler's seasonal differencing order for the (transformed) series `z`: `1` when
+/// one seasonal difference lowers the variance of the undifferenced series, else `0`.
+///
+/// Inferred from Modeler's selections, not documented: all 16 recorded seasonal ARIMA results
+/// (`ts_expert*`, `ts_more/ts_expert_arima_seasonal`) agree, D = 1 at ratios 0.03-0.84 and
+/// D = 0 at 1.28-1.73, decided before nonseasonal differencing
+/// (`crates/exec/tests/time_series_expert.rs`). The caller applies the public 3s gate first
+/// (`10 < n < 3s` builds a nonseasonal model).
+pub fn expert_seasonal_difference(z: &[f64], period: usize) -> usize {
+    if period < 2 || z.len() <= period {
+        return 0;
+    }
+    let seasonal: Vec<f64> = z
+        .iter()
+        .zip(z.iter().skip(period))
+        .map(|(a, b)| b - a)
+        .collect();
+    usize::from(population_variance(&seasonal) < population_variance(z))
+}
+
+fn population_variance(x: &[f64]) -> f64 {
+    let n = x.len() as f64;
+    let mean = x.iter().sum::<f64>() / n;
+    x.iter().map(|v| (v - mean) * (v - mean)).sum::<f64>() / n
+}
+
 pub(crate) fn difference(z: &[f64], d: usize) -> Vec<f64> {
     let mut series = z.to_vec();
     for _ in 0..d {

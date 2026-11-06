@@ -26,6 +26,7 @@
 
 ## 进度日志
 
+- 2026-11-06（续七）：ARIMA 专家的季节差分 D 已确定：在未做非季节差分的（变换后）序列上一次季节差分使方差下降则 D = 1，16 个季节性 ARIMA 记录全部吻合（`arima::expert_seasonal_difference` 与语料测试）；d、阶数、剪枝、对数判定仍为 GAP。
 - 2026-11-06（续六）：Time Series Expert 第五个探针 `ts_expert5`（12 例，卡对数变换门槛）：12 例全部取对数，推翻了“ln y 变异系数门槛 + 算术均值雅可比 Box-Cox 似然比”两段式规则（该规则拟合此前 61 个 ARIMA 记录）；极差-均值斜率同样无法区分，近似同源序列判定相反，指向两种尺度各自定阶后的完整似然比较。模型块打分 12 例全部一致。
 - 2026-11-06（续五）：GLE 第一期（normal、binomial、Poisson、gamma，典范连接及 identity/log，主效应）：建模按混合 IRLS，模型块按 Modeler 保存的 PMML 打分；因子空白值按缺失、模型外类别打分为 $null$，计数目标的均值输出实数；`gle` 探针 17 例中 14 例一致，二项 identity/log 链接与带因子的 logit 收敛差异 3 例为已知 GAP，节点保持默认分布（Modeler 实际按逆高斯拟合）时建模为 GAP。
 - 2026-11-06（续四）：E-Plot（Beta）节点：设置按 Modeler 保存的元素名读取（`eplot` 探针 16 例），记录选择与 Plot 同形输出；Modeler 批处理能运行该节点但五种格式都无法导出其输出（Unsupported for windowed rendering），故 oracle 只比对到达节点的记录，清单新增状态 `done (output unverified)`。Self-Learning Response Model：本机 Modeler 已装扩展但脚本报 unknown node type（与 Bayes Net、GenLin 相同），改为许可证受阻，未验证的实现不合并。
