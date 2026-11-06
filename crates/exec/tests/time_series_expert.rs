@@ -252,49 +252,66 @@ fn input_series(label: &str, stream: &dms_stream::Stream, target: &str) -> Vec<f
         .collect()
 }
 
-/// Seasonal differencing: D = 1 exactly when one seasonal difference lowers the variance of the
-/// undifferenced (transformed) series, for every recorded seasonal ARIMA selection.
-#[test]
-fn expert_arima_seasonal_difference_matches_all_16_seasonal_oracle_models() {
-    let cases = [
-        ("ts_expert", "pr_seas_ar"),
-        ("ts_expert", "pr_seastr_ar"),
-        ("ts_expert", "pr_seasmul_ar"),
-        ("ts_expert", "pr_air_ar"),
-        ("ts_expert", "pr_alt96_all"),
-        ("ts_expert2", "p2_seastr_ar"),
-        ("ts_expert2", "p2_alt60_ar"),
-        ("ts_expert2", "p2_alt60_all"),
-        ("ts_expert3", "p3_seas36_ar"),
-        ("ts_expert3", "p3_seas48_ar"),
-        ("ts_more", "ts_expert_arima_seasonal"),
-        ("ts_expert4", "p4_seasonweak_ar"),
-        ("ts_expert4", "p4_seasonmid_ar"),
-        ("ts_expert4", "p4_difforder_ar"),
-        ("ts_expert4", "p4_airzero_ar"),
-        ("ts_expert4", "p4_gate36_ar"),
-    ];
-    let mut seen_zero = 0;
-    for (label, case) in cases {
+/// Every recorded Expert ARIMA selection: the label, case and saved specification, with the
+/// series reaching its builder.
+fn expert_arima_selections() -> Vec<(String, String, arima::ArimaSpec, Vec<f64>)> {
+    let mut out = Vec::new();
+    let mut add = |label: &str, case: &str| {
         let (archive, stream) = open_case(label, case);
-        let FittedSpec::Arima(spec) = saved_spec(&archive, &stream) else {
-            panic!("{label}/{case}: Modeler did not select ARIMA");
-        };
-        assert_eq!(spec.period, 12, "{label}/{case}: period");
-        let y = input_series(label, &stream, "y");
+        if let FittedSpec::Arima(spec) = saved_spec(&archive, &stream) {
+            let y = input_series(label, &stream, "y");
+            out.push((label.to_string(), case.to_string(), spec, y));
+        }
+    };
+    for label in [
+        "ts_expert",
+        "ts_expert2",
+        "ts_expert3",
+        "ts_expert4",
+        "ts_expert5",
+        "ts_expert6",
+    ] {
+        let dir = support::repo_root().join("corpus").join(label);
+        let mut cases: Vec<String> = std::fs::read_dir(&dir)
+            .unwrap()
+            .filter_map(|entry| {
+                let name = entry.unwrap().file_name().into_string().unwrap();
+                name.strip_suffix(".str").map(str::to_string)
+            })
+            .collect();
+        cases.sort();
+        for case in cases {
+            add(label, &case);
+        }
+    }
+    add("ts_more", "ts_expert_arima_seasonal");
+    add("ts_more", "ts_expert_arima_nonseasonal");
+    out
+}
+
+/// Differencing (Guide appendix Step 3) reproduces every recorded `(d, D)`.
+#[test]
+fn expert_arima_differencing_matches_every_recorded_arima_selection() {
+    let selections = expert_arima_selections();
+    let mut seasonal = 0;
+    for (label, case, spec, y) in &selections {
         let z: Vec<f64> = match spec.transform {
             arima::Transform::Log => y.iter().map(|v| v.ln()).collect(),
             arima::Transform::Sqrt => y.iter().map(|v| v.sqrt()).collect(),
-            arima::Transform::None => y,
+            arima::Transform::None => y.clone(),
         };
         assert_eq!(
-            arima::expert_seasonal_difference(&z, 12),
-            spec.seasonal_d,
-            "{label}/{case}: seasonal D"
+            arima::expert_differencing(&z, spec.period),
+            (spec.d, spec.seasonal_d),
+            "{label}/{case}: (d, D)"
         );
-        seen_zero += usize::from(spec.seasonal_d == 0);
+        seasonal += usize::from(spec.seasonal_d == 1);
     }
-    assert_eq!(seen_zero, 4, "both outcomes are covered");
+    eprintln!(
+        "{} ARIMA selections, {seasonal} seasonally differenced",
+        selections.len()
+    );
+    assert!(selections.len() >= 90 && seasonal >= 10);
 }
 
 fn kind_of(spec: &FittedSpec) -> Kind {
@@ -403,98 +420,48 @@ fn expert_exponential_smoothing_selects_all_22_oracle_models_without_saved_pmml(
 /// statistic (ARMA part held fixed) exceeds 1.96, for every recorded ARIMA selection.
 #[test]
 fn expert_arima_constant_matches_every_recorded_arima_selection() {
-    let mut checked = 0;
+    let selections = expert_arima_selections();
     let mut dropped = 0;
     let (mut max_dropped, mut min_kept_arma) = (0.0_f64, f64::INFINITY);
-    for label in [
-        "ts_expert",
-        "ts_expert2",
-        "ts_expert3",
-        "ts_expert4",
-        "ts_expert5",
-    ] {
-        let dir = support::repo_root().join("corpus").join(label);
-        let mut cases: Vec<String> = std::fs::read_dir(&dir)
-            .unwrap()
-            .filter_map(|entry| {
-                let name = entry.unwrap().file_name().into_string().unwrap();
-                name.strip_suffix(".str").map(str::to_string)
-            })
-            .collect();
-        cases.sort();
-        for case in cases {
-            let (archive, stream) = open_case(label, &case);
-            let FittedSpec::Arima(spec) = saved_spec(&archive, &stream) else {
-                continue;
-            };
-            let y = input_series(label, &stream, "y");
-            let kept = spec.constant != 0.0;
-            let t = arima::expert_constant_t(&spec, &y).unwrap();
-            assert_eq!(
-                arima::expert_keeps_constant(&spec, &y).unwrap(),
-                kept,
-                "{label}/{case}: constant kept={kept}, t={t}"
-            );
-            checked += 1;
-            dropped += usize::from(!kept);
-            let has_arma = [&spec.ar, &spec.ma, &spec.seasonal_ar, &spec.seasonal_ma]
-                .iter()
-                .any(|c| c.iter().any(|v| *v != 0.0));
-            if kept && has_arma {
-                min_kept_arma = min_kept_arma.min(t.abs());
-            } else if !kept {
-                max_dropped = max_dropped.max(t.abs());
-            }
+    for (label, case, spec, y) in &selections {
+        let kept = spec.constant != 0.0;
+        let t = arima::expert_constant_t(spec, y).unwrap();
+        assert_eq!(
+            arima::expert_keeps_constant(spec, y).unwrap(),
+            kept,
+            "{label}/{case}: constant kept={kept}, t={t}"
+        );
+        dropped += usize::from(!kept);
+        let has_arma = [&spec.ar, &spec.ma, &spec.seasonal_ar, &spec.seasonal_ma]
+            .iter()
+            .any(|c| c.iter().any(|v| *v != 0.0));
+        if kept && has_arma {
+            min_kept_arma = min_kept_arma.min(t.abs());
+        } else if !kept {
+            max_dropped = max_dropped.max(t.abs());
         }
     }
     eprintln!(
-        "{checked} ARIMA selections, {dropped} dropped constants; max |t| dropped {max_dropped:.3}; min |t| kept with ARMA terms {min_kept_arma:.3}"
+        "{} ARIMA selections, {dropped} dropped constants; max |t| dropped {max_dropped:.3}; min |t| kept with ARMA terms {min_kept_arma:.3}",
+        selections.len()
     );
-    assert!(checked >= 60, "{checked} ARIMA selections checked");
-    assert!(dropped >= 10, "{dropped} dropped constants checked");
+    assert!(selections.len() >= 90 && dropped >= 10);
 }
 
 /// The transform (Guide appendix Step 2: OLS high-order AR on y, ln y and sqrt y, 4% gates) for
 /// every recorded ARIMA selection.
 #[test]
 fn expert_arima_transform_matches_every_recorded_arima_selection() {
-    let mut checked = 0;
+    let selections = expert_arima_selections();
     let mut logged = 0;
-    for label in [
-        "ts_expert",
-        "ts_expert2",
-        "ts_expert3",
-        "ts_expert4",
-        "ts_expert5",
-        "ts_expert6",
-    ] {
-        let dir = support::repo_root().join("corpus").join(label);
-        let mut cases: Vec<String> = std::fs::read_dir(&dir)
-            .unwrap()
-            .filter_map(|entry| {
-                let name = entry.unwrap().file_name().into_string().unwrap();
-                name.strip_suffix(".str").map(str::to_string)
-            })
-            .collect();
-        cases.sort();
-        for case in cases {
-            let (archive, stream) = open_case(label, &case);
-            let FittedSpec::Arima(spec) = saved_spec(&archive, &stream) else {
-                continue;
-            };
-            let y = input_series(label, &stream, "y");
-            assert_eq!(
-                arima::expert_transform(&y, spec.period),
-                spec.transform,
-                "{label}/{case}: transform"
-            );
-            checked += 1;
-            logged += usize::from(spec.transform == arima::Transform::Log);
-        }
+    for (label, case, spec, y) in &selections {
+        assert_eq!(
+            arima::expert_transform(y, spec.period),
+            spec.transform,
+            "{label}/{case}: transform"
+        );
+        logged += usize::from(spec.transform == arima::Transform::Log);
     }
-    eprintln!("{checked} ARIMA selections, {logged} logged");
-    assert!(
-        checked >= 80 && logged >= 15,
-        "{checked} checked, {logged} logged"
-    );
+    eprintln!("{} ARIMA selections, {logged} logged", selections.len());
+    assert!(selections.len() >= 90 && logged >= 15);
 }

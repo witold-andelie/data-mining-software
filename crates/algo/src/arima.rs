@@ -431,24 +431,306 @@ fn ols_ar_variance(z: &[f64], lags: &[usize]) -> Option<f64> {
     (sigma2 > 0.0 && sigma2.is_finite()).then_some(sigma2)
 }
 
-/// The Expert Modeler's seasonal differencing order for the (transformed) series `z`: `1` when
-/// one seasonal difference lowers the variance of the undifferenced series, else `0`.
+/// The Expert Modeler's differencing orders `(d, D)` for the (transformed) series `z` with
+/// seasonal period `period` (1 when nonseasonal or when `n < 3s`), Guide appendix "Time Series
+/// Algorithm: Expert Modeler", Step 3.
 ///
-/// Inferred from Modeler's selections, not documented: all 16 recorded seasonal ARIMA results
-/// (`ts_expert*`, `ts_more/ts_expert_arima_seasonal`) agree, D = 1 at ratios 0.03-0.84 and
-/// D = 0 at 1.28-1.73, decided before nonseasonal differencing
-/// (`crates/exec/tests/time_series_expert.rs`). The caller applies the public 3s gate first
-/// (`10 < n < 3s` builds a nonseasonal model).
-pub fn expert_seasonal_difference(z: &[f64], period: usize) -> usize {
-    if period < 2 || z.len() <= period {
-        return 0;
+/// - Step (a) runs OLS regressions against the simulated critical values of Tables 1-3,
+///   interpolated in `1/n`.
+/// - Step (b) repeatedly fits ARMA(1,1), or (1,1)(1,1) when `s > 1` and `n >= 3s`, by
+///   conditional least squares with pre-sample deviations and innovations at zero. It
+///   differences while `phi > 0.88` and `|phi - theta| > 0.12`, or while `phi` is within 0.03
+///   below 0.88 and the first six ACF have `|t| > 1.6`.
+///
+/// The zero pre-sample start is not printed in the Guide. It is the start that reproduces all
+/// 95 recorded `(d, D)` decisions (`crates/exec/tests/time_series_expert.rs`).
+pub fn expert_differencing(z: &[f64], period: usize) -> (usize, usize) {
+    let s = period.max(1);
+    let (mut d, mut big_d) = difference_step_a(z, s).unwrap_or((0, 0));
+    let mut w = z.to_vec();
+    for _ in 0..d {
+        w = difference(&w, 1);
     }
-    let seasonal: Vec<f64> = z
+    for _ in 0..big_d {
+        w = seasonal_difference(&w, s);
+    }
+    // Step (b), repeated until no difference is needed (bounded: d + D <= 3).
+    while d + big_d < 3 && w.len() > 10 {
+        if s == 1 || w.len() < 3 * s {
+            let Some((phi, theta)) = cls_arma11(&w) else {
+                break;
+            };
+            let near = phi < 0.88 && 0.88 - phi < 0.03 && first_six_acf_significant(&w);
+            if (phi > 0.88 && (phi - theta).abs() > 0.12) || near {
+                w = difference(&w, 1);
+                d += 1;
+                continue;
+            }
+            break;
+        }
+        let Some((p1, t1, p2, t2)) = cls_arma11_seasonal(&w, s) else {
+            break;
+        };
+        let a1 = p1 > 0.88 && (p1 - t1).abs() > 0.12;
+        let a2 = p2 > 0.88 && (p2 - t2).abs() > 0.12;
+        if a1 && a2 {
+            w = seasonal_difference(&difference(&w, 1), s);
+            d += 1;
+            big_d += 1;
+            continue;
+        }
+        let near = p1 < 0.88 && 0.88 - p1 < 0.03 && first_six_acf_significant(&w);
+        if (a1 || near) && !a2 {
+            w = difference(&w, 1);
+            d += 1;
+            continue;
+        }
+        if a2 && !a1 {
+            w = seasonal_difference(&w, s);
+            big_d += 1;
+            continue;
+        }
+        break;
+    }
+    (d, big_d)
+}
+
+fn seasonal_difference(w: &[f64], s: usize) -> Vec<f64> {
+    w.iter().zip(w.iter().skip(s)).map(|(a, b)| b - a).collect()
+}
+
+/// Sample sizes of the Guide's critical-value Tables 1-3.
+const CRITICAL_N: [f64; 4] = [50.0, 100.0, 200.0, 300.0];
+/// Table 1 (s = 1): `C(1,1), C(1,2), C(2,1)`.
+const CRITICAL_S1: [[f64; 3]; 4] = [
+    [1.616, 0.617, 0.734],
+    [1.807, 0.807, 0.863],
+    [1.904, 0.904, 0.930],
+    [1.937, 0.937, 0.954],
+];
+/// Table 2 (s = 4, used for 1 < s < 8): `C(1,1), C(1,2), C(2,1), C(4,1)`.
+const CRITICAL_S4: [[f64; 4]; 4] = [
+    [0.557, 0.823, 0.849, 0.734],
+    [0.773, 0.911, 0.908, 0.921],
+    [0.886, 0.947, 0.947, 0.930],
+    [0.925, 0.961, 0.963, 0.954],
+];
+/// Table 3 (s = 12, used for s >= 8): `C(1,1), C(1,2), C(2,1), C(4,1)`.
+const CRITICAL_S12: [[f64; 4]; 4] = [
+    [0.494, 0.811, 0.851, 0.734],
+    [0.759, 0.909, 0.907, 0.921],
+    [0.882, 0.947, 0.946, 0.930],
+    [0.922, 0.961, 0.961, 0.954],
+];
+
+/// Linear interpolation in `1/n` between the nearest tabulated sizes (one-sided outside
+/// 50..300); `n` below 36 uses 36 and above 1000 uses 1000.
+fn critical<const K: usize>(table: &[[f64; K]; 4], n: usize) -> [f64; K] {
+    let n = (n as f64).clamp(36.0, 1000.0);
+    let (lo, hi) = if n <= CRITICAL_N[0] {
+        (0, 1)
+    } else if n >= CRITICAL_N[3] {
+        (2, 3)
+    } else {
+        let hi = CRITICAL_N.iter().position(|v| *v >= n).unwrap_or(3);
+        (hi.saturating_sub(1), hi)
+    };
+    let (n1, n2) = (CRITICAL_N[lo], CRITICAL_N[hi]);
+    let mut out = [0.0; K];
+    for (k, slot) in out.iter_mut().enumerate() {
+        let (c1, c2) = (table[lo][k], table[hi][k]);
+        *slot = if n1 == n2 {
+            c1
+        } else {
+            c1 + (c2 - c1) * (1.0 / n - 1.0 / n1) / (1.0 / n2 - 1.0 / n1)
+        };
+    }
+    out
+}
+
+/// The lower 5% point of Student's t.
+fn t_lower(df: usize) -> Option<f64> {
+    crate::stats::student_t_quantile(0.95, df as f64).map(|q| -q)
+}
+
+/// OLS of `y` on an intercept and `cols`: coefficients and standard errors.
+fn ols_se(y: &[f64], cols: &[Vec<f64>]) -> Option<(Vec<f64>, Vec<f64>)> {
+    let n = y.len();
+    let k = cols.len() + 1;
+    if n <= k || cols.iter().any(|c| c.len() != n) {
+        return None;
+    }
+    let row = |t: usize| -> Vec<f64> {
+        std::iter::once(1.0)
+            .chain(cols.iter().map(|c| c[t]))
+            .collect()
+    };
+    let mut xtx = vec![vec![0.0; k]; k];
+    let mut xty = vec![0.0; k];
+    for (t, target) in y.iter().enumerate() {
+        let x = row(t);
+        for (a, xa) in x.iter().enumerate() {
+            xty[a] += xa * target;
+            for (b, xb) in x.iter().enumerate() {
+                xtx[a][b] += xa * xb;
+            }
+        }
+    }
+    let beta = crate::time_series::solve(xtx.clone(), xty).ok()?;
+    let sse: f64 = y
         .iter()
-        .zip(z.iter().skip(period))
-        .map(|(a, b)| b - a)
+        .enumerate()
+        .map(|(t, target)| {
+            let fit: f64 = row(t).iter().zip(&beta).map(|(x, b)| x * b).sum();
+            (target - fit) * (target - fit)
+        })
+        .sum();
+    let sigma2 = sse / (n - k) as f64;
+    let mut se = Vec::with_capacity(k);
+    for i in 0..k {
+        let unit: Vec<f64> = (0..k).map(|j| if i == j { 1.0 } else { 0.0 }).collect();
+        let column = crate::time_series::solve(xtx.clone(), unit).ok()?;
+        se.push((sigma2 * column.get(i).copied()?).max(0.0).sqrt());
+    }
+    Some((beta, se))
+}
+
+/// Step (a): `(d, D)` from the Guide's OLS regressions.
+fn difference_step_a(y: &[f64], s: usize) -> Option<(usize, usize)> {
+    let n = y.len();
+    let unit_root = |phi: f64, se_phi: f64, tc: f64, c_flat: f64, c_drift: f64| {
+        (tc.abs() < 2.0 && phi > c_flat) || (tc.abs() >= 2.0 && (phi - 1.0) / se_phi > c_drift)
+    };
+    let ar1 = |k: usize| -> Option<(f64, f64, f64)> {
+        let (b, se) = ols_se(y.get(k..)?, &[y.get(..n.checked_sub(k)?)?.to_vec()])?;
+        let tc = if se[0] > 0.0 { b[0] / se[0] } else { 0.0 };
+        Some((b[1], se[1], tc))
+    };
+    if s == 1 {
+        let [c11, c12, c21] = critical(&CRITICAL_S1, n);
+        let c31 = t_lower(n.checked_sub(3)?)?;
+        let (b, _) = ols_se(
+            y.get(2..)?,
+            &[y.get(1..n - 1)?.to_vec(), y.get(..n - 2)?.to_vec()],
+        )?;
+        if b[1] > c11 && -b[2] > c12 {
+            return Some((2, 0));
+        }
+        let (phi, se_phi, tc) = ar1(1)?;
+        return Some(if unit_root(phi, se_phi, tc, c21, c31) {
+            (1, 0)
+        } else {
+            (0, 0)
+        });
+    }
+    let table = if s < 8 { &CRITICAL_S4 } else { &CRITICAL_S12 };
+    let [c11, c12, c21, c41] = critical(table, n);
+    let c13 = c11 * c12;
+    let c31 = t_lower(n.checked_sub(s + 2)?)?;
+    let c51 = t_lower(n.checked_sub(3)?)?;
+    let (b, _) = ols_se(
+        y.get(s + 1..)?,
+        &[
+            y.get(s..n - 1)?.to_vec(),
+            y.get(1..n - s)?.to_vec(),
+            y.get(..n - s - 1)?.to_vec(),
+        ],
+    )?;
+    if b[1] > c11 && b[2] > c12 && -b[3] > c13 {
+        return Some((1, 1));
+    }
+    if b[1] <= b[2] {
+        let (phi, se_phi, tc) = ar1(s)?;
+        return Some(if unit_root(phi, se_phi, tc, c21, c31) {
+            (0, 1)
+        } else {
+            (0, 0)
+        });
+    }
+    let (phi, se_phi, tc) = ar1(1)?;
+    Some(if unit_root(phi, se_phi, tc, c41, c51) {
+        (1, 0)
+    } else {
+        (0, 0)
+    })
+}
+
+/// All of the first six sample autocorrelations have Bartlett `|t| > 1.6`.
+fn first_six_acf_significant(w: &[f64]) -> bool {
+    let n = w.len();
+    if n <= 7 {
+        return false;
+    }
+    let mean = w.iter().sum::<f64>() / n as f64;
+    let dev: Vec<f64> = w.iter().map(|v| v - mean).collect();
+    let den: f64 = dev.iter().map(|v| v * v).sum();
+    if den <= 0.0 {
+        return false;
+    }
+    let mut cumulative = 0.0;
+    (1..=6).all(|k| {
+        let r = dev
+            .iter()
+            .zip(dev.iter().skip(k))
+            .map(|(a, b)| a * b)
+            .sum::<f64>()
+            / den;
+        let se = ((1.0 + 2.0 * cumulative) / n as f64).sqrt();
+        cumulative += r * r;
+        (r / se).abs() > 1.6
+    })
+}
+
+/// CLS residuals of `(1 - phi B)(1 - Phi B^s)(w - mu) = (1 - theta B)(1 - Theta B^s) a`,
+/// with pre-sample deviations and innovations at zero; `params` = mu, phi, theta[, Phi, Theta].
+fn cls_residuals(w: &[f64], s: usize, params: &[f64]) -> Vec<f64> {
+    let seasonal = params.len() == 5;
+    let (mu, phi, theta) = (params[0], params[1], params[2]);
+    let (big_phi, big_theta) = if seasonal {
+        (params[3], params[4])
+    } else {
+        (0.0, 0.0)
+    };
+    let pad = if seasonal { s + 1 } else { 1 };
+    let mut dev = vec![0.0; pad];
+    dev.extend(w.iter().map(|v| v - mu));
+    let mut a = vec![0.0; dev.len()];
+    for t in pad..dev.len() {
+        let mut ar = phi * dev[t - 1];
+        let mut ma = theta * a[t - 1];
+        if seasonal {
+            ar += big_phi * dev[t - s] - phi * big_phi * dev[t - s - 1];
+            ma += big_theta * a[t - s] - theta * big_theta * a[t - s - 1];
+        }
+        a[t] = dev[t] - ar + ma;
+    }
+    a.split_off(pad)
+}
+
+fn cls_fit(w: &[f64], s: usize, start: Vec<f64>) -> Option<Vec<f64>> {
+    let bounds: Vec<(f64, f64)> = (0..start.len())
+        .map(|i| {
+            if i == 0 {
+                (f64::MIN, f64::MAX)
+            } else {
+                (-10.0, 10.0)
+            }
+        })
         .collect();
-    usize::from(population_variance(&seasonal) < population_variance(z))
+    let (x, _) = crate::time_series::lm(start, &bounds, |p| Ok(cls_residuals(w, s, p))).ok()?;
+    x.iter().all(|v| v.is_finite()).then_some(x)
+}
+
+fn cls_arma11(w: &[f64]) -> Option<(f64, f64)> {
+    let mean = w.iter().sum::<f64>() / w.len() as f64;
+    let x = cls_fit(w, 1, vec![mean, 0.5, 0.1])?;
+    Some((x[1], x[2]))
+}
+
+fn cls_arma11_seasonal(w: &[f64], s: usize) -> Option<(f64, f64, f64, f64)> {
+    let mean = w.iter().sum::<f64>() / w.len() as f64;
+    let x = cls_fit(w, s, vec![mean, 0.5, 0.1, 0.5, 0.1])?;
+    Some((x[1], x[2], x[3], x[4]))
 }
 
 /// Whether the Expert Modeler keeps the constant of a model with the ARMA part of `spec`:
@@ -531,12 +813,6 @@ pub fn expert_constant_t(spec: &ArimaSpec, y: &[f64]) -> Result<f64, ArimaError>
         ));
     }
     Ok(mean * (information / sigma2).sqrt())
-}
-
-fn population_variance(x: &[f64]) -> f64 {
-    let n = x.len() as f64;
-    let mean = x.iter().sum::<f64>() / n;
-    x.iter().map(|v| (v - mean) * (v - mean)).sum::<f64>() / n
 }
 
 pub(crate) fn difference(z: &[f64], d: usize) -> Vec<f64> {
