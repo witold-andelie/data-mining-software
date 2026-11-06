@@ -46,6 +46,7 @@ const BUILT_IN: &[(&str, Factory)] = &[
     ("histogram", nodes::histogram::build),
     ("graphboard", nodes::graphboard::build),
     ("plot", nodes::plot::build),
+    ("eplot", nodes::eplot::build),
     ("multiplot", nodes::plot::build_multiplot),
     ("time_intervals", nodes::time_intervals::build),
     ("time_plot", nodes::time_plot::build),
@@ -161,6 +162,15 @@ fn nugget_or_builder(node: &StreamNode) -> Result<Box<dyn Operator>, OperatorErr
     Err(OperatorError::Settings(format!(
         "GAP: training {builder}: {reason}; score the nugget's saved model"
     )))
+}
+
+/// Implemented nodes whose output Modeler cannot export in batch, so only the records reaching
+/// them are compared: E-Plot (`oracle/probes/eplot_streams/manifest.json`).
+const OUTPUT_UNVERIFIED: &[&str] = &["eplot"];
+
+/// Whether an implemented node's own output has no Modeler oracle.
+pub fn is_output_unverified(catalog_id: &str) -> bool {
+    OUTPUT_UNVERIFIED.contains(&catalog_id)
 }
 
 /// Nodes the planner implements itself, without an operator (supernodes are expanded).

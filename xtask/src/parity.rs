@@ -35,6 +35,10 @@ fn render() -> String {
         out,
         "Status `done (statistical)`: trained to statistical, not exact, parity with Modeler (`docs/statistical-parity.md`).\n"
     );
+    let _ = writeln!(
+        out,
+        "Status `done (output unverified)`: settings and the records reaching the node match Modeler, but Modeler cannot export the node's own output in batch.\n"
+    );
     let _ = writeln!(out, "| Scope | Implemented | Total |\n|---|---|---|");
     for scope in [
         Scope::Mvp,
@@ -60,6 +64,8 @@ fn render() -> String {
         for spec in NODES.iter().filter(|spec| spec.palette == palette) {
             let status = if nodes::is_statistical(spec.id) {
                 "done (statistical)"
+            } else if nodes::is_output_unverified(spec.id) {
+                "done (output unverified)"
             } else if nodes::is_implemented(spec.id) {
                 "done"
             } else {
