@@ -38,9 +38,7 @@
 use crate::stats::student_t_quantile;
 use std::fmt;
 
-pub use crate::expert::{
-    ExpertSelection, InitialOrders, OrderMethod, expert_arima, expert_selection,
-};
+pub use crate::expert::expert_arima;
 
 const MAX_HISTORY: usize = 100_000;
 const MAX_HORIZON: usize = 10_000;

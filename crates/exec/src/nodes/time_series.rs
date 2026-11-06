@@ -508,7 +508,7 @@ impl Operator for TimeSeriesBuild {
                 (None, Some(period)) => {
                     let selected = arima::expert_arima(&y, period)
                         .map_err(|e| OperatorError::Data(format!("Expert ARIMA selection: {e}")))?;
-                    let arima_fit = estimation::fit(&y, selected_arima_method(&selected))
+                    let arima_fit = estimation::fit(&y, selected_arima_method(&selected)?)
                         .map_err(score_message)?;
                     if self.expert_all_models {
                         // AllModels keeps the family with the smaller original-scale NBIC.
@@ -601,9 +601,19 @@ impl Operator for TimeSeriesBuild {
     }
 }
 
-/// The fit method for an automatic Expert ARIMA selection: its structure only (lags with a
-/// zero coefficient are omitted), mapped like a recorded selection in `expert_specifications`.
-fn selected_arima_method(spec: &ArimaSpec) -> Method {
+/// Map Expert structure to a fit method, omitting lags whose coefficients are zero.
+/// Seasonal orders are read only for a sparse fit: recorded dense selections have always
+/// ignored that metadata, including invalid seasonal attributes. Recorded selections also
+/// pass `constant: true`; automatic selections pass the selected constant flag.
+fn expert_arima_method(
+    (p, d, q): (usize, usize, usize),
+    period: usize,
+    seasonal_orders: impl FnOnce() -> Result<(usize, usize, usize), OperatorError>,
+    transform: Transform,
+    constant: bool,
+    ar: &[f64],
+    ma: &[f64],
+) -> Result<Method, OperatorError> {
     let zero_mask = |coefficients: &[f64]| -> u64 {
         coefficients
             .iter()
@@ -614,34 +624,48 @@ fn selected_arima_method(spec: &ArimaSpec) -> Method {
                 |mask, (i, v)| if *v == 0.0 { mask | (1u64 << i) } else { mask },
             )
     };
-    let (p, q) = (spec.ar.len(), spec.ma.len());
-    let (zero_ar, zero_ma) = (zero_mask(&spec.ar), zero_mask(&spec.ma));
-    let period = spec.period.max(1);
-    let constant = spec.constant != 0.0;
-    if period == 1 && constant && zero_ar == 0 && zero_ma == 0 && p <= 1 && q <= 1 && spec.d <= 1 {
-        Method::Arima {
-            p,
-            d: spec.d,
-            q,
-            transform: spec.transform,
-        }
-    } else {
-        Method::SparseArima {
-            order: estimation::ArimaOrder {
-                p,
-                d: spec.d,
-                q,
-                sp: spec.seasonal_ar.len(),
-                sd: spec.seasonal_d,
-                sq: spec.seasonal_ma.len(),
-                period,
-                constant,
-                transform: spec.transform,
-            },
-            zero_ar,
-            zero_ma,
-        }
-    }
+    let (zero_ar, zero_ma) = (zero_mask(ar), zero_mask(ma));
+    let period = period.max(1);
+    Ok(
+        if period == 1 && constant && zero_ar == 0 && zero_ma == 0 && p <= 1 && q <= 1 && d <= 1 {
+            Method::Arima { p, d, q, transform }
+        } else {
+            let (sp, sd, sq) = seasonal_orders()?;
+            Method::SparseArima {
+                order: estimation::ArimaOrder {
+                    p,
+                    d,
+                    q,
+                    sp,
+                    sd,
+                    sq,
+                    period,
+                    constant,
+                    transform,
+                },
+                zero_ar,
+                zero_ma,
+            }
+        },
+    )
+}
+
+fn selected_arima_method(spec: &ArimaSpec) -> Result<Method, OperatorError> {
+    expert_arima_method(
+        (spec.ar.len(), spec.d, spec.ma.len()),
+        spec.period,
+        || {
+            Ok((
+                spec.seasonal_ar.len(),
+                spec.seasonal_d,
+                spec.seasonal_ma.len(),
+            ))
+        },
+        spec.transform,
+        spec.constant != 0.0,
+        &spec.ar,
+        &spec.ma,
+    )
 }
 
 /// Read only selected structure, not parameters, variance or initial states.
@@ -722,48 +746,30 @@ fn expert_specifications(
             let q = attr_usize(ns, "q")?;
             let period = attr_usize(arima, "seasonLength")?.max(1);
             let transform = parse_transform(arima.attribute("transformation").unwrap_or("none"))?;
-            let zero_mask = |coefficients: Vec<f64>| -> u64 {
-                coefficients
-                    .iter()
-                    .take(64)
-                    .enumerate()
-                    .fold(
-                        0,
-                        |mask, (i, v)| {
-                            if *v == 0.0 { mask | (1u64 << i) } else { mask }
-                        },
-                    )
-            };
-            let zero_ar = zero_mask(parse_coef_array(ns, "AR", p)?);
-            let zero_ma = zero_mask(parse_coef_array(ns, "MA", q)?);
-            if period == 1 && zero_ar == 0 && zero_ma == 0 && p <= 1 && q <= 1 && d <= 1 {
-                Method::Arima { p, d, q, transform }
-            } else {
-                Method::SparseArima {
-                    order: estimation::ArimaOrder {
-                        p,
-                        d,
-                        q,
-                        sp: season
+            expert_arima_method(
+                (p, d, q),
+                period,
+                || {
+                    Ok((
+                        season
                             .map(|n| attr_usize(n, "seasonalP"))
                             .transpose()?
                             .unwrap_or(0),
-                        sd: season
+                        season
                             .map(|n| attr_usize(n, "seasonalD"))
                             .transpose()?
                             .unwrap_or(0),
-                        sq: season
+                        season
                             .map(|n| attr_usize(n, "seasonalQ"))
                             .transpose()?
                             .unwrap_or(0),
-                        period,
-                        constant: true,
-                        transform,
-                    },
-                    zero_ar,
-                    zero_ma,
-                }
-            }
+                    ))
+                },
+                transform,
+                true,
+                &parse_coef_array(ns, "AR", p)?,
+                &parse_coef_array(ns, "MA", q)?,
+            )?
         };
         selected.push((name.clone(), method));
     }
@@ -904,8 +910,8 @@ pub fn apply(node: &StreamNode) -> Result<Box<dyn Operator>, OperatorError> {
 }
 
 struct TimeSeriesApply {
-    /// Automatic selection is unavailable: retain the recorded Expert artifact.
-    /// Its separate refit is scoreable through the attachment-free API.
+    /// Retain the recorded Expert artifact when scoring with saved attachments.
+    /// A refit is scoreable through the attachment-free API.
     recorded_expert: bool,
     predictors: Vec<String>,
     future_inputs: Vec<(String, Vec<f64>)>,

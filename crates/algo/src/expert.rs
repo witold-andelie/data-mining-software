@@ -1,11 +1,11 @@
 //! Steps 4-6 of the ARIMA Expert Modeler (Guide appendix "Time Series Algorithm: Expert
-//! Modeler", as specified by `target/ts-expert/expert.py`, the reference for this task).
+//! Modeler").
 //!
 //! Step 2 (`arima::expert_transform`), step 3 (`arima::expert_differencing`) and the constant
-//! t-rule (`arima::expert_constant_t`) already live in `arima`. This module ports the rest:
+//! t-rule (`arima::expert_constant_t`) already live in `arima`. This module implements:
 //! order identification (ACF/PACF/EACF), CLS then ML pruning, and the Ljung-Box modification.
-//! The exact concentrated Gaussian likelihood is `lab.arima_nll` (Kalman filter with a
-//! stationary discrete-Lyapunov start), equivalent to `arima::likelihood_residuals` up to an
+//! The exact concentrated Gaussian likelihood uses a Kalman filter with a
+//! stationary discrete-Lyapunov start, equivalent to `arima::likelihood_residuals` up to an
 //! additive constant; a unit test below checks that equivalence.
 //!
 //! No `unwrap`/`expect`/`panic`: all data-derived indices go through `get`, loops are bounded,
@@ -18,58 +18,9 @@ use crate::time_series::{lm, solve};
 const MAX_ORDER: usize = 32;
 const MAX_SERIES: usize = 4096;
 
-// Optional diagnostic trace (test-only, off by default). Lets the parity test dump the
-// intermediate t-values so an optimizer difference can be diagnosed rather than hidden.
-thread_local! {
-    static TRACE: std::cell::RefCell<Option<Vec<String>>> =
-        const { std::cell::RefCell::new(None) };
-}
-
-/// Start collecting a human-readable trace for the next `expert_arima` call.
-pub fn begin_trace() {
-    TRACE.with(|cell| *cell.borrow_mut() = Some(Vec::new()));
-}
-
-/// Stop collecting and return the recorded lines.
-pub fn end_trace() -> Vec<String> {
-    TRACE.with(|cell| cell.borrow_mut().take().unwrap_or_default())
-}
-
-fn trace(line: String) {
-    TRACE.with(|cell| {
-        if let Some(entries) = cell.borrow_mut().as_mut() {
-            entries.push(line);
-        }
-    });
-}
-
-fn model_desc(model: &Model) -> String {
-    format!(
-        "ar={:?} ma={:?} P={} Q={} c={}",
-        model.ar, model.ma, model.ps, model.qs, model.constant
-    )
-}
-
-fn t_desc(t: &[(Term, f64)]) -> String {
-    t.iter()
-        .map(|(name, v)| format!("{}:{:.4}", term_name(*name), v))
-        .collect::<Vec<_>>()
-        .join(",")
-}
-
-fn term_name(t: Term) -> String {
-    match t {
-        Term::C => "c".into(),
-        Term::Ar(l) => format!("ar{l}"),
-        Term::Ma(l) => format!("ma{l}"),
-        Term::Sar => "sar".into(),
-        Term::Sma => "sma".into(),
-    }
-}
-
 /// How step 4 chose the initial orders.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum OrderMethod {
+enum OrderMethod {
     /// MA order from the sample ACF tail.
     Acf,
     /// AR order from the sample PACF tail.
@@ -78,30 +29,9 @@ pub enum OrderMethod {
     Eacf,
 }
 
-/// The initial `(p, q)` orders and the method that produced them (Python's `initial`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct InitialOrders {
-    pub method: OrderMethod,
-    pub p: usize,
-    pub q: usize,
-}
-
-/// The full Expert selection: the returned [`ArimaSpec`] plus the initial orders.
-#[derive(Debug, Clone, PartialEq)]
-pub struct ExpertSelection {
-    pub spec: ArimaSpec,
-    pub initial: InitialOrders,
-}
-
 /// `arima::expert_arima`: the selected specification.
 pub fn expert_arima(y: &[f64], period: usize) -> Result<ArimaSpec, ArimaError> {
-    Ok(expert_selection(y, period)?.spec)
-}
-
-/// The richer result used by the reference-parity test (needs the initial orders too).
-pub fn expert_selection(y: &[f64], period: usize) -> Result<ExpertSelection, ArimaError> {
-    let (spec, initial) = select(y, period)?;
-    Ok(ExpertSelection { spec, initial })
+    select(y, period)
 }
 
 // ---------------------------------------------------------------- polynomials / roots
@@ -242,7 +172,7 @@ impl Model {
             .saturating_add(self.qs)
     }
 
-    /// Names in the lab parameter order: `[c] + sorted AR + sorted MA + sar + sma`.
+    /// Names in parameter order: `[c] + sorted AR + sorted MA + sar + sma`.
     fn names(&self) -> Vec<Term> {
         let mut ar = self.ar.clone();
         let mut ma = self.ma.clone();
@@ -310,18 +240,9 @@ enum AddKind {
     Sma,
 }
 
-fn add_kind_name(k: AddKind) -> &'static str {
-    match k {
-        AddKind::Ar => "ar",
-        AddKind::Ma => "ma",
-        AddKind::Sar => "sar",
-        AddKind::Sma => "sma",
-    }
-}
-
 // ---------------------------------------------------------------- polys / difference
 
-/// Build the full AR and MA polynomials for `x` (lab order: sorted AR, sorted MA, sar, sma).
+/// Build the full AR and MA polynomials for `x` (sorted AR, sorted MA, sar, sma).
 fn polys(spec: &Spec, x: &[f64]) -> (Vec<f64>, Vec<f64>) {
     let mut at = 0usize;
     let max_ar = spec.ar.last().copied().unwrap_or(0);
@@ -656,7 +577,7 @@ struct NllOut {
     mu: f64,
 }
 
-/// `lab.arima_nll`: exact concentrated Gaussian negative log likelihood, with the constant
+/// Exact concentrated Gaussian negative log likelihood, with the constant
 /// profiled out by GLS. Returns the penalty value and `None` when the parameters are
 /// inadmissible or the filter fails.
 fn arima_nll(x: &[f64], spec: &Spec, y: &[f64]) -> (f64, Option<NllOut>) {
@@ -727,7 +648,7 @@ fn nll_value(x: &[f64], spec: &Spec, y: &[f64]) -> f64 {
 // ---------------------------------------------------------------- CLS
 
 /// CLS residuals with pre-sample deviations and innovations at zero. `p` = `[mu] + x` when
-/// the model has a constant, otherwise just `x` (lab order).
+/// the model has a constant, otherwise just `x` (sorted AR, sorted MA, sar, sma).
 fn cls_residuals(w: &[f64], spec: &Spec, p: &[f64]) -> Vec<f64> {
     let x = if spec.constant {
         p.get(1..).unwrap_or(&[])
@@ -889,11 +810,6 @@ fn cls_t(w: &[f64], model: &Model, s: usize) -> Option<Vec<(Term, f64)>> {
     let fit = cls_fit(w, &spec)?;
     let names = model.names();
     let result: Vec<(Term, f64)> = names.into_iter().zip(fit.tv).collect();
-    trace(format!(
-        "cls_t [{}] t={{{}}}",
-        model_desc(model),
-        t_desc(&result)
-    ));
     Some(result)
 }
 
@@ -937,7 +853,7 @@ fn prune_cls(w: &[f64], model: &mut Model, s: usize) {
     }
 }
 
-/// CLS ARMA estimates in lab order (drop the mean), used as the ML start.
+/// CLS ARMA estimates (sorted AR, sorted MA, sar, sma; no mean), used as the ML start.
 fn cls_start(w: &[f64], model: &Model, s: usize) -> Vec<f64> {
     let spec = model.to_spec(0, 0, s);
     let Some(fit) = cls_fit(w, &spec) else {
@@ -993,7 +909,7 @@ fn ml_local(y: &[f64], spec: &Spec, x_start: &[f64]) -> Option<Vec<f64>> {
         return Some(Vec::new());
     }
     let obj = |x: &[f64]| nll_value(x, spec, y);
-    // Shrink the start toward zero until admissible (Python: up to 60 shrinks of 0.95).
+    // Shrink the start toward zero until admissible (up to 60 shrinks of 0.95).
     let mut x = x_start.to_vec();
     for _ in 0..60 {
         if arima_nll(&x, spec, y).1.is_some() {
@@ -1201,30 +1117,7 @@ fn ml_t(
             }
         }
     }
-    // Names in parameter order: the constant first, then lab order.
-    let names: Vec<Term> = {
-        let mut ar = model.ar.clone();
-        let mut ma = model.ma.clone();
-        ar.sort_unstable();
-        ma.sort_unstable();
-        model
-            .constant
-            .then_some(Term::C)
-            .into_iter()
-            .chain(ar.into_iter().map(Term::Ar))
-            .chain(ma.into_iter().map(Term::Ma))
-            .chain((model.ps > 0).then_some(Term::Sar))
-            .chain((model.qs > 0).then_some(Term::Sma))
-            .collect()
-    };
-    let result: Vec<(Term, f64)> = names.into_iter().zip(tv).collect();
-    trace(format!(
-        "ml_t [{}] t={{{}}} x={:?} x_start={:?}",
-        model_desc(model),
-        t_desc(&result),
-        x,
-        x_start
-    ));
+    let result = model.names().into_iter().zip(tv).collect();
     Some(result)
 }
 
@@ -1567,7 +1460,6 @@ fn chi2_ppf_95(dof: f64) -> f64 {
     0.5 * (lo + hi)
 }
 
-/// Approximate `lab4.fit`: a small multistart bounded quasi-Newton global fit.
 /// Step 6 diagnoses the Step 5 model as fitted there: the same local ML fit from the CLS
 /// start, with unweighted noise residuals N_t - Nhat_t (Guide ARIMA appendix p. 744).
 fn fitted_residuals(
@@ -1605,20 +1497,6 @@ fn diagnose(y: &[f64], model: &Model, d: usize, dd: usize, s: usize) -> Vec<(Add
         * (n as f64 + 2.0);
     let dof = big_k as f64 - npar as f64;
     let crit = chi2_ppf_95(dof);
-    trace(format!(
-        "diagnose [{}] n={} K={} npar={} Qs={:.4} chi2_95={:.4} dof={:.1} r0..3={:?}",
-        model_desc(model),
-        n,
-        big_k,
-        npar,
-        qs,
-        crit,
-        dof,
-        r.iter()
-            .take(4)
-            .map(|v| format!("{v:.4}"))
-            .collect::<Vec<_>>()
-    ));
     if dof <= 0.0 || qs <= crit {
         return Vec::new();
     }
@@ -1666,23 +1544,6 @@ fn diagnose(y: &[f64], model: &Model, d: usize, dd: usize, s: usize) -> Vec<(Add
                 .unwrap_or(false)
         })
         .collect();
-    trace(format!(
-        "diagnose [{}] t_acf={:?} t_pac={:?} sig_acf={:?} sig_pacf={:?} all_small={}",
-        model_desc(model),
-        t_acf
-            .iter()
-            .take(14)
-            .map(|v| format!("{v:.3}"))
-            .collect::<Vec<_>>(),
-        t_pac
-            .iter()
-            .take(14)
-            .map(|v| format!("{v:.3}"))
-            .collect::<Vec<_>>(),
-        sig_acf,
-        sig_pacf,
-        all_small
-    ));
     if (1..=2).contains(&sig_acf.len()) {
         for l in &sig_acf {
             add.push((AddKind::Ma, if model.ma.contains(l) { 2 * l } else { *l }));
@@ -1762,7 +1623,7 @@ fn build_spec(
     }
 }
 
-fn select(y: &[f64], period: usize) -> Result<(ArimaSpec, InitialOrders), ArimaError> {
+fn select(y: &[f64], period: usize) -> Result<ArimaSpec, ArimaError> {
     if y.len() < 5 || y.len() > MAX_SERIES || y.iter().any(|v| !v.is_finite()) {
         return Err(ArimaError::Data(
             "Expert ARIMA needs 5..=4096 finite observations".into(),
@@ -1785,19 +1646,6 @@ fn select(y: &[f64], period: usize) -> Result<(ArimaSpec, InitialOrders), ArimaE
             choice = retry;
         }
     }
-    let initial = InitialOrders {
-        method: choice.method,
-        p: choice.p,
-        q: choice.q,
-    };
-    trace(format!(
-        "identify s={} w_len={} choice={:?} p={} q={}",
-        s,
-        w.len(),
-        choice.method,
-        choice.p,
-        choice.q
-    ));
     let seasonal = s > 1;
     let mut model = Model {
         ar: (1..=choice.p).collect(),
@@ -1808,16 +1656,9 @@ fn select(y: &[f64], period: usize) -> Result<(ArimaSpec, InitialOrders), ArimaE
     };
     prune_cls(&w, &mut model, s);
     ml_prune(&transformed, &w, &mut model, d, dd, s);
-    trace(format!("after_prune [{}]", model_desc(&model)));
 
     // Step 6: at most one modification.
     let add = diagnose(&transformed, &model, d, dd, s);
-    trace(format!(
-        "diagnose_add {:?}",
-        add.iter()
-            .map(|(k, l)| (add_kind_name(*k), *l))
-            .collect::<Vec<_>>()
-    ));
     if !add.is_empty() {
         for (kind, lag) in &add {
             model.add(*kind, *lag);
@@ -1826,8 +1667,7 @@ fn select(y: &[f64], period: usize) -> Result<(ArimaSpec, InitialOrders), ArimaE
         ml_prune(&transformed, &w, &mut model, d, dd, s);
     }
 
-    trace(format!("final [{}]", model_desc(&model)));
-    Ok((build_spec(&model, transform, d, dd, period), initial))
+    Ok(build_spec(&model, transform, d, dd, period))
 }
 
 #[cfg(test)]
