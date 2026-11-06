@@ -177,6 +177,11 @@ impl Element {
             })
             .collect()
     }
+
+    /// Serializes this element as XML text.
+    pub fn to_xml(&self) -> String {
+        xml::write_element(self)
+    }
 }
 
 /// Drops nested elements iteratively: the decoder accepts nesting up to `Limits::max_depth`, and

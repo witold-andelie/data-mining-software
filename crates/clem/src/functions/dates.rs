@@ -7,7 +7,7 @@ use dms_types::{
     Value,
     calendar::{
         MICROS_PER_DAY, MICROS_PER_SECOND, civil_from_days, days_from_civil, days_in_month,
-        micros_from_time, split_timestamp, time_from_micros,
+        micros_from_time, parse_month_year, split_timestamp, time_from_micros,
     },
 };
 
@@ -498,8 +498,12 @@ fn datetime_timestamp(args: &[Datum]) -> Result<Datum, ClemError> {
 /// - `YYYY-MM-DD` or `YYYY/MM/DD` (4-digit year first)
 /// - `DD-MM-YYYY` or `DD/MM/YYYY` (4-digit year last)
 /// - `DD-MM-YY` or `DD/MM/YY` (2-digit year last; `< 30 -> 2000 + yy`, `>= 30 -> 1900 + yy`)
+/// - `MON YYYY` (`Jan 1999`; stream `dateFormat` `format27`)
 fn parse_date_str(text: &str) -> Option<i64> {
     let text = text.trim();
+    if let Some(days) = parse_month_year(text) {
+        return Some(days);
+    }
     let sep = if text.contains('-') && !text.contains('/') {
         '-'
     } else if text.contains('/') && !text.contains('-') {

@@ -91,10 +91,12 @@ pub enum DateFormat {
     YyyyMmDdDash,
     /// `format24`: `YYYYDDD`
     YyyyDdd,
+    /// `format27`: `MON YYYY` (`Jan 1999`)
+    MonYyyy,
 }
 
 impl DateFormat {
-    /// Parses a Modeler saved format id (`format1`..`format24`) or scripting name.
+    /// Parses a Modeler saved format id (`format1`..`format27`) or scripting name.
     pub fn from_modeler_id(id: &str) -> Option<Self> {
         match id.trim() {
             "format1" | "DDMMYY" => Some(DateFormat::DdMmYy),
@@ -121,6 +123,7 @@ impl DateFormat {
             "format22" | "DD.MON.YYYY" => Some(DateFormat::DdMonYyyyDot),
             "format23" | "YYYY-MM-DD" => Some(DateFormat::YyyyMmDdDash),
             "format24" | "YYYYDDD" => Some(DateFormat::YyyyDdd),
+            "format27" | "MON YYYY" => Some(DateFormat::MonYyyy),
             _ => None,
         }
     }
@@ -656,6 +659,9 @@ fn parse_date_format(text: &str, format: DateFormat, baseline: i32) -> Option<i6
                 number(m, 1..=2)?,
                 number(d, 1..=2)?,
             )
+        }
+        DateFormat::MonYyyy => {
+            return calendar::parse_month_year(text);
         }
     };
     if matches!(

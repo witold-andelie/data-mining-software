@@ -149,7 +149,8 @@ pub struct Field {
 /// How Modeler prints a field's values in data exports when a node sets the field's format.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DisplayFormat {
-    /// `MON YYYY` dates (`Dec 2019`): Time Intervals month labels (`misc_ti_months`).
+    /// `MON YYYY` dates (`Dec 2019`): Time Intervals month labels (`misc_ti_months`) and stream
+    /// `dateFormat` `format27`.
     MonthYear,
     /// Timestamps with a dotted time, `YYYY-MM-DD HH.MM.SS` (Modeler `format10`;
     /// `misc_ti_workseconds`: `2020-02-28 08.05.47`).

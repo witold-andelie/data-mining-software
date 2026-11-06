@@ -5,10 +5,13 @@
 //! Modeler's score fields (`docs/models.md`).
 //!
 //! The model is the one the linked build node trained in this evaluation, else the PMML the
-//! nugget saved. Classic nuggets keep PMML at `properties/model@pmml`. Extension-framework
-//! nuggets keep a `PMML` container. Neural Net stores that member as `SCF\x01` zlib-wrapped
-//! PMML (`corpus/models_ml/nn_fixed_a.str`, `data/0002.dat`); [`dms_strfmt::read_model_xml`]
-//! unwraps it. Training is not implemented, so the nugget scores this saved model.
+//! nugget saved. Classic nuggets keep PMML at `properties/model@pmml`. Clementine 11 C&R Tree
+//! nuggets keep an inline `RuleTreeModel` as `properties/model` with no PMML container
+//! (`ibm-demos/telco_dataaudit`); [`dms_pmml::Pmml::parse_rule_tree`] maps it onto the same
+//! `TreeModel` the PMML path scores. Extension-framework nuggets keep a `PMML` container. Neural
+//! Net stores that member as `SCF\x01` zlib-wrapped PMML (`corpus/models_ml/nn_fixed_a.str`,
+//! `data/0002.dat`); [`dms_strfmt::read_model_xml`] unwraps it. Training is not implemented, so
+//! the nugget scores this saved model.
 //! Score fields, from the oracle exports of the team streams, `models/linear_enter`,
 //! `models/regression_enter`, `corpus/models_ml/nn_*`, and `crates/pmml/tests/oracle.rs`:
 //!
@@ -227,19 +230,24 @@ pub fn build(node: &StreamNode) -> Result<Box<dyn Operator>, OperatorError> {
             Kind::TwoStep => "TwoStep".to_string(),
             _ => "K-Means".to_string(),
         });
+    let model_el = settings::element(s, "model");
+    let pmml_member = model_el
+        .and_then(|model| model.attribute("pmml"))
+        .map(str::to_string)
+        .or_else(|| {
+            node.containers
+                .iter()
+                .find(|container| matches!(container.name.as_deref(), Some("PMML" | "ANOMALY_XML")))
+                .map(|container| container.member.clone())
+        });
+    let inline_model_xml = if pmml_member.is_none() {
+        model_el.and_then(rule_tree_xml)
+    } else {
+        None
+    };
     Ok(Box::new(Apply {
         kind,
-        pmml_member: settings::element(s, "model")
-            .and_then(|model| model.attribute("pmml"))
-            .map(str::to_string)
-            .or_else(|| {
-                node.containers
-                    .iter()
-                    .find(|container| {
-                        matches!(container.name.as_deref(), Some("PMML" | "ANOMALY_XML"))
-                    })
-                    .map(|container| container.member.clone())
-            }),
+        pmml_member,
         confidences: settings::flag(s, if analytic { "_calculate_conf" } else { "calculateConfidences" })?.unwrap_or(true)
             // `rt_noconf`, `rt_batch`: oracle runs the builder before exporting
             // terminal inputs. Its replacement-linked nugget regains the default
@@ -270,7 +278,16 @@ pub fn build(node: &StreamNode) -> Result<Box<dyn Operator>, OperatorError> {
         properties: node.properties_attachment.clone(),
         anomaly,
         apriori,
+        inline_model_xml,
     }))
+}
+
+fn rule_tree_xml(model: &dms_strfmt::fastinfoset::Element) -> Option<String> {
+    let class = model.attribute("class")?;
+    if class.rsplit('.').next() != Some("RuleTreeModel") {
+        return None;
+    }
+    Some(model.to_xml())
 }
 
 /// The nugget's own Anomaly Detection settings.
@@ -389,6 +406,8 @@ struct Apply {
     anomaly: Option<AnomalyOptions>,
     /// Apriori scoring options (`associationMaxPredictions` etc.; defaults for other nuggets).
     apriori: AprioriOptions,
+    /// Clementine 11 inline `RuleTreeModel` XML when the nugget saved no PMML member.
+    inline_model_xml: Option<String>,
 }
 
 /// `models_as`: native and the saved default (`false`) produce identical score fields.
@@ -565,19 +584,29 @@ impl Apply {
         let (pmml, valid_intervals) = match model {
             Some(model) => (model, Vec::new()),
             None => {
-                let xml = self.saved_model_xml(context)?;
-                let intervals = if self.kind == Kind::Linear {
-                    alm_valid_intervals(&xml, input.model())?
+                if let Some(xml) = &self.inline_model_xml {
+                    (
+                        Arc::new(
+                            Pmml::parse_rule_tree(xml)
+                                .map_err(|error| OperatorError::Data(format!("model: {error}")))?,
+                        ),
+                        Vec::new(),
+                    )
                 } else {
-                    Vec::new()
-                };
-                (
-                    Arc::new(
-                        Pmml::parse(&xml)
-                            .map_err(|error| OperatorError::Data(format!("model: {error}")))?,
-                    ),
-                    intervals,
-                )
+                    let xml = self.saved_model_xml(context)?;
+                    let intervals = if self.kind == Kind::Linear {
+                        alm_valid_intervals(&xml, input.model())?
+                    } else {
+                        Vec::new()
+                    };
+                    (
+                        Arc::new(
+                            Pmml::parse(&xml)
+                                .map_err(|error| OperatorError::Data(format!("model: {error}")))?,
+                        ),
+                        intervals,
+                    )
+                }
             }
         };
         if self.kind == Kind::Apriori {
