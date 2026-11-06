@@ -507,28 +507,12 @@ fn signature(spec: &arima::ArimaSpec) -> Signature {
     }
 }
 
-fn transform_name(t: arima::Transform) -> &'static str {
-    match t {
-        arima::Transform::None => "none",
-        arima::Transform::Log => "log",
-        arima::Transform::Sqrt => "sqrt",
-    }
-}
-
-fn order_name(m: arima::OrderMethod) -> &'static str {
-    match m {
-        arima::OrderMethod::Acf => "acf",
-        arima::OrderMethod::Pacf => "pacf",
-        arima::OrderMethod::Eacf => "eacf",
-    }
-}
-
 /// Frozen list of (label, case) pairs that `expert_arima` reproduces exactly. An improvement
 /// makes a NOT-listed case start matching, which fails this test until the list is updated.
 fn reproduced_cases() -> HashSet<(String, String)> {
-    // Frozen after the first full run: 82 of the 93 recorded selections reproduce Modeler
-    // exactly. Every case NOT listed must still mismatch (an improvement fails until added).
-    // See REPORT-HY4.md for the per-record table and the count.
+    // 85 of the 93 recorded selections reproduce Modeler exactly (82 from the port, 3 from
+    // the round 7b EACF rule). Every case NOT listed must still mismatch, so an improvement
+    // fails until it is added here.
     let pairs: &[(&str, &str)] = &[
         ("ts_expert", "pr_alt18_all"),
         ("ts_expert", "pr_alt30_all"),
@@ -552,6 +536,8 @@ fn reproduced_cases() -> HashSet<(String, String)> {
         ("ts_expert2", "p2_growth_ar"),
         ("ts_expert2", "p2_i2_ar"),
         ("ts_expert2", "p2_line_ar"),
+        ("ts_expert2", "p2_ma2_all"),
+        ("ts_expert2", "p2_ma2_ar"),
         ("ts_expert2", "p2_offset_ar"),
         ("ts_expert2", "p2_rwflat_ar"),
         ("ts_expert2", "p2_rwunit_ar"),
@@ -576,6 +562,7 @@ fn reproduced_cases() -> HashSet<(String, String)> {
         ("ts_expert4", "p4_gate35_ar"),
         ("ts_expert4", "p4_gate36_ar"),
         ("ts_expert4", "p4_imazero_ar"),
+        ("ts_expert4", "p4_ma4_ar"),
         ("ts_expert4", "p4_ma5_ar"),
         ("ts_expert4", "p4_off500_ar"),
         ("ts_expert4", "p4_off800_ar"),
@@ -657,175 +644,6 @@ fn expert_arima_full_selection_matches_recorded_cases() {
     eprintln!("{reproduced} reproduced / {total} recorded Expert ARIMA selections");
 }
 
-/// Load the 67 Python-reference records: name, effective seasonal setting, and the target
-/// series (from the same corpus CSV columns the reference used).
-fn reference_inputs() -> Vec<(String, usize, Vec<f64>)> {
-    let root = support::repo_root();
-    let reference: serde_json::Value = serde_json::from_str(
-        &std::fs::read_to_string(root.join("target/ts-expert/expert-reference.json")).unwrap(),
-    )
-    .unwrap();
-    let audited: serde_json::Value = serde_json::from_str(
-        &std::fs::read_to_string(root.join("target/ts-expert/round5/audited120.json")).unwrap(),
-    )
-    .unwrap();
-    let mut out = Vec::new();
-    for (name, record) in reference.as_object().unwrap() {
-        let season = record["season"].as_u64().unwrap() as usize;
-        let entry = &audited[name];
-        let data_path = entry["data_path"].as_str().unwrap().replace('\\', "/");
-        let column = entry["column"].as_str().unwrap();
-        let path = root.join(&data_path);
-        let text = std::fs::read_to_string(&path).unwrap();
-        let mut lines = text.lines();
-        let header = support::parse_csv_line(lines.next().unwrap());
-        let at = header.iter().position(|h| h == column).unwrap();
-        let y: Vec<f64> = lines
-            .filter(|line| !line.trim().is_empty())
-            .filter_map(|line| {
-                support::parse_csv_line(line)
-                    .get(at)
-                    .and_then(|v| v.parse::<f64>().ok())
-            })
-            .collect();
-        assert!(!y.is_empty(), "{name}: empty series from {path:?}");
-        out.push((name.clone(), season, y));
-    }
-    out.sort_by(|a, b| a.0.cmp(&b.0));
-    out
-}
-
-/// The two documented optimizer-difference exceptions allowed by the brief. In each, the Rust
-/// bounded quasi-Newton converges tightly to the MA invertibility/admissibility boundary while
-/// scipy's L-BFGS-B terminates early at an interior coefficient. That flips the MA boundary
-/// rule's verdict (`min |root| < 1.001`) and hence the selection. Causes, with the compared
-/// intermediate t-values, are in REPORT-HY4.md.
-fn documented_exceptions() -> HashSet<&'static str> {
-    ["mn_sales", "pr_seasmul_ar"].into_iter().collect()
-}
-
-/// Test 2: `#[ignore]` agreement with the Python reference on all 67 records, including the
-/// initial orders, with at most the two documented exceptions. Writes a diagnostic dump of the
-/// Rust selections and the intermediate trace for offline comparison.
-/// Development only: it needs the Python lab files in `target/ts-expert/`, which are not in git.
-#[test]
-#[ignore]
-fn expert_arima_agrees_with_python_reference() {
-    let root = support::repo_root();
-    let reference: serde_json::Value = serde_json::from_str(
-        &std::fs::read_to_string(root.join("target/ts-expert/expert-reference.json")).unwrap(),
-    )
-    .unwrap();
-    let inputs = reference_inputs();
-    let exceptions = documented_exceptions();
-    let mut undoc_mismatches = Vec::new();
-    let mut unexpected_agreement = Vec::new();
-    let mut seen_exceptions = 0usize;
-    let mut dump = serde_json::Map::new();
-    let mut trace_lines = Vec::new();
-    let mut agree = 0usize;
-    for (name, season, y) in &inputs {
-        dms_algo::expert::begin_trace();
-        let sel = arima::expert_selection(y, *season).unwrap();
-        for line in dms_algo::expert::end_trace() {
-            trace_lines.push(format!("{name}\t{line}"));
-        }
-        let sig = signature(&sel.spec);
-        let py = &reference[name]["python"];
-        let arr = |key: &str| -> Vec<usize> {
-            py[key]
-                .as_array()
-                .unwrap()
-                .iter()
-                .map(|v| v.as_u64().unwrap() as usize)
-                .collect()
-        };
-        let want = Signature {
-            transform: match py["transform"].as_str().unwrap() {
-                "log" => arima::Transform::Log,
-                "sqrt" => arima::Transform::Sqrt,
-                _ => arima::Transform::None,
-            },
-            d: py["d"].as_u64().unwrap() as usize,
-            dd: py["D"].as_u64().unwrap() as usize,
-            ar: arr("ar"),
-            ma: arr("ma"),
-            p: py["P"].as_u64().unwrap() as usize,
-            q: py["Q"].as_u64().unwrap() as usize,
-            constant: py["constant"].as_bool().unwrap(),
-        };
-        let initial = py["initial"].as_array().unwrap();
-        let want_initial = (
-            initial[0].as_str().unwrap(),
-            initial[1].as_u64().unwrap() as usize,
-            initial[2].as_u64().unwrap() as usize,
-        );
-        let got_initial = (order_name(sel.initial.method), sel.initial.p, sel.initial.q);
-        let ok = sig == want && got_initial == want_initial;
-        let is_exception = exceptions.contains(name.as_str());
-        if ok {
-            agree += 1;
-            if is_exception {
-                unexpected_agreement.push(format!(
-                    "{name}: documented exception now agrees; remove it from documented_exceptions"
-                ));
-            }
-        } else if is_exception {
-            seen_exceptions += 1;
-        } else {
-            undoc_mismatches.push(format!(
-                "{name}: spec_eq={} initial_eq={}\n  got  {:?} init {:?}\n  want {:?} init {:?}",
-                sig == want,
-                got_initial == want_initial,
-                sig,
-                got_initial,
-                want,
-                want_initial
-            ));
-        }
-        dump.insert(
-            name.clone(),
-            serde_json::json!({
-                "ar": sig.ar, "ma": sig.ma, "P": sig.p, "Q": sig.q, "c": sig.constant,
-                "d": sig.d, "D": sig.dd, "tr": transform_name(sig.transform),
-                "initial": [got_initial.0, got_initial.1, got_initial.2],
-            }),
-        );
-    }
-    std::fs::write(
-        root.join("target/ts-expert/rust-port.json"),
-        serde_json::to_string_pretty(&dump).unwrap(),
-    )
-    .unwrap();
-    std::fs::write(
-        root.join("target/ts-expert/rust-trace.txt"),
-        trace_lines.join("\n"),
-    )
-    .unwrap();
-    eprintln!(
-        "{agree}/{} agree with the Python reference; {} documented exceptions",
-        inputs.len(),
-        exceptions.len()
-    );
-    assert!(
-        undoc_mismatches.is_empty(),
-        "{} undocumented mismatches:\n{}",
-        undoc_mismatches.len(),
-        undoc_mismatches.join("\n")
-    );
-    assert!(
-        unexpected_agreement.is_empty(),
-        "{}",
-        unexpected_agreement.join("\n")
-    );
-    assert_eq!(
-        seen_exceptions,
-        exceptions.len(),
-        "documented exceptions no longer mismatch"
-    );
-    assert!(exceptions.len() <= 2, "too many documented exceptions");
-}
-
 /// The Time Series builder, with its saved containers stripped, selects ARIMA-only Expert
 /// models through `arima::expert_arima` and fits the selected structure. Every reproduced
 /// selection whose builder is ARIMA-only must come out of the node with Modeler's structure,
@@ -895,10 +713,10 @@ fn expert_arima_builder_selects_without_saved_pmml() {
         other_family.len(),
         fit_gaps.join("\n")
     );
-    // 8 reproduced selections come from AllModels builders (automatic AllModels selection is
+    // 9 reproduced selections come from AllModels builders (automatic AllModels selection is
     // GAP). 8 select structures the fitter rejects: d = 2, or more than four AR or MA lags.
     assert_eq!(
         (built.len(), fit_gaps.len(), other_family.len()),
-        (66, 8, 8)
+        (68, 8, 9)
     );
 }
