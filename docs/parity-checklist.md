@@ -7,8 +7,8 @@ Status `done (statistical)`: trained to statistical, not exact, parity with Mode
 | Scope | Implemented | Total |
 |---|---|---|
 | MVP | 85 | 85 |
-| later | 3 | 25 |
-| license blocked | 0 | 5 |
+| later | 3 | 24 |
+| license blocked | 0 | 6 |
 | out of scope | 0 | 34 |
 
 ## Sources
@@ -132,7 +132,7 @@ Status `done (statistical)`: trained to statistical, not exact, parity with Mode
 | GLE | `gle` | later | missing | (unmapped) |
 | Cox | `cox` | later | missing | `spss.coxreg_id!buildcoxreg` |
 | LSVM | `lsvm` | later | done (statistical) | `spss.linearSVM!linearSVM`, `spss.linearSVM!applyLinearSVM` |
-| Self-Learning Response Model | `slrm` | later | missing | `spss.selflearning!selflearning` |
+| Self-Learning Response Model | `slrm` | license blocked | missing | `spss.selflearning!selflearning` |
 | Temporal Causal Model | `tcm` | later | missing | `tcm!pasw.timeseries-extension` |
 | Random Forest (Python) | `random_forest` | later | missing | `rf!spss.rf` |
 | XGBoost Tree (Python) | `xgboost_tree` | later | missing | `xgboosttree!spss.xgboost` |

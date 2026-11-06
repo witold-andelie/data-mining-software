@@ -210,7 +210,7 @@ pub const NODES: &[NodeSpec] = &[
     n("gle", "GLE", Modeling, Later, &[]),
     n("cox", "Cox", Modeling, Later, &["spss.coxreg_id!buildcoxreg"]),
     n("lsvm", "LSVM", Modeling, Later, &["spss.linearSVM!linearSVM", "spss.linearSVM!applyLinearSVM"]),
-    n("slrm", "Self-Learning Response Model", Modeling, Later, &["spss.selflearning!selflearning"]),
+    n("slrm", "Self-Learning Response Model", Modeling, LicenseBlocked, &["spss.selflearning!selflearning"]),
     n("tcm", "Temporal Causal Model", Modeling, Later, &["tcm!pasw.timeseries-extension"]),
     n("random_forest", "Random Forest (Python)", Modeling, Later, &["rf!spss.rf"]),
     n("xgboost_tree", "XGBoost Tree (Python)", Modeling, Later, &["xgboosttree!spss.xgboost"]),
