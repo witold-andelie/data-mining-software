@@ -8,8 +8,8 @@
 |---|---|---|
 | MVP 节点覆盖 | 85 / 85（其中 10 个按统计等价验收） | 实测（`cargo xtask parity`，2026-10-20） |
 | 以后再做 / 许可证受阻 / 不做 | 已做 3 / 25；0 / 5；0 / 34 | 实测（`cargo xtask parity`） |
-| 回归（全部带标准答案的流） | 1354 个流：1231 完全一致、86 统计等价、37 已知 GAP、0 回归 | 实测（`cargo xtask regress`，2026-11-06） |
-| 语料 | `xtask/corpus.tsv` 登记 1474 个文件，70 个 oracle 标签 | 实测 |
+| 回归（全部带标准答案的流） | 1378 个流：1256 完全一致、86 统计等价、36 已知 GAP、0 回归 | 实测（`cargo xtask regress`，2026-11-06） |
+| 语料 | `xtask/corpus.tsv` 登记 1498 个文件，71 个 oracle 标签 | 实测 |
 
 ## 阶段
 
@@ -26,6 +26,7 @@
 
 ## 进度日志
 
+- 2026-11-06（续三）：Clementine 11 内联 `RuleTreeModel` C&R Tree 模型块映射到 PMML 树打分（`telco_dataaudit` 一致，移出已知 GAP）；流日期格式 `format27`（MON YYYY）的读入、`to_date` 与终端导出（`broadband_create_models` 的 Type 终端一致）。Time Series Expert 第四个探针 `ts_expert4`（24 例，由冻结的成对假设设计）及其 oracle，模型块打分全部一致；已确认 3s 季节门槛、全部模型按原始尺度归一化 BIC 比较、初始 MA 扫描可达稀疏第 5/7 阶，对数变换门槛不具尺度不变性，常数项按拟合决定；ARIMA 专家选型仍为 GAP。
 - 2026-11-06（续二）：Time Series Expert 第三个判别探针 `ts_expert3`（30 例：平方根异方差、偏移 200/1000、线性异方差、近单位根 AR、无漂移 IMA、AR 第 2 阶、MA 第 1/3 阶、36/48 个月季节）及其 oracle，30 例模型块打分全部一致；平滑专家 10/10 吻合；ARIMA 专家确认：从不取平方根，取对数不只看最大/最小比，常数始终保留，36 个月即启用季节差分，近单位根序列取 MA(4)，选型规则仍为 GAP。
 - 2026-11-06（续）：ARIMA 未来预测按有限历史做高斯条件化（新息递推延伸到预测期），季节平滑模型块支持非零末期相位；`ts_expert`、`ts_expert2` 60 例全部一致。Time Series Expert 限定指数平滑时自动选型：无变换、在简单/Holt/Brown/阻尼及（样本多于一个周期时）季节/Winters 加法/乘法中取归一化 BIC = ln(SSE/(n−k)) + k ln(n)/n 最小，22 个 Modeler 记录全部吻合；限定 ARIMA 与全部模型仍为 GAP。
 - 2026-11-06：`cargo xtask regress` 不再把统计等价构建节点所在流里未产出的终端算作统计等价（只有全部终端都产出、仅数值不同才算），由此暴露的 4 个流（Time Series 季节/变换传递函数、Streaming TS、CPLEX、18 点季节平滑相位）登记为已知 GAP。Time Series Expert：两个判别探针 `ts_expert`、`ts_expert2`（各 30 例，平滑/ARIMA/全部模型）及其 oracle；模型块打分支持白噪声 ARIMA（无 `NonseasonalComponent`）与 d=2，两标签 60 例中 56 例一致；自动选择仍为 GAP：平滑专家按归一化 BIC 取最小在 22 个记录中吻合 19 个，ARIMA 专家尚未确定。
