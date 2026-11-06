@@ -17,8 +17,10 @@
 //! Supports d=0, seasonal ARIMA products, simple/Holt/Brown/damped/seasonal/
 //! Winters smoothing, log/sqrt, and transfer functions with numerator and denominator
 //! (`transfer`, whose docs give the denominator start-up evidence).
-//! Expert refits recorded structure including omitted AR lags; automatic
-//! transform/order selection remains GAP (the guide omits decision thresholds).
+//! Expert refits recorded ARIMA/AllModels structure including omitted AR lags, and
+//! selects untransformed Exponential Smoothing models by minimum NBIC = ln(SSE/(n-k)) +
+//! k*ln(n)/n; automatic ARIMA/AllModels transform/order selection remains GAP (the guide
+//! omits decision thresholds).
 //! The four keyed ARIMA transform recordings have different saved and rebuilt
 //! specifications: detached-model refits are tested separately from linked scores.
 //! Two cases stay outside rule 3 because Modeler's estimate is not the optimum of the
@@ -47,6 +49,9 @@ pub enum Method {
     Smooth {
         kind: smooth::Kind,
         transform: Transform,
+        period: usize,
+    },
+    ExpertSmooth {
         period: usize,
     },
     SeasonalArima(ArimaOrder),
@@ -127,6 +132,7 @@ pub fn fit(y: &[f64], method: Method) -> Result<Fit, AlgoError> {
             transform,
             period,
         } => fit_general_smooth(y, kind, transform, period),
+        Method::ExpertSmooth { period } => fit_expert_smooth(y, period),
         Method::Simple | Method::Holt => fit_smooth(y, method == Method::Holt),
         Method::Arima { p, d, q, transform } => {
             if d > 1 || p > 1 || q > 1 {
@@ -242,8 +248,10 @@ fn general_initial(
     x: &[f64],
 ) -> Result<smooth::GeneralSpec, AlgoError> {
     use smooth::{GeneralSpec, Kind, State};
-    if kind.seasonal() && (!(2..=64).contains(&period) || z.len() < period.saturating_mul(2)) {
-        return Err(data("seasonal smoothing needs two complete seasons"));
+    if kind.seasonal() && (!(2..=64).contains(&period) || z.len() <= period) {
+        return Err(data(
+            "seasonal smoothing needs observations exceeding one period",
+        ));
     }
     let n = count(z.len());
     let mean = z.iter().sum::<f64>() / n;
@@ -280,7 +288,7 @@ fn general_initial(
             groups.push((t, v, if xx > 0.0 { xy / xx } else { 0.0 }));
         }
         if kind == Kind::WintersAdd {
-            slope = cross / squares;
+            slope = if squares > 0.0 { cross / squares } else { 0.0 };
         }
         if kind == Kind::WintersMul {
             slope = groups.iter().map(|(_, _, s)| s).sum::<f64>() / count(period);
@@ -293,7 +301,13 @@ fn general_initial(
                 _ => v - s * t,
             })
             .collect();
-        let center = seasons.iter().sum::<f64>() / count(period);
+        // Algorithms Guide p. 381: simple seasonal subtracts the sample mean;
+        // Winters additive/multiplicative centers/normalizes across the m seasonal indices.
+        let center = if kind == Kind::Seasonal {
+            mean
+        } else {
+            seasons.iter().sum::<f64>() / count(period)
+        };
         for v in &mut seasons {
             if kind == Kind::WintersMul {
                 *v /= center;
@@ -363,13 +377,29 @@ fn fit_general_smooth(
         Ok(p.iter().zip(&z).map(|(a, b)| a - b).collect::<Vec<_>>())
     };
     let mut best = None;
-    for start in [0.25, 0.5, 0.8] {
-        let mut initial = vec![start; kind.parameters()];
+    let mut starts: Vec<Vec<f64>> = [0.01, 0.1, 0.25, 0.5, 0.8]
+        .into_iter()
+        .map(|s| {
+            let mut initial = vec![s; kind.parameters()];
+            if kind == smooth::Kind::Damped
+                && let Some(v) = initial.get_mut(2)
+            {
+                *v = 0.9;
+            }
+            initial
+        })
+        .collect();
+    if kind.parameters() >= 2 {
+        let mut low_other = vec![0.001; kind.parameters()];
+        low_other[0] = 0.1;
         if kind == smooth::Kind::Damped
-            && let Some(v) = initial.get_mut(2)
+            && let Some(v) = low_other.get_mut(2)
         {
             *v = 0.9;
         }
+        starts.push(low_other);
+    }
+    for initial in starts {
         if let Ok((x, iterations)) = lm(initial, &bounds, residuals) {
             let r = residuals(&x)?;
             let value = r.iter().map(|v| v * v).sum::<f64>();
@@ -392,6 +422,35 @@ fn fit_general_smooth(
         final_trend: state.trend,
         rmse,
     })
+}
+
+fn fit_expert_smooth(y: &[f64], period: usize) -> Result<Fit, AlgoError> {
+    use smooth::Kind;
+    let mut candidates = vec![Kind::Simple, Kind::Holt, Kind::Brown, Kind::Damped];
+    if (2..=64).contains(&period) && y.len() > period {
+        candidates.push(Kind::Seasonal);
+        candidates.push(Kind::WintersAdd);
+        if y.iter().all(|v| *v > 0.0) {
+            candidates.push(Kind::WintersMul);
+        }
+    }
+    let n = count(y.len());
+    let mut best: Option<(f64, Fit)> = None;
+    for kind in candidates {
+        let k = count(kind.parameters());
+        if n <= k {
+            continue;
+        }
+        if let Ok(fit) = fit_general_smooth(y, kind, Transform::None, period) {
+            let sigma2 = (fit.objective / (n - k)).max(1e-300);
+            let nbic = sigma2.ln() + k * n.ln() / n;
+            if best.as_ref().is_none_or(|(b, _)| nbic < *b) {
+                best = Some((nbic, fit));
+            }
+        }
+    }
+    best.map(|(_, fit)| fit)
+        .ok_or_else(|| data("Expert exponential smoothing found no admissible candidate"))
 }
 
 fn fit_seasonal_arima(
@@ -700,6 +759,23 @@ pub(crate) fn lm(
         if projected <= 1e-9 * (1.0 + value) {
             return Ok((x, iteration));
         }
+        for (i, ((v, (lo, hi)), g)) in x.iter().zip(bounds).zip(&mut gradient).enumerate() {
+            if (*v <= *lo && *g > 0.0) || (*v >= *hi && *g < 0.0) {
+                *g = 0.0;
+                for (j, row) in matrix.iter_mut().enumerate() {
+                    if i == j {
+                        for cell in row.iter_mut() {
+                            *cell = 0.0;
+                        }
+                        if let Some(diag) = row.get_mut(i) {
+                            *diag = 1.0;
+                        }
+                    } else if let Some(cell) = row.get_mut(i) {
+                        *cell = 0.0;
+                    }
+                }
+            }
+        }
         for (i, row) in matrix.iter_mut().enumerate() {
             if let Some(v) = row.get_mut(i) {
                 *v += lambda * v.abs().max(1e-10);
@@ -983,5 +1059,29 @@ mod tests {
             assert_eq!(alpha, 1.0);
             assert!((fit.objective / (scale * scale) - 11.75).abs() < 1e-10);
         }
+    }
+
+    #[test]
+    fn expert_smooth_selects_simple_holt_and_short_seasonal() {
+        let constant = vec![50.0; 48];
+        let fit_const = fit(&constant, Method::ExpertSmooth { period: 1 }).unwrap();
+        assert!(matches!(
+            fit_const.spec,
+            FittedSpec::Smooth(SmoothSpec::General(smooth::GeneralSpec {
+                kind: smooth::Kind::Simple,
+                ..
+            }))
+        ));
+        let seasonal_18: Vec<f64> = (0..18)
+            .map(|i| 80.0 + 10.0 * (2.0 * std::f64::consts::PI * f64::from(i % 12) / 12.0).sin())
+            .collect();
+        let fit_seas = fit(&seasonal_18, Method::ExpertSmooth { period: 12 }).unwrap();
+        assert!(matches!(
+            fit_seas.spec,
+            FittedSpec::Smooth(SmoothSpec::General(smooth::GeneralSpec {
+                kind: smooth::Kind::Seasonal,
+                ..
+            }))
+        ));
     }
 }

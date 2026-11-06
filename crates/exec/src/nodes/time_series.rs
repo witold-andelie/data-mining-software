@@ -20,8 +20,9 @@
 //! retain log/sqrt. Tests independently refit the recorded transformed model
 //! and remove attachments when scoring it, preventing a saved-parameter pass.
 //!
-//! Expert refits recorded family/order/transform/omitted lags only. Automatic
-//! selection remains GAP: Guide p.394 does not specify all search thresholds.
+//! Expert selects Exponential Smoothing (`_expertModelTypeList == "Exsmooth"`) by
+//! minimum NBIC and refits recorded ARIMA/AllModels structure/transform/omitted lags.
+//! Automatic ARIMA/AllModels selection remains GAP: Guide p.394 omits search thresholds.
 //! `ts_expert/pr_wn_ar` omits the zero-order NonseasonalComponent; `pr_i2_ar`
 //! scores d=2 with a constant through the existing integrated ARIMA recursion.
 //! Transfer functions support AR(1) noise, delay, predictor differences and denominators
@@ -308,15 +309,17 @@ pub fn build(node: &StreamNode) -> Result<Box<dyn Operator>, OperatorError> {
                 }
             })
         }
-        Some("ExpertModeler") => {
-            if !matches!(
-                settings::text(s, "_expertModelTypeList").as_deref(),
-                Some("AllModels" | "Exsmooth" | "Arima")
-            ) {
-                return Err(gap("Expert model family"));
+        Some("ExpertModeler") => match settings::text(s, "_expertModelTypeList").as_deref() {
+            Some("Exsmooth") => {
+                let consider_seasonal =
+                    settings::flag(s, "_isConsiderSeasonalModels")?.unwrap_or(true);
+                Some(Method::ExpertSmooth {
+                    period: if monthly && consider_seasonal { 12 } else { 1 },
+                })
             }
-            None
-        }
+            Some("AllModels" | "Arima") => None,
+            _ => return Err(gap("Expert model family")),
+        },
         _ => return Err(gap("estimation method")),
     };
     let selected_member = node
@@ -329,7 +332,11 @@ pub fn build(node: &StreamNode) -> Result<Box<dyn Operator>, OperatorError> {
             "Expert automatic transformation/order selection; no recorded specification to refit",
         ));
     }
-    let predictors = field_list(s, "_candidateInputs");
+    let predictors = if matches!(method, Some(Method::ExpertSmooth { .. })) {
+        Vec::new()
+    } else {
+        field_list(s, "_candidateInputs")
+    };
     let mut effects = Vec::new();
     if predictors.len() > 16 {
         return Err(gap("too many transfer predictors"));
@@ -1532,11 +1539,21 @@ fn parse_general_smooth(
         .ok_or_else(|| OperatorError::Data("missing Level".into()))?;
     let seasons = if let Some(season) = season {
         let period = attr_usize(season, "period")?;
-        if !(2..=64).contains(&period) || attr_usize(season, "phase")? != 0 {
+        let phase = attr_usize(season, "phase")?;
+        let init_season =
+            ext("initSeason").ok_or_else(|| OperatorError::Data("missing initSeason".into()))?;
+        let start_index = init_season
+            .attribute("periodStartIndex")
+            .map(|v| v.parse::<usize>())
+            .transpose()
+            .map_err(|_| OperatorError::Data("invalid periodStartIndex".into()))?
+            .unwrap_or(0);
+        if !(2..=64).contains(&period) || phase >= period || start_index != 0 {
             return Err(OperatorError::Settings("GAP: seasonal period/phase".into()));
         }
-        let initial = ext("initSeason")
-            .and_then(|n| n.children().find(|n| n.has_tag_name("Array")))
+        let initial = init_season
+            .children()
+            .find(|n| n.has_tag_name("Array"))
             .ok_or_else(|| OperatorError::Data("missing initSeason".into()))?;
         let values = initial
             .text()
@@ -2110,5 +2127,18 @@ mod tests {
             "<ExponentialSmoothing transformation=\"none\"><Level alpha=\"0.2\" smoothedValue=\"1\"/><Trend_ExpoSmooth trend=\"multiplicative\" gamma=\"0.1\" smoothedValue=\"1\"/></ExponentialSmoothing>",
         );
         assert!(gap(&multiplicative).contains("multiplicative"));
+    }
+
+    #[test]
+    fn parses_seasonal_smoothing_with_nonzero_terminal_phase() {
+        let seasonal = model(
+            "<ExponentialSmoothing transformation=\"none\"><Level alpha=\"0.1\" smoothedValue=\"80\"/><Seasonality_ExpoSmooth type=\"additive\" period=\"12\" phase=\"6\" delta=\"0.01\"><Array n=\"12\" type=\"real\">1 2 3 4 5 6 -1 -2 -3 -4 -5 -6</Array></Seasonality_ExpoSmooth></ExponentialSmoothing><Extension name=\"errVariance\" value=\"1\"/><Extension name=\"degreesOfFreedom\" value=\"16\"/><Extension name=\"initLevel\" value=\"79\"/><Extension name=\"initSeason\" periodStartIndex=\"0\" periodLength=\"18\"><Array n=\"12\" type=\"real\">1 2 3 4 5 6 -1 -2 -3 -4 -5 -6</Array></Extension>",
+        );
+        assert!(matches!(
+            parse_saved_model(&seasonal).unwrap(),
+            SavedModel::Smooth(SmoothSpec::General(_))
+        ));
+        let bad_start = seasonal.replace("periodStartIndex=\"0\"", "periodStartIndex=\"1\"");
+        assert!(gap(&bad_start).contains("seasonal period/phase"));
     }
 }
