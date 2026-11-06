@@ -46,11 +46,25 @@
 //! Tabular differing sets (`antecons_diff_tab`): antecedents omit `jam`, so `jam=>butter`
 //! and `jam+bread=>butter` are dropped (3 rules, 4 items).
 //!
-//! GAP: the rank of items with equal support (`tie_equal`, `tie_twonew`). The rule order
-//! itself holds there (itemsets by size, then by rank; consequents from the highest rank), but
-//! Modeler ranks five equal items 3, 4, 1, 2, 0 by field index and two equal ones 1, 0, where
-//! we keep field order. Heap, selection, shell, Hoare and Lomuto sorts of the counts, with
-//! strict or non-strict comparisons, ascending or reversed, reproduce at most one of the two.
+//! GAP: the rank of items with equal support when they fall in separate co-occurrence blocks
+//! (`tie_equal`, `tie_twonew`, and the saved rule order of `apriori_tie/k5_two*` and
+//! `apriori_tie/food_two`). In `apriori_tie` every rule has confidence 1, so the scored
+//! outputs, and therefore the regression, still match. The rule order model itself holds
+//! there (itemsets by size, then by rank; consequents from the highest rank).
+//! Probe `apriori_tie` (12 cases) separates the cases:
+//! - Equal items that always occur together keep field (column) order for k = 2..6. This holds
+//!   whatever the names (`k5_revnames`, `k5_shuffle`), so the rule is field order.
+//! - With a 3-item block in columns 0-2 and a 2-item block in columns 3-4, Modeler ranks
+//!   3, 4, 1, 2, 0: the 2-block first, and the 3-block rotated. The data order of the blocks
+//!   does not matter (`k5_two_swapblocks`).
+//! - With the 2-block in columns 0-1 the rank is plain field order (`food_two_perm`).
+//!
+//! So the tie break depends on co-occurrence structure, not on names or row order. A
+//! java.util.PriorityQueue keyed by (support, number of frequent pairs) reproduces every
+//! two-block case but scrambles the one-block cases. Heap, selection, shell, Hoare and
+//! Lomuto sorts fail some case when scripted (`rea-work/apriori-tie/pq.py`, `sorts3.py`).
+//! Hash-map iteration of itemset keys and FP-growth or Eclat discovery orders were checked
+//! by hand on k3 and k5_two only, and fail one of them.
 //! GAP: rules with an empty antecedent and events are rejected.
 //! GAP: `Item` / `Itemset` element order in Modeler's file is not id order and is not
 //! reproduced. Comparison is by id.
