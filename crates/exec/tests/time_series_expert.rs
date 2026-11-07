@@ -510,9 +510,9 @@ fn signature(spec: &arima::ArimaSpec) -> Signature {
 /// Frozen list of (label, case) pairs that `expert_arima` reproduces exactly. An improvement
 /// makes a NOT-listed case start matching, which fails this test until the list is updated.
 fn reproduced_cases() -> HashSet<(String, String)> {
-    // 85 of the 93 recorded selections reproduce Modeler exactly (82 from the port, 3 from
-    // the round 7b EACF rule). Every case NOT listed must still mismatch, so an improvement
-    // fails until it is added here.
+    // 86 of the 93 recorded selections reproduce Modeler exactly (82 from the port, 3 from
+    // the round 7b EACF rule, 1 from taking the 2.8 high-order Step-4 model). Every case
+    // NOT listed must still mismatch, so an improvement fails until it is added here.
     let pairs: &[(&str, &str)] = &[
         ("ts_expert", "pr_alt18_all"),
         ("ts_expert", "pr_alt30_all"),
@@ -592,6 +592,7 @@ fn reproduced_cases() -> HashSet<(String, String)> {
         ("ts_expert6", "p6_ma12n240_ar"),
         ("ts_expert6", "p6_ma16n240_ar"),
         ("ts_expert6", "p6_ma8n144_ar"),
+        ("ts_expert6", "p6_ma8n72_ar"),
         ("ts_expert6", "p6_ma9n144_ar"),
         ("ts_expert6", "p6_off200x10_ar"),
         ("ts_expert6", "p6_rev85_ar"),
@@ -714,10 +715,10 @@ fn expert_arima_builder_selects_without_saved_pmml() {
         fit_gaps.join("\n")
     );
     // 9 of the built selections come from AllModels builders, where the ARIMA candidate also
-    // wins the NBIC comparison. All 85 structures fit, including d = 2 and sparse high lags.
+    // wins the NBIC comparison. All 86 structures fit, including d = 2 and sparse high lags.
     assert_eq!(
         (built.len(), fit_gaps.len(), other_family.len()),
-        (85, 0, 0)
+        (86, 0, 0)
     );
 }
 

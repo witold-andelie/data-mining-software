@@ -1641,10 +1641,10 @@ fn select(y: &[f64], period: usize) -> Result<ArimaSpec, ArimaError> {
 
     let mut choice = identify(&w, s, 2.0);
     if choice.sum() > 4 {
-        let retry = identify(&w, s, 2.8);
-        if retry.sum() <= 4 {
-            choice = retry;
-        }
+        // Guide p. 778: when none of ACF/PACF/EACF give a low-order model
+        // (p+q > 4), raise |t| to 2.8 and identify again. If that is still
+        // high-order, take the high-order model identified at this 2.8 step.
+        choice = identify(&w, s, 2.8);
     }
     let seasonal = s > 1;
     let mut model = Model {
