@@ -249,12 +249,11 @@
 //!   when the harmful group is dropped, the fields kept are those both trial trees test after
 //!   local pruning, not the first tree's grown fields.
 //!   Variants measured on `c50_presets`, `c50_winnow2` and `models_ml` (104 streams), each
-//!   against this rule:
-//!   - trial growth with the average-gain threshold: no change;
-//!   - children-as-leaves growth collapse in trial trees: w03 fixed, 12 regressions;
-//!   - first tree's pruned fields as evidence: w03 fixed, 6 regressions;
-//!   - the second tree's grown fields: no change;
-//!   - the second tree's pruned fields alone: w03 fixed, `c50_wn_winnow*` 2 regressions.
+//!   against this rule: trial growth with the average-gain threshold changes nothing;
+//!   children-as-leaves growth collapse in trial trees fixes w03 with 12 regressions; the
+//!   first tree's pruned fields as evidence fix w03 with 6 regressions; the second tree's
+//!   grown fields change nothing; its pruned fields alone fix w03 with 2 regressions
+//!   (`c50_wn_winnow*`).
 //!   Growth now also collapses a split whose grown subtrees err at least 99.9% as much as
 //!   the node as a leaf; the winnowing usage evidence needs it, and no other tree changes.
 //!   The notes below record the earlier black-box search.
@@ -2252,6 +2251,99 @@ mod tests {
             let cut = numeric_cut(lower, upper);
             assert!(cut.is_finite() && cut >= lower && cut < upper);
         }
+    }
+
+    fn numeric_table(n: usize) -> Table {
+        let mut x = Field::new("x", Storage::Real);
+        x.measurement = Measurement::Continuous;
+        let mut y = Field::new("y", Storage::String);
+        y.measurement = Measurement::Nominal;
+        y.values = ValueSpec::Categories(vec![Value::string("a"), Value::string("b")]);
+        Table::new(
+            DataModel::new(vec![x, y]).unwrap(),
+            (0..n)
+                .map(|i| {
+                    vec![
+                        Value::Real(i as f64),
+                        Value::string(if i < n / 2 { "a" } else { "b" }),
+                    ]
+                })
+                .collect(),
+        )
+        .unwrap()
+    }
+
+    fn numeric_split(table: &Table, min_child: usize) -> Split {
+        let dataset = Dataset {
+            table,
+            target: 1,
+            inputs: &[0],
+            frequency: None,
+        };
+        let data = Data::read(&dataset, None).unwrap();
+        let rows: Vec<usize> = (0..data.targets.len()).collect();
+        candidate(
+            &data,
+            &rows,
+            data.columns.first().expect("numeric column"),
+            min_child,
+            false,
+        )
+        .expect("numeric split")
+    }
+
+    #[test]
+    fn numeric_admissible_window_is_min_child_not_ten_percent_cap() {
+        // 100 records, 2 classes, m = 2. SPEC target = max(2, min(25, 0.10*100/2)) = 5
+        // would count h = 91 (n = 5..95). We count every both-sides->= m boundary:
+        // n = 2..98, h = 97. Change 1 (SPEC window) measured 433/21/13/0 and was reverted.
+        let table = numeric_table(100);
+        let split = numeric_split(&table, 2);
+        let expected = 1.0 - 97.0_f64.min(99.0).log2() / 100.0;
+        assert!(
+            (split.gain - expected).abs() < 1e-12,
+            "{} vs {expected}",
+            split.gain
+        );
+    }
+
+    #[test]
+    fn numeric_correction_counts_every_min_child_boundary() {
+        // A,A,A,B,B,B on 0..5, m = 2. Window n = 2,3,4 so h = 3, chosen cut 2.5.
+        // SPEC class-filter skip of same-class interiors (n = 2, 4) was a no-op
+        // on this fixture and on the 467-stream regress; it was not kept.
+        let mut x = Field::new("x", Storage::Real);
+        x.measurement = Measurement::Continuous;
+        let mut y = Field::new("y", Storage::String);
+        y.measurement = Measurement::Nominal;
+        y.values = ValueSpec::Categories(vec![Value::string("A"), Value::string("B")]);
+        let table = Table::new(
+            DataModel::new(vec![x, y]).unwrap(),
+            (0..6)
+                .map(|i| {
+                    vec![
+                        Value::Real(i as f64),
+                        Value::string(if i < 3 { "A" } else { "B" }),
+                    ]
+                })
+                .collect(),
+        )
+        .unwrap();
+        let split = numeric_split(&table, 2);
+        let expected = 1.0 - 3.0_f64.min(5.0).log2() / 6.0;
+        assert!(
+            (split.gain - expected).abs() < 1e-12,
+            "{} vs {expected}",
+            split.gain
+        );
+        assert_eq!(
+            split.groups[0].0,
+            Predicate::Simple {
+                field: "x".into(),
+                operator: Operator::LessOrEqual,
+                value: Some("2.5".into()),
+            }
+        );
     }
 
     #[test]
