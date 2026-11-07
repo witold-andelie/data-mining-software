@@ -257,11 +257,15 @@ fn c50_prune_internal_branch_controls_match_exactly() {
 /// when its field is the only positive test or carries enough bits, and drops it when a
 /// second positive test costs more bits than it carries; the one-SE budget then runs on the
 /// result, retrying only enclosing subtrees after a refused tie group (`wn89_noC4F` versus
-/// `wn150_prefix`).
+/// `wn150_prefix`). A test raised by local pruning keeps its verdict from where it was grown
+/// (`wn100_mc5`), while one raised again inside a regrown subtree does not (`wn100_sev65`).
 #[test]
 fn c50_global_pruning_matches_exactly() {
     for (label, case) in [
         ("c50_presets", "c50_wn100_expert"),
+        ("c50_global", "wn100_mc5"),
+        ("c50_global", "wn100_sev65"),
+        ("c50_global", "auto_sev80"),
         ("c50_global", "wn25_c1F"),
         ("c50_global", "wn100_sev85"),
         ("c50_global", "wn89_noC4F"),

@@ -91,12 +91,15 @@
 //!   rule that fixed only `wn100_sev85`. The specification has no such test; its MDL
 //!   condition acts during growth and has weight zero below 500 records per class. Dropping
 //!   ours loses 25 recorded streams, so Modeler keeps something like it.
-//!   GAP `c50_global/wn100_mc5` (2026-11-06 checks): at its 23-record node the test sees 4
-//!   positive tests (a, c1 0.0111; d 0.0087; c4 0.0021) and 0.20 bits. Exempting raised tests
-//!   from it fixes mc5 but breaks 6 other streams, and the specification's tie-break and
-//!   confidence table change nothing. Modeler's `d <= 47.865` (also with global pruning off; ours
-//!   `d <= 47.605`) was grown on other records, and Modeler keeps it where the test collapses
-//!   ours (0.20 bits, 4 positive tests).
+//!   A test raised by local pruning keeps the verdict it had at the node where it was grown
+//!   (`c50_global/wn100_mc5`, 2026-11-07): `d <= 47.865` is grown at 11 records as the only
+//!   positive test and raised to a 23-record node with 4 positive tests (a, c1 0.0111;
+//!   d 0.0087; c4 0.0021), where it carries 0.20 bits; Modeler keeps it. Tests regrown below a
+//!   raised test and raised again while those are pruned are judged where they stand: the
+//!   23-record `d <= 47.605` of `wn100_sev65`/`sev70`/`sev80`, `wn49_c3F` and
+//!   `c50_presets/c50_wn100_expert` (3.79 bits where grown, -0.31 where raised) collapses.
+//!   Exempting all raised tests instead breaks those 5 and `auto_sev80`, whose `age` split is
+//!   uninformative where grown (0.71 bits, 3 positive tests).
 //! - Pruning confidence (probe `c50_conf_streams`, 17 one-split trees at severities 65-85):
 //!   the normal deviate of the error bound is interpolated between table points, see
 //!   `confidence_deviate`. At severity 75 the exact deviate kept `c1 = T [8,4]`'s raised
@@ -1481,6 +1484,18 @@ fn prune(
             .iter()
             .position(|c| Some(c) == candidate.score.as_ref())
             .unwrap_or(parent);
+        // The information test judges a test raised here as it was when grown, at its
+        // original node (`c50_global/wn100_mc5`), once, before its branches are regrown.
+        if candidate.id.is_none()
+            && let Some(grown) = largest.and_then(|index| groups.get(index))
+        {
+            let mark = if informative(data, grown, &candidate, settings) {
+                RAISED_INFORMATIVE
+            } else {
+                RAISED_UNINFORMATIVE
+            };
+            candidate.id = Some(mark.into());
+        }
         let promoted = branch_rows(data, rows, &candidate);
         for (child, group) in candidate.children.iter_mut().zip(promoted) {
             let predicate = child.predicate.clone();
@@ -1609,9 +1624,20 @@ fn subtree_errors(data: &Data, node: &Node, rows: &[usize]) -> (f64, f64, usize)
     (leaf, errors, leaves)
 }
 
+/// Marks, in the scratch `id` that [`number`] later overwrites, a test raised by local
+/// pruning with its information verdict at the node where it was grown.
+const RAISED_INFORMATIVE: &str = "raised-informative";
+const RAISED_UNINFORMATIVE: &str = "raised-uninformative";
+
 /// The information test that starts global pruning (module docs): bottom-up, a split whose
 /// children are all leaves goes when records x corrected gain of its field's best test is
 /// below log2 of the tests with positive corrected gain at that node.
+///
+/// A test raised by local pruning keeps the verdict it had where it was grown
+/// (`c50_global/wn100_mc5`: `d` is raised from 11 records, where it is the only positive
+/// test, to 23, where it carries 0.20 bits against four positive tests; Modeler keeps it).
+/// Tests regrown below a raised test and raised again while those are pruned are judged
+/// where they stand (`c50_global/wn100_sev65`, `wn49_c3F`, `c50_presets/c50_wn100_expert`).
 fn collapse_uninformative(data: &Data, node: &mut Node, rows: &[usize], settings: &C50Settings) {
     if node.children.is_empty() {
         return;
@@ -1627,9 +1653,22 @@ fn collapse_uninformative(data: &Data, node: &mut Node, rows: &[usize], settings
     if node.children.iter().any(|c| !c.children.is_empty()) {
         return;
     }
+    let keep = match node.id.as_deref() {
+        Some(RAISED_INFORMATIVE) => true,
+        Some(RAISED_UNINFORMATIVE) => false,
+        _ => informative(data, rows, node, settings),
+    };
+    if !keep {
+        node.children.clear();
+    }
+}
+
+/// Whether `node`'s test passes the information test on `rows`; a node without a field
+/// test passes.
+fn informative(data: &Data, rows: &[usize], node: &Node, settings: &C50Settings) -> bool {
     let field = match node.children.first().map(|c| &c.predicate) {
         Some(Predicate::Simple { field, .. } | Predicate::SimpleSet { field, .. }) => field,
-        _ => return,
+        _ => return true,
     };
     let mut positive = 0usize;
     let mut gain = 0.0;
@@ -1653,9 +1692,7 @@ fn collapse_uninformative(data: &Data, node: &mut Node, rows: &[usize], settings
             gain = split.gain;
         }
     }
-    if gain * data.weight(rows) < (positive.max(1) as f64).log2() {
-        node.children.clear();
-    }
+    gain * data.weight(rows) >= (positive.max(1) as f64).log2()
 }
 
 /// Global pruning (C5.0 functional specification, section 1).
