@@ -248,6 +248,13 @@
 //!   tests only `a`, even at severity 0. That led to one departure from the specification:
 //!   when the harmful group is dropped, the fields kept are those both trial trees test after
 //!   local pruning, not the first tree's grown fields.
+//!   Variants measured on `c50_presets`, `c50_winnow2` and `models_ml` (104 streams), each
+//!   against this rule:
+//!   - trial growth with the average-gain threshold: no change;
+//!   - children-as-leaves growth collapse in trial trees: w03 fixed, 12 regressions;
+//!   - first tree's pruned fields as evidence: w03 fixed, 6 regressions;
+//!   - the second tree's grown fields: no change;
+//!   - the second tree's pruned fields alone: w03 fixed, `c50_wn_winnow*` 2 regressions.
 //!   Growth now also collapses a split whose grown subtrees err at least 99.9% as much as
 //!   the node as a leaf; the winnowing usage evidence needs it, and no other tree changes.
 //!   The notes below record the earlier black-box search.
