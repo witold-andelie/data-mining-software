@@ -25,6 +25,11 @@
 //! - Normal + identity + intercept: centre y, fit, add the mean back to the
 //!   intercept after mapping β to the original scale (section 2.2.4).
 //! - Covariate columns are centred and scaled as section 2.2.4; dummies are not.
+//! - Binomial identity/log links: a record whose mean leaves (0, 1) drops out of the score
+//!   and Hessian. The iteration stops at the first iterate whose kernel log-likelihood over all
+//!   records (Modeler's reported "Log Likelihood") is positive, except at the hybrid switch
+//!   (`positive_kernel`). GAP: `gle5/g5_ide_k2` (K = 2) ends with Modeler error AEQGL0044E
+//!   "no valid cases" where this rule stops with 3 in-range records.
 
 use crate::common::{data_field, mining_field};
 use crate::linear::bounded_categories;
@@ -630,6 +635,7 @@ fn estimate(
     };
     let mut converged = false;
     let mut iterations = 0usize;
+    let mut fisher_step = k_fisher >= 1;
     while iterations < settings.max_iterations {
         iterations = iterations.saturating_add(1);
         let Some(delta) = sweep_solve(&xtwx, &score, p, settings.singularity) else {
@@ -637,7 +643,8 @@ fn estimate(
         };
         match step_halve(work, &beta, &delta, loglik, settings.max_step_halving) {
             Some((new_beta, _)) => {
-                let Some((ll, s, a)) = derivatives(work, &new_beta, iterations <= k_fisher) else {
+                let fisher_next = iterations <= k_fisher;
+                let Some((ll, s, a)) = derivatives(work, &new_beta, fisher_next) else {
                     break;
                 };
                 let param_ok = parameter_converged(&beta, &new_beta, settings);
@@ -651,6 +658,16 @@ fn estimate(
                 if separated {
                     break;
                 }
+                // A positive kernel log-likelihood ends the iteration at this iterate
+                // (`gle2`/`gle5` G data: every hybrid, Fisher and Newton run stops at the first
+                // such iterate), except at the hybrid switch: an iterate reached by a Fisher step
+                // whose next step is Newton continues with Newton steps until it recurs (Guide
+                // 3.1.3: a hybrid that converges with Fisher scoring continues with Newton;
+                // `gle5/g5_ide_k3`, `g5_log_k2`).
+                if positive_kernel(work, &beta) && (!fisher_step || fisher_next) {
+                    break;
+                }
+                fisher_step = fisher_next;
                 if param_ok && like_ok && hess_ok {
                     converged = true;
                     break;
@@ -854,7 +871,7 @@ fn derivatives(work: &Work, beta: &[f64], fisher: bool) -> Option<(f64, Vec<f64>
         let eta = dot(x, beta)?;
         let raw = mu_of(eta, work.link)?;
         if excluded(raw, work) {
-            undefined |= undefined_likelihood(raw, work);
+            undefined |= undefined_likelihood(raw, y, work);
             continue;
         }
         let mu = project_mu(raw, work)?;
@@ -912,7 +929,7 @@ fn log_likelihood(work: &Work, beta: &[f64]) -> Option<f64> {
         let eta = dot(x, beta)?;
         let raw = mu_of(eta, work.link)?;
         if excluded(raw, work) {
-            if undefined_likelihood(raw, work) {
+            if undefined_likelihood(raw, *y, work) {
                 return Some(f64::NAN);
             }
             continue;
@@ -948,12 +965,39 @@ fn excluded(mu: f64, work: &Work) -> bool {
         && !(mu > 0.0 && mu < 1.0)
 }
 
-/// An excluded binomial mean at or below 0 makes the log-likelihood undefined (`ln mu`), so no
-/// step-halving comparison can be made and the full step is taken. A mean at or above 1 is only
-/// excluded. This asymmetry separates Modeler's converged `gle3/g3_id_b` (means above 1) from
-/// its 3-cycle `gle3/g3_id_d` (means below 0); `gle-lab/NOTES.md`, rounds 3-5.
-fn undefined_likelihood(mu: f64, work: &Work) -> bool {
-    excluded(mu, work) && (mu <= 0.0 || mu.is_nan())
+/// An excluded binomial mean at or below 0, or a failure (`y = 0`) with a mean at or above 1
+/// (whose own term `ln(1 - mu)` is undefined), makes the log-likelihood undefined, so no
+/// step-halving comparison can be made and the full step is taken. A success with a mean at or
+/// above 1 is only excluded. This separates Modeler's converged `gle3/g3_id_b` (successes with
+/// means above 1) from its 3-cycle `gle3/g3_id_d` (means below 0); a failure above 1 keeps the full Newton
+/// step of `gle3/g3_log_d_it1` (2026-11-07). `gle-lab/NOTES.md`, rounds 3-7.
+fn undefined_likelihood(mu: f64, y: f64, work: &Work) -> bool {
+    excluded(mu, work) && (mu <= 0.0 || mu.is_nan() || (y < 1.0 && mu >= 1.0))
+}
+
+/// Whether the binomial kernel log-likelihood that Modeler reports is positive at `beta`: the
+/// sum over all records, out-of-range means included, of the record's own term (`ln mu` for a
+/// success, `ln(1 - mu)` for a failure), skipping undefined terms. A proper binomial likelihood
+/// cannot be positive; out-of-range means make it so. The reported "Log Likelihood" of every
+/// recorded `gle2`-`gle5` binomial identity/log nugget equals this sum at the estimate
+/// (2026-11-07, `gle-lab/llcheck.py`).
+fn positive_kernel(work: &Work, beta: &[f64]) -> bool {
+    if work.distribution != Distribution::Binomial || matches!(work.link, Link::Logit) {
+        return false;
+    }
+    let mut sum = 0.0;
+    for (y, x) in work.y.iter().zip(&work.x) {
+        let Some(mu) = dot(x, beta).and_then(|eta| mu_of(eta, work.link)) else {
+            return false;
+        };
+        if *y > 0.0 && mu > 0.0 {
+            sum += y * mu.ln();
+        }
+        if *y < 1.0 && mu < 1.0 {
+            sum += (1.0 - y) * (1.0 - mu).ln();
+        }
+    }
+    sum > 0.0
 }
 
 fn project_mu(mu: f64, work: &Work) -> Option<f64> {
@@ -1882,9 +1926,10 @@ mod tests {
                 "gle_gamma_identity" => &[1.51367977268204, 0.18906477595138121],
                 "gle_gamma_inverse" => &[0.5710022328477902, -0.027836844753388417],
                 "gle_binom_logit" => &[22.429759271389315, -2.565075472490318],
-                // Ours, not Modeler's: these two remain gaps (xtask/known-gaps.tsv).
-                "gle_binom_identity" => &[-0.7414606021657878, 0.1582715062153454],
-                "gle_binom_log" => &[42.30870992073972, -4.453177950033853],
+                // Modeler's estimates: the iteration stops at the first positive kernel
+                // log-likelihood (`positive_kernel`).
+                "gle_binom_identity" => &[4.931565618627143, -0.5163625892162619],
+                "gle_binom_log" => &[34.32529361402371, -3.513389140645201],
                 "gle_binom_factor" => &[
                     126.13034812751488,
                     -12.938444031206005,
