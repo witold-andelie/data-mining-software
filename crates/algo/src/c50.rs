@@ -243,9 +243,11 @@
 //!   exported Type records numerically; loading different rows is not the cause.
 //! - Winnowing from the C5.0 functional specification (two-team clean room, 2026-11-06):
 //!   [`winnow_columns`] reproduces all 20 recorded `c50_presets`/`models_ml` winnowing trees
-//!   exactly and 11 of the 12 `c50_winnow2` on-cases. The exception is `w03`, where Modeler
-//!   returns a single leaf, a known GAP. The node enables winnowing (user decision
-//!   2026-11-06); `w03` was matching only through its saved model.
+//!   and all 12 `c50_winnow2` on-cases exactly. Probe `c50_trial` builds plain trees on the
+//!   24 winnowing training halves, and they match ours. It shows Modeler's w03 half tree
+//!   tests only `a`, even at severity 0. That led to one departure from the specification:
+//!   when the harmful group is dropped, the fields kept are those both trial trees test after
+//!   local pruning, not the first tree's grown fields.
 //!   Growth now also collapses a split whose grown subtrees err at least 99.9% as much as
 //!   the node as a leaf; the winnowing usage evidence needs it, and no other tree changes.
 //!   The notes below record the earlier black-box search.
@@ -1961,15 +1963,20 @@ fn winnow_columns(data: &Data, settings: &C50Settings) -> Result<Vec<bool>, Algo
     };
     let (grown, tree) = trial_tree(data, train, &trial)?;
     let baseline = evaluation_errors(data, &tree, evaluate, None);
-    let mut used = std::collections::HashSet::new();
-    tested_fields(&tree, &mut used);
-    let mut used: Vec<String> = used.into_iter().collect();
+    let mut pruned_used = std::collections::HashSet::new();
+    tested_fields(&tree, &mut pruned_used);
+    let mut used: Vec<String> = pruned_used.iter().cloned().collect();
     used.sort();
     let harmful: Vec<String> = used
         .into_iter()
         .filter(|field| evaluation_errors(data, &tree, evaluate, Some(field)) < baseline)
         .collect();
     let mut dropped: std::collections::HashSet<String> = std::collections::HashSet::new();
+    // The usage evidence for the final unused-field removal: the first tree's grown fields
+    // (specification), unless the harmful group is dropped. Then it is the fields both trial
+    // trees still test after local pruning: `c50_winnow2/w03` (Modeler winnows to a single
+    // leaf) needs this, and every other recorded winnowing case is unchanged.
+    let mut evidence = grown;
     if !harmful.is_empty() {
         let keep: Vec<bool> = data
             .columns
@@ -1980,6 +1987,9 @@ fn winnow_columns(data: &Data, settings: &C50Settings) -> Result<Vec<bool>, Algo
         let (_, second) = trial_tree(&reduced, train, &trial)?;
         if evaluation_errors(&reduced, &second, evaluate, None) <= baseline {
             dropped.extend(harmful);
+            let mut both = pruned_used;
+            tested_fields(&second, &mut both);
+            evidence = both;
         }
     }
     Ok(data
@@ -1987,7 +1997,7 @@ fn winnow_columns(data: &Data, settings: &C50Settings) -> Result<Vec<bool>, Algo
         .iter()
         .map(|c| {
             let name = column_name(c);
-            !dropped.contains(name) && grown.contains(name)
+            !dropped.contains(name) && evidence.contains(name)
         })
         .collect())
 }
