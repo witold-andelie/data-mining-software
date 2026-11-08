@@ -174,6 +174,30 @@ pub fn objective(spec: &FittedSpec, y: &[f64]) -> Result<f64, AlgoError> {
     }
 }
 
+/// Interior gaps of a series filled by linear interpolation between the nearest recorded
+/// neighbours, by position. Leading and trailing gaps stay `None`. Modeler's Time Series node
+/// imputes missing predictor values this way (`ts_expert_tf/tfx_missing`).
+pub fn interpolate_interior(values: &[Option<f64>]) -> Vec<Option<f64>> {
+    let mut out = values.to_vec();
+    let known: Vec<(usize, f64)> = values
+        .iter()
+        .enumerate()
+        .filter_map(|(i, v)| v.map(|v| (i, v)))
+        .collect();
+    for pair in known.windows(2) {
+        let [(i0, v0), (i1, v1)] = pair else {
+            continue;
+        };
+        for i in i0.saturating_add(1)..*i1 {
+            let fraction = (i - i0) as f64 / (i1 - i0) as f64;
+            if let Some(slot) = out.get_mut(i) {
+                *slot = Some(v0 + fraction * (v1 - v0));
+            }
+        }
+    }
+    out
+}
+
 /// Modeler's normalized BIC on the original scale, which Expert AllModels uses to choose
 /// between the smoothing and the ARIMA candidate: `ln(SSE / (n - k)) + k ln(n) / n`.
 /// SSE sums the squared original-scale one-step errors over the `n` fitted observations

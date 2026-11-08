@@ -482,6 +482,13 @@ impl Operator for TimeSeriesBuild {
         let input = inputs
             .first()
             .ok_or_else(|| OperatorError::Inputs("Time Series needs one training input".into()))?;
+        let predictor_fields: Vec<String> = self
+            .expert_inputs
+            .iter()
+            .cloned()
+            .chain(self.effects.iter().map(|e| e.field.clone()))
+            .collect();
+        let input = &interpolate_predictors(input, &predictor_fields)?;
         if !(5..=512).contains(&input.row_count()) {
             return Err(OperatorError::Data(
                 "Time Series estimation requires 5..=512 records".into(),
@@ -1017,6 +1024,7 @@ impl TimeSeriesApply {
         let input = inputs
             .first()
             .ok_or_else(|| OperatorError::Inputs("a Time Series nugget needs one input".into()))?;
+        let input = &interpolate_predictors(input, &self.predictors)?;
         // Detached nuggets retain their saved model when the builder is rerun.
         // Supplying PMML without attachments remains the explicit scoring API.
         let trained = trained.filter(|_| {
@@ -2216,6 +2224,53 @@ fn next_period(value: &Value) -> Result<Value, OperatorError> {
         _ => Err(OperatorError::Settings(
             "GAP: Time Series period field is not numeric".into(),
         )),
+    }
+}
+
+/// Interior missing values of the named predictor columns, replaced by linear interpolation
+/// (`estimation::interpolate_interior`) by record position; the output shows the imputed
+/// value (`ts_expert_tf/tfx_missing`: record 73 of `x` becomes -1.205731912967734, the mean of
+/// records 72 and 74, and the Expert keeps `x`). Leading and trailing gaps stay missing.
+fn interpolate_predictors(input: &Table, names: &[String]) -> Result<Table, OperatorError> {
+    let mut rows: Option<Vec<Vec<Value>>> = None;
+    for name in names {
+        let Some(at) = input.model().position(name) else {
+            continue;
+        };
+        let Some(field) = input.model().fields().get(at) else {
+            continue;
+        };
+        let current = rows.as_ref().map_or(input.rows(), Vec::as_slice);
+        let values: Vec<Option<f64>> = current
+            .iter()
+            .map(|r| {
+                r.get(at)
+                    .filter(|v| !field.is_missing(v))
+                    .and_then(Value::as_f64)
+                    .filter(|v| v.is_finite())
+            })
+            .collect();
+        if values.iter().all(Option::is_some) {
+            continue;
+        }
+        let mut filled = rows.take().unwrap_or_else(|| input.rows().to_vec());
+        for (row, value) in filled
+            .iter_mut()
+            .zip(estimation::interpolate_interior(&values))
+        {
+            if let (Some(slot), Some(v)) = (row.get_mut(at), value)
+                && !slot.as_f64().is_some_and(|x| x == v)
+            {
+                *slot = Value::real(v);
+            }
+        }
+        rows = Some(filled);
+    }
+    match rows {
+        None => Ok(input.clone()),
+        Some(rows) => {
+            Table::new(input.model().clone(), rows).map_err(|e| OperatorError::Data(e.to_string()))
+        }
     }
 }
 

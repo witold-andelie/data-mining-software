@@ -14,6 +14,11 @@
 //! first fitted value (t = 4) implies `v_3 = 10.471991`, which is `1.6336 * z_2` to six
 //! digits; zero or the raw first value do not fit. The scored prefix uses the
 //! larger numerator/denominator degree (`ts_tf_diff`: 108 - 3 - 5 = 100).
+//! Numerator lags that reach before the first (differenced, delayed) predictor value take
+//! that first value as well, the same pre-sample rule, so the response starts at the delay
+//! rather than after the numerator degree. Evidence: `ts_expert_tf/tfx_rational` (delay 2,
+//! numerator [0,1,2], denominator [1,2]) matches Modeler from row 5 on. The changed estimates
+//! also make the Expert's `denominator1`/`denominator2` selections Modeler's (agy, 2026-11-09).
 use crate::{
     AlgoError, arima,
     time_series::{self, Fit, FittedSpec},
@@ -77,7 +82,7 @@ impl TransferSpec {
                 return Err(error("invalid transfer predictor/order/length"));
             }
             let lost = e.difference + e.seasonal_difference * e.period;
-            let prefix = lost + e.delay + e.numerator.len() - 1;
+            let prefix = lost + e.delay;
             start = start.max(lost + e.delay + (e.numerator.len() - 1).max(e.denominator.len()));
             let transformed =
                 arima::transform(e.transform, x).map_err(|e| error(&e.to_string()))?;
@@ -90,22 +95,25 @@ impl TransferSpec {
                     .map(|(a, b)| a - b)
                     .collect();
             }
+            let first = z
+                .first()
+                .copied()
+                .ok_or_else(|| error("transfer lag absent"))?;
             let mut response = vec![0.0; n];
             for (i, out) in response.iter_mut().enumerate().skip(prefix) {
                 for (j, b) in e.numerator.iter().enumerate() {
-                    let at = i - lost - e.delay - j;
-                    *out += b * z
-                        .get(at)
-                        .copied()
-                        .ok_or_else(|| error("transfer lag absent"))?;
+                    let u = match i.checked_sub(prefix + j) {
+                        Some(at) => z
+                            .get(at)
+                            .copied()
+                            .ok_or_else(|| error("transfer lag absent"))?,
+                        None => first,
+                    };
+                    *out += b * u;
                 }
             }
             if !e.denominator.is_empty() {
                 let level = 1.0 - e.denominator.iter().sum::<f64>();
-                let first = z
-                    .first()
-                    .copied()
-                    .ok_or_else(|| error("transfer lag absent"))?;
                 if level.abs() < 1e-12 {
                     return Err(error("transfer denominator has a unit root"));
                 }
