@@ -3,7 +3,7 @@
 # label	stem	reason
 ibm-demos	bayes_bankloan	Bayes Net is license-blocked in Modeler 19 and not implemented, so the downstream filter cannot be compared
 ibm-demos	bayes_churn_retrain	Bayes Net is license-blocked in Modeler 19 and not implemented, so the downstream filter cannot be compared
-ibm-demos	broadband_create_models	applyts terminal not produced: GAP: seasonal/transformed transfer
+ibm-demos	broadband_create_models	Time Series: all four transfer targets match (seasonal factors, predictor log/sqrt and seasonal differencing); Market_3 and Total differ on rows 1-63 because Modeler scores Market_3 with its auxiliary Holt model (2.es.xml) instead of the saved primary log ARIMA(0,2,1), and Total's oracle model is not saved
 ibm-demos	catalog_streaming_timeseries	Streaming Time Series is not implemented (its terminal is not produced), so the downstream Time Series nugget scores $null$
 ibm-demos	cplex_goodslearn	CPLEX Optimization is out of scope and not implemented, so its terminal is not produced
 ibm-demos	pm_binaryclassifier	Auto Classifier nugget: legacy Auto model scoring is unverified; the oracle retrains a replacement-linked model, which is out of scope
