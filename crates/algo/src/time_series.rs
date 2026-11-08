@@ -793,7 +793,7 @@ fn fit_arima(
 }
 
 /// Small, bounded Levenberg–Marquardt solver. Reject nonfinite/inadmissible steps,
-/// use central numerical derivatives, and explicitly fail instead of returning a
+/// use central numerical derivatives (one-sided at an admissibility boundary), and explicitly fail instead of returning a
 /// silently unconverged model when the work budget is exhausted.
 pub(crate) fn lm(
     mut x: Vec<f64>,
@@ -837,25 +837,23 @@ pub(crate) fn lm(
             if let Some(slot) = minus.get_mut(j) {
                 *slot = b;
             }
-            let column = match (residuals(&plus), residuals(&minus)) {
-                (Ok(rp), Ok(rm)) => rp
-                    .iter()
-                    .zip(rm)
-                    .map(|(a0, b0)| (a0 - b0) / (a - b))
-                    .collect::<Vec<_>>(),
-                (Ok(rp), Err(_)) if (a - v).abs() > 0.0 => rp
-                    .iter()
-                    .zip(&r)
-                    .map(|(a0, r0)| (a0 - r0) / (a - v))
-                    .collect::<Vec<_>>(),
-                (Err(_), Ok(rm)) if (v - b).abs() > 0.0 => r
-                    .iter()
-                    .zip(rm)
-                    .map(|(r0, b0)| (r0 - b0) / (v - b))
-                    .collect::<Vec<_>>(),
-                (Err(e), _) | (_, Err(e)) => return Err(e),
+            // A perturbation that leaves the admissible region (roots, joint transfer
+            // polynomial constraints) falls back to a one-sided interior difference.
+            let (rp, rm, width) = match (residuals(&plus), residuals(&minus)) {
+                (Ok(rp), Ok(rm)) => (rp, rm, a - b),
+                (Ok(rp), Err(_)) => (rp, r.clone(), a - v),
+                (Err(_), Ok(rm)) => (r.clone(), rm, v - b),
+                (Err(e), Err(_)) => return Err(e),
             };
-            jac.push(column);
+            if width <= 0.0 {
+                return Err(data("optimizer derivative has no interior step"));
+            }
+            jac.push(
+                rp.iter()
+                    .zip(rm)
+                    .map(|(a0, b0)| (a0 - b0) / width)
+                    .collect::<Vec<_>>(),
+            );
         }
         let size = x.len();
         let mut matrix = vec![vec![0.0; size]; size];

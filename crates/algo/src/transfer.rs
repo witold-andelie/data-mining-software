@@ -44,16 +44,17 @@ fn error(message: &str) -> AlgoError {
 }
 
 impl TransferSpec {
-    fn signal(&self, x: &[Vec<f64>], n: usize) -> Result<(usize, Vec<f64>), AlgoError> {
+    pub(crate) fn signal(&self, x: &[Vec<f64>], n: usize) -> Result<(usize, Vec<f64>), AlgoError> {
         if n > 1024
             || self.effects.is_empty()
             || self.effects.len() > 16
             || x.len() != self.effects.len()
-            || self.noise.d != 0
-            || self.noise.seasonal_d != 0
+            || self.noise.d > 2
+            || self.noise.seasonal_d > 2
+            || !(1..=64).contains(&self.noise.period)
         {
             return Err(error(
-                "GAP: transfer requires <=16 predictors and undifferenced ARMA noise",
+                "transfer requires 1..=16 predictors with matching input columns",
             ));
         }
         let mut signal = vec![0.0; n];
@@ -150,6 +151,32 @@ impl TransferSpec {
     pub fn objective(&self, y: &[f64], x: &[Vec<f64>]) -> Result<f64, AlgoError> {
         let mut noise = self.noise.clone();
         noise.transform = arima::Transform::None;
+        if noise.d != 0 || noise.seasonal_d != 0 {
+            let (start, signal) = self.signal(x, y.len())?;
+            let transformed =
+                arima::transform(self.noise.transform, y).map_err(|e| error(&e.to_string()))?;
+            let degree = noise
+                .d
+                .saturating_add(noise.seasonal_d.saturating_mul(noise.period));
+            let mut z = arima::difference(&transformed, noise.d);
+            for _ in 0..noise.seasonal_d {
+                z = z
+                    .iter()
+                    .skip(noise.period)
+                    .zip(&z)
+                    .map(|(a, b)| a - b)
+                    .collect();
+            }
+            let adjusted: Vec<_> = z
+                .iter()
+                .zip(signal.iter().skip(degree))
+                .skip(start.saturating_sub(degree))
+                .map(|(y, x)| y - x)
+                .collect();
+            noise.d = 0;
+            noise.seasonal_d = 0;
+            return time_series::objective(&FittedSpec::Arima(noise), &adjusted);
+        }
         time_series::objective(&FittedSpec::Arima(noise), &self.adjusted(y, x)?)
     }
 
@@ -164,10 +191,23 @@ impl TransferSpec {
             return Err(error("transfer scoring history/horizon exceeds 512"));
         }
         let (start, signal) = self.signal(x, y.len().saturating_add(horizon))?;
+        let degree = self
+            .noise
+            .d
+            .saturating_add(self.noise.seasonal_d.saturating_mul(self.noise.period));
+        if self.noise.d > 2 || self.noise.seasonal_d > 2 || self.noise.period > 64 {
+            return Err(error("invalid transfer noise differencing"));
+        }
+        let start = start.saturating_sub(degree);
         if start >= y.len() {
             return Err(error("transfer prefix exceeds history"));
         }
-        let noise = arima::score_with_signal(
+        let score = if degree == 0 {
+            arima::score_with_signal
+        } else {
+            arima::score_with_differenced_signal
+        };
+        let noise = score(
             &self.noise,
             &y[start..],
             horizon,
@@ -200,6 +240,8 @@ impl TransferSpec {
 /// Fit only the supplied orders; template coefficients and noise state are discarded.
 pub fn fit(y: &[f64], x: &[Vec<f64>], template: &TransferSpec) -> Result<Fit, AlgoError> {
     if template.noise.transform != arima::Transform::None
+        || template.noise.d != 0
+        || template.noise.seasonal_d != 0
         || template.noise.ar.len() != 1
         || !template.noise.ma.is_empty()
         || !template.noise.seasonal_ar.is_empty()

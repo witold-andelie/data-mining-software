@@ -101,6 +101,82 @@ fn admissible(poly: &[f64]) -> bool {
     roots_outside(poly, 1.0005)
 }
 
+/// Shared stationary noise filter for the Transfer Function Expert. The input
+/// is already transformed/differenced and has the transfer signal removed.
+pub(crate) fn tf_noise_residuals(
+    noise: &ArimaSpec,
+    w: &[f64],
+    ml: bool,
+) -> Option<(Vec<f64>, f64)> {
+    let expanded = noise.expanded().ok()?;
+    let ar: Vec<_> = std::iter::once(1.0)
+        .chain(expanded.ar.iter().map(|v| -v))
+        .collect();
+    let ma: Vec<_> = std::iter::once(1.0)
+        .chain(expanded.ma.iter().copied())
+        .collect();
+    if ml && (!admissible(&ar) || !admissible(&ma)) {
+        return None;
+    }
+    let centered: Vec<_> = w.iter().map(|v| v - noise.constant).collect();
+    if ml {
+        let kal = kalman(&ar, &ma, &centered, false)?;
+        let mut ld = 0.0;
+        let mut residuals = Vec::with_capacity(w.len());
+        for (row, variance) in kal.v.iter().zip(&kal.f) {
+            if *variance <= 0.0 || !variance.is_finite() {
+                return None;
+            }
+            residuals.push(row.first().copied()? / variance.sqrt());
+            ld += variance.ln();
+        }
+        Some((residuals, ld))
+    } else {
+        let mut residuals = vec![0.0; w.len()];
+        for t in 0..w.len() {
+            let mut value = 0.0;
+            for (lag, coef) in ar.iter().enumerate() {
+                value += coef
+                    * t.checked_sub(lag)
+                        .and_then(|i| centered.get(i))
+                        .copied()
+                        .unwrap_or(0.0);
+            }
+            for (lag, coef) in ma.iter().enumerate().skip(1) {
+                value -= coef
+                    * t.checked_sub(lag)
+                        .and_then(|i| residuals.get(i))
+                        .copied()
+                        .unwrap_or(0.0);
+            }
+            if let Some(slot) = residuals.get_mut(t) {
+                *slot = value;
+            }
+        }
+        Some((residuals, 0.0))
+    }
+}
+
+pub(crate) fn tf_admissible_denominator(coefficients: &[f64]) -> bool {
+    let poly: Vec<_> = std::iter::once(1.0)
+        .chain(coefficients.iter().map(|v| -v))
+        .collect();
+    admissible(&poly)
+}
+
+pub(crate) fn tf_raw_residuals(noise: &ArimaSpec, w: &[f64]) -> Option<Vec<f64>> {
+    let expanded = noise.expanded().ok()?;
+    let ar: Vec<_> = std::iter::once(1.0)
+        .chain(expanded.ar.iter().map(|v| -v))
+        .collect();
+    let ma: Vec<_> = std::iter::once(1.0)
+        .chain(expanded.ma.iter().copied())
+        .collect();
+    let centered: Vec<_> = w.iter().map(|v| v - noise.constant).collect();
+    let kal = kalman(&ar, &ma, &centered, false)?;
+    kal.v.iter().map(|row| row.first().copied()).collect()
+}
+
 /// Triangular "vertex" of the EACF significance table: the MA polynomial built from the
 /// selected MA lags is at (or beyond) the invertibility boundary (`min |root| < 1.001`).
 /// `ml_t` applies it to the nonseasonal MA only for a single MA term with no seasonal MA
@@ -1590,13 +1666,17 @@ fn diagnose(y: &[f64], model: &Model, d: usize, dd: usize, s: usize) -> Vec<(Add
     let Some((r, npar)) = fitted_residuals(y, model, d, dd, s) else {
         return Vec::new();
     };
+    diagnose_residuals(&r, npar, model, s)
+}
+
+fn diagnose_residuals(r: &[f64], npar: usize, model: &Model, s: usize) -> Vec<(AddKind, usize)> {
     let n = r.len();
     let mut big_k = if s > 1 { 2 * s } else { 18 };
     if big_k >= n {
         big_k = n / 4;
     }
     let m_acf = big_k.max(2 * s);
-    let acf = autocorrelations(&r, m_acf);
+    let acf = autocorrelations(r, m_acf);
     let qs: f64 = (1..=big_k)
         .map(|k| {
             let a = acf.get(k - 1).copied().unwrap_or(0.0);
@@ -1619,7 +1699,7 @@ fn diagnose(y: &[f64], model: &Model, d: usize, dd: usize, s: usize) -> Vec<(Add
     };
     let t_acf = bartlett_t(&acf, n);
     let pacf_m = if s > 1 { mres.max(2 * s) } else { mres };
-    let t_pac = pacf_t(&r, pacf_m);
+    let t_pac = pacf_t(r, pacf_m);
     let mut lags_check: Vec<usize> = (1..=mres).collect();
     if s > 1 {
         lags_check.push(s);
@@ -1693,6 +1773,41 @@ fn diagnose(y: &[f64], model: &Model, d: usize, dd: usize, s: usize) -> Vec<(Add
         }
     }
     add
+}
+
+/// Apply the identical step-6 test to transfer residuals, without selecting a
+/// new univariate model for the adjusted target.
+pub(crate) fn tf_diagnostic(noise: &ArimaSpec, residuals: &[f64], s: usize) -> ArimaSpec {
+    let mut model = Model {
+        ar: noise
+            .ar
+            .iter()
+            .enumerate()
+            .filter(|(_, v)| **v != 0.0)
+            .map(|(i, _)| i + 1)
+            .collect(),
+        ma: noise
+            .ma
+            .iter()
+            .enumerate()
+            .filter(|(_, v)| **v != 0.0)
+            .map(|(i, _)| i + 1)
+            .collect(),
+        ps: noise.seasonal_ar.len(),
+        qs: noise.seasonal_ma.len(),
+        constant: noise.constant != 0.0,
+    };
+    let add = diagnose_residuals(residuals, model.kc(), &model, s);
+    for (kind, lag) in add {
+        model.add(kind, lag);
+    }
+    build_spec(
+        &model,
+        noise.transform,
+        noise.d,
+        noise.seasonal_d,
+        noise.period,
+    )
 }
 
 // ---------------------------------------------------------------- orchestration
