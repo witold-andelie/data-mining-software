@@ -108,10 +108,13 @@ fn probe_selections_match_modeler() {
         "delay12",
         "delay3",
         "delay6",
+        "denominator1",
+        "denominator2",
         "event_pulse",
         "irrelevant_candidate",
         "log",
         "log_nonpositive_input",
+        "missing",
         "numerator1",
         "numerator_gap",
         "seasonal",
@@ -135,9 +138,15 @@ fn probe_selections_match_modeler() {
         ran += 1;
         let text = std::fs::read_to_string(root.join(format!("{name}_train.csv"))).unwrap();
         let rows: Vec<Vec<String>> = text.lines().skip(1).map(support::parse_csv_line).collect();
+        // The node imputes interior predictor gaps before the Expert sees them.
         let column = |i: usize| -> Vec<f64> {
-            rows.iter()
-                .map(|r| r[i].trim().parse::<f64>().unwrap_or(f64::NAN))
+            let raw: Vec<Option<f64>> = rows
+                .iter()
+                .map(|r| r[i].trim().parse::<f64>().ok())
+                .collect();
+            dms_algo::time_series::interpolate_interior(&raw)
+                .into_iter()
+                .map(|v| v.unwrap_or(f64::NAN))
                 .collect()
         };
         let mut predictors = vec![Predictor {
