@@ -42,3 +42,5 @@ gle4	g4_id_c_mi4	as g4_id_c_mi2 (chaotic path)
 gle4	g4_id_c_mi5	as g4_id_c_mi2 (chaotic path)
 gle4	g4_id_c_mi10	as g4_id_c_mi2 (chaotic path)
 gle4	g4_id_c_newton	as g4_id_c_mi2, Newton-only (Modeler's estimate is iterate 39 of our Newton-only path exactly, but the end of the run is not reproducible)
+ts_expert_tf	tfx_missing	Time Series transfer scoring rejects a missing predictor value ("nonfinite/missing predictor x"); Modeler scores the series with one missing x (its handling is not reproduced)
+ts_expert_tf	tfx_rational	Time Series rational transfer (delay 2, numerator [0,1,2], denominator [1,2]) scored from the saved model: history differs from row 5 ($TS-y 100.3788 vs ours 108.3035), so the pre-sample response for a second-order denominator is not reproduced
