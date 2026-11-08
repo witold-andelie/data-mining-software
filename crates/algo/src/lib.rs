@@ -21,6 +21,7 @@ pub mod cluster_evaluation;
 mod common;
 pub mod decision_list;
 pub mod expert;
+pub mod expert_tf;
 pub mod factor;
 pub mod feature_selection;
 pub mod gle;

@@ -122,6 +122,28 @@ pub(crate) fn score_with_signal(
     conf_percent: f64,
     signal: &[f64],
 ) -> Result<SeriesScore, ArimaError> {
+    score_signal(spec, y, horizon, conf_percent, signal, false)
+}
+
+/// Transfer Expert models put the signal on the differenced target scale.
+pub(crate) fn score_with_differenced_signal(
+    spec: &ArimaSpec,
+    y: &[f64],
+    horizon: usize,
+    conf_percent: f64,
+    signal: &[f64],
+) -> Result<SeriesScore, ArimaError> {
+    score_signal(spec, y, horizon, conf_percent, signal, true)
+}
+
+fn score_signal(
+    spec: &ArimaSpec,
+    y: &[f64],
+    horizon: usize,
+    conf_percent: f64,
+    signal: &[f64],
+    differenced_signal: bool,
+) -> Result<SeriesScore, ArimaError> {
     spec.check()?;
     let expanded = spec.expanded()?;
     let spec = &expanded;
@@ -160,7 +182,7 @@ pub(crate) fn score_with_signal(
     let z: Vec<_> = transform(spec.transform, y)?
         .into_iter()
         .enumerate()
-        .map(|(i, v)| v - offset(i))
+        .map(|(i, v)| v - if differenced_signal { 0.0 } else { offset(i) })
         .collect();
     let diff = spec.difference_polynomial()?;
     let degree = diff.len().saturating_sub(1);
@@ -170,7 +192,18 @@ pub(crate) fn score_with_signal(
         ));
     }
     let differenced = filter_difference(&z, &diff);
-    let w: Vec<f64> = differenced.iter().map(|v| v - spec.constant).collect();
+    let w: Vec<f64> = differenced
+        .iter()
+        .enumerate()
+        .map(|(i, v)| {
+            v - spec.constant
+                - if differenced_signal {
+                    offset(i + degree)
+                } else {
+                    0.0
+                }
+        })
+        .collect();
     let gamma_lags = w.len().saturating_add(horizon).saturating_add(2).max(2);
     let gamma = arma_gamma(&spec.ar, &spec.ma, gamma_lags)?;
     let (hats, v, w_forecasts, var_factors) =
@@ -182,7 +215,12 @@ pub(crate) fn score_with_signal(
         let what = *hats.get(w_index).ok_or_else(|| {
             ArimaError::Data("Time Series innovations is short of the history".into())
         })?;
-        let zhat = invert_difference(&diff, &z, t, spec.constant + what)?;
+        let zhat = invert_difference(
+            &diff,
+            &z,
+            t,
+            spec.constant + what + if differenced_signal { offset(t) } else { 0.0 },
+        )?;
         let vn = *v.get(w_index).ok_or_else(|| {
             ArimaError::Data("Time Series innovations variance is short of the history".into())
         })?;
@@ -192,13 +230,29 @@ pub(crate) fn score_with_signal(
             ));
         }
         let se = (spec.sigma2 * vn).sqrt();
-        *slot = Some(back_transform(spec.transform, zhat + offset(t), se, tcrit)?);
+        *slot = Some(back_transform(
+            spec.transform,
+            zhat + if differenced_signal { 0.0 } else { offset(t) },
+            se,
+            tcrit,
+        )?);
     }
 
     let mut forecasts = Vec::with_capacity(horizon);
     let mut extended = z.clone();
     for (what, var_factor) in w_forecasts.iter().zip(&var_factors) {
-        let zhat = invert_difference(&diff, &extended, extended.len(), spec.constant + what)?;
+        let zhat = invert_difference(
+            &diff,
+            &extended,
+            extended.len(),
+            spec.constant
+                + what
+                + if differenced_signal {
+                    offset(extended.len())
+                } else {
+                    0.0
+                },
+        )?;
         extended.push(zhat);
         if *var_factor < 0.0 || !var_factor.is_finite() {
             return Err(ArimaError::Data(
@@ -208,7 +262,11 @@ pub(crate) fn score_with_signal(
         let se = (spec.sigma2 * var_factor).sqrt();
         forecasts.push(back_transform(
             spec.transform,
-            zhat + offset(extended.len().saturating_sub(1)),
+            zhat + if differenced_signal {
+                0.0
+            } else {
+                offset(extended.len().saturating_sub(1))
+            },
             se,
             tcrit,
         )?);

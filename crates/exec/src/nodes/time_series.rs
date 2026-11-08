@@ -161,6 +161,22 @@ fn add_residuals(table: Table, targets: &[String]) -> Result<Table, OperatorErro
 pub fn build(node: &StreamNode) -> Result<Box<dyn Operator>, OperatorError> {
     let s = node.settings.as_ref();
     let gap = |what: &str| OperatorError::Settings(format!("GAP: Time Series {what}"));
+    let expert_requested = settings::text(s, "_method").as_deref() == Some("ExpertModeler")
+        && matches!(
+            settings::text(s, "_expertModelTypeList").as_deref(),
+            Some("Arima" | "AllModels")
+        );
+    let mut expert_events = field_list(s, "_eventFields");
+    for name in field_list(s, "eventFields") {
+        if !expert_events.contains(&name) {
+            expert_events.push(name);
+        }
+    }
+    if !expert_requested
+        && (!expert_events.is_empty() || settings::flag(s, "useEvents")?.unwrap_or(false))
+    {
+        return Err(gap("events require Expert ARIMA/AllModels"));
+    }
     if node.properties_attachment.is_some() {
         return Err(gap(
             "external training parameters have no oracle; these four streams use inline extension properties",
@@ -169,7 +185,6 @@ pub fn build(node: &StreamNode) -> Result<Box<dyn Operator>, OperatorError> {
     for key in [
         "autoModelFieldSelection",
         "useFrequency",
-        "useEvents",
         "_useFrequency",
         "_useWeight",
         "_specifyEstimationPeriod",
@@ -184,13 +199,7 @@ pub fn build(node: &StreamNode) -> Result<Box<dyn Operator>, OperatorError> {
             return Err(gap(key));
         }
     }
-    for key in [
-        "_eventFields",
-        "eventFields",
-        "_splitFields",
-        "modelSplitFieldSelection",
-        "_dimFieldList",
-    ] {
+    for key in ["_splitFields", "modelSplitFieldSelection", "_dimFieldList"] {
         if !field_list(s, key).is_empty() {
             return Err(gap(key));
         }
@@ -339,7 +348,9 @@ pub fn build(node: &StreamNode) -> Result<Box<dyn Operator>, OperatorError> {
     let expert_family = settings::text(s, "_expertModelTypeList");
     let expert_all_models = expert_family.as_deref() == Some("AllModels");
     let expert_period = if method.is_none()
-        && selected_member.is_none()
+        && (selected_member.is_none()
+            || !field_list(s, "_candidateInputs").is_empty()
+            || !expert_events.is_empty())
         && settings::text(s, "_method").as_deref() == Some("ExpertModeler")
         && matches!(expert_family.as_deref(), Some("Arima" | "AllModels"))
     {
@@ -353,16 +364,23 @@ pub fn build(node: &StreamNode) -> Result<Box<dyn Operator>, OperatorError> {
             "Expert automatic transformation/order selection; no recorded specification to refit",
         ));
     }
-    let predictors = if matches!(method, Some(Method::ExpertSmooth { .. })) {
+    let mut predictors = if matches!(method, Some(Method::ExpertSmooth { .. })) {
         Vec::new()
     } else {
         field_list(s, "_candidateInputs")
     };
+    if expert_requested {
+        for name in &expert_events {
+            if !predictors.contains(name) {
+                predictors.push(name.clone());
+            }
+        }
+    }
     let mut effects = Vec::new();
     if predictors.len() > 16 {
         return Err(gap("too many transfer predictors"));
     }
-    for field in &predictors {
+    for field in predictors.iter().filter(|_| expert_period.is_none()) {
         let row = settings::children(s, "_arimaTfOrders/rows", "row")
             .into_iter()
             .find(|r| settings::text(Some(r), "key").as_deref() == Some(field))
@@ -411,6 +429,12 @@ pub fn build(node: &StreamNode) -> Result<Box<dyn Operator>, OperatorError> {
         return Err(gap("transfer requires constant untransformed AR(1) noise"));
     }
     Ok(Box::new(TimeSeriesBuild {
+        expert_events,
+        expert_inputs: if expert_period.is_some() {
+            predictors
+        } else {
+            Vec::new()
+        },
         effects,
         method,
         targets,
@@ -423,6 +447,8 @@ pub fn build(node: &StreamNode) -> Result<Box<dyn Operator>, OperatorError> {
 }
 
 struct TimeSeriesBuild {
+    expert_events: Vec<String>,
+    expert_inputs: Vec<String>,
     effects: Vec<Effect>,
     method: Option<Method>,
     targets: Vec<String>,
@@ -511,6 +537,36 @@ impl Operator for TimeSeriesBuild {
                 .collect();
             let y = y?;
             let fit = match (self.method, self.expert_period) {
+                (None, Some(period)) if !self.expert_inputs.is_empty() => {
+                    let mut predictors = Vec::new();
+                    for name in self.expert_inputs.iter().filter(|name| *name != target) {
+                        let at = input.model().position(name).ok_or_else(|| {
+                            OperatorError::Data(format!("Time Series predictor {name:?} absent"))
+                        })?;
+                        let field = input.model().fields().get(at).ok_or_else(|| {
+                            OperatorError::Data("Time Series predictor metadata absent".into())
+                        })?;
+                        let values = input
+                            .rows()
+                            .iter()
+                            .map(|row| {
+                                row.get(at)
+                                    .filter(|v| !field.is_missing(v))
+                                    .and_then(Value::as_f64)
+                                    .unwrap_or(f64::NAN)
+                            })
+                            .collect();
+                        predictors.push(dms_algo::expert_tf::Predictor {
+                            field: name.clone(),
+                            values,
+                            forced: false,
+                            event: self.expert_events.contains(name),
+                        });
+                    }
+                    dms_algo::expert_tf::select(&y, &predictors, period, self.expert_all_models)
+                        .map_err(score_message)?
+                        .fit
+                }
                 (None, Some(period)) => {
                     let selected = arima::expert_arima(&y, period)
                         .map_err(|e| OperatorError::Data(format!("Expert ARIMA selection: {e}")))?;
@@ -583,8 +639,11 @@ impl Operator for TimeSeriesBuild {
             "<PMML version=\"4.3\"><DataDictionary/><MiningModel functionName=\"timeSeries\"><MiningSchema/><Segmentation multipleModelMethod=\"selectAll\">{segments}</Segmentation></MiningModel></PMML>"
         );
         let mut pmml = Pmml::parse(&xml).map_err(|e| OperatorError::Data(e.to_string()))?;
+        let mut dictionary_names = std::collections::HashSet::new();
         pmml.data_dictionary = std::iter::once(&self.period)
             .chain(&self.targets)
+            .chain(&self.expert_inputs)
+            .filter(|name| dictionary_names.insert(*name))
             .filter_map(|name| {
                 input
                     .model()
@@ -831,12 +890,6 @@ pub fn apply(node: &StreamNode) -> Result<Box<dyn Operator>, OperatorError> {
         ));
     }
     let future_inputs = parse_future_inputs(s)?;
-    let events = field_list(s, "_eventFields");
-    if !events.is_empty() {
-        return Err(OperatorError::Settings(
-            "GAP: Time Series events (_eventFields) have no oracle".into(),
-        ));
-    }
     let splits = field_list(s, "_splitFields");
     if !splits.is_empty() {
         return Err(OperatorError::Settings(
