@@ -534,6 +534,7 @@ fn fit_seasonal_arima(
     }
     // Keep every previously supported structure on its original numerical path.
     let extended = o.p > 4 || o.q > 4 || o.d > 1;
+    let check_roots = extended || o.p > 1 || o.q > 1;
     let make = |x: &[f64]| {
         let mut i = usize::from(o.constant);
         let mut take = |len: usize, zeros: u64| {
@@ -569,7 +570,7 @@ fn fit_seasonal_arima(
     };
     let residuals = |x: &[f64]| {
         let spec = make(x);
-        if extended && !admissible_arima(&spec)? {
+        if check_roots && !admissible_arima(&spec)? {
             return Err(data("ARIMA roots must lie outside the unit circle"));
         }
         let (r, ld) = arima::likelihood_residuals(&spec, y).map_err(data)?;
@@ -583,7 +584,12 @@ fn fit_seasonal_arima(
         *v = (f64::NEG_INFINITY, f64::INFINITY);
     }
     let mut best = None;
-    for start in [-0.3, 0.1, 0.5] {
+    let starts: &[f64] = if o.d > 0 && active(o.q, zero_ma) > 1 {
+        &[0.1]
+    } else {
+        &[-0.3, 0.1, 0.5]
+    };
+    for &start in starts {
         let mut x = vec![start; k];
         if o.constant
             && let Some(v) = x.first_mut()
@@ -594,9 +600,9 @@ fn fit_seasonal_arima(
                 0.0
             };
         }
-        if extended {
-            // A common coefficient start need not be stationary/invertible at high
-            // orders. Contract towards the white-noise interior, preserving masks.
+        if check_roots {
+            // A common coefficient start need not be stationary/invertible at order >= 2.
+            // Contract towards the white-noise interior, preserving masks.
             for _ in 0..32 {
                 if admissible_arima(&make(&x))? {
                     break;
@@ -831,14 +837,25 @@ pub(crate) fn lm(
             if let Some(slot) = minus.get_mut(j) {
                 *slot = b;
             }
-            let rp = residuals(&plus)?;
-            let rm = residuals(&minus)?;
-            jac.push(
-                rp.iter()
+            let column = match (residuals(&plus), residuals(&minus)) {
+                (Ok(rp), Ok(rm)) => rp
+                    .iter()
                     .zip(rm)
                     .map(|(a0, b0)| (a0 - b0) / (a - b))
                     .collect::<Vec<_>>(),
-            );
+                (Ok(rp), Err(_)) if (a - v).abs() > 0.0 => rp
+                    .iter()
+                    .zip(&r)
+                    .map(|(a0, r0)| (a0 - r0) / (a - v))
+                    .collect::<Vec<_>>(),
+                (Err(_), Ok(rm)) if (v - b).abs() > 0.0 => r
+                    .iter()
+                    .zip(rm)
+                    .map(|(r0, b0)| (r0 - b0) / (v - b))
+                    .collect::<Vec<_>>(),
+                (Err(e), _) | (_, Err(e)) => return Err(e),
+            };
+            jac.push(column);
         }
         let size = x.len();
         let mut matrix = vec![vec![0.0; size]; size];
