@@ -510,8 +510,9 @@ fn signature(spec: &arima::ArimaSpec) -> Signature {
 /// Frozen list of (label, case) pairs that `expert_arima` reproduces exactly. An improvement
 /// makes a NOT-listed case start matching, which fails this test until the list is updated.
 fn reproduced_cases() -> HashSet<(String, String)> {
-    // 86 of the 93 recorded selections reproduce Modeler exactly (82 from the port, 3 from
-    // the round 7b EACF rule, 1 from taking the 2.8 high-order Step-4 model). Every case
+    // 90 of the 93 recorded selections reproduce Modeler exactly (82 from the port, 3 from
+    // the round 7b EACF rule, 1 from taking the 2.8 high-order Step-4 model, 4 from EACF
+    // q >= 1 / candidate comparison / nonseasonal MA(1) boundary rule). Every case
     // NOT listed must still mismatch, so an improvement fails until it is added here.
     let pairs: &[(&str, &str)] = &[
         ("ts_expert", "pr_alt18_all"),
@@ -525,7 +526,9 @@ fn reproduced_cases() -> HashSet<(String, String)> {
         ("ts_expert", "pr_ma2_ar"),
         ("ts_expert", "pr_rw_ar"),
         ("ts_expert", "pr_seas30_ar"),
+        ("ts_expert", "pr_seas_ar"),
         ("ts_expert", "pr_seasmul_ar"),
+        ("ts_expert", "pr_seastr_ar"),
         ("ts_expert", "pr_trend_ar"),
         ("ts_expert", "pr_wide_ar"),
         ("ts_expert", "pr_wn_ar"),
@@ -598,8 +601,10 @@ fn reproduced_cases() -> HashSet<(String, String)> {
         ("ts_expert6", "p6_rev85_ar"),
         ("ts_expert6", "p6_revadflag_ar"),
         ("ts_expert6", "p6_weak1_ar"),
+        ("ts_expert6", "p6_weak3_ar"),
         ("ts_expert6", "p6_weak4_ar"),
         ("ts_more", "ts_expert_arima_nonseasonal"),
+        ("ts_more", "ts_expert_arima_seasonal"),
     ];
     pairs
         .iter()
@@ -715,10 +720,10 @@ fn expert_arima_builder_selects_without_saved_pmml() {
         fit_gaps.join("\n")
     );
     // 9 of the built selections come from AllModels builders, where the ARIMA candidate also
-    // wins the NBIC comparison. All 86 structures fit, including d = 2 and sparse high lags.
+    // wins the NBIC comparison. All 90 structures fit, including d = 2 and sparse high lags.
     assert_eq!(
         (built.len(), fit_gaps.len(), other_family.len()),
-        (86, 0, 0)
+        (90, 0, 0)
     );
 }
 

@@ -19,7 +19,7 @@ const MAX_ORDER: usize = 32;
 const MAX_SERIES: usize = 4096;
 
 /// How step 4 chose the initial orders.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 enum OrderMethod {
     /// MA order from the sample ACF tail.
     Acf,
@@ -103,6 +103,8 @@ fn admissible(poly: &[f64]) -> bool {
 
 /// Triangular "vertex" of the EACF significance table: the MA polynomial built from the
 /// selected MA lags is at (or beyond) the invertibility boundary (`min |root| < 1.001`).
+/// `ml_t` applies it to the nonseasonal MA only for a single MA term with no seasonal MA
+/// (`pr_seastr_ar` keeps MA(1) at -0.9994 beside its seasonal MA).
 fn at_boundary(poly: &[f64]) -> bool {
     let mut degree = 0usize;
     for (j, c) in poly.iter().enumerate() {
@@ -223,7 +225,7 @@ impl Model {
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 enum Term {
     C,
     Ar(usize),
@@ -808,9 +810,7 @@ fn cls_fit(w: &[f64], spec: &Spec) -> Option<ClsResult> {
 fn cls_t(w: &[f64], model: &Model, s: usize) -> Option<Vec<(Term, f64)>> {
     let spec = model.to_spec(0, 0, s);
     let fit = cls_fit(w, &spec)?;
-    let names = model.names();
-    let result: Vec<(Term, f64)> = names.into_iter().zip(fit.tv).collect();
-    Some(result)
+    Some(model.names().into_iter().zip(fit.tv).collect())
 }
 
 fn prune_cls(w: &[f64], model: &mut Model, s: usize) {
@@ -1072,7 +1072,7 @@ fn ml_t(
         // MA boundary rule, judging the nonseasonal and seasonal MA polynomials separately.
         let na = model.ar.len();
         let nm = model.ma.len();
-        if nm > 0 {
+        if nm == 1 && model.qs == 0 {
             let mut poly = vec![
                 0.0;
                 model
@@ -1117,14 +1117,12 @@ fn ml_t(
             }
         }
     }
-    let result = model.names().into_iter().zip(tv).collect();
-    Some(result)
+    Some(model.names().into_iter().zip(tv).collect())
 }
 
 fn ml_prune(y: &[f64], w: &[f64], model: &mut Model, d: usize, dd: usize, s: usize) {
     for _ in 0..MAX_ORDER {
-        let start = cls_start(w, model, s);
-        let Some(t) = ml_t(y, model, d, dd, s, &start) else {
+        let Some(t) = ml_t(y, model, d, dd, s, &cls_start(w, model, s)) else {
             break;
         };
         let low: Vec<Term> = t
@@ -1362,6 +1360,13 @@ impl Choice {
     }
 }
 
+/// Step 4 orders. The ACF, PACF and EACF candidates compete on the smallest p+q. The EACF
+/// candidate always carries q >= 1, because pure AR is the PACF candidate's job. Ties go
+/// PACF, then ACF, then EACF. This order is measured, not the Guide's (the Guide prefers EACF
+/// on a tie). Together with the single-MA boundary rule in `ml_t`, it reproduces `pr_seas_ar`,
+/// `pr_seastr_ar`, `p6_weak3_ar` and `ts_expert_arima_seasonal`. That gives 90 of 93 recorded
+/// selections with none lost (agy Gemini 4 Argon, 2026-11-08,
+/// `rea-work/archive/agy/tsx2/AGY_TSX2_REPORT.md`).
 fn identify(w: &[f64], s: usize, crit: f64) -> Choice {
     let n = w.len();
     let mut m = if s == 1 || s >= 10 {
@@ -1400,22 +1405,6 @@ fn identify(w: &[f64], s: usize, crit: f64) -> Choice {
             q: 0,
         });
     }
-    if !cands.is_empty() {
-        // Prefer smaller p+q, then PACF (AR) over ACF (MA).
-        let key = |c: &Choice| (c.sum(), if c.method == OrderMethod::Pacf { 0 } else { 1 });
-        let mut best = cands.first().copied().unwrap_or(Choice {
-            method: OrderMethod::Acf,
-            p: 0,
-            q: 0,
-        });
-        for candidate in cands.iter().skip(1) {
-            if key(candidate) < key(&best) {
-                best = *candidate;
-            }
-        }
-        return best;
-    }
-    // Neither ACF nor PACF gives a clear model: use the EACF table.
     let sig = eacf_sig(w, m, crit);
     let mut best: Option<(usize, usize)> = None;
     for ki in 0..m {
@@ -1433,12 +1422,31 @@ fn identify(w: &[f64], s: usize, crit: f64) -> Choice {
             best = Some((ki, q));
         }
     }
-    let (bk, bq) = best.unwrap_or((0, m));
-    Choice {
+    let (bk, bq) = best.map(|(ki, q)| (ki, q.max(1))).unwrap_or((0, m));
+    let eacf_choice = Choice {
         method: OrderMethod::Eacf,
         p: bk,
         q: bq,
+    };
+    cands.push(eacf_choice);
+    // Prefer smaller p+q, breaking ties PACF (AR) < ACF (MA) < EACF.
+    let key = |c: &Choice| {
+        (
+            c.sum(),
+            match c.method {
+                OrderMethod::Pacf => 0,
+                OrderMethod::Acf => 1,
+                OrderMethod::Eacf => 2,
+            },
+        )
+    };
+    let mut best_cand = eacf_choice;
+    for candidate in &cands {
+        if key(candidate) < key(&best_cand) {
+            best_cand = *candidate;
+        }
     }
+    best_cand
 }
 
 // ---------------------------------------------------------------- step 6 diagnose
