@@ -4,8 +4,10 @@
 //! rule 3 (worst accepted max point/bound/residual error 0.008378 target SD).
 //! See `exec/tests/time_series_more.rs` for both objectives and coefficients.
 //!
-//! Output projects the observation field first, then targets and selected predictors in
-//! source order: unused Type fields are discarded, irrespective of storage type.
+//! Output projects the observation field first, then targets and candidate predictors in
+//! source order, whether or not the model kept them (`ts_expert_tf`: `x` stays when the
+//! Expert drops it; null on future rows); other Type fields are discarded, irrespective of
+//! storage type.
 //! `$FutureFlag` follows the period/date; then per-target $TS/$TSLCI/$TSUCI.
 //! Monthly dates advance by calendar month, with consecutive month-start input
 //! required. Residuals are target minus original-scale prediction; future null.
@@ -1164,7 +1166,10 @@ impl TimeSeriesApply {
             &fitted,
             &forecasts,
             self.calculate_conf,
-            &self.future_inputs,
+            Predictors {
+                future: &self.future_inputs,
+                candidates: &self.predictors,
+            },
         )?;
         if self.residuals {
             add_residuals(result, &targets)
@@ -2003,6 +2008,14 @@ fn parse_finite(text: &str, label: &str) -> Result<f64, OperatorError> {
     Ok(value)
 }
 
+/// Predictor fields of the scored output: user-specified future values, and the candidate
+/// inputs that are kept in the output whether or not the model uses them.
+#[derive(Clone, Copy)]
+struct Predictors<'a> {
+    future: &'a [(String, Vec<f64>)],
+    candidates: &'a [String],
+}
+
 fn assemble(
     input: &Table,
     period_at: usize,
@@ -2010,8 +2023,12 @@ fn assemble(
     fitted: &[Vec<Option<Forecast>>],
     forecasts: &[Vec<Forecast>],
     calculate_conf: bool,
-    future_inputs: &[(String, Vec<f64>)],
+    predictors: Predictors<'_>,
 ) -> Result<Table, OperatorError> {
+    let Predictors {
+        future: future_inputs,
+        candidates: candidate_inputs,
+    } = predictors;
     let horizon = forecasts.first().map(Vec::len).unwrap_or(0);
     let positions: Vec<_> = std::iter::once(period_at)
         .chain(
@@ -2023,6 +2040,7 @@ fn assemble(
                 .filter_map(|(i, f)| {
                     (i != period_at
                         && (targets.contains(&f.name)
+                            || candidate_inputs.contains(&f.name)
                             || future_inputs.iter().any(|(n, _)| n == &f.name)))
                     .then_some(i)
                 }),
