@@ -510,9 +510,10 @@ fn signature(spec: &arima::ArimaSpec) -> Signature {
 /// Frozen list of (label, case) pairs that `expert_arima` reproduces exactly. An improvement
 /// makes a NOT-listed case start matching, which fails this test until the list is updated.
 fn reproduced_cases() -> HashSet<(String, String)> {
-    // 90 of the 93 recorded selections reproduce Modeler exactly (82 from the port, 3 from
+    // 91 of the 93 recorded selections reproduce Modeler exactly (82 from the port, 3 from
     // the round 7b EACF rule, 1 from taking the 2.8 high-order Step-4 model, 4 from EACF
-    // q >= 1 / candidate comparison / nonseasonal MA(1) boundary rule). Every case
+    // q >= 1 / candidate comparison / nonseasonal MA(1) boundary rule, 1 from the Marquardt
+    // fallback in ml_t when CLS steps outside the invertible region). Every case
     // NOT listed must still mismatch, so an improvement fails until it is added here.
     let pairs: &[(&str, &str)] = &[
         ("ts_expert", "pr_alt18_all"),
@@ -549,6 +550,7 @@ fn reproduced_cases() -> HashSet<(String, String)> {
         ("ts_expert3", "p3_ar2_all"),
         ("ts_expert3", "p3_ar2_ar"),
         ("ts_expert3", "p3_ima11nc_ar"),
+        ("ts_expert3", "p3_linehet_ar"),
         ("ts_expert3", "p3_ma3_all"),
         ("ts_expert3", "p3_ma3_ar"),
         ("ts_expert3", "p3_off1000_ar"),
@@ -720,10 +722,10 @@ fn expert_arima_builder_selects_without_saved_pmml() {
         fit_gaps.join("\n")
     );
     // 9 of the built selections come from AllModels builders, where the ARIMA candidate also
-    // wins the NBIC comparison. All 90 structures fit, including d = 2 and sparse high lags.
+    // wins the NBIC comparison. All 91 structures fit, including d = 2 and sparse high lags.
     assert_eq!(
         (built.len(), fit_gaps.len(), other_family.len()),
-        (90, 0, 0)
+        (91, 0, 0)
     );
 }
 
@@ -834,6 +836,7 @@ fn expert_sparse_refits_objective_and_forecasts() {
     for (label, case) in [
         ("ts_expert", "pr_i2_ar"),
         ("ts_expert2", "p2_i2_ar"),
+        ("ts_expert3", "p3_linehet_ar"),
         ("ts_expert4", "p4_ma5_ar"),
         ("ts_expert4", "p4_weakma1_ar"),
         ("ts_expert6", "p6_ma8n144_ar"),

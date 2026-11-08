@@ -575,6 +575,8 @@ fn kalman(ar: &[f64], ma: &[f64], w: &[f64], constant: bool) -> Option<Kalman> {
 struct NllOut {
     /// Unweighted innovations N_t - Nhat_t (the mean removed).
     e_raw: Vec<f64>,
+    /// Standardized innovations (N_t - Nhat_t) / sqrt(eta_t).
+    e_std: Vec<f64>,
     /// The GLS-profiled mean (zero without a constant).
     mu: f64,
 }
@@ -640,7 +642,7 @@ fn arima_nll(x: &[f64], spec: &Spec, y: &[f64]) -> (f64, Option<NllOut>) {
         .zip(&kal.f)
         .map(|(e, fval)| e * fval.sqrt())
         .collect();
-    (nll, Some(NllOut { e_raw, mu }))
+    (nll, Some(NllOut { e_raw, e_std, mu }))
 }
 
 fn nll_value(x: &[f64], spec: &Spec, y: &[f64]) -> f64 {
@@ -996,6 +998,100 @@ fn ml_local(y: &[f64], spec: &Spec, x_start: &[f64]) -> Option<Vec<f64>> {
     x.iter().all(|v| v.is_finite()).then_some(x)
 }
 
+/// Marquardt search on the GLS-centered standardized innovations (Guide ARIMA appendix
+/// pp. 739-741), used when `cls_start` falls back to the zero vector because unrestricted CLS
+/// stepped outside the invertible region.
+fn ml_marquardt(y: &[f64], spec: &Spec, x_start: &[f64]) -> Option<Vec<f64>> {
+    let kc = spec.kc();
+    if kc == 0 {
+        return Some(Vec::new());
+    }
+    let mut x = x_start.to_vec();
+    for _ in 0..60 {
+        if arima_nll(&x, spec, y).1.is_some() {
+            break;
+        }
+        for v in &mut x {
+            *v *= 0.95;
+        }
+    }
+    let resid = |xv: &[f64]| -> Option<Vec<f64>> { arima_nll(xv, spec, y).1.map(|out| out.e_std) };
+    let mut r = resid(&x)?;
+    let mut val: f64 = r.iter().map(|v| v * v).sum();
+    let mut lam = 1e-3_f64;
+    for _ in 0..200 {
+        let mut jac = Vec::with_capacity(kc);
+        for j in 0..kc {
+            let xj = x.get(j).copied().unwrap_or(0.0);
+            let mut delta = if xj > 0.0 { -1e-4 } else { 1e-4 };
+            let mut moved = x.clone();
+            if let Some(slot) = moved.get_mut(j) {
+                *slot += delta;
+            }
+            let rm = if let Some(rm) = resid(&moved) {
+                rm
+            } else {
+                delta = -delta;
+                moved = x.clone();
+                if let Some(slot) = moved.get_mut(j) {
+                    *slot += delta;
+                }
+                let Some(rm) = resid(&moved) else {
+                    jac.clear();
+                    break;
+                };
+                rm
+            };
+            jac.push(
+                rm.iter()
+                    .zip(&r)
+                    .map(|(a, b)| (a - b) / delta)
+                    .collect::<Vec<f64>>(),
+            );
+        }
+        if jac.len() < kc {
+            break;
+        }
+        let grad: Vec<f64> = jac
+            .iter()
+            .map(|col| col.iter().zip(&r).map(|(a, b)| a * b).sum())
+            .collect();
+        let gmax = grad.iter().map(|v| v.abs()).fold(0.0_f64, f64::max);
+        if !gmax.is_finite() || gmax < 1e-7 {
+            break;
+        }
+        let mut jtj = mat_t_j(&jac);
+        for (i, row) in jtj.iter_mut().enumerate() {
+            if let Some(diag) = row.get_mut(i) {
+                *diag += lam * diag.abs().max(1e-10);
+            }
+        }
+        let Ok(step) = solve(jtj, grad) else {
+            break;
+        };
+        let xn: Vec<f64> = x
+            .iter()
+            .zip(&step)
+            .map(|(xi, si)| (xi - si).clamp(-4.0, 4.0))
+            .collect();
+        if let Some(rn) = resid(&xn) {
+            let vn: f64 = rn.iter().map(|v| v * v).sum();
+            if vn.is_finite() && vn < val {
+                x = xn;
+                r = rn;
+                val = vn;
+                lam = (lam * 0.3).max(1e-9);
+                continue;
+            }
+        }
+        lam *= 10.0;
+        if lam > 1e9 {
+            break;
+        }
+    }
+    x.iter().all(|v| v.is_finite()).then_some(x)
+}
+
 /// ML t-values: central finite-difference Hessian with `h = 1e-4`, plus the MA boundary rule
 /// and the GLS constant t-statistic. Returns `None` when the local fit fails.
 fn ml_t(
@@ -1008,7 +1104,11 @@ fn ml_t(
 ) -> Option<Vec<(Term, f64)>> {
     let kc = model.kc();
     let spec = model.to_spec(d, dd, s);
-    let x = ml_local(y, &spec, x_start)?;
+    let x = if x_start.iter().all(|v| *v == 0.0) {
+        ml_marquardt(y, &spec, x_start)?
+    } else {
+        ml_local(y, &spec, x_start)?
+    };
     let (_, out) = arima_nll(&x, &spec, y);
     let out = out?;
     // t statistics from the joint mean/ARMA covariance sigma2 * inv(J'J), where J is the
@@ -1366,7 +1466,9 @@ impl Choice {
 /// on a tie). Together with the single-MA boundary rule in `ml_t`, it reproduces `pr_seas_ar`,
 /// `pr_seastr_ar`, `p6_weak3_ar` and `ts_expert_arima_seasonal`. That gives 90 of 93 recorded
 /// selections with none lost (agy Gemini 4 Argon, 2026-11-08,
-/// `rea-work/archive/agy/tsx2/AGY_TSX2_REPORT.md`).
+/// `rea-work/archive/agy/tsx2/AGY_TSX2_REPORT.md`). With the Marquardt fallback in `ml_t`
+/// (`ml_marquardt`), `p3_linehet_ar` also matches: 91 of 93
+/// (`rea-work/archive/agy/linehet/LINEHET_REPORT.md`).
 fn identify(w: &[f64], s: usize, crit: f64) -> Choice {
     let n = w.len();
     let mut m = if s == 1 || s >= 10 {
