@@ -1,4 +1,7 @@
-//! Transfer regression with stationary AR(1) noise (Algorithms Guide, Time Series).
+//! Transfer scoring with stationary ARMA noise (Algorithms Guide 19, Time Series).
+//! Predictors are transformed, differenced, delayed, then filtered. Seasonal
+//! multiplicative polynomials are expanded by the PMML parser, so scoring only
+//! sees additive numerator and denominator recurrence coefficients.
 //! `ts_more/ts_tf_static`, `ts_tf_num`, `ts_tf_den`, `ts_tf_delay` establish
 //! the lost prefix and PMML numerator sign: coefficient zero is positive,
 //! subsequent numerator coefficients are subtracted.
@@ -9,8 +12,8 @@
 //! the first (differenced) predictor value, as the Algorithms Guide's "Calculation of the
 //! Transfer Function" describes. Evidence: with Modeler's saved `ts_tf_diff` parameters its
 //! first fitted value (t = 4) implies `v_3 = 10.471991`, which is `1.6336 * z_2` to six
-//! digits; zero or the raw first value do not fit. The prefix and the degrees of freedom do
-//! not grow with the denominator (`ts_tf_diff`: 108 - 3 - 5 = 100).
+//! digits; zero or the raw first value do not fit. The scored prefix uses the
+//! larger numerator/denominator degree (`ts_tf_diff`: 108 - 3 - 5 = 100).
 use crate::{
     AlgoError, arima,
     time_series::{self, Fit, FittedSpec},
@@ -19,11 +22,14 @@ use crate::{
 #[derive(Debug, Clone, PartialEq)]
 pub struct Effect {
     pub field: String,
+    pub transform: arima::Transform,
     pub difference: usize,
+    pub seasonal_difference: usize,
+    pub period: usize,
     pub delay: usize,
     /// All coefficients use the additive convention internally.
     pub numerator: Vec<f64>,
-    /// `delta_1..delta_r` of `v_t = sum_i delta_i v_{t-i} + ...` (PMML's stored values).
+    /// Expanded recurrence coefficients: `v_t = sum_i delta_i v_{t-i} + ...`.
     pub denominator: Vec<f64>,
 }
 
@@ -43,26 +49,23 @@ impl TransferSpec {
             || self.effects.is_empty()
             || self.effects.len() > 16
             || x.len() != self.effects.len()
-            || self.noise.transform != arima::Transform::None
             || self.noise.d != 0
             || self.noise.seasonal_d != 0
-            || self.noise.ar.len() != 1
-            || !self.noise.ma.is_empty()
-            || !self.noise.seasonal_ar.is_empty()
-            || !self.noise.seasonal_ma.is_empty()
         {
             return Err(error(
-                "GAP: transfer requires <=16 predictors and untransformed AR(1) noise",
+                "GAP: transfer requires <=16 predictors and undifferenced ARMA noise",
             ));
         }
         let mut signal = vec![0.0; n];
         let mut start = 0;
         for (e, x) in self.effects.iter().zip(x) {
-            if e.difference > 1
+            if e.difference > 2
+                || e.seasonal_difference > 2
+                || !(1..=64).contains(&e.period)
                 || e.delay > 64
                 || e.numerator.is_empty()
-                || e.numerator.len() > 5
-                || e.denominator.len() > 4
+                || e.numerator.len() > 65
+                || e.denominator.len() > 64
                 || x.len() < n
                 || x.len() > 1024
                 || x.iter()
@@ -72,13 +75,24 @@ impl TransferSpec {
             {
                 return Err(error("invalid transfer predictor/order/length"));
             }
-            let prefix = e.difference + e.delay + e.numerator.len() - 1;
-            start = start.max(prefix);
-            let z = arima::difference(x, e.difference);
+            let lost = e.difference + e.seasonal_difference * e.period;
+            let prefix = lost + e.delay + e.numerator.len() - 1;
+            start = start.max(lost + e.delay + (e.numerator.len() - 1).max(e.denominator.len()));
+            let transformed =
+                arima::transform(e.transform, x).map_err(|e| error(&e.to_string()))?;
+            let mut z = arima::difference(&transformed, e.difference);
+            for _ in 0..e.seasonal_difference {
+                z = z
+                    .iter()
+                    .skip(e.period)
+                    .zip(&z)
+                    .map(|(a, b)| a - b)
+                    .collect();
+            }
             let mut response = vec![0.0; n];
             for (i, out) in response.iter_mut().enumerate().skip(prefix) {
                 for (j, b) in e.numerator.iter().enumerate() {
-                    let at = i - e.difference - e.delay - j;
+                    let at = i - lost - e.delay - j;
                     *out += b * z
                         .get(at)
                         .copied()
@@ -123,7 +137,10 @@ impl TransferSpec {
 
     fn adjusted(&self, y: &[f64], x: &[Vec<f64>]) -> Result<Vec<f64>, AlgoError> {
         let (start, signal) = self.signal(x, y.len())?;
-        Ok(y.iter()
+        let transformed =
+            arima::transform(self.noise.transform, y).map_err(|e| error(&e.to_string()))?;
+        Ok(transformed
+            .iter()
             .zip(signal)
             .skip(start)
             .map(|(y, v)| y - v)
@@ -131,10 +148,9 @@ impl TransferSpec {
     }
 
     pub fn objective(&self, y: &[f64], x: &[Vec<f64>]) -> Result<f64, AlgoError> {
-        time_series::objective(
-            &FittedSpec::Arima(self.noise.clone()),
-            &self.adjusted(y, x)?,
-        )
+        let mut noise = self.noise.clone();
+        noise.transform = arima::Transform::None;
+        time_series::objective(&FittedSpec::Arima(noise), &self.adjusted(y, x)?)
     }
 
     pub fn score(
@@ -148,28 +164,20 @@ impl TransferSpec {
             return Err(error("transfer scoring history/horizon exceeds 512"));
         }
         let (start, signal) = self.signal(x, y.len().saturating_add(horizon))?;
-        let adjusted = self.adjusted(y, x)?;
-        let noise = arima::score(&self.noise, &adjusted, horizon, confidence)
-            .map_err(|e| error(&e.to_string()))?;
+        if start >= y.len() {
+            return Err(error("transfer prefix exceeds history"));
+        }
+        let noise = arima::score_with_signal(
+            &self.noise,
+            &y[start..],
+            horizon,
+            confidence,
+            &signal[start..],
+        )
+        .map_err(|e| error(&e.to_string()))?;
         let mut fitted = vec![None; start];
-        let add = |f: arima::Forecast, s: f64| arima::Forecast {
-            point: f.point + s,
-            lower: f.lower + s,
-            upper: f.upper + s,
-        };
-        fitted.extend(
-            noise
-                .fitted
-                .into_iter()
-                .zip(signal.iter().skip(start))
-                .map(|(f, s)| f.map(|f| add(f, *s))),
-        );
-        let forecasts = noise
-            .forecasts
-            .into_iter()
-            .zip(signal.iter().skip(y.len()))
-            .map(|(f, s)| add(f, *s))
-            .collect();
+        fitted.extend(noise.fitted);
+        let forecasts = noise.forecasts;
         Ok(arima::SeriesScore { fitted, forecasts })
     }
 
@@ -179,13 +187,33 @@ impl TransferSpec {
             let coefs=e.numerator.iter().enumerate().map(|(i,v)|if i==0{*v}else{-v}).map(|v|v.to_string()).collect::<Vec<_>>().join(" ");
             let den=e.denominator.iter().map(f64::to_string).collect::<Vec<_>>().join(" ");
             let r=e.denominator.len();
-            format!("<PredicterEffect field=\"{field}\" transformation=\"none\" delay=\"{}\" nonSeasonalDiff=\"{}\" seasonalDiff=\"0\"><Numerator><NonseasonFactor maximumOrder=\"{}\"><Array n=\"{}\" type=\"real\">{coefs}</Array></NonseasonFactor></Numerator><Denominator><NonseasonFactor maximumOrder=\"{r}\"><Array n=\"{r}\" type=\"real\">{den}</Array></NonseasonFactor></Denominator></PredicterEffect>",e.delay,e.difference,e.numerator.len(),e.numerator.len())
+            let transform = match e.transform {
+                arima::Transform::None => "none",
+                arima::Transform::Log => "logarithmic",
+                arima::Transform::Sqrt => "squareroot",
+            };
+            format!("<PredicterEffect field=\"{field}\" transformation=\"{transform}\" delay=\"{}\" nonSeasonalDiff=\"{}\" seasonalDiff=\"{}\"><Numerator><NonseasonFactor maximumOrder=\"{}\"><Array n=\"{}\" type=\"real\">{coefs}</Array></NonseasonFactor></Numerator><Denominator><NonseasonFactor maximumOrder=\"{r}\"><Array n=\"{r}\" type=\"real\">{den}</Array></NonseasonFactor></Denominator></PredicterEffect>",e.delay,e.difference,e.seasonal_difference,e.numerator.len(),e.numerator.len())
         }).collect()
     }
 }
 
 /// Fit only the supplied orders; template coefficients and noise state are discarded.
 pub fn fit(y: &[f64], x: &[Vec<f64>], template: &TransferSpec) -> Result<Fit, AlgoError> {
+    if template.noise.transform != arima::Transform::None
+        || template.noise.ar.len() != 1
+        || !template.noise.ma.is_empty()
+        || !template.noise.seasonal_ar.is_empty()
+        || !template.noise.seasonal_ma.is_empty()
+        || template.effects.iter().any(|e| {
+            e.transform != arima::Transform::None
+                || e.seasonal_difference != 0
+                || e.difference > 1
+                || e.numerator.len() > 5
+                || e.denominator.len() > 4
+        })
+    {
+        return Err(error("unsupported transfer fitting specification"));
+    }
     if !(8..=512).contains(&y.len()) || y.iter().any(|v| !v.is_finite()) {
         return Err(error("invalid transfer training history"));
     }

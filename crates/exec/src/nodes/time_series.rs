@@ -4,13 +4,14 @@
 //! rule 3 (worst accepted max point/bound/residual error 0.008378 target SD).
 //! See `exec/tests/time_series_more.rs` for both objectives and coefficients.
 //!
-//! Output projects the observation field, targets and selected predictors in
+//! Output projects the observation field first, then targets and selected predictors in
 //! source order: unused Type fields are discarded, irrespective of storage type.
 //! `$FutureFlag` follows the period/date; then per-target $TS/$TSLCI/$TSUCI.
 //! Monthly dates advance by calendar month, with consecutive month-start input
 //! required. Residuals are target minus original-scale prediction; future null.
 //! USER_SPECIFY predictor values extend records, including a detached grid whose
-//! generic forecast flag is off (`ts_tf_*`). No predictor forecast is invented.
+//! generic forecast flag is off (`ts_tf_*`). Saved `.es.xml` models supply predictor
+//! futures in older model collections; explicit user values take precedence.
 //!
 //! PMML is read from the nugget's length-prefixed ZIP, not the empty exported XML.
 //! Replacement-linked nuggets receive the new builder model; detached nuggets
@@ -28,8 +29,10 @@
 //! (`time_series::normalized_bic`).
 //! `ts_expert/pr_wn_ar` omits the zero-order NonseasonalComponent; `pr_i2_ar`
 //! scores d=2 with a constant through the existing integrated ARIMA recursion.
-//! Transfer functions support AR(1) noise, delay, predictor differences and denominators
-//! (start-up rule in `dms_algo::transfer`);
+//! Transfer scoring supports stationary ARMA noise, delay, log/sqrt predictors,
+//! ordinary/seasonal differences and multiplicative seasonal factors. PMML 4.2
+//! polynomial signs and collection field IDs are normalized on import. Fitting
+//! retains its nonseasonal AR(1) scope (start-up rule in `dms_algo::transfer`);
 //! persisted TF columns p/q/d mean numerator/difference/denominator, evidenced
 //! by the ts_tf_num/den/delay saved models and complete scores.
 //! Outside rule 3: ts_sarlog_noconst (0.116627 SD) and ts_tf_static (0.016416 SD), where
@@ -385,6 +388,9 @@ pub fn build(node: &StreamNode) -> Result<Box<dyn Operator>, OperatorError> {
         }
         effects.push(Effect {
             field: field.clone(),
+            transform: Transform::None,
+            seasonal_difference: 0,
+            period: 1,
             delay,
             difference,
             numerator: vec![0.0; numerator + 1],
@@ -967,6 +973,17 @@ impl TimeSeriesApply {
             None => load_saved_models(&self.pmml_member, context)?,
         };
         let targets = resolve_targets(&self.targets, &models)?;
+        let models = if targets
+            .iter()
+            .all(|target| models.iter().any(|(name, _)| name == target))
+        {
+            targets
+                .iter()
+                .filter_map(|target| models.iter().find(|(name, _)| name == target).cloned())
+                .collect()
+        } else {
+            models
+        };
         if targets.len() != models.len() {
             return Err(OperatorError::Data(format!(
                 "Time Series lists {} targets and {} saved models",
@@ -1019,6 +1036,23 @@ impl TimeSeriesApply {
                 .max()
                 .unwrap_or(0),
         );
+        let mut future_inputs = self.future_inputs.clone();
+        if horizon > 0
+            && models
+                .iter()
+                .any(|(_, s)| matches!(s, SavedModel::Transfer(_)))
+        {
+            // Saved collections carry independent smoothing models for future
+            // predictor values, including predictors which are also targets.
+            for (name, predictor) in load_predictor_models(&self.pmml_member, context)? {
+                if future_inputs.iter().any(|(field, _)| field == &name) {
+                    continue;
+                }
+                let values = numeric_column(input, &name)?;
+                let (_, ahead) = score_saved(&predictor, &values, horizon, self.conf_percent)?;
+                future_inputs.push((name, ahead.into_iter().map(|f| f.point).collect()));
+            }
+        }
         for ((_name, spec), y) in models.iter().zip(&series) {
             let (history, ahead) = if let SavedModel::Transfer(spec) = spec {
                 let x = spec
@@ -1040,8 +1074,7 @@ impl TimeSeriesApply {
                         };
                         let mut values = numeric_column(input, name)?;
                         if horizon > 0 {
-                            let future = self
-                                .future_inputs
+                            let future = future_inputs
                                 .iter()
                                 .find(|(n, _)| n == name)
                                 .map(|(_, v)| v)
@@ -1177,7 +1210,23 @@ fn load_saved_models(
     }
     let mut models = Vec::with_capacity(indexed.len());
     for (position, (_, xml)) in indexed.iter().enumerate() {
-        let spec = parse_saved_model(xml)?;
+        let mut spec = parse_saved_model(xml)?;
+        if let SavedModel::Transfer(transfer) = &mut spec {
+            let document =
+                roxmltree::Document::parse(xml).map_err(|e| OperatorError::Data(e.to_string()))?;
+            if document
+                .descendants()
+                .any(|n| n.has_tag_name("TimeSeriesModel") && legacy_polynomial_signs(n))
+            {
+                for effect in &mut transfer.effects {
+                    if let Ok(index) = effect.field.parse::<usize>() {
+                        effect.field = names.get(index).cloned().ok_or_else(|| {
+                            OperatorError::Data("unknown legacy transfer field index".into())
+                        })?;
+                    }
+                }
+            }
+        }
         let name = names
             .get(position)
             .cloned()
@@ -1194,6 +1243,38 @@ fn numeric_xml_name(name: &str) -> Option<usize> {
     } else {
         None
     }
+}
+
+fn load_predictor_models(
+    member: &str,
+    context: &ExecContext,
+) -> Result<Vec<(String, SavedModel)>, OperatorError> {
+    let Some(bytes) = context.attachments.get(member) else {
+        return Ok(Vec::new());
+    };
+    let entries = read_length_prefixed_zip(bytes, &ArchiveLimits::default())
+        .map_err(|e| OperatorError::Data(e.to_string()))?;
+    let names = datamodel_targets(&entries)?;
+    let mut models = Vec::new();
+    for entry in &entries {
+        let Some(index) = entry
+            .name
+            .strip_suffix(".es.xml")
+            .and_then(|s| s.parse::<usize>().ok())
+        else {
+            continue;
+        };
+        let name = names
+            .get(index)
+            .ok_or_else(|| OperatorError::Data("unknown predictor model index".into()))?;
+        let xml =
+            std::str::from_utf8(&entry.bytes).map_err(|e| OperatorError::Data(e.to_string()))?;
+        models.push((name.clone(), parse_saved_model(xml)?));
+        if models.len() > 16 {
+            return Err(OperatorError::Data("too many predictor models".into()));
+        }
+    }
+    Ok(models)
 }
 
 fn datamodel_targets(entries: &[dms_strfmt::ZipMember]) -> Result<Vec<String>, OperatorError> {
@@ -1263,37 +1344,17 @@ pub fn parse_saved_model(xml: &str) -> Result<SavedModel, OperatorError> {
         let numerator = factor("Numerator")
             .ok_or_else(|| OperatorError::Data("missing transfer numerator".into()))?;
         let den = factor("Denominator");
-        let seasonal = |factor: Option<roxmltree::Node<'_, '_>>| {
-            factor.is_some_and(|f| {
-                f.children()
-                    .filter(|n| n.has_tag_name("SeasonFactor"))
-                    .any(|n| {
-                        n.descendants().any(|a| {
-                            a.has_tag_name("Array") && !a.text().unwrap_or("").trim().is_empty()
-                        })
-                    })
-            })
-        };
-        if attr_usize(e, "seasonalDiff")? != 0
-            || e.attribute("transformation").unwrap_or("none") != "none"
-            || seasonal(Some(numerator))
-            || seasonal(den)
-        {
-            return Err(OperatorError::Settings(
-                "GAP: seasonal/transformed transfer".into(),
-            ));
-        }
-        let mut coefficients = parse_coef_array(numerator, "NonseasonFactor", 0)?;
-        for v in coefficients.iter_mut().skip(1) {
-            *v = -*v;
-        }
-        // Denominator values are used as stored (`ts_tf_diff`, see `dms_algo::transfer`).
-        let denominator = match den {
-            Some(den) => parse_coef_array(den, "NonseasonFactor", 0)?,
-            None => Vec::new(),
-        };
+        let legacy = legacy_polynomial_signs(model);
+        let coefficients = parse_transfer_polynomial(numerator, true, legacy, noise.period)?;
+        let denominator = den
+            .map(|den| parse_transfer_polynomial(den, false, legacy, noise.period))
+            .transpose()?
+            .unwrap_or_default();
         effects.push(Effect {
             field: e.attribute("field").unwrap_or("").into(),
+            transform: parse_transform(e.attribute("transformation").unwrap_or("none"))?,
+            seasonal_difference: attr_usize(e, "seasonalDiff")?,
+            period: noise.period,
             difference: attr_usize(e, "nonSeasonalDiff")?,
             delay: attr_usize(e, "delay")?,
             numerator: coefficients,
@@ -1304,6 +1365,69 @@ pub fn parse_saved_model(xml: &str) -> Result<SavedModel, OperatorError> {
         Ok(SavedModel::Arima(noise))
     } else {
         Ok(SavedModel::Transfer(TransferSpec { noise, effects }))
+    }
+}
+
+/// PMML 4.2 saved by the older Time Series engine stores polynomial
+/// coefficients, whereas positiveParameters=1 stores AR/denominator parameters.
+/// Keep this encoding distinction at the boundary, never in the filter.
+fn legacy_polynomial_signs(model: roxmltree::Node<'_, '_>) -> bool {
+    model
+        .ancestors()
+        .any(|n| n.has_tag_name("PMML") && n.attribute("version") == Some("4.2"))
+        && !model.children().any(|n| {
+            n.attribute("name") == Some("positiveParameters") && n.attribute("value") == Some("1")
+        })
+}
+
+/// Normalize both multiplicative factors into a dense lag polynomial. A
+/// numerator includes its gain at lag zero; seasonal factors have implicit 1.
+/// Denominators are returned as additive recurrence coefficients, without 1.
+fn parse_transfer_polynomial(
+    parent: roxmltree::Node<'_, '_>,
+    numerator: bool,
+    legacy: bool,
+    period: usize,
+) -> Result<Vec<f64>, OperatorError> {
+    let mut nonseasonal = parse_coef_array(parent, "NonseasonFactor", 0)?;
+    let seasonal = parse_coef_array(parent, "SeasonFactor", 0)?;
+    let sign = if legacy { 1.0 } else { -1.0 };
+    for value in nonseasonal.iter_mut().skip(usize::from(numerator)) {
+        *value *= sign;
+    }
+    if !numerator {
+        nonseasonal.insert(0, 1.0);
+    }
+    if nonseasonal.is_empty() || !(1..=64).contains(&period) {
+        return Err(OperatorError::Data("invalid transfer factor/period".into()));
+    }
+    let degree = nonseasonal
+        .len()
+        .saturating_sub(1)
+        .saturating_add(seasonal.len().saturating_mul(period));
+    if degree > 64 {
+        return Err(OperatorError::Data(
+            "transfer polynomial degree exceeds 64".into(),
+        ));
+    }
+    let mut polynomial = vec![0.0; degree + 1];
+    for (i, &value) in nonseasonal.iter().enumerate() {
+        if let Some(slot) = polynomial.get_mut(i) {
+            *slot += value;
+        }
+        for (j, &coefficient) in seasonal.iter().enumerate() {
+            if let Some(slot) = polynomial.get_mut(i + (j + 1) * period) {
+                *slot += value * sign * coefficient;
+            }
+        }
+    }
+    if polynomial.iter().any(|v| !v.is_finite()) {
+        return Err(OperatorError::Data("nonfinite transfer polynomial".into()));
+    }
+    if numerator {
+        Ok(polynomial)
+    } else {
+        Ok(polynomial.into_iter().skip(1).map(|v| -v).collect())
     }
 }
 
@@ -1369,16 +1493,24 @@ fn parse_arima_model(model: roxmltree::Node<'_, '_>) -> Result<ArimaSpec, Operat
         .map(|n| attr_usize(n, "seasonalQ"))
         .transpose()?
         .unwrap_or(0);
+    let sign = if legacy_polynomial_signs(model) {
+        -1.0
+    } else {
+        1.0
+    };
     let seasonal_ar = seasonal
         .map(|n| parse_coef_array(n, "AR", sp))
         .transpose()?
-        .unwrap_or_default();
+        .unwrap_or_default()
+        .into_iter()
+        .map(|v| v * sign)
+        .collect();
     let seasonal_ma = seasonal
         .map(|n| parse_coef_array(n, "MA", sq))
         .transpose()?
         .unwrap_or_default()
         .into_iter()
-        .map(|v| -v)
+        .map(|v| -v * sign)
         .collect();
     let nonseasonal = arima
         .descendants()
@@ -1414,12 +1546,15 @@ fn parse_arima_model(model: roxmltree::Node<'_, '_>) -> Result<ArimaSpec, Operat
     let ar = nonseasonal
         .map(|n| parse_coef_array(n, "AR", p))
         .transpose()?
-        .unwrap_or_default();
+        .unwrap_or_default()
+        .into_iter()
+        .map(|v| v * sign)
+        .collect();
     let ma_pmml = nonseasonal
         .map(|n| parse_coef_array(n, "MA", q))
         .transpose()?
         .unwrap_or_default();
-    let ma: Vec<f64> = ma_pmml.into_iter().map(|theta| -theta).collect();
+    let ma: Vec<f64> = ma_pmml.into_iter().map(|theta| -theta * sign).collect();
     let sigma2 =
         sigma2.ok_or_else(|| OperatorError::Data("Time Series PMML has no errVariance".into()))?;
     let df =
@@ -1825,17 +1960,20 @@ fn assemble(
     future_inputs: &[(String, Vec<f64>)],
 ) -> Result<Table, OperatorError> {
     let horizon = forecasts.first().map(Vec::len).unwrap_or(0);
-    let positions: Vec<_> = input
-        .model()
-        .fields()
-        .iter()
-        .enumerate()
-        .filter_map(|(i, f)| {
-            (i == period_at
-                || targets.contains(&f.name)
-                || future_inputs.iter().any(|(n, _)| n == &f.name))
-            .then_some(i)
-        })
+    let positions: Vec<_> = std::iter::once(period_at)
+        .chain(
+            input
+                .model()
+                .fields()
+                .iter()
+                .enumerate()
+                .filter_map(|(i, f)| {
+                    (i != period_at
+                        && (targets.contains(&f.name)
+                            || future_inputs.iter().any(|(n, _)| n == &f.name)))
+                    .then_some(i)
+                }),
+        )
         .collect();
     let projected = Table::new(
         DataModel::new(
@@ -2107,6 +2245,119 @@ mod tests {
         format!(
             "<PMML><TimeSeriesModel algorithmName=\"ARIMA\" bestFit=\"ARIMA\"><Extension name=\"errVariance\" value=\"4\"/><Extension name=\"degreesOfFreedom\" value=\"20\"/><Extension><ARIMA constantTerm=\"2\" transformation=\"none\" seasonLength=\"1\">{component}</ARIMA></Extension></TimeSeriesModel></PMML>"
         )
+    }
+
+    fn transfer_model(transform: &str, legacy: bool) -> String {
+        let sign = if legacy { -1.0 } else { 1.0 };
+        let marker = if legacy {
+            ""
+        } else {
+            "<Extension name=\"positiveParameters\" value=\"1\"/>"
+        };
+        format!(
+            r#"<PMML version="4.2"><TimeSeriesModel algorithmName="ARIMA">{marker}
+          <Extension name="errVariance" value="4"/><Extension name="degreesOfFreedom" value="20"/>
+          <Extension><ARIMA constantTerm="2" seasonLength="3">
+          <PredicterEffect field="x" transformation="{transform}" delay="2" nonSeasonalDiff="1" seasonalDiff="1">
+          <Numerator><NonseasonFactor><Array>2 {}</Array></NonseasonFactor><SeasonFactor><Array>{}</Array></SeasonFactor></Numerator>
+          <Denominator><NonseasonFactor><Array>{}</Array></NonseasonFactor><SeasonFactor><Array>{}</Array></SeasonFactor></Denominator>
+          </PredicterEffect></ARIMA></Extension></TimeSeriesModel></PMML>"#,
+            0.5 * sign,
+            0.25 * sign,
+            0.2 * sign,
+            0.3 * sign
+        )
+    }
+
+    #[test]
+    fn transfer_seasonal_factors_transform_difference_and_delay() {
+        for transform in ["logarithmic", "squareroot"] {
+            let SavedModel::Transfer(spec) =
+                parse_saved_model(&transfer_model(transform, false)).unwrap()
+            else {
+                panic!("transfer model");
+            };
+            let SavedModel::Transfer(legacy) =
+                parse_saved_model(&transfer_model(transform, true)).unwrap()
+            else {
+                panic!("legacy transfer model");
+            };
+            assert_eq!(legacy, spec);
+            assert_eq!(spec.effects[0].numerator, [2.0, -0.5, 0.0, -0.5, 0.125]);
+            assert_eq!(spec.effects[0].denominator, [0.2, 0.0, 0.3, -0.06]);
+            let z: Vec<f64> = (1..=40)
+                .map(|i| 1.0 + 0.002 * f64::from(i).powi(3))
+                .collect();
+            let x: Vec<f64> = z
+                .iter()
+                .map(|v| {
+                    if transform == "logarithmic" {
+                        v.exp()
+                    } else {
+                        v * v
+                    }
+                })
+                .collect();
+            let y = vec![10.0; 36];
+            let result = spec.score(&y, &[x], 4, 95.0).unwrap();
+            // Independent cascade: differences followed by the numerator, then
+            // two first-order recurrences (ordinary lag 1 and seasonal lag 3).
+            let difference: Vec<f64> = z.windows(2).map(|v| v[1] - v[0]).collect();
+            let w: Vec<f64> = difference
+                .iter()
+                .skip(3)
+                .zip(&difference)
+                .map(|(a, b)| a - b)
+                .collect();
+            let gain = 1.5 * 0.75;
+            let mut ordinary = vec![gain * w[0] / 0.8; 40];
+            let mut seasonal = vec![gain * w[0] / (0.8 * 0.7); 40];
+            for t in 10..40 {
+                let at = t - 6; // 4 differences and 2 delay observations.
+                let forcing =
+                    2.0 * w[at] - 0.5 * w[at - 1] - 0.25 * (2.0 * w[at - 3] - 0.5 * w[at - 4]);
+                ordinary[t] = forcing + 0.2 * ordinary[t - 1];
+                seasonal[t] = ordinary[t] + 0.3 * seasonal[t - 3];
+            }
+            assert!(result.fitted[..10].iter().all(Option::is_none));
+            let scored = result
+                .fitted
+                .into_iter()
+                .skip(10)
+                .map(Option::unwrap)
+                .chain(result.forecasts);
+            for (f, v) in scored.zip(seasonal.iter().skip(10)) {
+                assert!(
+                    (f.point - (2.0 + v)).abs() < 1e-10,
+                    "{transform}: {f:?}, {v}"
+                );
+                assert!(f.lower < f.point && f.upper > f.point);
+            }
+        }
+    }
+
+    #[test]
+    fn transfer_rejects_invalid_domains_orders_and_short_history() {
+        let xml = transfer_model("logarithmic", false);
+        let SavedModel::Transfer(mut spec) = parse_saved_model(&xml).unwrap() else {
+            panic!("transfer");
+        };
+        assert!(spec.score(&[1.0; 36], &[vec![0.0; 40]], 4, 95.0).is_err());
+        assert!(spec.score(&[1.0; 4], &[vec![1.0; 40]], 36, 95.0).is_err());
+        spec.effects[0].seasonal_difference = usize::MAX;
+        assert!(spec.score(&[1.0; 36], &[vec![1.0; 40]], 4, 95.0).is_err());
+        assert!(
+            parse_saved_model(&xml.replace(
+                "seasonLength=\"3\"",
+                "seasonLength=\"18446744073709551615\""
+            ))
+            .is_err()
+        );
+        assert!(
+            parse_saved_model(&xml.replace("<Array>2 0.5</Array>", "<Array>NaN 0.5</Array>"))
+                .is_err()
+        );
+        assert!(parse_saved_model(&xml.replace("logarithmic", "unknown")).is_err());
     }
 
     #[test]

@@ -109,6 +109,19 @@ pub fn score(
     horizon: usize,
     conf_percent: f64,
 ) -> Result<SeriesScore, ArimaError> {
+    score_with_signal(spec, y, horizon, conf_percent, &[])
+}
+
+/// A known additive signal on the transformed target scale. Subtract before
+/// conditioning the noise, then restore before inverse transformation (including
+/// the log/sqrt variance correction and confidence bounds).
+pub(crate) fn score_with_signal(
+    spec: &ArimaSpec,
+    y: &[f64],
+    horizon: usize,
+    conf_percent: f64,
+    signal: &[f64],
+) -> Result<SeriesScore, ArimaError> {
     spec.check()?;
     let expanded = spec.expanded()?;
     let spec = &expanded;
@@ -135,7 +148,20 @@ pub fn score(
             spec.df
         ))
     })?;
-    let z = transform(spec.transform, y)?;
+    if !signal.is_empty()
+        && (signal.len() != y.len().saturating_add(horizon)
+            || signal.iter().any(|v| !v.is_finite()))
+    {
+        return Err(ArimaError::Data(
+            "invalid transfer signal length/value".into(),
+        ));
+    }
+    let offset = |at: usize| signal.get(at).copied().unwrap_or(0.0);
+    let z: Vec<_> = transform(spec.transform, y)?
+        .into_iter()
+        .enumerate()
+        .map(|(i, v)| v - offset(i))
+        .collect();
     let diff = spec.difference_polynomial()?;
     let degree = diff.len().saturating_sub(1);
     if z.len() <= degree {
@@ -166,7 +192,7 @@ pub fn score(
             ));
         }
         let se = (spec.sigma2 * vn).sqrt();
-        *slot = Some(back_transform(spec.transform, zhat, se, tcrit)?);
+        *slot = Some(back_transform(spec.transform, zhat + offset(t), se, tcrit)?);
     }
 
     let mut forecasts = Vec::with_capacity(horizon);
@@ -180,7 +206,12 @@ pub fn score(
             ));
         }
         let se = (spec.sigma2 * var_factor).sqrt();
-        forecasts.push(back_transform(spec.transform, zhat, se, tcrit)?);
+        forecasts.push(back_transform(
+            spec.transform,
+            zhat + offset(extended.len().saturating_sub(1)),
+            se,
+            tcrit,
+        )?);
     }
     Ok(SeriesScore { fitted, forecasts })
 }
