@@ -1,0 +1,27 @@
+[package]
+name = "dms-macos-open"
+description = "Files macOS asks the app to open (Finder, Open With, the Dock): the one crate allowed unsafe"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "=0.6.5"
+objc2-foundation = { version = "=0.3.2", default-features = false, features = ["std", "NSArray", "NSEnumerator", "NSObject", "NSString", "NSURL"] }
+objc2-app-kit = { version = "=0.3.2", default-features = false, features = ["std", "NSApplication", "NSResponder"] }
+
+# Not `workspace = true`: the workspace forbids unsafe code, which cannot be relaxed per module.
+# Here it is denied for the crate and allowed only in `mod macos` (owner decision 2026-11-09,
+# docs/gui/MAC_APP_PLAN.md and AGENTS.md). The clippy lints are the workspace's.
+[lints.rust]
+unsafe_code = "deny"
+
+[lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+todo = "deny"
+unimplemented = "deny"
+unreachable = "deny"
