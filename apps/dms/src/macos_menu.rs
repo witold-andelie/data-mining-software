@@ -134,6 +134,8 @@ fn accelerator(spec: &CommandSpec) -> Option<Accelerator> {
         Key::R => Code::KeyR,
         Key::F => Code::KeyF,
         Key::Comma => Code::Comma,
+        Key::Period => Code::Period,
+        Key::Escape => Code::Escape,
         Key::Minus => Code::Minus,
         Key::Equals => Code::Equal,
         Key::Num0 => Code::Digit0,

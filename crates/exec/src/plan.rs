@@ -18,6 +18,20 @@ use std::sync::Arc;
 
 pub type NodeResult = Result<NodeOutput, NodeError>;
 
+/// What happens while a stream is evaluated, in evaluation order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EvalEvent<'a> {
+    /// A real node is about to run. Indices start at zero; total counts the nodes reachable
+    /// through inputs and model builders, once each, before evaluation starts.
+    NodeStarted {
+        uid: &'a str,
+        index: usize,
+        total: usize,
+    },
+    /// The node finished, successfully or with an error.
+    NodeFinished { uid: &'a str, ok: bool },
+}
+
 /// A node ready to evaluate: its inputs (in link order) and its operator, or why it has none.
 pub struct PlannedNode {
     pub uid: String,
@@ -58,8 +72,18 @@ impl Execution<'_> {
         targets: &[&str],
         context: &ExecContext,
     ) -> HashMap<String, NodeResult> {
+        self.evaluate_observed(targets, context, &mut |_| {})
+    }
+
+    /// Evaluates as usual, reporting only real `run_node` calls to the observer.
+    pub fn evaluate_observed(
+        &mut self,
+        targets: &[&str],
+        context: &ExecContext,
+        observer: &mut dyn FnMut(EvalEvent<'_>),
+    ) -> HashMap<String, NodeResult> {
         self.plan
-            .evaluate_with_globals(targets, context, &mut self.globals)
+            .evaluate_with_globals(targets, context, &mut self.globals, observer)
     }
 }
 
@@ -248,7 +272,10 @@ impl Plan {
         targets: &[&str],
         context: &ExecContext,
         globals: &mut dms_clem::GlobalValues,
+        observer: &mut dyn FnMut(EvalEvent<'_>),
     ) -> HashMap<String, NodeResult> {
+        let total = self.reachable_count(targets);
+        let mut started = 0usize;
         let mut state = vec![Visit::Pending; self.nodes.len()];
         let mut results: Vec<Option<NodeResult>> = vec![None; self.nodes.len()];
         let mut stack: Vec<(usize, bool)> = targets
@@ -281,7 +308,17 @@ impl Plan {
                     }
                 }
                 (Some(Visit::Expanded), true) => {
+                    observer(EvalEvent::NodeStarted {
+                        uid: &node.uid,
+                        index: started,
+                        total,
+                    });
+                    started = started.saturating_add(1);
                     let result = self.run_node(node, &results, context, globals);
+                    observer(EvalEvent::NodeFinished {
+                        uid: &node.uid,
+                        ok: result.is_ok(),
+                    });
                     set(&mut results, index, result);
                     set_state(&mut state, index, Visit::Done);
                 }
@@ -305,6 +342,29 @@ impl Plan {
             }
         }
         out
+    }
+
+    fn reachable_count(&self, targets: &[&str]) -> usize {
+        let mut seen = vec![false; self.nodes.len()];
+        let mut stack: Vec<usize> = targets
+            .iter()
+            .filter_map(|uid| self.by_uid.get(*uid).copied())
+            .collect();
+        let mut count = 0usize;
+        while let Some(index) = stack.pop() {
+            let Some(visited) = seen.get_mut(index) else {
+                continue;
+            };
+            if *visited {
+                continue;
+            }
+            *visited = true;
+            count = count.saturating_add(1);
+            if let Some(node) = self.nodes.get(index) {
+                stack.extend(node.inputs.iter().chain(&node.model_from).copied());
+            }
+        }
+        count
     }
 
     fn run_node(
@@ -436,4 +496,217 @@ fn links_to(diagram: &Diagram, to: &str) -> Vec<String> {
             _ => None,
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{Arity, OperatorError};
+    use dms_stream::Link;
+    use dms_types::{DataModel, Field, Storage, Table, Value};
+
+    fn node(uid: &str, class: &str) -> StreamNode {
+        StreamNode {
+            uid: uid.into(),
+            class: format!("com.example.{class}"),
+            extension: None,
+            model_builder: None,
+            name: None,
+            label: None,
+            position: None,
+            properties_attachment: None,
+            containers: Vec::new(),
+            settings: None,
+            binning_output: None,
+            result_items: Vec::new(),
+            subdiagram: None,
+        }
+    }
+
+    fn stream(nodes: Vec<StreamNode>, links: &[(&str, &str)]) -> Stream {
+        Stream {
+            file_version: None,
+            save_version: None,
+            properties: None,
+            diagram: Diagram {
+                nodes,
+                links: links
+                    .iter()
+                    .map(|(from, to)| Link {
+                        from: NodeRef::Uid((*from).into()),
+                        to: NodeRef::Uid((*to).into()),
+                    })
+                    .collect(),
+                terminal_order: Vec::new(),
+            },
+        }
+    }
+
+    struct Source;
+    impl Operator for Source {
+        fn arity(&self) -> Arity {
+            Arity::Exactly(0)
+        }
+        fn run(&self, _: &[Arc<Table>], _: &ExecContext) -> Result<Table, OperatorError> {
+            Ok(Table::new(
+                DataModel::new(vec![Field::new("x", Storage::Integer)]).unwrap(),
+                vec![vec![Value::Integer(42)]],
+            )
+            .unwrap())
+        }
+    }
+
+    fn lookup(id: &str) -> Option<Factory> {
+        match id {
+            "user_input" => Some(|_| Ok(Box::new(Source))),
+            _ => registry::factory(id),
+        }
+    }
+
+    fn comparable(
+        results: HashMap<String, NodeResult>,
+    ) -> HashMap<String, Result<Table, NodeError>> {
+        results
+            .into_iter()
+            .map(|(uid, result)| {
+                let result = result.map(|output| output.data().unwrap().as_ref().clone());
+                (uid, result)
+            })
+            .collect()
+    }
+
+    type RecordedEvent = (String, bool, usize, usize);
+
+    fn observed(
+        plan: &Plan,
+        targets: &[&str],
+    ) -> (HashMap<String, NodeResult>, Vec<RecordedEvent>) {
+        let mut events = Vec::new();
+        let results = plan.execution().unwrap().evaluate_observed(
+            targets,
+            &ExecContext::default(),
+            &mut |event| match event {
+                EvalEvent::NodeStarted { uid, index, total } => {
+                    events.push((uid.into(), true, index, total))
+                }
+                EvalEvent::NodeFinished { uid, ok } => {
+                    events.push((uid.into(), false, usize::from(ok), 0))
+                }
+            },
+        );
+        (results, events)
+    }
+
+    #[test]
+    fn observed_results_and_shared_node_events_match_normal_evaluation() {
+        let stream = stream(
+            vec![
+                node("source", "UserInputNode"),
+                node("left", "TableNode"),
+                node("right", "TableNode"),
+            ],
+            &[("source", "left"), ("source", "right")],
+        );
+        let plan = Plan::with_factories(&stream, lookup);
+        let targets = ["left", "right", "left", "missing"];
+        let (results, events) = observed(&plan, &targets);
+        assert_eq!(
+            comparable(results),
+            comparable(plan.evaluate(&targets, &ExecContext::default()))
+        );
+        assert_eq!(events.len(), 6);
+        for (index, (pair, uid)) in events
+            .chunks_exact(2)
+            .zip(["source", "left", "right"])
+            .enumerate()
+        {
+            assert_eq!(pair[0], (uid.into(), true, index, 3));
+            assert_eq!(pair[1], (uid.into(), false, 1, 0));
+        }
+    }
+
+    #[test]
+    fn observed_failures_cycles_and_unknown_targets_preserve_results() {
+        let stream = stream(
+            vec![
+                node("mystery", "Mystery"),
+                node("out", "TableNode"),
+                node("a", "TableNode"),
+                node("b", "TableNode"),
+            ],
+            &[("mystery", "out"), ("a", "b"), ("b", "a")],
+        );
+        let plan = Plan::new(&stream);
+        let targets = ["out", "a", "missing"];
+        let (results, events) = observed(&plan, &targets);
+        assert_eq!(
+            comparable(results),
+            comparable(plan.evaluate(&targets, &ExecContext::default()))
+        );
+        assert_eq!(events.len(), 6); // The cycle's repeated node never calls run_node.
+        for (index, pair) in events.chunks_exact(2).enumerate() {
+            assert_eq!(pair[0].2, index);
+            assert_eq!(pair[0].3, 4); // Reachable nodes include the cycle error.
+            assert_eq!(pair[0].0, pair[1].0);
+            assert_eq!(pair[1].2, 0);
+        }
+        assert!(observed(&plan, &["missing"]).1.is_empty());
+    }
+
+    #[test]
+    fn observed_aliases_and_model_builders_are_counted_once() {
+        let mut model = node("model", "TableNode");
+        model.settings = Some(dms_strfmt::fastinfoset::Element {
+            name: dms_strfmt::fastinfoset::QualifiedName {
+                prefix: None,
+                namespace: None,
+                local: Arc::from("properties"),
+            },
+            namespace_declarations: Vec::new(),
+            attributes: Vec::new(),
+            children: vec![dms_strfmt::fastinfoset::Node::Element(
+                dms_strfmt::fastinfoset::Element {
+                    name: dms_strfmt::fastinfoset::QualifiedName {
+                        prefix: None,
+                        namespace: None,
+                        local: Arc::from("builderNodeId"),
+                    },
+                    namespace_declarations: Vec::new(),
+                    attributes: Vec::new(),
+                    children: vec![dms_strfmt::fastinfoset::Node::Text(Arc::from("builder"))],
+                },
+            )],
+        });
+        let mut alias = node("alias", "MutableSuperNode");
+        alias.subdiagram = Some(
+            stream(
+                vec![
+                    node("source", "UserInputNode"),
+                    node("connector", "SuperNodeOutputConnectorNode"),
+                ],
+                &[("source", "connector")],
+            )
+            .diagram,
+        );
+        let stream = stream(
+            vec![alias, node("builder", "UserInputNode"), model],
+            &[("alias", "model")],
+        );
+        let plan = Plan::with_factories(&stream, lookup);
+        let targets = ["alias", "model", "builder"];
+        let (results, events) = observed(&plan, &targets);
+        assert_eq!(
+            comparable(results),
+            comparable(plan.evaluate(&targets, &ExecContext::default()))
+        );
+        let starts: Vec<_> = events
+            .iter()
+            .filter(|event| event.1)
+            .map(|event| (event.0.as_str(), event.2, event.3))
+            .collect();
+        assert_eq!(
+            starts,
+            [("source", 0, 3), ("builder", 1, 3), ("model", 2, 3)]
+        );
+    }
 }

@@ -29,10 +29,10 @@ fn gpu() -> MutexGuard<'static, ()> {
 
 fn workbench(nodes: usize) -> Workbench {
     Workbench::with_document(
-        Document {
-            path: PathBuf::from("synthetic-stream.str"),
-            stream: synthetic::stream(nodes),
-        },
+        Document::from_stream(
+            PathBuf::from("synthetic-stream.str"),
+            synthetic::stream(nodes),
+        ),
         ShellState::default(),
     )
 }

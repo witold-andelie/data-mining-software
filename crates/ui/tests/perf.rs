@@ -20,10 +20,10 @@ fn two_hundred_nodes_frame_cost() {
         (6, "200 nodes, zoomed out"),
     ] {
         let mut workbench = Workbench::with_document(
-            Document {
-                path: PathBuf::from("synthetic.str"),
-                stream: synthetic::grid(200, columns),
-            },
+            Document::from_stream(
+                PathBuf::from("synthetic.str"),
+                synthetic::grid(200, columns),
+            ),
             ShellState::default(),
         );
         let ctx = egui::Context::default();

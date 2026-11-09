@@ -35,6 +35,8 @@ fn egui_key(key: Key) -> egui::Key {
         Key::R => egui::Key::R,
         Key::F => egui::Key::F,
         Key::Comma => egui::Key::Comma,
+        Key::Period => egui::Key::Period,
+        Key::Escape => egui::Key::Escape,
         Key::Minus => egui::Key::Minus,
         Key::Equals => egui::Key::Equals,
         Key::Num0 => egui::Key::Num0,
