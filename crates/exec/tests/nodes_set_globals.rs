@@ -575,15 +575,19 @@ fn every_clem_node_reads_the_stream_globals() {
     );
 }
 
+// Declared at the crate root so it resolves to tests/support/mod.rs on every platform. A
+// `#[path = "../support/mod.rs"]` inside the inline `mod corpus` resolves against
+// tests/corpus/, a directory that does not exist: Windows folds the `..` away, POSIX does not.
+#[cfg(feature = "corpus")]
+mod support;
+
 #[cfg(feature = "corpus")]
 mod corpus {
+    use super::support;
     use super::*;
     use dms_exec::{Document, DocumentTable, FileResolver, format_real};
     use std::collections::HashMap;
     use std::path::{Path, PathBuf};
-
-    #[path = "../support/mod.rs"]
-    mod support;
 
     fn document(table: &Table, null_text: &str) -> Document {
         Document {
