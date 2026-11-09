@@ -400,10 +400,19 @@ fn run_summary(report: &dms_engine::run::RunReport) -> String {
 /// The native open and folder dialogs (run on the main thread, as macOS requires).
 fn pick(kind: Pick, filename: &str) -> Option<PathBuf> {
     match kind {
-        Pick::Stream => rfd::FileDialog::new()
-            .set_title("Open Stream")
-            .add_filter("Streams", &["dms", "str"])
-            .pick_file(),
+        Pick::Stream => {
+            let dialog = rfd::FileDialog::new().set_title("Open Stream");
+            // No type filter on macOS: the open panel maps an extension to the type this app
+            // declares, while `.str` files on a Mac can carry another app's type (Modeler's
+            // `com.ibm.spssmac.str`), and then they show greyed out and cannot be chosen. Any
+            // file can be picked; one that is not a stream is reported as an open error.
+            let dialog = if cfg!(target_os = "macos") {
+                dialog
+            } else {
+                dialog.add_filter("Streams", &["dms", "str"])
+            };
+            dialog.pick_file()
+        }
         Pick::Folder => rfd::FileDialog::new()
             .set_title("Add Data Folder")
             .pick_folder(),

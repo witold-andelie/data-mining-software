@@ -17,8 +17,11 @@ const APP_NAME: &str = "Data Mining";
 const BUNDLE_ID: &str = "io.github.witold-andelie.dms";
 /// Our exported native stream type.
 const DMS_TYPE_ID: &str = "io.github.witold-andelie.dms.stream";
-/// Our identifier for the `.str` file type (imported: another application defines the format).
-const STR_TYPE_ID: &str = "io.github.witold-andelie.dms.modeler-stream";
+/// The `.str` file type, imported (another application defines the format). Apple asks importers
+/// to use the defining application's identifier, and Macs with Modeler installed type `.str`
+/// files as this one; with an identifier of our own, the open panel greyed those files out.
+/// It is an interoperability identifier, like the extension, not IBM content.
+const STR_TYPE_ID: &str = "com.ibm.spssmac.str";
 const ICON_SIZES: &[u32] = &[16, 32, 128, 256, 512];
 
 pub fn run(_args: &[String]) -> Result<()> {
@@ -288,6 +291,8 @@ mod tests {
         let plist = info_plist("1.2.3");
         assert!(plist.contains("<string>str</string>"));
         assert!(plist.contains(STR_TYPE_ID));
+        // The identifier .str files carry on a Mac with Modeler; ours made them unselectable.
+        assert_eq!(STR_TYPE_ID, "com.ibm.spssmac.str");
         assert!(plist.contains("<key>CFBundleShortVersionString</key>\n\t<string>1.2.3</string>"));
         assert_eq!(
             plist.matches("<dict>").count(),
