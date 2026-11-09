@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Steps 1, 3 and 4 of docs/mac/MAC_VALIDATION.md as fixed commands, so that the opencode
-# Muse subagent only needs permission to run this script. Each step keeps its full log in
+# subagent only needs permission to run this script. Each step keeps its full log in
 # target/mac/<step>.log and ends with one summary line. Bash 3.2 compatible (macOS).
 set -uo pipefail
 cd "$(dirname "$0")/../.." || exit 2
@@ -37,16 +37,16 @@ case "$step" in
       cargo xtask compare "$label" "$stem.str" >| "target/mac/details/${label}__${stem}.txt" 2>&1
       count=$((count + 1))
     done < <(grep -E '^[^ ]+/[^ ]+: ' target/mac/mac-compare.txt)
-    echo "muse-steps details: $count streams compared elapsed=$(( $(date +%s) - start ))s dir=target/mac/details" \
+    echo "mac-steps details: $count streams compared elapsed=$(( $(date +%s) - start ))s dir=target/mac/details" \
       | tee target/mac/details.log
     exit 0 ;;
   *)
-    echo "usage: muse-steps.sh ci|test-corpus|regress|compare|details"
+    echo "usage: mac-steps.sh ci|test-corpus|regress|compare|details"
     exit 2 ;;
 esac
 start=$(date +%s)
 "${cmd[@]}" 2>&1 | tee "target/mac/$step.log"
 code=${PIPESTATUS[0]}
-echo "muse-steps $step: exit=$code elapsed=$(( $(date +%s) - start ))s log=target/mac/$step.log" \
+echo "mac-steps $step: exit=$code elapsed=$(( $(date +%s) - start ))s log=target/mac/$step.log" \
   | tee -a "target/mac/$step.log"
 exit "$code"
