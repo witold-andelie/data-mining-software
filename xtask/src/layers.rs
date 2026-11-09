@@ -18,14 +18,31 @@ const LAYERS: &[(&str, u8)] = &[
     ("dms-algo", 2),
     ("dms-exec", 3),
     ("dms-engine", 4),
+    ("dms-ui", UI_LAYER),
     ("dms-cli", APPS),
+    ("dms", APPS),
     ("xtask", TOOLS),
 ];
 
 const UI_LAYER: u8 = 6;
 const APPS: u8 = 10;
 const TOOLS: u8 = 100;
-const GUI_CRATES: &[&str] = &["egui", "eframe", "egui_extras", "egui_plot", "winit", "rfd"];
+const GUI_CRATES: &[&str] = &[
+    "egui",
+    "eframe",
+    "egui_extras",
+    "egui_plot",
+    "egui_kittest",
+    "egui-wgpu",
+    "egui-winit",
+    "egui_glow",
+    "egui_tiles",
+    "egui_dock",
+    "egui-snarl",
+    "winit",
+    "rfd",
+    "muda",
+];
 
 pub fn check() -> Result<()> {
     let output = Command::new(cargo_program())

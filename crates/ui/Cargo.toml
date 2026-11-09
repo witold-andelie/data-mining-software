@@ -1,0 +1,23 @@
+[package]
+name = "dms-ui"
+description = "Desktop interface widgets (L6): stream canvas, panels, view state"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+dms-engine.workspace = true
+dms-stream.workspace = true
+egui.workspace = true
+serde.workspace = true
+
+[dev-dependencies]
+# Bundled fonts in tests only, so screenshots do not depend on the machine's fonts.
+egui = { workspace = true, features = ["default_fonts"] }
+egui_kittest.workspace = true
+serde_json.workspace = true
+
+[lints]
+workspace = true

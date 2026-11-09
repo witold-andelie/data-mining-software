@@ -1,0 +1,143 @@
+//! The native macOS menu bar (muda), built from the engine's command registry. Choosing an
+//! item, or pressing its key equivalent, yields the command id; the window then dispatches it
+//! like any other request. Elsewhere the window draws the same menus (`dms_ui::menu`).
+
+use dms_engine::command::{CommandSpec, Key, Menu, Shortcut};
+use dms_engine::session::Session;
+use dms_ui::menu::menu_items;
+use muda::accelerator::{Accelerator, Code, Modifiers};
+use muda::{MenuEvent, MenuItem, PredefinedMenuItem, Submenu};
+use std::sync::mpsc;
+
+pub struct NativeMenu {
+    /// Kept alive for as long as the menu is installed.
+    _menu: muda::Menu,
+    items: Vec<(&'static str, MenuItem)>,
+    enabled: Vec<bool>,
+    events: mpsc::Receiver<MenuEvent>,
+}
+
+impl NativeMenu {
+    /// Builds the menu bar and installs it as the application's main menu. Menu events wake the
+    /// event loop so they are handled at once.
+    pub fn install(ctx: &eframe::egui::Context) -> Result<NativeMenu, muda::Error> {
+        let menu = muda::Menu::new();
+        let mut items = Vec::new();
+        for kind in Menu::ALL {
+            let submenu = Submenu::new(kind.label(), true);
+            let commands = menu_items(kind, true);
+            let mut group = None;
+            for spec in &commands {
+                if group.is_some_and(|g| g != spec.group) {
+                    submenu.append(&PredefinedMenuItem::separator())?;
+                }
+                group = Some(spec.group);
+                // Standard application-menu items sit between Settings and Quit.
+                if kind == Menu::App && spec.id == "app.quit" {
+                    submenu.append_items(&[
+                        &PredefinedMenuItem::services(None),
+                        &PredefinedMenuItem::separator(),
+                        &PredefinedMenuItem::hide(None),
+                        &PredefinedMenuItem::hide_others(None),
+                        &PredefinedMenuItem::show_all(None),
+                        &PredefinedMenuItem::separator(),
+                    ])?;
+                }
+                let item = MenuItem::with_id(spec.id, spec.label, false, accelerator(spec));
+                submenu.append(&item)?;
+                items.push((spec.id, item));
+            }
+            match kind {
+                Menu::Window => {
+                    submenu.append_items(&[
+                        &PredefinedMenuItem::minimize(None),
+                        &PredefinedMenuItem::maximize(None),
+                    ])?;
+                    submenu.set_as_windows_menu_for_nsapp();
+                }
+                Menu::Help => submenu.set_as_help_menu_for_nsapp(),
+                _ => {}
+            }
+            menu.append(&submenu)?;
+        }
+        menu.init_for_nsapp();
+
+        let (sender, events) = mpsc::channel();
+        let repaint = ctx.clone();
+        MenuEvent::set_event_handler(Some(move |event: MenuEvent| {
+            // The receiver lives as long as the app; a failed send only means it is closing.
+            let _ = sender.send(event);
+            repaint.request_repaint();
+        }));
+        let enabled = vec![false; items.len()];
+        Ok(NativeMenu {
+            _menu: menu,
+            items,
+            enabled,
+            events,
+        })
+    }
+
+    /// Commands chosen since the last call.
+    pub fn take_commands(&self) -> Vec<&'static str> {
+        self.events
+            .try_iter()
+            .filter_map(|event| {
+                self.items
+                    .iter()
+                    .find(|(id, _)| event.id() == *id)
+                    .map(|(id, _)| *id)
+            })
+            .collect()
+    }
+
+    /// Enables exactly the items whose commands can run now.
+    pub fn sync_enabled(&mut self, session: &Session) {
+        for ((id, item), was) in self.items.iter().zip(self.enabled.iter_mut()) {
+            let now = session.is_enabled(id);
+            if now != *was {
+                item.set_enabled(now);
+                *was = now;
+            }
+        }
+    }
+}
+
+fn accelerator(spec: &CommandSpec) -> Option<Accelerator> {
+    let Shortcut {
+        key,
+        command,
+        shift,
+        alt,
+        mac_control,
+    } = spec.shortcuts.mac?;
+    let mut modifiers = Modifiers::empty();
+    if command {
+        modifiers |= Modifiers::META;
+    }
+    if shift {
+        modifiers |= Modifiers::SHIFT;
+    }
+    if alt {
+        modifiers |= Modifiers::ALT;
+    }
+    if mac_control {
+        modifiers |= Modifiers::CONTROL;
+    }
+    let code = match key {
+        Key::N => Code::KeyN,
+        Key::O => Code::KeyO,
+        Key::S => Code::KeyS,
+        Key::W => Code::KeyW,
+        Key::Q => Code::KeyQ,
+        Key::Z => Code::KeyZ,
+        Key::R => Code::KeyR,
+        Key::F => Code::KeyF,
+        Key::Comma => Code::Comma,
+        Key::Minus => Code::Minus,
+        Key::Equals => Code::Equal,
+        Key::Num0 => Code::Digit0,
+        Key::F11 => Code::F11,
+    };
+    Some(Accelerator::new(modifiers, code))
+}
