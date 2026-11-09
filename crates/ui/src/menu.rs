@@ -41,6 +41,15 @@ fn egui_key(key: Key) -> egui::Key {
         Key::Equals => egui::Key::Equals,
         Key::Num0 => egui::Key::Num0,
         Key::F11 => egui::Key::F11,
+        Key::X => egui::Key::X,
+        Key::C => egui::Key::C,
+        Key::V => egui::Key::V,
+        Key::D => egui::Key::D,
+        Key::A => egui::Key::A,
+        Key::Backspace => egui::Key::Backspace,
+        Key::Delete => egui::Key::Delete,
+        Key::Enter => egui::Key::Enter,
+        Key::F2 => egui::Key::F2,
     }
 }
 

@@ -2,11 +2,13 @@
 //!
 //! Runs use immutable document snapshots; results and progress are applied by `poll_jobs`.
 
+pub use crate::autosave::Recovery;
 use crate::command::{self, Requires};
+pub use crate::edit_session::DocumentState;
+use crate::edit_session::{document_view, read_state};
 use crate::job::{JobEvent, JobId, JobManager, Progress, Waker};
 use crate::run::{RunReport, RunRequest, RunTargets, run_stream};
 use dms_stream::Stream;
-use dms_strfmt::{ArchiveLimits, read_archive};
 use std::collections::HashMap;
 use std::fmt;
 use std::path::{Path, PathBuf};
@@ -14,9 +16,6 @@ use std::sync::Arc;
 
 /// Upper bound on extra data folders.
 pub const MAX_DATA_FOLDERS: usize = 64;
-
-/// Largest `.str` file the session reads (the archive reader has its own member limits).
-const MAX_STREAM_FILE_BYTES: u64 = 1 << 30;
 
 /// An open stream.
 #[derive(Debug, Clone)]
@@ -42,6 +41,13 @@ impl Document {
 pub enum Arg {
     Path(PathBuf),
     Node(String),
+    Force,
+    Text(String),
+    Kind(String),
+    Position(i64, i64),
+    Delta(i64, i64),
+    Nodes(Vec<String>),
+    Link(String, String),
 }
 
 /// View changes the engine asks the interface to make; the engine does not own view state.
@@ -63,8 +69,12 @@ pub enum Outcome {
     /// The command needs this argument; an interface asks the person (for `path`: a file
     /// dialog) and calls again. Programs get this instead of a dialog.
     NeedsArgument(&'static str),
-    /// The application should close (after asking about unsaved work, from phase B).
+    /// The application can close; the discard guard has already passed.
     Quit,
+    /// Retry the requested lifecycle command with `Arg::Force` after user confirmation.
+    ConfirmDiscard,
+    /// The interface places this text on its clipboard.
+    Clipboard(String),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -78,6 +88,10 @@ pub enum CommandError {
         id: &'static str,
         expected: &'static str,
     },
+    Failed {
+        id: &'static str,
+        reason: String,
+    },
     Open {
         path: PathBuf,
         reason: String,
@@ -90,6 +104,7 @@ impl fmt::Display for CommandError {
             CommandError::Unknown(id) => write!(f, "unknown command {id:?}"),
             CommandError::Disabled { id, reason } => write!(f, "{id} is not available: {reason}"),
             CommandError::BadArgument { id, expected } => write!(f, "{id} expects {expected}"),
+            CommandError::Failed { id, reason } => write!(f, "{id}: {reason}"),
             CommandError::Open { path, reason } => {
                 write!(f, "cannot open {}: {reason}", path.display())
             }
@@ -103,6 +118,7 @@ impl std::error::Error for CommandError {}
 pub struct RunResults {
     pub job: JobId,
     pub report: RunReport,
+    pub revision: u64,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -133,12 +149,15 @@ pub enum RunNotice {
 
 #[derive(Debug, Default)]
 pub struct Session {
-    document: Option<Document>,
+    pub(crate) document: Option<Document>,
+    pub(crate) document_state: Option<DocumentState>,
+    pub(crate) autosave: crate::autosave::Autosave,
+    run_revision: u64,
     /// Folders searched by file name for data a stream references, after the stream's own
     /// folder (streams often name files on the machine that saved them).
     data_folders: Vec<PathBuf>,
     jobs: JobManager<RunReport>,
-    results: Option<RunResults>,
+    pub(crate) results: Option<RunResults>,
     run_state: RunState,
 }
 
@@ -147,10 +166,27 @@ impl Session {
         Self::default()
     }
 
-    /// A session over a stream that is already decoded (tests, synthetic streams).
+    /// A clean session over an already decoded stream (tests, synthetic streams).
+    /// File imports should use `file.open` to track their unsaved native document.
     pub fn with_document(document: Document) -> Self {
+        let native = document.path.extension().is_some_and(|s| s == "dms");
+        let state = DocumentState::new(
+            dms_stream::StreamDoc {
+                stream: document.stream,
+                attachments: document
+                    .attachments
+                    .iter()
+                    .map(|(k, v)| (k.clone(), v.clone()))
+                    .collect(),
+                meta: Default::default(),
+            },
+            native.then(|| document.path.clone()),
+            (!native).then_some(document.path),
+            true,
+        );
         Session {
-            document: Some(document),
+            document: Some(document_view(&state)),
+            document_state: Some(state),
             ..Self::default()
         }
     }
@@ -193,6 +229,7 @@ impl Session {
                         self.results = Some(RunResults {
                             job,
                             report: output,
+                            revision: self.run_revision,
                         });
                         self.run_state = RunState::Idle;
                     }
@@ -216,7 +253,7 @@ impl Session {
         notices
     }
 
-    fn cancel_run(&mut self) {
+    pub(crate) fn cancel_run(&mut self) {
         if let RunState::Running { job, .. } = self.run_state {
             self.jobs.cancel(job);
             self.run_state = RunState::Idle;
@@ -244,25 +281,41 @@ impl Session {
     }
 
     fn start_run(&mut self, targets: RunTargets) {
-        let Some(document) = &self.document else {
+        let Some(state) = &self.document_state else {
             return;
         };
         let request = RunRequest {
-            stream: Arc::new(document.stream.clone()),
-            attachments: Arc::clone(&document.attachments),
+            stream: Arc::new(state.doc.stream.clone()),
+            attachments: Arc::new(
+                state
+                    .doc
+                    .attachments
+                    .iter()
+                    .map(|(k, v)| (k.clone(), v.clone()))
+                    .collect(),
+            ),
             data_dirs: std::iter::once(
-                document
-                    .path
-                    .parent()
+                state
+                    .native_path
+                    .as_ref()
+                    .or(state.imported_from.as_ref())
+                    .and_then(|path| path.parent())
                     .filter(|dir| !dir.as_os_str().is_empty())
                     .unwrap_or_else(|| Path::new("."))
                     .to_path_buf(),
             )
             .chain(self.data_folders.iter().cloned())
             .collect(),
-            export_dir: export_dir_for(&document.path),
+            export_dir: export_dir_for(
+                state
+                    .native_path
+                    .as_deref()
+                    .or(state.imported_from.as_deref())
+                    .unwrap_or_else(|| Path::new("Untitled.dms")),
+            ),
             targets,
         };
+        self.run_revision = state.revision;
         let job = self.jobs.spawn(move |ctx| run_stream(request, ctx));
         self.run_state = RunState::Running {
             job,
@@ -277,6 +330,19 @@ impl Session {
     /// Whether a command can run now, and if not, why.
     pub fn availability(&self, id: &str) -> Result<(), String> {
         let spec = command::by_id(id).ok_or_else(|| format!("unknown command {id:?}"))?;
+        match id {
+            "edit.undo" if self.undo_label().is_none() => return Err("Nothing to undo".into()),
+            "edit.redo" if self.redo_label().is_none() => return Err("Nothing to redo".into()),
+            "edit.cut" | "edit.copy" | "edit.duplicate" | "edit.delete"
+                if self
+                    .document_state
+                    .as_ref()
+                    .is_none_or(|s| s.selection.is_empty()) =>
+            {
+                return Err("No nodes are selected".into());
+            }
+            _ => {}
+        }
         match spec.requires {
             Requires::Nothing => Ok(()),
             Requires::Document if self.document.is_some() => Ok(()),
@@ -307,25 +373,11 @@ impl Session {
                 reason,
             })?;
         match spec.id {
-            "file.open" => {
-                let Some(Arg::Path(path)) = args.first() else {
-                    return Ok(Outcome::NeedsArgument("path"));
-                };
-                self.cancel_run();
-                let document = open_document(path).map_err(|reason| CommandError::Open {
-                    path: path.clone(),
-                    reason,
-                })?;
-                self.document = Some(document);
-                self.results = None;
-                Ok(Outcome::Done)
-            }
-            "file.close" => {
-                self.cancel_run();
-                self.document = None;
-                self.results = None;
-                Ok(Outcome::Done)
-            }
+            "file.new" | "file.open" | "file.save" | "file.save_as" | "file.close"
+            | "file.recover" | "app.quit" | "edit.undo" | "edit.redo" | "edit.cut"
+            | "edit.copy" | "edit.paste" | "edit.duplicate" | "edit.delete" | "edit.select_all"
+            | "edit.select" | "node.add" | "node.move" | "node.connect" | "node.disconnect"
+            | "node.rename" => self.execute_document_command(spec.id, args),
             "run.stream" => {
                 self.start_run(RunTargets::Stream);
                 Ok(Outcome::Done)
@@ -368,7 +420,6 @@ impl Session {
             "view.zoom_fit" => Ok(Outcome::View(ViewAction::ZoomFit)),
             "view.fullscreen" => Ok(Outcome::View(ViewAction::ToggleFullscreen)),
             "app.about" => Ok(Outcome::View(ViewAction::ShowAbout)),
-            "app.quit" => Ok(Outcome::Quit),
             other => Err(CommandError::Disabled {
                 id: spec.id,
                 reason: format!("{other} has no implementation yet"),
@@ -377,28 +428,9 @@ impl Session {
     }
 }
 
-/// Reads and decodes a `.str` file.
+/// Reads an imported `.str` or native `.dms` into the v0.1 compatibility view.
 pub fn open_document(path: &Path) -> Result<Document, String> {
-    let size = std::fs::metadata(path).map_err(|e| e.to_string())?.len();
-    if size > MAX_STREAM_FILE_BYTES {
-        return Err(format!(
-            "file is {size} bytes; the limit is {MAX_STREAM_FILE_BYTES}"
-        ));
-    }
-    let bytes = std::fs::read(path).map_err(|e| e.to_string())?;
-    let archive = read_archive(&bytes, &ArchiveLimits::default()).map_err(|e| e.to_string())?;
-    let stream = Stream::from_document(&archive.document).map_err(|e| e.to_string())?;
-    Ok(Document {
-        path: path.to_path_buf(),
-        stream,
-        attachments: Arc::new(
-            archive
-                .attachments
-                .into_iter()
-                .map(|attachment| (attachment.name, attachment.bytes.into()))
-                .collect(),
-        ),
-    })
+    read_state(path).map(|state| document_view(&state))
 }
 
 /// Centralized default; the interface can later provide an explicit export destination.
@@ -634,6 +666,12 @@ mod tests {
         std::fs::remove_file(&path).unwrap();
         assert_eq!(opened, Ok(Outcome::Done));
         assert!(session.results().is_none());
+        assert!(session.is_dirty());
+        assert!(session.document_state().unwrap().native_path.is_none());
+        assert_eq!(
+            session.execute("file.save", &[]),
+            Ok(Outcome::NeedsArgument("save_path"))
+        );
         let document = session.document().unwrap();
         assert_eq!(document.path, path);
         assert_eq!(

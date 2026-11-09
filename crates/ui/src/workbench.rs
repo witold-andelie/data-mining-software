@@ -287,6 +287,17 @@ impl Workbench {
                     });
                 }
             }
+            Ok(Outcome::ConfirmDiscard) => {
+                self.status = Some(StatusMessage {
+                    text: "There are unsaved changes.".to_string(),
+                    error: true,
+                });
+            }
+            Ok(Outcome::Clipboard(text)) => {
+                if let Some(ctx) = ctx {
+                    ctx.copy_text(text);
+                }
+            }
             Ok(Outcome::View(action)) => self.apply_view(action, ctx),
             Ok(Outcome::Quit) => {
                 if let Some(ctx) = ctx {

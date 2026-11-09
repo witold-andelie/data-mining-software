@@ -295,6 +295,8 @@ cargo test -p dms-ui --lib                      # 不渲染的测试
 - **移动**：拖动选中的节点。拖动过程中只在界面里预览偏移，松开时发送一次 `node.move`（一个撤销步骤）。
 - **连线**：节点图块右边缘中点有一个小圆形端口（悬停时才显示）。从端口拖到另一个节点上松开，发送 `node.connect`；不合法时在指针旁显示原因（成环、自连、重复），不发送。单击连线选中它（高亮），⌫ 或 Delete 发送 `node.disconnect`。
 - **删除、复制、粘贴、复制一份、全选**：走 `edit.*` 命令。macOS 上，原生菜单的 ⌘C/⌘V/⌘X/⌘A 在**文本框有焦点时**（`ctx.wants_keyboard_input()`）要变成文本操作：给 egui 注入 `Event::Copy`、`Event::Cut`、`Event::Paste(text)`、全选；其余时候是节点操作。读写系统剪贴板用 `arboard`（只在 `apps/dms` 里），界面库通过一个 `Clipboard` trait 拿到它，测试里用假实现。
+- **单键快捷键**：⌫、Delete、↩︎、F2、Esc 这类不带 ⌘/Ctrl 的快捷键，不要注册成 macOS 原生菜单的 accelerator（菜单项只显示按键文字），否则会截走文本框里的退格和回车。改由界面在画布有焦点、且 `ctx.wants_keyboard_input()` 为 false 时处理。`apps/dms/src/macos_menu.rs` 的 `accelerator` 为没有 `command` 修饰的快捷键返回 `None`；`dms_ui::menu::take_shortcuts` 在有原生菜单时仍处理这些单键。
+- **撤销菜单的标签**：用 WP2 的 `Session::command_label(id)`（例如“Undo Move”），原生菜单和窗口内菜单都要同步。
 - **从节点面板添加**：可以把已实现的节点从面板拖到画布，松开处就是位置；或者双击，放在可见区域中心。发送 `node.add`。未实现的节点不能拖，悬停时说明原因（现有行为）。
 - **重命名**：双击节点标签，或选中节点后按 ↩︎ / F2，在原处出现文本框；↩︎ 确认（发送 `node.rename`），Esc 取消。
 - **右键菜单**：在节点上：运行到此、重命名、复制、删除；在连线上：删除；在空白处：粘贴、全选。
