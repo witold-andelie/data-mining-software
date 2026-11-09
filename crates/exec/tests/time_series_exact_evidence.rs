@@ -161,6 +161,7 @@ fn collect_evidence(only_exact: bool) -> Vec<Value> {
 const EXACT_CASES: &[&str] = &[
     "ts_ar",
     "ts_ma",
+    "ts_airline",
     "ts_airline_noconst",
     "ts_tf_delay",
     "ts_tf_den",

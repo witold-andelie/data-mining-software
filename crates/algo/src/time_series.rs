@@ -38,22 +38,30 @@
 //! Initial TF coefficients use joint least squares before the extra lag discard;
 //! AR uses the centered biased ACF. The pure MA(1) initialization uses the ACF
 //! through p+q=1 in the Guide's AR approximation, with higher lags zero.
-//! Adoption is structural: nonseasonal, undifferenced AR(1)/MA(1) with constant;
-//! the supported AR(1)-noise transfer fits without denominator parameters;
-//! and two no-constant seasonal products under `marquardt_guide` with the
-//! section-6 ACF of N_t = ΔZ_t (c = 0, so the raw second moment, not a further
-//! mean subtraction):
-//! - MA(1)×SMA(1) with d = D = 1 (`ts_more/ts_airline_noconst`): saved coefficients
-//!   to 11 digits, 4/4 terminal inputs;
-//! - AR(1)×SAR(1) with d = D = 0 (`ts_more/ts_sarlog_noconst` rebuild):
-//!   (φ, Φ) = (0.98817376, 0.52429593) vs the recorded rebuild (0.988174, 0.524296).
-//!   Row-1 half-width differs by 1.01e-8 (8.2 digits); compare stays 3/4 on `$TSLCI`.
+//! Adoption is structural, under `marquardt_guide`:
+//! - one nonseasonal AR or MA term, d <= 1, with or without a constant (`ts_more/ts_ar`,
+//!   `ts_ma`; probe `ts_est`: `est_iar_*`, `est_ima_*`, `est_arma_*_ar`, `est_arma_*_ma`,
+//!   all 4/4 terminal inputs, coefficients to 11-12 digits);
+//! - MA(1)×SMA(1) with d = D = 1, with or without a constant (`ts_more/ts_airline`,
+//!   `ts_airline_noconst`, `ts_est/est_air_a`, `est_air_a_nc`);
+//! - AR(1)×SAR(1) with d = D = 0 and no constant (`ts_more/ts_sarlog_noconst` rebuild:
+//!   (φ, Φ) = (0.98817376, 0.52429593) vs the recorded rebuild (0.988174, 0.524296); the
+//!   row-1 half-width differs by 1.01e-8 and compare stays 3/4 on `$TSLCI`);
+//! - the supported AR(1)-noise transfer fits without denominator parameters.
 //!
-//! Mixed ARIMA(1,1,1), airline-with-constant, and rational transfers retain `lm`.
+//! Section-6 starts: the constant starts at the mean of the differenced series; the lag-1
+//! ACF is that of N_t = w_t - c (centered when there is a constant, the raw second moment
+//! when there is none); the seasonal-lag ACF is always the raw second moment of w_t. With
+//! a constant, a centered seasonal ACF stops at 4.5 digits (`ts_airline`).
+//!
+//! Mixed ARMA (p, q >= 1, e.g. ARIMA(1,1,1), probe `ts_est/est_arma_*`, `est_ari_*`) and
+//! rational transfers retain `lm`: Modeler's objective at its saved estimates equals ours
+//! (errVariance to 1e-16), but no reading of the section-6 mixed start (A6.2 AR, MA from
+//! the AR(p+q) cross covariance; truncation, centering, unbiased ACF, CLS pre-fit,
+//! Hannan-Rissanen, ARMA(1,1) moments) reproduces the stopping point (best 2-4 digits).
 //! Expert selection and smoothing also retain `lm`. The earlier optimum for
 //! `ts_tf_static` was closer to the likelihood maximum, but the Guide's early
-//! stop matches Modeler. Centered ACF on the two no-constant products stops at
-//! 4.5 digits (airline_noconst) / 2.1 digits on the CI (sarlog_noconst).
+//! stop matches Modeler.
 //!
 //! Passing the objective alone is not acceptance.
 //! Other limits: <=512 fitting observations, monthly regular dates, bounded
@@ -619,22 +627,21 @@ fn fit_seasonal_arima(
         let scale = (ld / (2.0 * n)).exp();
         Ok(r.into_iter().map(|v| v * scale).collect::<Vec<_>>())
     };
-    // Guide section 6 with c = 0: N_t is the (differenced) series, and the ACF
-    // is its raw second moment. Centered ACF on the same structures stops 4–5
-    // digits short. Measured under marquardt_guide:
-    // - MA(1)×SMA(1) with d=D=1: ts_more/ts_airline_noconst, 11 digits vs saved;
-    // - AR(1)×SAR(1) with d=D=0: ts_more/ts_sarlog_noconst rebuild
-    //   (φ, Φ) = (0.988174, 0.524296).
-    let guide_noconst = !o.constant
-        && zero_ar == 0
-        && zero_ma == 0
-        && o.period > 1
+    // Guide section 6 starts under marquardt_guide, only for the structures measured
+    // exact (see the module doc): one nonseasonal AR or MA term (d <= 1, with or without
+    // a constant), MA(1)×SMA(1) with d = D = 1, and AR(1)×SAR(1) with d = D = 0 and no
+    // constant. Mixed ARMA starts are not reproduced and keep `lm`.
+    let nonseasonal_one = o.sp == 0 && o.sq == 0 && o.sd == 0 && o.p + o.q == 1 && o.d <= 1;
+    let seasonal_one = o.period > 1
         && ((o.p == 0 && o.sp == 0 && o.q == 1 && o.sq == 1 && o.d == 1 && o.sd == 1)
-            || (o.p == 1 && o.sp == 1 && o.q == 0 && o.sq == 0 && o.d == 0 && o.sd == 0));
-    let (x, iterations) = if guide_noconst {
-        if k != 2 {
-            return Err(data("Guide noconst seasonal start expects two parameters"));
-        }
+            || (!o.constant
+                && o.p == 1
+                && o.sp == 1
+                && o.q == 0
+                && o.sq == 0
+                && o.d == 0
+                && o.sd == 0));
+    let (x, iterations) = if zero_ar == 0 && zero_ma == 0 && (nonseasonal_one || seasonal_one) {
         let mut w = arima::difference(&z, o.d);
         for _ in 0..o.sd {
             if w.len() <= o.period {
@@ -647,13 +654,31 @@ fn fit_seasonal_arima(
                 .map(|(a, b)| a - b)
                 .collect();
         }
-        let r1 = guide_acf_lag(&w, 1, false)?;
-        let rs = guide_acf_lag(&w, o.period, false)?;
-        let x = if o.q == 1 {
-            vec![guide_ma1_from_rho(r1), guide_ma1_from_rho(rs)]
-        } else {
-            vec![guide_ar1_from_rho(r1), guide_ar1_from_rho(rs)]
-        };
+        // The constant starts at the mean of the differenced series and the lag-1 ACF is
+        // that of N_t = w_t - c (centered); without a constant N_t = w_t (raw second
+        // moment). The seasonal-lag ACF is the raw second moment in both cases.
+        let mut x = Vec::with_capacity(k);
+        if o.constant {
+            x.push(w.iter().sum::<f64>() / count(w.len()));
+        }
+        let r1 = guide_acf_lag(&w, 1, o.constant)?;
+        if o.p == 1 {
+            x.push(guide_ar1_from_rho(r1));
+        }
+        if o.q == 1 {
+            x.push(guide_ma1_from_rho(r1));
+        }
+        if o.sp == 1 || o.sq == 1 {
+            let rs = guide_acf_lag(&w, o.period, false)?;
+            x.push(if o.sp == 1 {
+                guide_ar1_from_rho(rs)
+            } else {
+                guide_ma1_from_rho(rs)
+            });
+        }
+        if x.len() != k {
+            return Err(data("Guide start does not cover every parameter"));
+        }
         marquardt_guide(x, residuals, |x| admissible_arima(&make(x)))?
     } else {
         let mut bounds = vec![(-1.0 + 1e-8, 1.0 - 1e-8); k];
@@ -811,7 +836,7 @@ fn fit_arima(
             .sum();
         let lambda = r1 - a1 * r2 - phi + phi * (a1 * r1 + a2 * r2);
         initial.push(if q == 0 {
-            r1.clamp(-0.95, 0.95)
+            guide_ar1_from_rho(r1)
         } else {
             phi.clamp(-0.95, 0.95)
         });
@@ -820,13 +845,9 @@ fn fit_arima(
         } // internal MA sign is plus
     }
     if p == 0 && q == 1 {
-        initial.push(if d == 0 {
-            // Guide section 6, AR(1) approximation to MA(1). The available
-            // initialization ACF ends at p+q=1 (higher lags are zero).
-            guide_ma1_from_rho(guide_acf1(&w)?)
-        } else {
-            0.1
-        });
+        // Guide section 6, AR(1) approximation to MA(1). The available
+        // initialization ACF ends at p+q=1 (higher lags are zero).
+        initial.push(guide_ma1_from_rho(guide_acf1(&w)?));
     }
     let make = |x: &[f64]| ArimaSpec {
         seasonal_d: 0,
@@ -856,7 +877,7 @@ fn fit_arima(
         let scale = (log_det / (2.0 * n)).exp();
         Ok(r.iter().map(|v| v * scale).collect::<Vec<_>>())
     };
-    let (parameters, iterations) = if d == 0 && p + q == 1 {
+    let (parameters, iterations) = if p + q == 1 {
         marquardt_guide(initial, residuals, |x| admissible_arima(&make(x)))?
     } else {
         lm(initial, &bounds, residuals)?
