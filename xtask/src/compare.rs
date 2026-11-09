@@ -11,7 +11,7 @@
 use crate::{Result, cargo, cargo_quiet, oracle, workspace_root};
 use serde_json::{Value, json};
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// Mismatching cells reported per node.
 const MAX_REPORTED: usize = 5;
@@ -118,7 +118,14 @@ pub fn compare_stream(label: &str, path: &str, verbose: bool) -> Result<StreamCo
         "--out".into(),
         path_text(&ours)?,
     ];
-    for dir in data_dirs(&root, label) {
+    let mut dirs = data_dirs(&root, label);
+    for dir in referenced_label_dirs(&root, label, &stream) {
+        let dir = path_text(&dir)?;
+        if !dirs.contains(&dir) {
+            dirs.push(dir);
+        }
+    }
+    for dir in dirs {
         run_args.push("--data-dir".into());
         run_args.push(dir);
     }
@@ -205,6 +212,71 @@ fn data_dirs(root: &Path, label: &str) -> Vec<String> {
         .filter(|dir| dir.is_dir())
         .filter_map(|dir| dir.to_str().map(str::to_string))
         .collect()
+}
+
+/// Local copies of the other corpus labels a stream names in a saved path, such as
+/// `D:/data-mining-software/corpus/sources/source_records.xml` in an `xml_scan` stream. The
+/// recording machine opens that absolute path directly; on any other checkout (another drive,
+/// macOS) the file is only found by name, so the label's directory joins the search list after
+/// the usual ones. Extension nodes keep their settings in text attachments, so those are read
+/// too. A stream that does not decode adds nothing: `dms-cli run` reports it.
+fn referenced_label_dirs(root: &Path, label: &str, stream: &Path) -> Vec<PathBuf> {
+    use dms_strfmt::AttachmentKind;
+    let Ok(bytes) = fs::read(stream) else {
+        return Vec::new();
+    };
+    let Ok(archive) = dms_strfmt::read_archive(&bytes, &dms_strfmt::ArchiveLimits::default())
+    else {
+        return Vec::new();
+    };
+    let mut text = archive.document.to_xml();
+    for attachment in &archive.attachments {
+        if matches!(
+            attachment.kind,
+            AttachmentKind::XmlText | AttachmentKind::Json
+        ) {
+            text.push('\n');
+            text.push_str(&String::from_utf8_lossy(&attachment.bytes));
+        }
+    }
+    corpus_labels_in(&text)
+        .into_iter()
+        .filter(|other| other != label)
+        .map(|other| root.join("corpus").join(other))
+        .filter(|dir| dir.is_dir())
+        .collect()
+}
+
+/// Label names `x` in every `…/corpus/x/…` (forward or back slashes) in `text`, first seen first.
+fn corpus_labels_in(text: &str) -> Vec<String> {
+    let mut labels: Vec<String> = Vec::new();
+    for (start, _) in text.match_indices("corpus") {
+        let after_separator = text
+            .get(..start)
+            .and_then(|before| before.chars().next_back())
+            .is_some_and(|c| c == '/' || c == '\\');
+        let Some(tail) = text
+            .get(start..)
+            .and_then(|rest| rest.strip_prefix("corpus"))
+            .and_then(|rest| rest.strip_prefix(['/', '\\']))
+        else {
+            continue;
+        };
+        let end = tail
+            .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_' || c == '-'))
+            .unwrap_or(tail.len());
+        let (Some(name), Some(rest)) = (tail.get(..end), tail.get(end..)) else {
+            continue;
+        };
+        if after_separator
+            && !name.is_empty()
+            && rest.starts_with(['/', '\\'])
+            && !labels.iter().any(|known| known == name)
+        {
+            labels.push(name.to_string());
+        }
+    }
+    labels
 }
 
 fn path_text(path: &Path) -> Result<String> {
@@ -489,6 +561,20 @@ fn parse_csv_chars(text: &str, dialect: Dialect) -> Vec<Vec<Cell>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn corpus_labels_in_saved_paths() {
+        let xml = concat!(
+            r#"<p n="a">D:/data-mining-software/corpus/sources/source_records.xml</p>"#,
+            r#"<p n="b">D:\data-mining-software\corpus\misc_next\pmml_template.str</p>"#,
+            r#"<p n="c">D:/data-mining-software/corpus/sources/source_xml_dir</p>"#,
+            r#"<p n="d">C:/mycorpus/x/y.csv corpus/no_root.csv /corpus/ /corpus/../up.csv</p>"#,
+        );
+        assert_eq!(corpus_labels_in(xml), ["sources", "misc_next"]);
+        assert!(corpus_labels_in("").is_empty());
+        assert!(corpus_labels_in("corpus").is_empty());
+        assert!(corpus_labels_in("/corpus/é/x").is_empty());
+    }
 
     fn c(text: &str, quoted: bool) -> Cell {
         Cell {
