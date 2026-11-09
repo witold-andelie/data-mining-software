@@ -1,13 +1,13 @@
-# Muse 子代理任务：在 Mac 上运行验证命令并如实汇报
+# 子代理任务：在 Mac 上运行验证命令并如实汇报
 
 你在 `data-mining-software` 仓库的根目录。这个仓库是用 Rust 重写的数据挖掘工具。你的工作只有一件：按顺序运行下面五条命令，然后如实汇报结果。
 
 ```sh
-bash docs/mac/muse-steps.sh ci
-bash docs/mac/muse-steps.sh test-corpus
-bash docs/mac/muse-steps.sh regress
-bash docs/mac/muse-steps.sh compare
-bash docs/mac/muse-steps.sh details
+bash docs/mac/mac-steps.sh ci
+bash docs/mac/mac-steps.sh test-corpus
+bash docs/mac/mac-steps.sh regress
+bash docs/mac/mac-steps.sh compare
+bash docs/mac/mac-steps.sh details
 ```
 
 ## 规则
@@ -22,7 +22,7 @@ bash docs/mac/muse-steps.sh details
 
 对每条命令：
 
-1. 它最后一行 `muse-steps <step>: exit=… elapsed=…`，原样复制。
+1. 它最后一行 `mac-steps <step>: exit=… elapsed=…`，原样复制。
 2. 如果退出码不是 0，从对应的 `target/mac/<step>.log` 里原样复制最先出现的错误（编译错误、失败的测试名和断言信息、`regress` 的汇总行），最多 40 行。不要改写，不要总结。
 3. `regress` 的汇总行（以 `xtask regress:` 开头）原样复制。
 4. `compare` 输出的前 30 行原样复制（`target/mac/mac-compare.txt`）。

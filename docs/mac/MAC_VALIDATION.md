@@ -13,11 +13,11 @@
 |---|---|---|
 | 0 | Claude Code | 环境：Rust 工具链、opencode、分支 |
 | 2 | Claude Code | 放置数据（涉及 `~/Downloads` 和家目录） |
-| 1、3、4 | **opencode Muse 子代理** | 只运行 `docs/mac/muse-steps.sh` 的五个子命令，不改文件 |
-| 核查 | Claude Code | 自己读 `target/mac/` 下的日志和 TSV，核对 Muse 的汇报 |
+| 1、3、4 | **opencode 子代理**（`opencode/glm-5.3-flash-free`） | 只运行 `docs/mac/mac-steps.sh` 的五个子命令，不改文件 |
+| 核查 | Claude Code | 自己读 `target/mac/` 下的日志和 TSV，核对子代理的汇报 |
 | 5、交付 | Claude Code | 分析差异、平台修复、报告、推送 |
 
-Muse 的已知问题：它会把真实的失败说成"上游的怪癖"，声称检查已通过而实际没有，用错参数后把失败报告成成功，还曾按绝对路径改动别的目录。所以它只拿到一个固定脚本的执行权，没有编辑权；它的汇报只作参考，**结论一律以 Claude Code 自己读到的日志和 TSV 为准**。
+子代理模型的已知风险（Windows 上用 opencode 模型时实际遇到过）：把真实的失败说成"上游的怪癖"，声称检查已通过而实际没有，用错参数后把失败报告成成功，按绝对路径改动别的目录，免费模型还容易编造。所以它只拿到一个固定脚本的执行权，没有编辑权；它的汇报只作参考，**结论一律以 Claude Code 自己读到的日志和 TSV 为准**。
 
 ## 规则（除 AGENTS.md 外，额外适用）
 
@@ -43,7 +43,7 @@ git switch -c mac-validation
 安装 opencode（按 opencode 官方说明；常见方式是 `npm install -g opencode-ai`，或 `curl -fsSL https://opencode.ai/install | bash`）。然后请负责人登录他的 opencode go 会员：`! opencode auth login`。确认模型可用：
 
 ```sh
-opencode models --standalone | grep -i muse     # 应能看到 opencode-go/muse-spark-1.3-contributor
+opencode models --standalone | grep -i glm      # 应能看到 opencode/glm-5.3-flash-free
 ```
 
 opencode 的注意事项（来自 Windows 上的经验）：
@@ -65,36 +65,36 @@ tar -xzf ~/Downloads/dms-data-d1d2836.tar.gz -C "$HOME" modeler-home
 cargo xtask corpus verify
 ```
 
-`muse-steps.sh` 默认使用 `$HOME/modeler-home` 作为 `DMS_MODELER_HOME`（回归按文件名在它的 `Demos/` 里找数据）。`.sha256` 文件是 Windows 上生成的（文件名前有 `*`）；如果 `-c` 不认，就用 `shasum -a 256 dms-data-d1d2836.tar.gz` 和文末的哈希值手动对比。
+`mac-steps.sh` 默认使用 `$HOME/modeler-home` 作为 `DMS_MODELER_HOME`（回归按文件名在它的 `Demos/` 里找数据）。`.sha256` 文件是 Windows 上生成的（文件名前有 `*`）；如果 `-c` 不认，就用 `shasum -a 256 dms-data-d1d2836.tar.gz` 和文末的哈希值手动对比。
 
-## 第 1、3、4 步：交给 Muse
+## 第 1、3、4 步：交给 opencode 子代理
 
 1. 把权限模板放到仓库根目录，并让 git 忽略它：
 
    ```sh
-   cp docs/mac/opencode.muse.json opencode.json
+   cp docs/mac/opencode.subagent.json opencode.json
    echo opencode.json >> .git/info/exclude
    ```
 
-   模板拒绝一切编辑和网络，shell 只允许 `bash docs/mac/muse-steps.sh ci|test-corpus|regress|compare|details` 这五条。
+   模板拒绝一切编辑和网络，shell 只允许 `bash docs/mac/mac-steps.sh ci|test-corpus|regress|compare|details` 这五条。
 
-2. 在仓库根目录后台启动 Muse，输出存到 `target/mac/muse/`：
+2. 在仓库根目录后台启动子代理，输出存到 `target/mac/agent/`：
 
    ```sh
-   mkdir -p target/mac/muse
-   opencode run --standalone --auto -m 'opencode-go/muse-spark-1.3-contributor#xhigh' \
-     --format json --title mac-muse \
-     "Read docs/mac/MUSE_BRIEF.md and carry out exactly what it says." \
-     > target/mac/muse/out.json 2> target/mac/muse/err.log
+   mkdir -p target/mac/agent
+   opencode run --standalone --auto -m 'opencode/glm-5.3-flash-free' \
+     --format json --title mac-agent \
+     "Read docs/mac/SUBAGENT_BRIEF.md and carry out exactly what it says." \
+     > target/mac/agent/out.json 2> target/mac/agent/err.log
    ```
 
-   参数以 `opencode run --help` 为准；如果 `#xhigh` 写法不被接受，就用当前版本指定变体的方式，或者去掉变体。
+   参数以 `opencode run --help` 为准。免费模型可能限流或排队；如果它报错或长时间无响应，告诉负责人，不要自行换成付费模型。
 
 3. 看护：几分钟内 `out.json` 应该开始增长。如果超过 30 分钟没有增长，但 `target/mac/*.log` 也没有新内容，说明卡住了：结束进程后用同样的命令重启一次（Windows 上遇到过首个请求挂住的情况，重启即好）。`regress` 本身可能跑一个多小时，这期间 `target/mac/regress.log` 会持续增长，属于正常。
-4. 结束后清理会话，防止以后被自动恢复：`opencode session list --standalone`，确认 `mac-muse` 会话已结束；必要时 `opencode session delete --standalone <id>`。
+4. 结束后清理会话，防止以后被自动恢复：`opencode session list --standalone`，确认 `mac-agent` 会话已结束；必要时 `opencode session delete --standalone <id>`。
 5. 删除仓库根目录的 `opencode.json`。
 
-`muse-steps.sh` 各子命令的产物：
+`mac-steps.sh` 各子命令的产物：
 
 | 子命令 | 产物 |
 |---|---|
@@ -104,17 +104,17 @@ cargo xtask corpus verify
 | `compare` | `target/mac/mac-compare.txt`（逐流对照 Windows 基线） |
 | `details` | `target/mac/details/<label>__<stem>.txt`（每个与基线不同的流各跑一次 `cargo xtask compare`） |
 
-每个日志最后一行是 `muse-steps <step>: exit=… elapsed=…`。
+每个日志最后一行是 `mac-steps <step>: exit=… elapsed=…`。
 
 ## 核查（Claude Code）
 
-不要直接相信 Muse 的汇报。自己读：
+不要直接相信子代理的汇报。自己读：
 
 - 每个 `target/mac/*.log` 的最后一行（退出码、用时），失败时找到最先出现的错误；
 - `target/mac/regress.log` 的汇总行，以及 `target/mac/mac-compare.txt`；
 - `target/mac/details/` 是否覆盖了 `mac-compare.txt` 里列出的每个差异流。
 
-缺了哪一步，就自己补跑那一步（直接运行 `bash docs/mac/muse-steps.sh <step>`）。预期有一处不同：`sources/excel_named_range` 的 oracle 没有拷过来，在 Mac 上会显示为 `absent`。
+缺了哪一步，就自己补跑那一步（直接运行 `bash docs/mac/mac-steps.sh <step>`）。预期有一处不同：`sources/excel_named_range` 的 oracle 没有拷过来，在 Mac 上会显示为 `absent`。
 
 ## 第 5 步：分析差异（Claude Code）
 
@@ -133,7 +133,7 @@ cargo xtask corpus verify
 
 在分支 `mac-validation` 上提交：
 
-- `docs/mac/MAC_REPORT.md`：环境、每一步的结果和用时、Muse 的汇报与你核查的结果是否一致、差异流清单及分类、浮点数差异的证据（最先分叉的计算）、平台修复的根因和改动、你建议的下一步（比如是否需要跨平台一致的数学函数实现）。
+- `docs/mac/MAC_REPORT.md`：环境、每一步的结果和用时、子代理的汇报与你核查的结果是否一致、差异流清单及分类、浮点数差异的证据（最先分叉的计算）、平台修复的根因和改动、你建议的下一步（比如是否需要跨平台一致的数学函数实现）。
 - `docs/mac/mac-regress.tsv`：用 `cut -f1-4 target/mac/mac-regress.tsv > docs/mac/mac-regress.tsv` 生成。第 5 列含有 Modeler 的输出值，不提交。
 - 必要的平台修复。
 
