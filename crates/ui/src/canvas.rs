@@ -6,6 +6,7 @@
 //! (editing goes through engine commands from phase B).
 
 use crate::graph::{GraphNode, NodeKind, NodeStatus, StreamGraph, TILE};
+use crate::node_icons;
 use crate::theme;
 use egui::epaint::CubicBezierShape;
 use egui::{
@@ -341,17 +342,43 @@ fn draw_node(
     selected: bool,
     visuals: &egui::Visuals,
 ) {
-    let fill = theme::tile_color(node.kind, dark);
+    let color = theme::tile_color(node.kind, dark);
     let ready = node.status == NodeStatus::Ready;
-    let fill = if ready {
-        fill
+    let color = if ready {
+        color
     } else {
-        fill.gamma_multiply(0.45)
+        color.gamma_multiply(0.45)
     };
     let radius = CornerRadius::same((10.0 * zoom).clamp(2.0, 20.0) as u8);
-    painter.rect_filled(tile, radius, fill);
+    // A model nugget is drawn hollow: a light tile with a thick border and the pictogram in
+    // the palette colour, plus a small corner tab; the node that builds it is solid.
+    let glyph_color = if node.nugget {
+        let paper = if dark {
+            Color32::from_rgb(0x2A, 0x2D, 0x33)
+        } else {
+            Color32::WHITE
+        };
+        painter.rect_filled(tile, radius, paper);
+        painter.rect_stroke(
+            tile,
+            radius,
+            Stroke::new((3.0 * zoom).clamp(1.5, 5.0), color),
+            StrokeKind::Inside,
+        );
+        let tab = (11.0 * zoom).clamp(4.0, 18.0);
+        let corner = tile.left_bottom();
+        painter.add(Shape::convex_polygon(
+            vec![corner + vec2(0.0, -tab), corner, corner + vec2(tab, 0.0)],
+            color,
+            Stroke::NONE,
+        ));
+        color
+    } else {
+        painter.rect_filled(tile, radius, color);
+        Color32::WHITE
+    };
     if selected || hovered {
-        let color = if selected {
+        let ring = if selected {
             visuals.selection.stroke.color
         } else {
             visuals.widgets.hovered.fg_stroke.color
@@ -359,7 +386,7 @@ fn draw_node(
         painter.rect_stroke(
             tile.expand(3.0 * zoom.max(0.5)),
             radius,
-            Stroke::new(if selected { 2.5 } else { 1.5 }, color),
+            Stroke::new(if selected { 2.5 } else { 1.5 }, ring),
             StrokeKind::Outside,
         );
     }
@@ -385,12 +412,13 @@ fn draw_node(
             dash * 0.7,
         ));
     }
-    theme::glyph(
+    node_icons::draw(
         painter,
+        &node.type_id,
         node.kind,
         tile.center(),
-        tile.width() * 0.5,
-        Color32::WHITE,
+        tile.width() * 0.56,
+        glyph_color,
     );
     if zoom >= LABEL_MIN_ZOOM {
         let text_color = visuals.text_color();

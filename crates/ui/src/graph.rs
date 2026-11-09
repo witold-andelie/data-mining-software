@@ -59,6 +59,8 @@ pub struct GraphNode {
     pub kind: NodeKind,
     pub status: NodeStatus,
     pub pos: Pos2,
+    /// A model nugget (a trained model), drawn differently from the node that builds it.
+    pub nugget: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -132,6 +134,8 @@ impl StreamGraph {
                     pos2(column * GRID_STEP, -GRID_STEP * (row + 1.0))
                 }
             };
+            let nugget = node.model_builder.is_some()
+                || dms_stream::simple_class_name(&node.class).starts_with("Apply");
             index.insert(node.uid.clone(), graph.nodes.len());
             graph.nodes.push(GraphNode {
                 uid: node.uid.clone(),
@@ -140,6 +144,7 @@ impl StreamGraph {
                 kind,
                 status,
                 pos,
+                nugget,
             });
         }
         for link in &diagram.links {
