@@ -287,7 +287,7 @@ cargo test -p dms-ui --lib                      # 不渲染的测试
 
 ### 6.2 文件
 
-只能改：`crates/ui/src/{workbench.rs,canvas.rs,graph.rs,menu.rs,results.rs}`；新文件 `crates/ui/src/{edit_canvas.rs,dialogs.rs}`；新测试 `crates/ui/tests/editing.rs`（不做截图）；`apps/dms/src/main.rs`、`apps/dms/Cargo.toml`（只加 `arboard.workspace = true`，并在根 `Cargo.toml` 的 `[workspace.dependencies]` 加 `arboard = "=3.7.0"` 这一行）；`xtask/src/bundle.rs`（`.dms` 文档类型）。**不要改** `crates/ui/src/theme.rs` 和 `crates/ui/src/icon.rs`：协调者同时在重做节点图标。
+只能改：`crates/ui/src/{workbench.rs,canvas.rs,graph.rs,menu.rs,results.rs}`；新文件 `crates/ui/src/{edit_canvas.rs,dialogs.rs}`；新测试 `crates/ui/tests/editing.rs`（不做截图）；`apps/dms/src/main.rs`、`apps/dms/Cargo.toml`（只加 `arboard.workspace = true`，并在根 `Cargo.toml` 的 `[workspace.dependencies]` 加 `arboard = "=3.7.0"` 这一行）；`xtask/src/bundle.rs`（`.dms` 文档类型）。**不要改** `crates/ui/src/theme.rs`、`crates/ui/src/icon.rs`、`crates/ui/src/node_icons.rs` 和 `crates/ui/tests/node_icons.rs`：节点图标由协调者负责。`canvas.rs` 里画节点图块和模型块样式的部分（`draw_node`）保持现有外观，只能加交互状态（拖动预览、连线端口）。
 
 ### 6.3 交互（照此实现）
 
