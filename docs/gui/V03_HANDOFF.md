@@ -28,6 +28,9 @@
 - 设置编辑整体替换一个节点的设置元素：L1 新增 `Edit::SetSettings`，逆操作恢复原来的元素。一次参数修改 = 一个撤销步骤。
 - 写入时只改动该参数对应的元素，其余元素（包括我们不认识的）原样保留，位置不变；元素不存在时追加在 `properties` 末尾。
 - 写入的文本编码与 Modeler 保存的一致（见 `docs/formats/nodes/*.md` 的 encoding 列）：布尔 `true`/`false`，整数十进制，实数写最短往返文本（Rust 的 `{}` 格式即可；整数值的实数写成 `2.0`），必须能被 `settings::real` 读回同值，选择项写文件值（如 `include`）。
+- **参数有两种来源**（`ParamSource`）：`Properties`（`path` 是 `properties` 下的元素路径）和 `Attachment`（`path` 是节点 `properties_attachment` 所指 XML 附件里 `<Parameter name=…>` 的名字；文档里写作 `attachment:<名字>`）。CHAID、C&R Tree、Linear 等扩展节点的算法参数、目标和输入都在附件里，执行器（`crates/exec/src/nodes/build.rs` 的 `Parameters`）从附件读取。**执行器代码不改**：表单改附件，跟 Modeler 保存的位置一致。
+- 写附件参数只改那一个 `Parameter` 的 `value` 属性（列表参数改其 `Value` 子元素），附件其余字节原样不变；该 `Parameter` 不存在时，在已有 `Parameter` 的父元素末尾追加一个。节点没有附件、附件不是合法 XML、或附件被别的节点共用时，写入返回错误（表单把这些参数显示为只读并给出原因），不自动新建附件。
+- 一次参数修改可能同时产生 `SetSettings` 和 `PutAttachment`；两者放在同一个撤销步骤里。
 - 字段列表来自**上一次运行**的结果：节点的输入表的字段。没有运行过时，表单退化为自由文本并提示先运行。v0.3 不做“不运行就推断字段”。
 
 ## 3. 覆盖的 15 个节点
@@ -67,7 +70,9 @@ Edit::SetSettings { uid: String, settings: Option<Element> }   // Element = dms_
 // crates/exec/src/schema.rs
 pub struct ParamSpec {
     pub key: &'static str,                // scripting property name from the docs, stable
-    pub path: &'static str,               // element path under `properties`, '/'-separated
+    pub source: ParamSource,              // Properties or Attachment (see §2)
+    pub path: &'static str,               // Properties: element path under `properties`, '/'-separated;
+                                          // Attachment: the `Parameter` name
     pub label: &'static str,              // our English label
     pub help: &'static str,               // one sentence, ours
     pub group: &'static str,              // section heading in the form ("Fields", "Options", ...)
@@ -93,7 +98,12 @@ pub struct ColumnSpec { pub child: &'static str, pub label: &'static str, pub ki
 pub enum ParamValue { Unset, Bool(bool), Int(i64), Real(f64), Text(String), Fields(Vec<String>),
                       Rows(Vec<(String, Vec<Option<String>>)>) }   // (key, column file values)
 
+pub enum ParamSource { Properties, Attachment }
+
 pub fn schema(catalog_id: &str) -> Option<&'static [ParamSpec]>;
+// Attachment parameters: read from / rewrite the attachment's bytes (only that Parameter changes).
+pub fn read_attachment(attachment: Option<&[u8]>, spec: &ParamSpec) -> Result<ParamValue, String>;
+pub fn write_attachment(attachment: &[u8], spec: &ParamSpec, value: &ParamValue) -> Result<Vec<u8>, String>;
 pub fn read(settings: Option<&Element>, spec: &ParamSpec) -> Result<ParamValue, String>;
 /// The settings element after setting `spec` to `value` (a new `properties` element when
 /// `settings` is None). Only that parameter's elements change.
@@ -109,6 +119,10 @@ impl Session {
     pub fn node_settings(&self, uid: &str) -> Option<&Element>;
     /// Fields of the data reaching `uid` in the latest run (its inputs' outputs), if any.
     pub fn input_fields(&self, uid: &str) -> Option<Vec<FieldInfo>>;
+    /// The parameter's current value from either source (settings or the node's attachment).
+    pub fn param_value(&self, uid: &str, key: &str) -> Result<ParamValue, String>;
+    /// Why the parameter cannot be changed (e.g. the node has no attachment), if it cannot.
+    pub fn param_read_only(&self, uid: &str, key: &str) -> Option<String>;
 }
 ```
 
@@ -125,7 +139,7 @@ cargo test -p dms-exec --features corpus --test schema_corpus -- --nocapture
 cargo xtask regress --label team --label misc --label sources --out target/schema-subset.tsv
 ```
 
-`schema_corpus`：对 `corpus/` 里这 15 种节点的**每个实例**：用 `read` 读出全部参数（不得报错，读不懂的值算失败并列出）；再把读出的值用 `write` 写回，结果在 `dms_stream::settings_xml::normalize` 意义下与原设置元素完全相同。打印每种节点的实例数和参数数。另外每种节点至少一个单元测试：改一个参数后 `read` 读回新值，且执行器读取该设置的函数得到新值（例如 Select 改条件后，过滤结果随之改变）。
+`schema_corpus`：对 `corpus/` 里这 15 种节点的**每个实例**：用 `read` / `read_attachment` 读出全部参数（不得报错，读不懂的值算失败并列出）；再把读出的值用 `write` / `write_attachment` 写回，设置元素在 `dms_stream::settings_xml::normalize` 意义下与原来完全相同，附件逐字节相同。打印每种节点的实例数和参数数。另外每种节点至少一个单元测试：改一个参数后 `read` 读回新值，且执行器读取该设置的函数得到新值（例如 Select 改条件后，过滤结果随之改变；CHAID 改最大深度后建出的树随之改变）。引擎测试：附件参数的一次修改是一个撤销步骤，撤销后附件逐字节恢复。
 
 协调者另跑全量 `regress`，必须与 `docs/mac/mac-regress.tsv` 逐行相同。
 
