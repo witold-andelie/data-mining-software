@@ -36,6 +36,8 @@ egui_kittest = { version = "=0.37.0", features = ["wgpu", "snapshot"] }
 muda = { version = "=0.21.2", default-features = false }
 rfd = "=0.18.0"
 serde = { version = "1", features = ["derive"] }
+# Native stream format (.dms), docs/gui/V02_HANDOFF.md.
+toml = "=1.2.1"
 serde_json = "1"
 
 [workspace.lints.rust]
