@@ -89,6 +89,14 @@ impl StreamComparison {
 /// `verbose` prints the per-node table and the summary line (`cargo xtask compare`); `regress`
 /// compares hundreds of streams and stays quiet.
 pub fn compare_stream(label: &str, path: &str, verbose: bool) -> Result<StreamComparison> {
+    compare_stream_mode(label, path, verbose, false)
+}
+pub fn compare_stream_mode(
+    label: &str,
+    path: &str,
+    verbose: bool,
+    via_dms: bool,
+) -> Result<StreamComparison> {
     let root = workspace_root()?;
     let oracle_dir = oracle::output_dir(label, path)?;
     let manifest = read_json(&oracle_dir.join("manifest.json"))
@@ -107,6 +115,25 @@ pub fn compare_stream(label: &str, path: &str, verbose: bool) -> Result<StreamCo
         fs::remove_dir_all(&ours).map_err(|e| format!("cannot clear {}: {e}", ours.display()))?;
     }
     let stream = root.join("corpus").join(label).join(path);
+    let run_stream = if via_dms {
+        let native_dir = target.join("via-dms").join(label);
+        fs::create_dir_all(&native_dir)
+            .map_err(|e| format!("cannot create {}: {e}", native_dir.display()))?;
+        let native = native_dir.join(format!("{stem}.dms"));
+        let input = path_text(&stream)?;
+        let output = path_text(&native)?;
+        let args = [
+            "run", "--quiet", "-p", "dms-cli", "--", "convert", &input, &output,
+        ];
+        if verbose {
+            cargo(&args)?;
+        } else {
+            cargo_quiet(&args)?;
+        }
+        native
+    } else {
+        stream.clone()
+    };
     let mut run_args: Vec<String> = vec![
         "run".into(),
         "--quiet".into(),
@@ -114,7 +141,7 @@ pub fn compare_stream(label: &str, path: &str, verbose: bool) -> Result<StreamCo
         "dms-cli".into(),
         "--".into(),
         "run".into(),
-        path_text(&stream)?,
+        path_text(&run_stream)?,
         "--out".into(),
         path_text(&ours)?,
     ];

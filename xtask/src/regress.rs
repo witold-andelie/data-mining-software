@@ -1,4 +1,4 @@
-//! `cargo xtask regress [--label <label>]... [--jobs <n>] [--out <file>]`: run every corpus
+//! `cargo xtask regress [--label <label>]... [--jobs <n>] [--out <file>] [--via-dms]`: run every corpus
 //! stream that has a Modeler oracle export and classify it.
 //!
 //! Classes:
@@ -48,12 +48,12 @@ pub fn run(args: &[String]) -> Result<()> {
             )
         });
     }
-    let results = compare_all(&streams, &gaps, options.jobs, &root)?;
+    let results = compare_all(&streams, &gaps, options.jobs, &root, options.via_dms)?;
     report(&results, &gaps, &options, &root)
 }
 
 fn usage() -> String {
-    "usage: regress [--label <label>]... [--jobs <n>] [--out <file>]".into()
+    "usage: regress [--label <label>]... [--jobs <n>] [--out <file>] [--via-dms]".into()
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -63,6 +63,7 @@ struct Options {
     jobs: usize,
     /// Per-stream TSV, relative to the workspace root when not absolute.
     out: Option<PathBuf>,
+    via_dms: bool,
 }
 
 impl Options {
@@ -71,6 +72,7 @@ impl Options {
             labels: Vec::new(),
             jobs: DEFAULT_JOBS,
             out: None,
+            via_dms: false,
         };
         let mut rest = args.iter();
         while let Some(arg) = rest.next() {
@@ -96,6 +98,7 @@ impl Options {
                     }
                     options.jobs = jobs;
                 }
+                "--via-dms" => options.via_dms = true,
                 "--out" => {
                     let value = rest.next().ok_or("--out needs a file name")?;
                     if value.is_empty() {
@@ -174,6 +177,7 @@ fn compare_all(
     gaps: &KnownGaps,
     jobs: usize,
     root: &Path,
+    via_dms: bool,
 ) -> Result<Vec<StreamResult>> {
     let total = streams.len();
     let workers = jobs.min(total);
@@ -192,7 +196,7 @@ fn compare_all(
                         let Some(stream) = streams.get(index) else {
                             break;
                         };
-                        let result = compare_one(stream, gaps, root);
+                        let result = compare_one(stream, gaps, root, via_dms);
                         slots
                             .lock()
                             .unwrap_or_else(|poisoned| poisoned.into_inner())[index] = Some(result);
@@ -226,10 +230,15 @@ fn compare_all(
     Ok(results)
 }
 
-fn compare_one(stream: &oracle::OracleStream, gaps: &KnownGaps, root: &Path) -> StreamResult {
+fn compare_one(
+    stream: &oracle::OracleStream,
+    gaps: &KnownGaps,
+    root: &Path,
+    via_dms: bool,
+) -> StreamResult {
     let corpus = root.join("corpus").join(&stream.label).join(&stream.path);
     let statistical = statistical_builder(&corpus);
-    let comparison = compare::compare_stream(&stream.label, &stream.path, false);
+    let comparison = compare::compare_stream_mode(&stream.label, &stream.path, false, via_dms);
     let listed = gaps.reason(&stream.label, &stream.stem);
     let class = classify(
         &comparison,
@@ -560,6 +569,8 @@ mod tests {
         assert_eq!(defaults.jobs, DEFAULT_JOBS);
         assert!(defaults.labels.is_empty());
         assert_eq!(defaults.out, None);
+        assert!(!defaults.via_dms);
+        assert!(parse(&["--via-dms"]).expect("via-dms").via_dms);
         let options = parse(&[
             "--label",
             "records",
