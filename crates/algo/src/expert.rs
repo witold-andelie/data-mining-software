@@ -1536,16 +1536,23 @@ impl Choice {
     }
 }
 
-/// Step 4 orders. The ACF, PACF and EACF candidates compete on the smallest p+q. The EACF
-/// candidate always carries q >= 1, because pure AR is the PACF candidate's job. Ties go
-/// PACF, then ACF, then EACF. This order is measured, not the Guide's (the Guide prefers EACF
-/// on a tie). Together with the single-MA boundary rule in `ml_t`, it reproduces `pr_seas_ar`,
-/// `pr_seastr_ar`, `p6_weak3_ar` and `ts_expert_arima_seasonal`. That gives 90 of 93 recorded
-/// selections with none lost (agy Gemini 4 Argon, 2026-11-08,
-/// `rea-work/archive/agy/tsx2/AGY_TSX2_REPORT.md`). With the Marquardt fallback in `ml_t`
-/// (`ml_marquardt`), `p3_linehet_ar` also matches: 91 of 93
-/// (`rea-work/archive/agy/linehet/LINEHET_REPORT.md`).
-fn identify(w: &[f64], s: usize, crit: f64) -> Choice {
+#[derive(Clone)]
+struct IdentifyOut {
+    choice: Choice,
+    k1: usize,
+    k2: usize,
+    acf: Option<Choice>,
+    pacf: Option<Choice>,
+    eacf: Choice,
+    pacf_t: Vec<f64>,
+}
+
+/// Step 4 orders. ACF, PACF and EACF compete on smallest p+q; ties go PACF < ACF <
+/// EACF except: (1) when both ACF and PACF cut off at the same k and PACF lag 1 is
+/// insignificant, take ACF (sparse MA), unless EACF already has smaller p+q;
+/// (2) when both cut off at the same k and EACF is mixed with the same p+q, take
+/// EACF (Guide: a tie involving EACF). EACF always carries q >= 1.
+fn identify_at(w: &[f64], s: usize, crit: f64) -> IdentifyOut {
     let n = w.len();
     let mut m = if s == 1 || s >= 10 {
         8
@@ -1568,21 +1575,29 @@ fn identify(w: &[f64], s: usize, crit: f64) -> Choice {
     let tp = pacf_t(w, m);
     let mut cands: Vec<Choice> = Vec::new();
     let k1 = first_insig_tail(&ta, crit);
-    if k1 <= k {
-        cands.push(Choice {
+    let acf = if k1 <= k {
+        let c = Choice {
             method: OrderMethod::Acf,
             p: 0,
             q: k1,
-        });
-    }
+        };
+        cands.push(c);
+        Some(c)
+    } else {
+        None
+    };
     let k2 = first_insig_tail(&tp, crit);
-    if k2 <= k {
-        cands.push(Choice {
+    let pacf = if k2 <= k {
+        let c = Choice {
             method: OrderMethod::Pacf,
             p: k2,
             q: 0,
-        });
-    }
+        };
+        cands.push(c);
+        Some(c)
+    } else {
+        None
+    };
     let sig = eacf_sig(w, m, crit);
     let mut best: Option<(usize, usize)> = None;
     for ki in 0..m {
@@ -1594,37 +1609,78 @@ fn identify(w: &[f64], s: usize, crit: f64) -> Choice {
                 break;
             }
         }
-        let tie = (ki.saturating_add(q), ki); // TIE=ar_small
+        let tie = (ki.saturating_add(q), ki); // smaller p on a p+q tie
         let btie = best.map(|(bk, bq)| (bk.saturating_add(bq), bk));
         if btie.is_none_or(|b| tie < b) {
             best = Some((ki, q));
         }
     }
-    let (bk, bq) = best.map(|(ki, q)| (ki, q.max(1))).unwrap_or((0, m));
+    let eacf_raw = best.unwrap_or((0, m));
     let eacf_choice = Choice {
         method: OrderMethod::Eacf,
-        p: bk,
-        q: bq,
+        p: eacf_raw.0,
+        q: eacf_raw.1.max(1),
     };
     cands.push(eacf_choice);
-    // Prefer smaller p+q, breaking ties PACF (AR) < ACF (MA) < EACF.
+    let mut out = IdentifyOut {
+        choice: eacf_choice,
+        k1,
+        k2,
+        acf,
+        pacf,
+        eacf: eacf_choice,
+        pacf_t: tp,
+    };
+    out.choice = pick_choice(&out, &cands);
+    out
+}
+
+/// Prefer smaller p+q, breaking ties PACF (AR) < ACF (MA) < EACF, with two
+/// measured exceptions for ACF/PACF ties at the same cutoff k.
+fn pick_choice(out: &IdentifyOut, cands: &[Choice]) -> Choice {
+    let pac0 = out.pacf_t.first().copied().unwrap_or(0.0).abs();
+    if out.k1 == out.k2
+        && out.k1 >= 2
+        && pac0 < 2.0
+        && out.eacf.sum() >= out.k1
+        && let Some(acf) = out.acf
+    {
+        return acf;
+    }
+    if out.acf.is_some()
+        && out.pacf.is_some()
+        && out.k1 == out.k2
+        && out.eacf.p > 0
+        && out.eacf.q > 0
+        && out.eacf.sum() == out.k1
+    {
+        return out.eacf;
+    }
     let key = |c: &Choice| {
         (
             c.sum(),
             match c.method {
-                OrderMethod::Pacf => 0,
+                OrderMethod::Pacf => 0u8,
                 OrderMethod::Acf => 1,
                 OrderMethod::Eacf => 2,
             },
         )
     };
-    let mut best_cand = eacf_choice;
-    for candidate in &cands {
+    let mut best_cand = out.eacf;
+    for candidate in cands {
         if key(candidate) < key(&best_cand) {
             best_cand = *candidate;
         }
     }
     best_cand
+}
+
+fn cls_sse(w: &[f64], model: &Model, s: usize) -> f64 {
+    let spec = model.to_spec(0, 0, s);
+    let Some(fit) = cls_fit(w, &spec) else {
+        return f64::INFINITY;
+    };
+    cls_residuals(w, &spec, &fit.x).iter().map(|v| v * v).sum()
 }
 
 // ---------------------------------------------------------------- step 6 diagnose
@@ -1848,7 +1904,17 @@ fn build_spec(
     }
 }
 
-fn select(y: &[f64], period: usize) -> Result<ArimaSpec, ArimaError> {
+struct Prepared {
+    transform: Transform,
+    transformed: Vec<f64>,
+    s: usize,
+    d: usize,
+    dd: usize,
+    w: Vec<f64>,
+    period: usize,
+}
+
+fn prepare(y: &[f64], period: usize) -> Result<Prepared, ArimaError> {
     if y.len() < 5 || y.len() > MAX_SERIES || y.iter().any(|v| !v.is_finite()) {
         return Err(ArimaError::Data(
             "Expert ARIMA needs 5..=4096 finite observations".into(),
@@ -1863,15 +1929,66 @@ fn select(y: &[f64], period: usize) -> Result<ArimaSpec, ArimaError> {
     let transformed = arima::transform(transform, y)?;
     let (d, dd) = arima::expert_differencing(&transformed, s);
     let w = difference(&transformed, d, dd, s);
+    Ok(Prepared {
+        transform,
+        transformed,
+        s,
+        d,
+        dd,
+        w,
+        period,
+    })
+}
 
-    let mut choice = identify(&w, s, 2.0);
-    if choice.sum() > 4 {
+fn choose_orders(prep: &Prepared) -> Choice {
+    let mut info = identify_at(&prep.w, prep.s, 2.0);
+    if info.choice.sum() > 4 {
         // Guide p. 778: when none of ACF/PACF/EACF give a low-order model
         // (p+q > 4), raise |t| to 2.8 and identify again. If that is still
         // high-order, take the high-order model identified at this 2.8 step.
-        choice = identify(&w, s, 2.8);
+        info = identify_at(&prep.w, prep.s, 2.8);
+    } else if info.acf.is_none() && info.pacf.is_none() && prep.d >= 1 && prep.dd >= 1 {
+        // After regular and seasonal differencing, leftover ACF spikes in (2, 2.8)
+        // can hide a clear MA(1) (airline). Retry ACF/PACF at |t|=2.8 and take a
+        // non-white-noise identification if one appears.
+        let alt = identify_at(&prep.w, prep.s, 2.8);
+        let acf_real = alt.acf.map(|c| c.q >= 1).unwrap_or(false);
+        let pacf_real = alt.pacf.map(|c| c.p >= 1).unwrap_or(false);
+        if acf_real || pacf_real {
+            info = alt;
+        }
     }
-    let seasonal = s > 1;
+    if prep.d >= 1
+        && info.k1 == 1
+        && info.k2 == 1
+        && let (Some(acf), Some(pacf)) = (info.acf, info.pacf)
+    {
+        let seasonal = prep.s > 1;
+        let ar_m = Model {
+            ar: vec![1],
+            ma: vec![],
+            ps: usize::from(seasonal),
+            qs: usize::from(seasonal),
+            constant: true,
+        };
+        let ma_m = Model {
+            ar: vec![],
+            ma: vec![1],
+            ps: usize::from(seasonal),
+            qs: usize::from(seasonal),
+            constant: true,
+        };
+        let ar_s = cls_sse(&prep.w, &ar_m, prep.s);
+        let ma_s = cls_sse(&prep.w, &ma_m, prep.s);
+        return if ma_s < ar_s { acf } else { pacf };
+    }
+    info.choice
+}
+
+fn select(y: &[f64], period: usize) -> Result<ArimaSpec, ArimaError> {
+    let prep = prepare(y, period)?;
+    let choice = choose_orders(&prep);
+    let seasonal = prep.s > 1;
     let mut model = Model {
         ar: (1..=choice.p).collect(),
         ma: (1..=choice.q).collect(),
@@ -1879,20 +1996,40 @@ fn select(y: &[f64], period: usize) -> Result<ArimaSpec, ArimaError> {
         qs: usize::from(seasonal),
         constant: true,
     };
-    prune_cls(&w, &mut model, s);
-    ml_prune(&transformed, &w, &mut model, d, dd, s);
+    prune_cls(&prep.w, &mut model, prep.s);
+    ml_prune(
+        &prep.transformed,
+        &prep.w,
+        &mut model,
+        prep.d,
+        prep.dd,
+        prep.s,
+    );
 
     // Step 6: at most one modification.
-    let add = diagnose(&transformed, &model, d, dd, s);
+    let add = diagnose(&prep.transformed, &model, prep.d, prep.dd, prep.s);
     if !add.is_empty() {
         for (kind, lag) in &add {
             model.add(*kind, *lag);
         }
-        prune_cls(&w, &mut model, s);
-        ml_prune(&transformed, &w, &mut model, d, dd, s);
+        prune_cls(&prep.w, &mut model, prep.s);
+        ml_prune(
+            &prep.transformed,
+            &prep.w,
+            &mut model,
+            prep.d,
+            prep.dd,
+            prep.s,
+        );
     }
 
-    Ok(build_spec(&model, transform, d, dd, period))
+    Ok(build_spec(
+        &model,
+        prep.transform,
+        prep.d,
+        prep.dd,
+        prep.period,
+    ))
 }
 
 #[cfg(test)]
