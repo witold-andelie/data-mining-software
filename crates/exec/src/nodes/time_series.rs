@@ -2428,6 +2428,9 @@ mod tests {
             let result = spec.score(&y, &[x], 4, 95.0).unwrap();
             // Independent cascade: differences followed by the numerator, then
             // two first-order recurrences (ordinary lag 1 and seasonal lag 3).
+            // The response starts after 4 differences and 2 delay observations
+            // (t = 6); numerator lags before the first differenced value take
+            // that value, and both recurrences start from their steady states.
             let difference: Vec<f64> = z.windows(2).map(|v| v[1] - v[0]).collect();
             let w: Vec<f64> = difference
                 .iter()
@@ -2435,13 +2438,13 @@ mod tests {
                 .zip(&difference)
                 .map(|(a, b)| a - b)
                 .collect();
+            let lag = |t: usize, j: usize| t.checked_sub(6 + j).map_or(w[0], |at| w[at]);
             let gain = 1.5 * 0.75;
             let mut ordinary = vec![gain * w[0] / 0.8; 40];
             let mut seasonal = vec![gain * w[0] / (0.8 * 0.7); 40];
-            for t in 10..40 {
-                let at = t - 6; // 4 differences and 2 delay observations.
+            for t in 6..40 {
                 let forcing =
-                    2.0 * w[at] - 0.5 * w[at - 1] - 0.25 * (2.0 * w[at - 3] - 0.5 * w[at - 4]);
+                    2.0 * lag(t, 0) - 0.5 * lag(t, 1) - 0.25 * (2.0 * lag(t, 3) - 0.5 * lag(t, 4));
                 ordinary[t] = forcing + 0.2 * ordinary[t - 1];
                 seasonal[t] = ordinary[t] + 0.3 * seasonal[t - 3];
             }
