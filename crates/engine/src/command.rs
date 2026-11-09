@@ -60,6 +60,8 @@ pub enum Key {
     R,
     F,
     Comma,
+    Period,
+    Escape,
     Minus,
     Equals,
     Num0,
@@ -141,6 +143,10 @@ pub enum Requires {
     Nothing,
     /// An open stream.
     Document,
+    /// An open stream with no active run.
+    DocumentIdle,
+    /// An active run that can be stopped.
+    Running,
     /// Not available yet; the reason is shown as a tooltip.
     Planned(&'static str),
 }
@@ -158,7 +164,6 @@ pub struct CommandSpec {
 }
 
 const PHASE_B: &str = "Arrives with stream editing (phase B)";
-const PHASE_C: &str = "Arrives with stream execution in the interface";
 
 macro_rules! command {
     ($id:literal, $label:literal, $menu:ident, $group:literal, $shortcuts:expr, $requires:expr) => {
@@ -308,7 +313,26 @@ pub const COMMANDS: &[CommandSpec] = &[
         Run,
         0,
         Shortcuts::both(Shortcut::command(Key::R)),
-        Requires::Planned(PHASE_C)
+        Requires::DocumentIdle
+    ),
+    command!(
+        "run.node",
+        "Run Selected Node",
+        Run,
+        0,
+        Shortcuts::both(Shortcut::command_shift(Key::R)),
+        Requires::DocumentIdle
+    ),
+    command!(
+        "run.cancel",
+        "Stop",
+        Run,
+        1,
+        Shortcuts {
+            mac: Some(Shortcut::command(Key::Period)),
+            other: Some(Shortcut::plain(Key::Escape))
+        },
+        Requires::Running
     ),
 ];
 

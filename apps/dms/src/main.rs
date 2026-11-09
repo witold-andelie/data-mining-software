@@ -141,10 +141,10 @@ impl DmsApp {
         let synthetic_nodes = options.bench.or(options.synthetic);
         let mut workbench = match synthetic_nodes {
             Some(nodes) => Workbench::with_document(
-                Document {
-                    path: PathBuf::from(format!("synthetic-{nodes}.str")),
-                    stream: synthetic::grid(nodes, 20),
-                },
+                Document::from_stream(
+                    PathBuf::from(format!("synthetic-{nodes}.str")),
+                    synthetic::grid(nodes, 20),
+                ),
                 state,
             ),
             None => Workbench::new(state),

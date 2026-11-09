@@ -17,4 +17,4 @@ pub use context::{ExecContext, FileResolver, Resolved};
 pub use error::{ErrorKind, NodeError, OperatorError};
 pub use operator::{Arity, Factory, Operator};
 pub use output::{Document, DocumentTable, NodeOutput, format_real};
-pub use plan::{Execution, NodeResult, Plan};
+pub use plan::{EvalEvent, Execution, NodeResult, Plan};
