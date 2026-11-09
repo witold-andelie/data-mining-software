@@ -17,9 +17,9 @@
 | L2 | `dms-algo` | 原生算法：树族、回归、聚类、关联规则、神经网络等（线性代数用 faer） | P3 |
 | L2 | `dms-python` | Python 桥：子进程、Arrow 数据交换、环境检测、模型持久化 | P3 |
 | L3 | `dms-exec` | 参考执行器（逐行，作对照）和优化执行器（Polars lazy）；节点缓存、增量重算、任务、取消 | P2 |
-| L4 | `dms-engine` | Session、撤销、命令注册表、节点注册表、节点目录 | P0 起 |
+| L4 | `dms-engine` | Session、撤销、命令注册表、节点注册表、节点目录 | P0 起；P4 阶段 A 有命令表和最小 Session（`docs/gui/DESIGN.md` §6） |
 | L5 | `dms-mcp` | MCP 服务器（无界面，或连到运行中的应用） | P2 |
-| L6 | `dms-ui` | egui 节点画布、数据预览、图表、模型查看器 | P4 |
+| L6 | `dms-ui` | egui 节点画布、数据预览、图表、模型查看器 | P4（阶段 A：画布、菜单、截图测试） |
 | apps | `dms`、`dms-cli` | 桌面应用；命令行 `run / inspect / import-str / convert / mcp` | P1 起 |
 | tools | `xtask` | `ci / layers / parity / corpus`，以后加 `oracle / scorecard / perf` | P0 起 |
 
