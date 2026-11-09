@@ -2,15 +2,22 @@
 //! commands by id. Lives in the UI library (not the app) so the whole window can be rendered
 //! off-screen in tests. Layout: docs/gui/DESIGN.md §2.
 
-use crate::canvas::{self, CanvasView, ZOOM_STEP};
+use crate::canvas::{self, CanvasView, RunMark, ZOOM_STEP};
 use crate::graph::StreamGraph;
 use crate::menu;
+use crate::results::{self, ResultsAction};
 use dms_engine::catalog::{NODES, Palette, Scope};
+use dms_engine::job::Waker;
 use dms_engine::nodes;
-use dms_engine::session::{Arg, CommandError, Document, Outcome, Session, ViewAction};
+use dms_engine::session::{
+    Arg, CommandError, Document, Outcome, RunNotice, RunState, Session, ViewAction,
+};
+use dms_exec::ErrorKind;
 use egui::{Context, Rect, RichText, Ui, ViewportCommand};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 /// Interface state that survives restarts (stored by the app, see DESIGN.md §7).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -18,7 +25,10 @@ use std::path::PathBuf;
 pub struct ShellState {
     pub show_palette: bool,
     pub show_properties: bool,
+    pub show_results: bool,
     pub canvas: CanvasView,
+    /// Extra folders searched for the data streams reference (File > Add Data Folder…).
+    pub data_folders: Vec<PathBuf>,
 }
 
 impl Default for ShellState {
@@ -26,7 +36,9 @@ impl Default for ShellState {
         ShellState {
             show_palette: true,
             show_properties: true,
+            show_results: true,
             canvas: CanvasView::default(),
+            data_folders: Vec::new(),
         }
     }
 }
@@ -35,6 +47,15 @@ impl ShellState {
     pub fn sanitize(&mut self) {
         self.canvas.sanitize();
     }
+}
+
+/// What a command asks the person to choose.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Pick {
+    /// A stream file to open.
+    Stream,
+    /// A folder (data folders).
+    Folder,
 }
 
 /// What the host platform provides.
@@ -62,25 +83,42 @@ pub struct Workbench {
     about_open: bool,
     fit_pending: bool,
     canvas_rect: Option<Rect>,
+    /// The results tab shown (a node uid).
+    results_tab: Option<String>,
+    /// The window title last sent, so it is sent only when it changes.
+    title: Option<String>,
 }
 
 impl Workbench {
     pub fn new(state: ShellState) -> Self {
+        let mut session = Session::new();
+        session.set_data_folders(state.data_folders.clone());
         Workbench {
-            session: Session::new(),
+            session,
             state,
             graph: None,
             status: None,
             about_open: false,
             fit_pending: false,
             canvas_rect: None,
+            results_tab: None,
+            title: None,
         }
+    }
+
+    /// Repaints the window when a background run has news.
+    pub fn connect_repaint(&mut self, ctx: &Context) {
+        let ctx = ctx.clone();
+        let waker: Waker = Arc::new(move || ctx.request_repaint());
+        self.session.set_waker(Some(waker));
     }
 
     /// A workbench showing an already decoded stream, zoomed to fit on the first frame.
     pub fn with_document(document: Document, state: ShellState) -> Self {
         let mut workbench = Workbench::new(state);
+        let folders = workbench.session.data_folders().to_vec();
         workbench.session = Session::with_document(document);
+        workbench.session.set_data_folders(folders);
         workbench.document_changed(true);
         workbench
     }
@@ -95,7 +133,90 @@ impl Workbench {
             .document()
             .map(|document| StreamGraph::from_diagram(&document.stream.diagram));
         self.state.canvas.selected = None;
+        self.results_tab = None;
         self.fit_pending = fit && self.graph.is_some();
+    }
+
+    /// Selects a node, centres it on the canvas and shows its result.
+    pub fn focus_node(&mut self, uid: &str) {
+        self.state.canvas.selected = Some(uid.to_string());
+        self.results_tab = Some(uid.to_string());
+        let position = self
+            .graph
+            .as_ref()
+            .and_then(|g| g.nodes.iter().find(|n| n.uid == uid))
+            .map(|n| n.pos);
+        if let (Some(position), Some(rect)) = (position, self.canvas_rect) {
+            let view = &mut self.state.canvas;
+            let offset = rect.size() / 2.0 - position.to_vec2() * view.zoom;
+            view.pan = [offset.x, offset.y];
+        }
+    }
+
+    /// Drains background-run events into the status line. Called every frame by `ui`.
+    fn poll_runs(&mut self) {
+        for notice in self.session.poll_jobs() {
+            self.status = Some(match notice {
+                RunNotice::Finished {
+                    root_causes,
+                    elapsed,
+                    ..
+                } => {
+                    let seconds = elapsed.as_secs_f64();
+                    if root_causes == 0 {
+                        StatusMessage {
+                            text: format!("Finished in {seconds:.1} s"),
+                            error: false,
+                        }
+                    } else {
+                        StatusMessage {
+                            text: format!(
+                                "Finished in {seconds:.1} s · {root_causes} node{} failed",
+                                if root_causes == 1 { "" } else { "s" }
+                            ),
+                            error: true,
+                        }
+                    }
+                }
+                RunNotice::Failed { message, .. } => StatusMessage {
+                    text: format!("The run stopped unexpectedly: {message}"),
+                    error: true,
+                },
+                RunNotice::Cancelled { .. } => StatusMessage {
+                    text: "Stopped".to_string(),
+                    error: false,
+                },
+            });
+            if let Some(first) = self
+                .session
+                .results()
+                .and_then(|r| r.report.root_causes.first())
+                .map(|e| e.uid.clone())
+            {
+                self.results_tab = Some(first);
+            }
+        }
+    }
+
+    /// Badges for the canvas: the running node, and every node of the latest run.
+    fn run_marks(&self) -> HashMap<String, RunMark> {
+        let mut marks = HashMap::new();
+        if let Some(results) = self.session.results() {
+            for (uid, result) in &results.report.results {
+                let mark = match result {
+                    Ok(_) => RunMark::Done,
+                    Err(error) if matches!(error.kind, ErrorKind::Upstream(_)) => RunMark::Blocked,
+                    Err(_) => RunMark::Failed,
+                };
+                marks.insert(uid.clone(), mark);
+            }
+        }
+        if let RunState::Running { progress, .. } = self.session.run_state()
+            && let Some(current) = progress.current
+        {
+            marks.insert(current, RunMark::Running);
+        }
+        marks
     }
 
     /// Opens a file directly (dropped on the window, or given on the command line).
@@ -104,18 +225,35 @@ impl Workbench {
         self.finish("file.open", result, None);
     }
 
-    /// Runs a command by id. `pick_path` is asked only when the command needs a path and the
-    /// person has to choose one (a file dialog in the app, a fixed answer in tests).
+    /// Runs a command by id. `pick` is asked only when the command needs a file or folder the
+    /// person has to choose (a native dialog in the app, a fixed answer in tests).
     pub fn dispatch(
         &mut self,
         ctx: &Context,
         id: &str,
-        pick_path: &mut dyn FnMut() -> Option<PathBuf>,
+        pick: &mut dyn FnMut(Pick) -> Option<PathBuf>,
     ) {
         let result = match self.session.execute(id, &[]) {
-            Ok(Outcome::NeedsArgument("path")) => match pick_path() {
+            Ok(Outcome::NeedsArgument("path")) => match pick(Pick::Stream) {
                 Some(path) => self.session.execute(id, &[Arg::Path(path)]),
                 None => return,
+            },
+            Ok(Outcome::NeedsArgument("folder")) => match pick(Pick::Folder) {
+                Some(path) => self.session.execute(id, &[Arg::Path(path)]),
+                None => return,
+            },
+            Ok(Outcome::NeedsArgument("node")) => match self.state.canvas.selected.clone() {
+                Some(uid) => {
+                    self.results_tab = Some(uid.clone());
+                    self.session.execute(id, &[Arg::Node(uid)])
+                }
+                None => {
+                    self.status = Some(StatusMessage {
+                        text: "Select a node on the canvas first.".to_string(),
+                        error: true,
+                    });
+                    return;
+                }
             },
             other => other,
         };
@@ -125,6 +263,22 @@ impl Workbench {
     fn finish(&mut self, id: &str, result: Result<Outcome, CommandError>, ctx: Option<&Context>) {
         match result {
             Ok(Outcome::Done) => {
+                if id == "run.stream" || id == "run.node" {
+                    self.status = None;
+                }
+                if id == "file.add_data_folder" || id == "file.clear_data_folders" {
+                    self.state.data_folders = self.session.data_folders().to_vec();
+                    self.status = Some(StatusMessage {
+                        text: match self.state.data_folders.last() {
+                            Some(folder) if id == "file.add_data_folder" => format!(
+                                "Data folder added: {} (run again to use it)",
+                                folder.display()
+                            ),
+                            _ => "Data folders cleared".to_string(),
+                        },
+                        error: false,
+                    });
+                }
                 if id == "file.open" || id == "file.close" {
                     self.document_changed(id == "file.open");
                     self.status = self.session.document().map(|document| StatusMessage {
@@ -178,6 +332,23 @@ impl Workbench {
     /// shortcuts); the caller passes them to [`Self::dispatch`]. Dropped files open directly.
     pub fn ui(&mut self, ui: &mut Ui, platform: &Platform) -> Vec<&'static str> {
         let mut requested = Vec::new();
+        self.poll_runs();
+        let title = match self.session.document() {
+            Some(document) => format!(
+                "{} — Data Mining",
+                document
+                    .path
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_default()
+            ),
+            None => "Data Mining".to_string(),
+        };
+        if self.title.as_deref() != Some(title.as_str()) {
+            ui.ctx()
+                .send_viewport_cmd(ViewportCommand::Title(title.clone()));
+            self.title = Some(title);
+        }
         if !platform.native_menu {
             requested.extend(menu::take_shortcuts(ui.ctx(), platform.mac));
         }
@@ -214,12 +385,60 @@ impl Workbench {
                     }
                 });
                 ui.separator();
+                for (id, label, hint) in [
+                    ("run.stream", "Run", "Run Stream"),
+                    (
+                        "run.node",
+                        "Run Selected",
+                        "Run the selected node and what it needs",
+                    ),
+                    ("run.cancel", "Stop", "Stop the run"),
+                ] {
+                    let availability = self.session.availability(id);
+                    let response = ui.add_enabled(availability.is_ok(), egui::Button::new(label));
+                    let response = match &availability {
+                        Err(reason) => response.on_disabled_hover_text(reason),
+                        Ok(()) => response.on_hover_text(hint),
+                    };
+                    if response.clicked() {
+                        requested.push(id);
+                    }
+                }
+                ui.separator();
                 ui.toggle_value(&mut self.state.show_palette, "Nodes");
                 ui.toggle_value(&mut self.state.show_properties, "Properties");
+                ui.toggle_value(&mut self.state.show_results, "Results");
             });
         });
 
-        egui::Panel::bottom("status").show(ui, |ui| self.status_bar(ui, platform));
+        egui::Panel::bottom("status").show(ui, |ui| {
+            if let Some(action) = self.status_bar(ui, platform) {
+                requested.push(action);
+            }
+        });
+        if self.state.show_results && self.session.results().is_some() {
+            let mut action = None;
+            egui::Panel::bottom("results")
+                .resizable(true)
+                .default_size(280.0)
+                .min_size(120.0)
+                .show(ui, |ui| {
+                    if let Some(results) = self.session.results() {
+                        action = results::show_results(
+                            ui,
+                            &results.report,
+                            self.graph.as_ref(),
+                            self.state.canvas.selected.as_deref(),
+                            &mut self.results_tab,
+                        );
+                    }
+                });
+            match action {
+                Some(ResultsAction::Focus(uid)) => self.focus_node(&uid),
+                Some(ResultsAction::Command(id)) => requested.push(id),
+                None => {}
+            }
+        }
 
         if self.state.show_palette {
             egui::Panel::left("palette")
@@ -245,7 +464,7 @@ impl Workbench {
                 .show(ui.ctx(), |ui| {
                     ui.heading("Data Mining");
                     ui.label(format!("Version {}", env!("CARGO_PKG_VERSION")));
-                    ui.label("Interface preview (phase A).");
+                    ui.label("Opens and runs SPSS Modeler streams (.str).");
                 });
         }
         requested
@@ -273,7 +492,8 @@ impl Workbench {
             }
             self.fit_pending = false;
         }
-        canvas::show(ui, graph, &mut self.state.canvas);
+        let marks = self.run_marks();
+        canvas::show(ui, graph, &mut self.state.canvas, &marks);
     }
 
     fn properties_panel(&self, ui: &mut Ui) {
@@ -300,23 +520,63 @@ impl Workbench {
             ui.label(&node.uid);
             ui.end_row();
         });
+        if let Some(Err(error)) = self
+            .session
+            .results()
+            .and_then(|r| r.report.results.get(&node.uid))
+        {
+            ui.separator();
+            ui.colored_label(ui.visuals().error_fg_color, "Last run failed here");
+            ui.label(results::error_text(error));
+        }
         ui.separator();
-        ui.weak("Settings forms are generated from each node's settings schema (phase B).");
+        ui.weak("Settings forms arrive in a later version.");
     }
 
-    fn status_bar(&self, ui: &mut Ui, platform: &Platform) {
+    /// The status line. Returns a command when its Stop button is pressed.
+    fn status_bar(&self, ui: &mut Ui, platform: &Platform) -> Option<&'static str> {
+        let mut command = None;
         ui.horizontal(|ui| {
+            if let RunState::Running { progress, .. } = self.session.run_state() {
+                let fraction = if progress.total == 0 {
+                    0.0
+                } else {
+                    progress.done as f32 / progress.total as f32
+                };
+                let running = progress
+                    .current
+                    .as_deref()
+                    .map(|uid| results::title_of(self.graph.as_ref(), uid));
+                ui.spinner();
+                ui.label(match running {
+                    Some(title) => format!("Running {title}"),
+                    None => "Running".to_string(),
+                });
+                ui.add(
+                    egui::ProgressBar::new(fraction)
+                        .desired_width(140.0)
+                        .text(format!("{}/{}", progress.done, progress.total)),
+                );
+                if ui.small_button("Stop").clicked() {
+                    command = Some("run.cancel");
+                }
+                ui.separator();
+            }
             match (&self.status, self.session.document()) {
                 (Some(message), _) if message.error => {
                     ui.colored_label(ui.visuals().error_fg_color, &message.text);
                 }
-                (_, Some(document)) => {
+                (message, Some(document)) => {
                     let name = document
                         .path
                         .file_name()
                         .map(|n| n.to_string_lossy().into_owned())
                         .unwrap_or_default();
                     ui.label(name);
+                    if let Some(message) = message {
+                        ui.separator();
+                        ui.label(&message.text);
+                    }
                 }
                 _ => {
                     ui.weak("Ready");
@@ -345,6 +605,7 @@ impl Workbench {
                 ui.monospace(format!("{ms:.1} ms"));
             }
         });
+        command
     }
 }
 

@@ -21,6 +21,7 @@ serde.workspace = true
 # Bundled fonts in tests only, so screenshots do not depend on the machine's fonts.
 egui = { workspace = true, features = ["default_fonts"] }
 egui_kittest.workspace = true
+egui_system_font_provider.workspace = true
 serde_json.workspace = true
 
 [lints]
