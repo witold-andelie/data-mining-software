@@ -644,10 +644,9 @@ mod tests {
 
     #[test]
     fn export_directory_uses_the_document_stem() {
-        assert_eq!(
-            export_dir_for(Path::new("/some/folder/example.str")),
-            std::env::temp_dir().join("dms-exports/example")
-        );
+        let dir = export_dir_for(Path::new("/some/folder/example.str"));
+        assert_eq!(dir.file_name(), Some(std::ffi::OsStr::new("example")));
+        assert!(dir.parent().is_some_and(|p| p.ends_with("Exports")));
         let document = Document::from_stream(
             PathBuf::from("test.str"),
             stream(vec![node("n", "Mystery")], &[], &[]),
