@@ -122,6 +122,7 @@ fn probe_selections_match_modeler() {
         "missing",
         "numerator1",
         "numerator_gap",
+        "rational",
         "seasonal",
         "short11",
         "short19",
@@ -225,23 +226,9 @@ fn broadband_selection_without_saved_parameters() {
 
 /// Step 1(d) of the Transfer Function Expert: Modeler's univariate Expert ARIMA on the same 26
 /// target series (`corpus/ts_expert_tfu`, probe `ts_expert_tfu_streams`, no predictors) against
-/// `arima::expert_arima`. All but three reproduce Modeler. The misses are where the
-/// Transfer Function selections `rational` and `event_step` part from Modeler: their noise
-/// keeps these univariate lags (Guide 6.7.1).
-/// - `rational`: ACF (0,2), PACF (2,0) and EACF (1,1) tie at p+q = 2; Modeler takes EACF's
-///   ARMA(1,1), we take PACF's AR(2).
-/// - `numerator_gap`: Modeler MA[2], ours AR[2].
-/// - `event_step`: the Step 4 candidates are identical to `numerator1`'s (ACF (0,1),
-///   PACF (1,0), EACF (0,1)), yet Modeler ends with MA[1] after d = 1 where `numerator1` ends
-///   AR[1]. So that difference comes after Step 4.
-///
-/// The Guide's EACF-first tie order fixes `rational` and `numerator_gap` here but loses 27 of
-/// the 91 recorded `ts_expert*` selections (measured 2026-11-09).
+/// `arima::expert_arima`. All 26 reproduce Modeler.
 #[test]
 fn probe_univariate_selections_match_modeler() {
-    let differ: BTreeSet<&str> = ["event_step", "numerator_gap", "rational"]
-        .into_iter()
-        .collect();
     let root = support::repo_root().join("corpus/ts_expert_tfu");
     let (mut ran, mut matched) = (0, 0);
     for c in recipes() {
@@ -262,15 +249,8 @@ fn probe_univariate_selections_match_modeler() {
         let ours = dms_algo::arima::expert_arima(&y, s).unwrap();
         let got = structure(&FittedSpec::Arima(ours));
         let want = saved_structure("ts_expert_tfu", &format!("tfu_{name}"));
-        if differ.contains(name) {
-            assert_ne!(
-                got, want,
-                "{name}: newly reproduced, remove it from `differ`"
-            );
-        } else {
-            assert_eq!(got, want, "{name}: univariate reproduction lost");
-            matched += 1;
-        }
+        assert_eq!(got, want, "{name}: univariate reproduction lost");
+        matched += 1;
     }
-    assert_eq!((ran, matched), (26, 23));
+    assert_eq!((ran, matched), (26, 26));
 }
