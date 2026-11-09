@@ -95,7 +95,7 @@ fn results_panel_shows_tables_documents_and_failures() {
         .with_size(vec2(900.0, 360.0))
         .with_pixels_per_point(1.0)
         .build_ui(|ui| {
-            if let Some(action) = show_results(ui, &report, None, None, &mut active) {
+            if let Some(action) = show_results(ui, &report, None, None, &mut active, None) {
                 actions.push(action);
             }
         });

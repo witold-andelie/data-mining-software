@@ -402,11 +402,25 @@ pub fn open_document(path: &Path) -> Result<Document, String> {
 }
 
 /// Centralized default; the interface can later provide an explicit export destination.
+/// Where a stream's export nodes write: `Documents/Data Mining/Exports/<stream name>/` in the
+/// person's home folder (macOS `HOME`, Windows `USERPROFILE`), or the temporary folder when
+/// there is no home folder.
 pub fn export_dir_for(path: &Path) -> PathBuf {
-    std::env::temp_dir().join("dms-exports").join(
+    let home = std::env::var_os("HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
+        .filter(|home| !home.is_empty())
+        .map(PathBuf::from);
+    exports_root(home).join(
         path.file_stem()
             .unwrap_or_else(|| std::ffi::OsStr::new("stream")),
     )
+}
+
+fn exports_root(home: Option<PathBuf>) -> PathBuf {
+    match home {
+        Some(home) => home.join("Documents").join("Data Mining").join("Exports"),
+        None => std::env::temp_dir().join("Data Mining Exports"),
+    }
 }
 
 #[cfg(test)]
@@ -651,6 +665,20 @@ mod tests {
                 Err(other) => panic!("{}: {other}", spec.id),
             }
         }
+    }
+
+    #[test]
+    fn exports_go_to_documents_in_the_home_folder() {
+        let home = PathBuf::from("/Users/someone");
+        assert_eq!(
+            exports_root(Some(home.clone())),
+            home.join("Documents").join("Data Mining").join("Exports")
+        );
+        assert!(exports_root(None).starts_with(std::env::temp_dir()));
+        assert_eq!(
+            export_dir_for(Path::new("/x/Stream č.1.str")).file_name(),
+            Some(std::ffi::OsStr::new("Stream č.1"))
+        );
     }
 
     #[test]

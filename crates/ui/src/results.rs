@@ -3,12 +3,18 @@
 //! trained models as their summary, failures with their cause and a way to the failing node.
 
 use crate::document_view::show_document;
+use crate::graph::NodeKind;
 use crate::graph::StreamGraph;
 use crate::model_view::show_model;
 use crate::results_table::show_table;
+use dms_engine::catalog::Palette;
 use dms_engine::run::RunReport;
 use dms_exec::{ErrorKind, NodeError, NodeOutput};
 use egui::{RichText, Ui};
+use std::path::Path;
+
+/// Failures listed by name before the rest are counted.
+const MAX_LISTED_FAILURES: usize = 20;
 
 /// What the person asked for in the results area.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -55,33 +61,53 @@ pub fn show_results(
     graph: Option<&StreamGraph>,
     selected: Option<&str>,
     active: &mut Option<String>,
+    export_dir: Option<&Path>,
 ) -> Option<ResultsAction> {
     let mut action = None;
+    if let (Some(dir), Some(graph)) = (export_dir, graph) {
+        let exported = report.targets.iter().any(|uid| {
+            matches!(report.results.get(uid), Some(Ok(_)))
+                && graph
+                    .nodes
+                    .iter()
+                    .any(|n| &n.uid == uid && n.kind == NodeKind::Palette(Palette::Export))
+        });
+        if exported {
+            ui.horizontal_wrapped(|ui| {
+                ui.label(format!("Exported files are in {}", dir.display()));
+                if ui.button("Show in Finder").clicked() {
+                    ui.ctx()
+                        .open_url(egui::OpenUrl::same_tab(format!("file://{}", dir.display())));
+                }
+            });
+        }
+    }
     let tabs = tabs(report, selected);
     if !report.root_causes.is_empty() {
-        ui.horizontal_wrapped(|ui| {
-            ui.colored_label(
-                ui.visuals().error_fg_color,
-                format!(
-                    "{} node{} failed:",
-                    report.root_causes.len(),
-                    if report.root_causes.len() == 1 {
-                        ""
-                    } else {
-                        "s"
-                    }
-                ),
-            );
-            for error in &report.root_causes {
+        let error_color = ui.visuals().error_fg_color;
+        let count = report.root_causes.len();
+        ui.colored_label(
+            error_color,
+            format!(
+                "{count} node{} failed; the other nodes ran:",
+                if count == 1 { "" } else { "s" }
+            ),
+        );
+        for error in report.root_causes.iter().take(MAX_LISTED_FAILURES) {
+            ui.horizontal_wrapped(|ui| {
                 if ui
                     .link(title_of(graph, &error.uid))
-                    .on_hover_text(error_text(error))
+                    .on_hover_text("Show this node")
                     .clicked()
                 {
                     action = Some(ResultsAction::Focus(error.uid.clone()));
                 }
-            }
-        });
+                ui.colored_label(error_color, error_text(error));
+            });
+        }
+        if count > MAX_LISTED_FAILURES {
+            ui.weak(format!("and {} more", count - MAX_LISTED_FAILURES));
+        }
         if missing_data(report) {
             ui.horizontal_wrapped(|ui| {
                 ui.label(
