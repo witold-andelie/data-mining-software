@@ -19,6 +19,7 @@ const LAYERS: &[(&str, u8)] = &[
     ("dms-exec", 3),
     ("dms-engine", 4),
     ("dms-ui", UI_LAYER),
+    ("dms-macos-open", UI_LAYER),
     ("dms-cli", APPS),
     ("dms", APPS),
     ("xtask", TOOLS),
