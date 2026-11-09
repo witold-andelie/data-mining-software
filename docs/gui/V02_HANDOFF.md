@@ -193,7 +193,7 @@ Session 能新建、打开（`.str` 和 `.dms`）、编辑、撤销/重做、保
 
 ### 5.2 文件
 
-只能改：`crates/engine/src/session.rs`、`crates/engine/src/command.rs`、`crates/engine/src/run.rs`（只为改从 `StreamDoc` 取流）、`crates/engine/src/lib.rs`；新文件 `crates/engine/src/edit_session.rs`、`crates/engine/src/undo.rs`、`crates/engine/src/clipboard.rs`、`crates/engine/src/autosave.rs`；`crates/ui/src/menu.rs`（只改 `egui_key` 里新 `Key` 的分支）、`apps/dms/src/macos_menu.rs`（只改 `accelerator` 里新 `Key` 的分支）；以及为了让编译通过而必须做的、只涉及调用签名的一行改动（在汇报里逐一列出）。
+只能改：`crates/engine/src/session.rs`、`crates/engine/src/command.rs`、`crates/engine/src/run.rs`（只为改从 `StreamDoc` 取流）、`crates/engine/src/lib.rs`；新文件 `crates/engine/src/edit_session.rs`、`crates/engine/src/undo.rs`、`crates/engine/src/clipboard.rs`、`crates/engine/src/autosave.rs`；`crates/ui/src/menu.rs`（只改 `egui_key` 里新 `Key` 的分支）、`apps/dms/src/macos_menu.rs`（只改 `accelerator` 里新 `Key` 的分支）；`crates/ui/src/workbench.rs` 里 `finish` 函数对 `Outcome` 的 `match`：只为新增的 `Outcome` 变体各加一个最小分支——`ConfirmDiscard` 在状态栏显示错误消息“There are unsaved changes.”，`Clipboard(text)` 在有 `ctx` 时调用 `ctx.copy_text(text)`（真正的确认对话框和系统剪贴板由 WP3 做），该文件的其他部分一律不动；以及为了让编译通过而必须做的、只涉及调用签名的一行改动（在汇报里逐一列出）。
 
 ### 5.3 命令（加入或改为可用；id 不可改）
 
