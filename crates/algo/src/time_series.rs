@@ -26,11 +26,24 @@
 //! previously supported structures retain their original fitting arithmetic.
 //! The four keyed ARIMA transform recordings have different saved and rebuilt
 //! specifications: detached-model refits are tested separately from linked scores.
-//! Two cases stay outside rule 3 because Modeler's estimate is not the optimum of the
-//! documented exact likelihood; ours is better and is kept:
-//! - `ts_tf_static`: an independent exact AR(1) likelihood (SciPy) has its optimum at our
-//!   (81.1180, 0.15312, -0.16418); Modeler's saved (81.0875, 0.14865, -0.15936) has
-//!   gradient (0.0003, -0.056, 0.21) and a 6.3e-4 worse -loglik; scores differ 1.64 % SD.
+//! Guide estimation evidence (19.0 PDF physical pp.739-742): `marquardt_guide`
+//! reproduces all four terminal inputs for `ts_more/ts_ar`, `ts_ma`, `ts_tf_num`,
+//! `ts_tf_den`, `ts_tf_delay`, and `ts_tf_static`. It uses an inward 1e-4 numerical
+//! difference of determinant-scaled residuals, scaled normal equations, lambda
+//! 0.001 (increase 100, reduce 0.1, maximum 1e9), six admissibility halvings,
+//! relative objective change <1e-5 before absolute parameter change <1e-4, and
+//! returns the new iterate. The cap is 25*k (the Guide checks m <= M).
+//! The printed reversed derivative numerator and differentiation of weighted
+//! residuals without the determinant factor did not reproduce these estimates.
+//! Initial TF coefficients use joint least squares before the extra lag discard;
+//! AR uses the centered biased ACF. The pure MA(1) initialization uses the ACF
+//! through p+q=1 in the Guide's AR approximation, with higher lags zero.
+//! Adoption is structural: nonseasonal, undifferenced AR(1)/MA(1) with constant,
+//! and the supported AR(1)-noise transfer fits without denominator parameters.
+//! Mixed/seasonal ARIMA and rational transfers retain `lm`; expert selection
+//! and smoothing also retain `lm`. The earlier optimum for `ts_tf_static` was
+//! closer to the likelihood maximum, but the Guide's early stop matches Modeler.
+//! Remaining unresolved early-stop case:
 //! - `ts_sarlog_noconst`: the saved builder lacks the scripted keyed transform, so Modeler's
 //!   own rebuild (which the oracle's tables show) is untransformed, like ours. Its fitted
 //!   values give phi 0.988174, Phi 0.524296 exactly (residual 2e-15); ours 0.988068,
@@ -763,7 +776,21 @@ fn fit_arima(
         } // internal MA sign is plus
     }
     if p == 0 && q == 1 {
-        initial.push(0.1);
+        initial.push(if d == 0 {
+            // Guide section 6, AR(1) approximation to MA(1). The available
+            // initialization ACF ends at p+q=1 (higher lags are zero).
+            let rho = guide_acf1(&w)?;
+            let mut theta = rho / (1.0 - rho * rho);
+            for _ in 0..1024 {
+                if theta.abs() < 1.0 {
+                    break;
+                }
+                theta *= 0.9;
+            }
+            theta
+        } else {
+            0.1
+        });
     }
     let make = |x: &[f64]| ArimaSpec {
         seasonal_d: 0,
@@ -793,7 +820,11 @@ fn fit_arima(
         let scale = (log_det / (2.0 * n)).exp();
         Ok(r.iter().map(|v| v * scale).collect::<Vec<_>>())
     };
-    let (parameters, iterations) = lm(initial, &bounds, residuals)?;
+    let (parameters, iterations) = if d == 0 && p + q == 1 {
+        marquardt_guide(initial, residuals, |x| admissible_arima(&make(x)))?
+    } else {
+        lm(initial, &bounds, residuals)?
+    };
     let mut spec = make(&parameters);
     let (r, _) = arima::likelihood_residuals(&spec, y).map_err(data)?;
     spec.sigma2 = r.iter().map(|v| v * v).sum::<f64>() / spec.df;
@@ -960,6 +991,179 @@ pub(crate) fn lm(
         }
     }
     Err(data("Time Series optimizer exceeded 400 iterations"))
+}
+
+/// Biased, mean-centered lag-one ACF used by Guide section 6 initialization.
+pub(crate) fn guide_acf1(w: &[f64]) -> Result<f64, AlgoError> {
+    if !(2..=512).contains(&w.len()) || w.iter().any(|v| !v.is_finite()) {
+        return Err(data("invalid ARIMA initialization history"));
+    }
+    let mean = w.iter().sum::<f64>() / count(w.len());
+    let c0 = w.iter().map(|v| (v - mean).powi(2)).sum::<f64>();
+    if c0 <= 0.0 || !c0.is_finite() {
+        return Err(data("ARIMA needs nonzero initialization variance"));
+    }
+    Ok(w.iter()
+        .skip(1)
+        .zip(w)
+        .map(|(a, b)| (a - mean) * (b - mean))
+        .sum::<f64>()
+        / c0)
+}
+
+/// Guide section 5, physical PDF pp.740-741. The caller supplies residuals whose
+/// squared norm is S*: for ML these include exp(logdet/(2*n)). Corpus evidence
+/// resolves the printed derivative's reversed numerator in favor of a descent
+/// difference. Keep `lm` separate: expert selection and smoothing depend on it.
+pub(crate) fn marquardt_guide(
+    mut x: Vec<f64>,
+    residuals: impl Fn(&[f64]) -> Result<Vec<f64>, AlgoError>,
+    admissible: impl Fn(&[f64]) -> Result<bool, AlgoError>,
+) -> Result<(Vec<f64>, usize), AlgoError> {
+    let k = x.len();
+    if k > 64 || x.iter().any(|v| !v.is_finite()) || !admissible(&x)? {
+        return Err(data("invalid Guide optimizer parameters"));
+    }
+    let evaluate = |x: &[f64]| {
+        let r = residuals(x)?;
+        if r.is_empty() || r.len() > 512 || r.iter().any(|v| !v.is_finite()) {
+            return Err(data("invalid Guide optimizer residuals"));
+        }
+        let s = r.iter().map(|v| v * v).sum::<f64>();
+        if !s.is_finite() {
+            return Err(data("nonfinite Guide objective"));
+        }
+        Ok((r, s))
+    };
+    let (mut r, mut value) = evaluate(&x)?;
+    if k == 0 || value == 0.0 {
+        return Ok((x, 0));
+    }
+    let mut lambda = 0.001;
+    for m in 0..=25 * k {
+        let mut jac = Vec::with_capacity(k);
+        for (i, v) in x.iter().enumerate() {
+            let delta = if *v > 0.0 { -0.0001 } else { 0.0001 };
+            let mut perturbed = x.clone();
+            if let Some(slot) = perturbed.get_mut(i) {
+                *slot += delta;
+            }
+            let (rr, _) = evaluate(&perturbed)?;
+            if rr.len() != r.len() {
+                return Err(data("Guide residual dimension changed"));
+            }
+            jac.push(
+                rr.iter()
+                    .zip(&r)
+                    .map(|(a, b)| (a - b) / delta)
+                    .collect::<Vec<_>>(),
+            );
+        }
+        let mut scales: Vec<_> = jac
+            .iter()
+            .map(|j| j.iter().map(|v| v * v).sum::<f64>().sqrt())
+            .collect();
+        let max_scale = scales.iter().copied().fold(0.0, f64::max);
+        if !max_scale.is_finite() {
+            return Err(data("nonfinite Guide derivative"));
+        }
+        if max_scale == 0.0 {
+            return Ok((x, m));
+        }
+        for d in &mut scales {
+            if *d / max_scale < 1e-8 {
+                *d = 0.0;
+            }
+        }
+        let mut a = vec![vec![0.0; k]; k];
+        let mut g = vec![0.0; k];
+        for (i, (ji, di)) in jac.iter().zip(&scales).enumerate() {
+            if *di == 0.0 {
+                continue;
+            }
+            if let Some(slot) = g.get_mut(i) {
+                *slot = ji.iter().zip(&r).map(|(a, b)| a * b).sum::<f64>() / di;
+            }
+            for (j, (jj, dj)) in jac.iter().zip(&scales).enumerate() {
+                if *dj != 0.0
+                    && let Some(slot) = a.get_mut(i).and_then(|row| row.get_mut(j))
+                {
+                    *slot = ji.iter().zip(jj).map(|(a, b)| a * b).sum::<f64>() / (di * dj);
+                }
+            }
+        }
+        // Bound retries as well as accepted iterations; lambda has a positive
+        // floor so a long sequence of reductions cannot underflow to zero.
+        let mut accepted = None;
+        for _ in 0..(25 * k + 32) {
+            if lambda > 1e9 {
+                return Ok((x, m));
+            }
+            let mut matrix = a.clone();
+            for (i, row) in matrix.iter_mut().enumerate() {
+                if let Some(diag) = row.get_mut(i) {
+                    *diag = 1.0 + lambda;
+                }
+            }
+            let mut step: Vec<_> = solve(matrix, g.clone())?
+                .iter()
+                .zip(&scales)
+                .map(|(h, d)| if *d == 0.0 { 0.0 } else { h / d })
+                .collect();
+            let mut candidate = None;
+            for _ in 0..=6 {
+                let mut next: Vec<_> = x.iter().zip(&step).map(|(v, h)| v - h).collect();
+                if !admissible(&next)? {
+                    let mut restored = None;
+                    for (i, old) in x.iter().enumerate() {
+                        let mut trial = next.clone();
+                        if let Some(slot) = trial.get_mut(i) {
+                            *slot = *old;
+                        }
+                        if admissible(&trial)? {
+                            restored = Some(trial);
+                            break;
+                        }
+                    }
+                    if let Some(trial) = restored {
+                        next = trial;
+                    } else {
+                        for h in &mut step {
+                            *h *= 0.5;
+                        }
+                        continue;
+                    }
+                }
+                candidate = Some(next);
+                break;
+            }
+            if let Some(next) = candidate {
+                let (rr, next_value) = evaluate(&next)?;
+                if next_value <= value {
+                    accepted = Some((next, rr, next_value));
+                    break;
+                }
+            }
+            lambda = (lambda * 100.0).max(f64::MIN_POSITIVE);
+        }
+        let Some((next, rr, next_value)) = accepted else {
+            return Err(data("Guide optimizer retry limit"));
+        };
+        let change = next
+            .iter()
+            .zip(&x)
+            .map(|(a, b)| (a - b).abs())
+            .fold(0.0, f64::max);
+        // Step 11 precedes step 12; both return the newly accepted iterate.
+        if (value - next_value) / value < 1e-5 || change < 1e-4 || next_value == 0.0 {
+            return Ok((next, m + 1));
+        }
+        x = next;
+        r = rr;
+        value = next_value;
+        lambda = (lambda * 0.1).max(f64::MIN_POSITIVE);
+    }
+    Ok((x, 25 * k + 1))
 }
 
 pub(crate) fn solve(mut a: Vec<Vec<f64>>, mut b: Vec<f64>) -> Result<Vec<f64>, AlgoError> {
