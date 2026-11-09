@@ -34,11 +34,11 @@ commands:
   compare <label> <path> [--strict]
                              run a corpus stream with dms-cli and compare the data reaching
                              each terminal node with the Modeler oracle export
-  regress [--label <label>]... [--jobs <n>] [--out <file>]
+  regress [--label <label>]... [--jobs <n>] [--out <file>] [--via-dms]
                              compare every stream that has an oracle export: match,
                              statistical (a statistical-parity builder trains), known GAP
                              (xtask/known-gaps.tsv) or regression; fails on a regression or
-                             a stale known-gap entry (--out: per-stream TSV)";
+                             a stale known-gap entry (--out: per-stream TSV; --via-dms: convert then run)";
 
 /// Crates with real-file and oracle tests behind their `corpus` feature.
 const CORPUS_CRATES: &[&str] = &[

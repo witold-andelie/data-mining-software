@@ -1,7 +1,7 @@
 //! `dms-cli`: inspect IBM SPSS Modeler streams from the command line.
 
 use dms_engine::catalog::{self, Resolution, Scope};
-use dms_stream::{Diagram, NodeRef, Stream, StreamNode};
+use dms_stream::{Diagram, NodeRef, Stream, StreamDoc, StreamNode};
 use dms_strfmt::{ArchiveLimits, AttachmentKind, StreamArchive, read_archive};
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
@@ -15,7 +15,8 @@ commands:
   inspect <file.str>              print nodes, links and attachments as JSON
   coverage [--json] <path>...     decode every .str under the paths and report which catalog
                                   nodes they use
-  run <file.str> --out <dir> [--data-dir <dir>]...
+  convert <in.str> <out.dms>      import a stream and atomically save the native document
+  run <file.str|file.dms> --out <dir> [--data-dir <dir>]...
                                   run the stream and write the data reaching each terminal node
                                   to <dir>/<uid>.csv, with a report in <dir>/run.json
                                   [--terminal-order <uid,...>] overrides saved terminal run order";
@@ -29,6 +30,9 @@ fn main() -> ExitCode {
         [command, path] if command == "xml" => xml(Path::new(path)),
         [command, path] if command == "inspect" => inspect(Path::new(path)),
         [command, rest @ ..] if command == "coverage" && !rest.is_empty() => coverage(rest),
+        [command, input, output] if command == "convert" => {
+            convert(Path::new(input), Path::new(output))
+        }
         [command, path, rest @ ..] if command == "run" => run(Path::new(path), rest),
         _ => Err(USAGE.to_string()),
     };
@@ -48,6 +52,51 @@ fn open(path: &Path) -> Result<(StreamArchive, Stream), String> {
     let stream =
         Stream::from_document(&archive.document).map_err(|e| format!("{}: {e}", path.display()))?;
     Ok((archive, stream))
+}
+
+fn read_document(path: &Path) -> Result<StreamDoc, String> {
+    match path
+        .extension()
+        .and_then(|s| s.to_str())
+        .map(str::to_ascii_lowercase)
+        .as_deref()
+    {
+        Some("dms") => {
+            dms_stream::native::load(path).map_err(|e| format!("{}: {e}", path.display()))
+        }
+        Some("str") => {
+            use std::io::Read;
+            let file = std::fs::File::open(path)
+                .map_err(|e| format!("cannot read {}: {e}", path.display()))?;
+            const LIMIT: u64 = 1 << 30;
+            if file.metadata().map_err(|e| e.to_string())?.len() > LIMIT {
+                return Err("input exceeds 1 GiB".into());
+            }
+            let mut bytes = Vec::new();
+            file.take(LIMIT + 1)
+                .read_to_end(&mut bytes)
+                .map_err(|e| e.to_string())?;
+            let name = path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .ok_or("input file name must be UTF-8")?;
+            StreamDoc::import_str(&bytes, name).map_err(|e| format!("{}: {e}", path.display()))
+        }
+        _ => Err("expected a .str or .dms file".into()),
+    }
+}
+fn convert(input: &Path, output: &Path) -> Result<(), String> {
+    if !input
+        .extension()
+        .is_some_and(|s| s.eq_ignore_ascii_case("str"))
+        || !output
+            .extension()
+            .is_some_and(|s| s.eq_ignore_ascii_case("dms"))
+    {
+        return Err("usage: dms-cli convert <in.str> <out.dms>".into());
+    }
+    let doc = read_document(input)?;
+    dms_stream::native::save_atomic(&doc, output).map_err(|e| e.to_string())
 }
 
 fn xml(path: &Path) -> Result<(), String> {
@@ -314,7 +363,11 @@ fn run(path: &Path, args: &[String]) -> Result<(), String> {
         }
     }
     let out = out.ok_or("run needs --out <dir>")?;
-    let (archive, stream) = open(path)?;
+    let StreamDoc {
+        stream,
+        attachments,
+        ..
+    } = read_document(path)?;
     let plan = dms_exec::Plan::new(&stream);
     let terminals = plan.terminals();
     let run_order = match &terminal_order {
@@ -342,13 +395,7 @@ fn run(path: &Path, args: &[String]) -> Result<(), String> {
     let context = dms_exec::ExecContext {
         files: dms_exec::FileResolver { data_dirs },
         stream_properties: stream.properties.clone().map(std::sync::Arc::new),
-        attachments: std::sync::Arc::new(
-            archive
-                .attachments
-                .into_iter()
-                .map(|attachment| (attachment.name, attachment.bytes.into()))
-                .collect(),
-        ),
+        attachments: std::sync::Arc::new(attachments.into_iter().collect()),
         decimal_places: None,
         // Export nodes write under the output directory, never over the stream's own paths.
         export_dir: Some(out.join("exports")),

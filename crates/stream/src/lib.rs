@@ -18,6 +18,14 @@
 //! `uid`, and links are resolved to uids. Settings are kept as the original XML elements: typed
 //! interpretation of each node's settings belongs to the node implementations.
 
+pub mod base64;
+pub mod doc;
+pub mod edit;
+pub mod native;
+pub mod settings_xml;
+pub use doc::{DocError, DocMeta, StreamDoc};
+pub use edit::{Edit, EditError, new_uid};
+
 use dms_strfmt::fastinfoset::{Document, Element};
 use std::collections::HashMap;
 use std::fmt;
