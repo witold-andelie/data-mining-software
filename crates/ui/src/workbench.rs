@@ -430,6 +430,10 @@ impl Workbench {
                             self.graph.as_ref(),
                             self.state.canvas.selected.as_deref(),
                             &mut self.results_tab,
+                            self.session
+                                .document()
+                                .map(|d| dms_engine::session::export_dir_for(&d.path))
+                                .as_deref(),
                         );
                     }
                 });
