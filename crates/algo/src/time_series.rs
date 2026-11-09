@@ -38,17 +38,22 @@
 //! Initial TF coefficients use joint least squares before the extra lag discard;
 //! AR uses the centered biased ACF. The pure MA(1) initialization uses the ACF
 //! through p+q=1 in the Guide's AR approximation, with higher lags zero.
-//! Adoption is structural: nonseasonal, undifferenced AR(1)/MA(1) with constant,
-//! and the supported AR(1)-noise transfer fits without denominator parameters.
-//! Mixed/seasonal ARIMA and rational transfers retain `lm`; expert selection
-//! and smoothing also retain `lm`. The earlier optimum for `ts_tf_static` was
-//! closer to the likelihood maximum, but the Guide's early stop matches Modeler.
-//! Remaining unresolved early-stop case:
-//! - `ts_sarlog_noconst`: the saved builder lacks the scripted keyed transform, so Modeler's
-//!   own rebuild (which the oracle's tables show) is untransformed, like ours. Its fitted
-//!   values give phi 0.988174, Phi 0.524296 exactly (residual 2e-15); ours 0.988068,
-//!   0.524038 has a 7.3e-5 better -loglik on an independent exact likelihood. Near the unit
-//!   root that moves the six-step interval bound by 11.7 % SD.
+//! Adoption is structural: nonseasonal, undifferenced AR(1)/MA(1) with constant;
+//! the supported AR(1)-noise transfer fits without denominator parameters;
+//! and two no-constant seasonal products under `marquardt_guide` with the
+//! section-6 ACF of N_t = ΔZ_t (c = 0, so the raw second moment, not a further
+//! mean subtraction):
+//! - MA(1)×SMA(1) with d = D = 1 (`ts_more/ts_airline_noconst`): saved coefficients
+//!   to 11 digits, 4/4 terminal inputs;
+//! - AR(1)×SAR(1) with d = D = 0 (`ts_more/ts_sarlog_noconst` rebuild):
+//!   (φ, Φ) = (0.98817376, 0.52429593) vs the recorded rebuild (0.988174, 0.524296).
+//!   Row-1 half-width differs by 1.01e-8 (8.2 digits); compare stays 3/4 on `$TSLCI`.
+//!
+//! Mixed ARIMA(1,1,1), airline-with-constant, and rational transfers retain `lm`.
+//! Expert selection and smoothing also retain `lm`. The earlier optimum for
+//! `ts_tf_static` was closer to the likelihood maximum, but the Guide's early
+//! stop matches Modeler. Centered ACF on the two no-constant products stops at
+//! 4.5 digits (airline_noconst) / 2.1 digits on the CI (sarlog_noconst).
 //!
 //! Passing the objective alone is not acceptance.
 //! Other limits: <=512 fitting observations, monthly regular dates, bounded
@@ -614,51 +619,90 @@ fn fit_seasonal_arima(
         let scale = (ld / (2.0 * n)).exp();
         Ok(r.into_iter().map(|v| v * scale).collect::<Vec<_>>())
     };
-    let mut bounds = vec![(-1.0 + 1e-8, 1.0 - 1e-8); k];
-    if o.constant
-        && let Some(v) = bounds.first_mut()
-    {
-        *v = (f64::NEG_INFINITY, f64::INFINITY);
-    }
-    let mut best = None;
-    let starts: &[f64] = if o.d > 0 && active(o.q, zero_ma) > 1 {
-        &[0.1]
+    // Guide section 6 with c = 0: N_t is the (differenced) series, and the ACF
+    // is its raw second moment. Centered ACF on the same structures stops 4–5
+    // digits short. Measured under marquardt_guide:
+    // - MA(1)×SMA(1) with d=D=1: ts_more/ts_airline_noconst, 11 digits vs saved;
+    // - AR(1)×SAR(1) with d=D=0: ts_more/ts_sarlog_noconst rebuild
+    //   (φ, Φ) = (0.988174, 0.524296).
+    let guide_noconst = !o.constant
+        && zero_ar == 0
+        && zero_ma == 0
+        && o.period > 1
+        && ((o.p == 0 && o.sp == 0 && o.q == 1 && o.sq == 1 && o.d == 1 && o.sd == 1)
+            || (o.p == 1 && o.sp == 1 && o.q == 0 && o.sq == 0 && o.d == 0 && o.sd == 0));
+    let (x, iterations) = if guide_noconst {
+        if k != 2 {
+            return Err(data("Guide noconst seasonal start expects two parameters"));
+        }
+        let mut w = arima::difference(&z, o.d);
+        for _ in 0..o.sd {
+            if w.len() <= o.period {
+                return Err(data("insufficient seasonal difference history"));
+            }
+            w = w
+                .iter()
+                .skip(o.period)
+                .zip(&w)
+                .map(|(a, b)| a - b)
+                .collect();
+        }
+        let r1 = guide_acf_lag(&w, 1, false)?;
+        let rs = guide_acf_lag(&w, o.period, false)?;
+        let x = if o.q == 1 {
+            vec![guide_ma1_from_rho(r1), guide_ma1_from_rho(rs)]
+        } else {
+            vec![guide_ar1_from_rho(r1), guide_ar1_from_rho(rs)]
+        };
+        marquardt_guide(x, residuals, |x| admissible_arima(&make(x)))?
     } else {
-        &[-0.3, 0.1, 0.5]
-    };
-    for &start in starts {
-        let mut x = vec![start; k];
+        let mut bounds = vec![(-1.0 + 1e-8, 1.0 - 1e-8); k];
         if o.constant
-            && let Some(v) = x.first_mut()
+            && let Some(v) = bounds.first_mut()
         {
-            *v = if degree == 0 {
-                z.iter().sum::<f64>() / count(z.len())
-            } else {
-                0.0
-            };
+            *v = (f64::NEG_INFINITY, f64::INFINITY);
         }
-        if check_roots {
-            // A common coefficient start need not be stationary/invertible at order >= 2.
-            // Contract towards the white-noise interior, preserving masks.
-            for _ in 0..32 {
-                if admissible_arima(&make(&x))? {
-                    break;
+        let mut best = None;
+        let starts: &[f64] = if o.d > 0 && active(o.q, zero_ma) > 1 {
+            &[0.1]
+        } else {
+            &[-0.3, 0.1, 0.5]
+        };
+        for &start in starts {
+            let mut x = vec![start; k];
+            if o.constant
+                && let Some(v) = x.first_mut()
+            {
+                *v = if degree == 0 {
+                    z.iter().sum::<f64>() / count(z.len())
+                } else {
+                    0.0
+                };
+            }
+            if check_roots {
+                // A common coefficient start need not be stationary/invertible at order >= 2.
+                // Contract towards the white-noise interior, preserving masks.
+                for _ in 0..32 {
+                    if admissible_arima(&make(&x))? {
+                        break;
+                    }
+                    for v in x.iter_mut().skip(usize::from(o.constant)) {
+                        *v *= 0.5;
+                    }
                 }
-                for v in x.iter_mut().skip(usize::from(o.constant)) {
-                    *v *= 0.5;
+            }
+            if let Ok((x, iterations)) = lm(x, &bounds, residuals) {
+                let r = residuals(&x)?;
+                let value = r.iter().map(|v| v * v).sum::<f64>();
+                if best.as_ref().is_none_or(|(_, _, v)| value < *v) {
+                    best = Some((x, iterations, value));
                 }
             }
         }
-        if let Ok((x, iterations)) = lm(x, &bounds, residuals) {
-            let r = residuals(&x)?;
-            let value = r.iter().map(|v| v * v).sum::<f64>();
-            if best.as_ref().is_none_or(|(_, _, v)| value < *v) {
-                best = Some((x, iterations, value));
-            }
-        }
-    }
-    let (x, iterations, _) =
-        best.ok_or_else(|| data("seasonal ARIMA optimizer did not converge"))?;
+        let (x, iterations, _) =
+            best.ok_or_else(|| data("seasonal ARIMA optimizer did not converge"))?;
+        (x, iterations)
+    };
     let mut spec = make(&x);
     let (r, _) = arima::likelihood_residuals(&spec, y).map_err(data)?;
     spec.sigma2 = r.iter().map(|v| v * v).sum::<f64>() / spec.df;
@@ -779,15 +823,7 @@ fn fit_arima(
         initial.push(if d == 0 {
             // Guide section 6, AR(1) approximation to MA(1). The available
             // initialization ACF ends at p+q=1 (higher lags are zero).
-            let rho = guide_acf1(&w)?;
-            let mut theta = rho / (1.0 - rho * rho);
-            for _ in 0..1024 {
-                if theta.abs() < 1.0 {
-                    break;
-                }
-                theta *= 0.9;
-            }
-            theta
+            guide_ma1_from_rho(guide_acf1(&w)?)
         } else {
             0.1
         });
@@ -993,22 +1029,77 @@ pub(crate) fn lm(
     Err(data("Time Series optimizer exceeded 400 iterations"))
 }
 
-/// Biased, mean-centered lag-one ACF used by Guide section 6 initialization.
-pub(crate) fn guide_acf1(w: &[f64]) -> Result<f64, AlgoError> {
-    if !(2..=512).contains(&w.len()) || w.iter().any(|v| !v.is_finite()) {
+/// Biased lag-`lag` ACF of `w`. `center` subtracts the sample mean (Guide
+/// autocorrelations of N_t after a fitted intercept). With `c = 0`, N_t is
+/// already the model residual, so the raw second moment is used.
+pub(crate) fn guide_acf_lag(w: &[f64], lag: usize, center: bool) -> Result<f64, AlgoError> {
+    if !(2..=512).contains(&w.len())
+        || lag == 0
+        || lag >= w.len()
+        || w.iter().any(|v| !v.is_finite())
+    {
         return Err(data("invalid ARIMA initialization history"));
     }
-    let mean = w.iter().sum::<f64>() / count(w.len());
+    let mean = if center {
+        w.iter().sum::<f64>() / count(w.len())
+    } else {
+        0.0
+    };
     let c0 = w.iter().map(|v| (v - mean).powi(2)).sum::<f64>();
     if c0 <= 0.0 || !c0.is_finite() {
         return Err(data("ARIMA needs nonzero initialization variance"));
     }
     Ok(w.iter()
-        .skip(1)
+        .skip(lag)
         .zip(w)
         .map(|(a, b)| (a - mean) * (b - mean))
         .sum::<f64>()
         / c0)
+}
+
+/// Biased, mean-centered lag-one ACF used by Guide section 6 initialization.
+pub(crate) fn guide_acf1(w: &[f64]) -> Result<f64, AlgoError> {
+    guide_acf_lag(w, 1, true)
+}
+
+/// Guide section 6 AR(1) Yule–Walker start, contracted inside the unit interval.
+fn guide_ar1_from_rho(rho: f64) -> f64 {
+    let mut phi = if rho.is_finite() { rho } else { 0.0 };
+    for _ in 0..1024 {
+        if phi.is_finite() && phi.abs() < 1.0 {
+            break;
+        }
+        phi *= 0.9;
+    }
+    if phi.is_finite() && phi.abs() < 1.0 {
+        phi
+    } else {
+        0.0
+    }
+}
+
+/// Guide section 6 MA(1) start from an AR(1) approximation, truncated at p+q=1.
+/// Internal coefficient is Brockwell–Davis sign `(1 + θ B)`.
+fn guide_ma1_from_rho(rho: f64) -> f64 {
+    if !rho.is_finite() || rho.abs() >= 1.0 {
+        return 0.0;
+    }
+    let denom = 1.0 - rho * rho;
+    if denom.abs() < 1e-18 {
+        return 0.0;
+    }
+    let mut theta = rho / denom;
+    for _ in 0..1024 {
+        if theta.is_finite() && theta.abs() < 1.0 {
+            break;
+        }
+        theta *= 0.9;
+    }
+    if theta.is_finite() && theta.abs() < 1.0 {
+        theta
+    } else {
+        0.0
+    }
 }
 
 /// Guide section 5, physical PDF pp.740-741. The caller supplies residuals whose
