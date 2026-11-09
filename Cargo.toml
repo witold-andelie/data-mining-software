@@ -22,9 +22,11 @@ dms-stream = { path = "crates/stream" }
 dms-catalog = { path = "crates/catalog" }
 dms-exec = { path = "crates/exec" }
 dms-ui = { path = "crates/ui" }
+dms-macos-open = { path = "crates/macos-open" }
 # GUI (L6 and apps only; `cargo xtask layers` enforces it). Licences: docs/gui/DESIGN.md §9.
 egui = "=0.37.0"
 eframe = { version = "=0.37.0", features = ["persistence"] }
+egui_extras = { version = "=0.37.0", default-features = false }
 egui_kittest = { version = "=0.37.0", features = ["wgpu", "snapshot"] }
 muda = { version = "=0.21.2", default-features = false }
 rfd = "=0.18.0"
