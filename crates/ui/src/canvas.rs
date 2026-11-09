@@ -13,6 +13,7 @@ use egui::{
     Ui, Vec2, pos2, vec2,
 };
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 
 pub const MIN_ZOOM: f32 = 0.1;
 pub const MAX_ZOOM: f32 = 4.0;
@@ -95,6 +96,16 @@ impl CanvasView {
     }
 }
 
+/// How a node fared in the latest run, drawn as a badge on its tile.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RunMark {
+    Running,
+    Done,
+    Failed,
+    /// Not run because a node upstream failed.
+    Blocked,
+}
+
 /// What happened on the canvas this frame.
 #[derive(Debug, Default)]
 pub struct CanvasEvents {
@@ -104,7 +115,12 @@ pub struct CanvasEvents {
 }
 
 /// Draws the canvas into all of `ui`'s available space and handles pan, zoom and selection.
-pub fn show(ui: &mut Ui, graph: &StreamGraph, view: &mut CanvasView) -> (Response, CanvasEvents) {
+pub fn show(
+    ui: &mut Ui,
+    graph: &StreamGraph,
+    view: &mut CanvasView,
+    marks: &HashMap<String, RunMark>,
+) -> (Response, CanvasEvents) {
     let rect = ui.available_rect_before_wrap();
     let response = ui.allocate_rect(rect, Sense::click_and_drag());
     let origin = rect.min;
@@ -165,6 +181,9 @@ pub fn show(ui: &mut Ui, graph: &StreamGraph, view: &mut CanvasView) -> (Respons
         draw_node(
             &painter, node, tile, view.zoom, dark, hovered, selected, &visuals,
         );
+        if let Some(mark) = marks.get(&node.uid) {
+            draw_mark(&painter, tile, view.zoom, *mark, dark);
+        }
     }
 
     if response.clicked() {
@@ -183,6 +202,55 @@ pub fn show(ui: &mut Ui, graph: &StreamGraph, view: &mut CanvasView) -> (Respons
         None => response,
     };
     (response, events)
+}
+
+/// A badge at the tile's top-right corner: a ring for running, a dot for done, an exclamation
+/// disc for failed, a hollow square for blocked. Shapes differ, not only colours.
+fn draw_mark(painter: &egui::Painter, tile: Rect, zoom: f32, mark: RunMark, dark: bool) {
+    let r = (7.0 * zoom).clamp(4.0, 10.0);
+    let center = tile.right_top() + vec2(-r * 0.3, r * 0.3);
+    let outline = if dark {
+        Color32::from_gray(30)
+    } else {
+        Color32::WHITE
+    };
+    let ring = |color: Color32, width: f32| {
+        painter.rect_stroke(
+            tile.expand(4.0 * zoom.max(0.5)),
+            CornerRadius::same((12.0 * zoom).clamp(2.0, 22.0) as u8),
+            Stroke::new(width, color),
+            StrokeKind::Outside,
+        );
+    };
+    match mark {
+        RunMark::Running => {
+            let blue = Color32::from_rgb(0x2F, 0x80, 0xED);
+            ring(blue, 2.0);
+            painter.circle_filled(center, r, outline);
+            painter.circle_stroke(center, r * 0.7, Stroke::new(r * 0.4, blue));
+        }
+        RunMark::Done => {
+            painter.circle_filled(center, r * 0.75, Color32::from_rgb(0x2E, 0xA0, 0x43));
+            painter.circle_stroke(center, r * 0.75, Stroke::new(1.5, outline));
+        }
+        RunMark::Failed => {
+            let red = Color32::from_rgb(0xD9, 0x30, 0x25);
+            ring(red, 2.5);
+            painter.circle_filled(center, r, red);
+            painter.circle_stroke(center, r, Stroke::new(1.5, outline));
+            painter.line_segment(
+                [center + vec2(0.0, -r * 0.55), center + vec2(0.0, r * 0.15)],
+                Stroke::new(r * 0.28, Color32::WHITE),
+            );
+            painter.circle_filled(center + vec2(0.0, r * 0.5), r * 0.15, Color32::WHITE);
+        }
+        RunMark::Blocked => {
+            let amber = Color32::from_rgb(0xC9, 0x8A, 0x12);
+            let square = Rect::from_center_size(center, vec2(r * 1.3, r * 1.3));
+            painter.rect_filled(square, 2.0, outline);
+            painter.rect_stroke(square, 2.0, Stroke::new(r * 0.3, amber), StrokeKind::Inside);
+        }
+    }
 }
 
 fn canvas_background(dark: bool) -> Color32 {

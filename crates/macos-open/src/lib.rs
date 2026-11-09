@@ -1,12 +1,13 @@
 //! Files macOS asks the application to open: a `.str` double-clicked in Finder, chosen with
-//! "Open With", or dropped on the Dock icon. macOS delivers them to the application delegate
-//! (`application:openURLs:`), which winit 0.30 leaves to the application, and declaring an
-//! Objective-C class needs `unsafe`.
+//! "Open With", or dropped on the Dock icon. macOS sends them as an "open documents" Apple Event.
+//! winit 0.30 neither handles it nor lets the application replace its own application
+//! delegate (which drives the event loop), so this crate registers an Apple Event handler of its
+//! own. Declaring the Objective-C handler class and registering it need `unsafe`.
 //!
 //! **This is the only crate in the workspace that may use `unsafe`** (owner decision,
-//! 2026-11-09). It is confined to `mod macos`, which only declares the delegate class and
-//! forwards file paths to [`take_paths`]. Everything else here, and on other platforms all of
-//! it, is safe code.
+//! 2026-11-09). It is confined to `mod macos`, which only declares the handler class, registers
+//! it, and forwards file paths to [`take_paths`]. Everything else here, and on other platforms
+//! all of it, is safe code.
 //!
 //! Usage: call [`install`] on the main thread after the winit event loop is created and before
 //! it runs (files that launch the app arrive while it finishes launching); set a waker with
@@ -73,40 +74,62 @@ fn push(paths: impl IntoIterator<Item = PathBuf>) {
 #[cfg(target_os = "macos")]
 #[allow(unsafe_code)]
 mod macos {
+    use block2::RcBlock;
     use objc2::rc::Retained;
-    use objc2::runtime::ProtocolObject;
-    use objc2::{MainThreadMarker, MainThreadOnly, define_class, msg_send};
-    use objc2_app_kit::{NSApplication, NSApplicationDelegate};
-    use objc2_foundation::{NSArray, NSObject, NSObjectProtocol, NSURL};
+    use objc2::runtime::{NSObjectProtocol, ProtocolObject};
+    use objc2::{MainThreadMarker, MainThreadOnly, define_class, msg_send, sel};
+    use objc2_app_kit::NSApplicationWillFinishLaunchingNotification;
+    use objc2_foundation::{
+        NSAppleEventDescriptor, NSAppleEventManager, NSNotification, NSNotificationCenter, NSObject,
+    };
     use std::cell::RefCell;
     use std::path::PathBuf;
+    use std::ptr::NonNull;
+
+    /// Four-character codes from the Apple Event Manager (`AppleEvents.h`).
+    const K_CORE_EVENT_CLASS: u32 = u32::from_be_bytes(*b"aevt");
+    const K_AE_OPEN_DOCUMENTS: u32 = u32::from_be_bytes(*b"odoc");
+    const KEY_DIRECT_OBJECT: u32 = u32::from_be_bytes(*b"----");
+    /// Upper bound on files read from one event.
+    const MAX_ITEMS: isize = 1024;
 
     define_class!(
         // SAFETY: NSObject has no subclassing requirements, and this class implements no Drop.
         #[unsafe(super(NSObject))]
         #[thread_kind = MainThreadOnly]
-        #[name = "DmsOpenDocumentsDelegate"]
-        struct OpenDelegate;
+        #[name = "DmsOpenDocumentsHandler"]
+        struct OpenHandler;
 
-        // SAFETY: NSObjectProtocol has no requirements beyond being an NSObject subclass.
-        unsafe impl NSObjectProtocol for OpenDelegate {}
-
-        // SAFETY: the method has the signature AppKit declares for `application:openURLs:`
-        // (see `objc2_app_kit::NSApplicationDelegate::application_openURLs`).
-        unsafe impl NSApplicationDelegate for OpenDelegate {
-            #[unsafe(method(application:openURLs:))]
-            fn application_open_urls(&self, _application: &NSApplication, urls: &NSArray<NSURL>) {
+        impl OpenHandler {
+            // SAFETY: the signature NSAppleEventManager calls handlers with
+            // (`- (void)handleEvent:(NSAppleEventDescriptor *)event
+            //    withReplyEvent:(NSAppleEventDescriptor *)reply`).
+            #[unsafe(method(handleOpenDocuments:withReplyEvent:))]
+            fn handle_open_documents(
+                &self,
+                event: &NSAppleEventDescriptor,
+                _reply: &NSAppleEventDescriptor,
+            ) {
+                let Some(list) = event.paramDescriptorForKeyword(KEY_DIRECT_OBJECT) else {
+                    return;
+                };
+                let count = list.numberOfItems().clamp(0, MAX_ITEMS);
+                // Apple Event lists are 1-based.
                 super::push(
-                    urls.iter()
-                        .filter(|url| url.isFileURL())
+                    (1..=count)
+                        .filter_map(|index| list.descriptorAtIndex(index))
+                        .filter_map(|item| item.fileURLValue())
                         .filter_map(|url| url.path())
                         .map(|path| PathBuf::from(path.to_string())),
                 );
             }
         }
+
+        // SAFETY: NSObjectProtocol has no requirements beyond being an NSObject subclass.
+        unsafe impl NSObjectProtocol for OpenHandler {}
     );
 
-    impl OpenDelegate {
+    impl OpenHandler {
         fn new(mtm: MainThreadMarker) -> Retained<Self> {
             let this = Self::alloc(mtm).set_ivars(());
             // SAFETY: `init` is NSObject's designated initializer and takes no arguments.
@@ -115,21 +138,56 @@ mod macos {
     }
 
     thread_local! {
-        /// AppKit holds the delegate weakly; this keeps it alive for the life of the app.
-        static DELEGATE: RefCell<Option<Retained<OpenDelegate>>> = const { RefCell::new(None) };
+        /// The handler and the notification observer live as long as the application.
+        static KEEP: RefCell<Vec<Retained<ProtocolObject<dyn NSObjectProtocol>>>> =
+            const { RefCell::new(Vec::new()) };
+        static HANDLER: RefCell<Option<Retained<OpenHandler>>> = const { RefCell::new(None) };
+    }
+
+    fn register(handler: &OpenHandler) {
+        let manager = NSAppleEventManager::sharedAppleEventManager();
+        // SAFETY: `handler` is an object of a class that implements the selector with the
+        // signature the Apple Event Manager calls (see `handle_open_documents`), and it is kept
+        // alive in `HANDLER` for the life of the application.
+        unsafe {
+            manager.setEventHandler_andSelector_forEventClass_andEventID(
+                handler,
+                sel!(handleOpenDocuments:withReplyEvent:),
+                K_CORE_EVENT_CLASS,
+                K_AE_OPEN_DOCUMENTS,
+            );
+        }
     }
 
     pub(super) fn install() -> bool {
         let Some(mtm) = MainThreadMarker::new() else {
             return false;
         };
-        let app = NSApplication::sharedApplication(mtm);
-        if app.delegate().is_some() {
-            return false;
-        }
-        let delegate = OpenDelegate::new(mtm);
-        app.setDelegate(Some(ProtocolObject::from_ref(&*delegate)));
-        DELEGATE.with(|slot| *slot.borrow_mut() = Some(delegate));
+        let handler = OpenHandler::new(mtm);
+        HANDLER.with(|slot| *slot.borrow_mut() = Some(handler));
+        // AppKit installs its default "open documents" handler while the application finishes
+        // launching, so ours goes in at "will finish launching": after AppKit's, and before the
+        // documents that launched the application are delivered.
+        let block = RcBlock::new(|_notification: NonNull<NSNotification>| {
+            HANDLER.with(|slot| {
+                if let Some(handler) = slot.borrow().as_ref() {
+                    register(handler);
+                }
+            });
+        });
+        let center = NSNotificationCenter::defaultCenter();
+        // SAFETY: reading an AppKit constant (an immutable NSString); the block is only run on
+        // the main thread (the notification is posted there) and owns no thread-bound data;
+        // the observer token is kept alive in `KEEP`.
+        let observer = unsafe {
+            center.addObserverForName_object_queue_usingBlock(
+                Some(NSApplicationWillFinishLaunchingNotification),
+                None,
+                None,
+                &block,
+            )
+        };
+        KEEP.with(|keep| keep.borrow_mut().push(observer));
         true
     }
 }

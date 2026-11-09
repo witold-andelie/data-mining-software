@@ -12,6 +12,9 @@ use std::fmt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+/// Upper bound on extra data folders.
+pub const MAX_DATA_FOLDERS: usize = 64;
+
 /// Largest `.str` file the session reads (the archive reader has its own member limits).
 const MAX_STREAM_FILE_BYTES: u64 = 1 << 30;
 
@@ -131,6 +134,9 @@ pub enum RunNotice {
 #[derive(Debug, Default)]
 pub struct Session {
     document: Option<Document>,
+    /// Folders searched by file name for data a stream references, after the stream's own
+    /// folder (streams often name files on the machine that saved them).
+    data_folders: Vec<PathBuf>,
     jobs: JobManager<RunReport>,
     results: Option<RunResults>,
     run_state: RunState,
@@ -217,6 +223,26 @@ impl Session {
         }
     }
 
+    /// The extra data folders, in search order.
+    pub fn data_folders(&self) -> &[PathBuf] {
+        &self.data_folders
+    }
+
+    /// Replaces the extra data folders (restored from the interface's saved state). Duplicates
+    /// and more than [`MAX_DATA_FOLDERS`] folders are dropped.
+    pub fn set_data_folders(&mut self, folders: Vec<PathBuf>) {
+        self.data_folders.clear();
+        for folder in folders {
+            self.add_data_folder(folder);
+        }
+    }
+
+    fn add_data_folder(&mut self, folder: PathBuf) {
+        if self.data_folders.len() < MAX_DATA_FOLDERS && !self.data_folders.contains(&folder) {
+            self.data_folders.push(folder);
+        }
+    }
+
     fn start_run(&mut self, targets: RunTargets) {
         let Some(document) = &self.document else {
             return;
@@ -224,14 +250,16 @@ impl Session {
         let request = RunRequest {
             stream: Arc::new(document.stream.clone()),
             attachments: Arc::clone(&document.attachments),
-            data_dirs: vec![
+            data_dirs: std::iter::once(
                 document
                     .path
                     .parent()
                     .filter(|dir| !dir.as_os_str().is_empty())
                     .unwrap_or_else(|| Path::new("."))
                     .to_path_buf(),
-            ],
+            )
+            .chain(self.data_folders.iter().cloned())
+            .collect(),
             export_dir: export_dir_for(&document.path),
             targets,
         };
@@ -307,6 +335,23 @@ impl Session {
                     return Ok(Outcome::NeedsArgument("node"));
                 };
                 self.start_run(RunTargets::Nodes(vec![uid.clone()]));
+                Ok(Outcome::Done)
+            }
+            "file.add_data_folder" => {
+                let Some(Arg::Path(folder)) = args.first() else {
+                    return Ok(Outcome::NeedsArgument("folder"));
+                };
+                if !folder.is_dir() {
+                    return Err(CommandError::BadArgument {
+                        id: spec.id,
+                        expected: "an existing folder",
+                    });
+                }
+                self.add_data_folder(folder.clone());
+                Ok(Outcome::Done)
+            }
+            "file.clear_data_folders" => {
+                self.data_folders.clear();
                 Ok(Outcome::Done)
             }
             "run.cancel" => {
@@ -606,6 +651,37 @@ mod tests {
                 Err(other) => panic!("{}: {other}", spec.id),
             }
         }
+    }
+
+    #[test]
+    fn data_folders_are_added_once_and_checked() {
+        let mut session = Session::new();
+        assert_eq!(
+            session.execute("file.add_data_folder", &[]),
+            Ok(Outcome::NeedsArgument("folder"))
+        );
+        let dir = std::env::temp_dir();
+        for _ in 0..2 {
+            assert_eq!(
+                session.execute("file.add_data_folder", &[Arg::Path(dir.clone())]),
+                Ok(Outcome::Done)
+            );
+        }
+        assert_eq!(session.data_folders(), std::slice::from_ref(&dir));
+        assert!(matches!(
+            session.execute(
+                "file.add_data_folder",
+                &[Arg::Path(dir.join("dms-no-such-folder"))]
+            ),
+            Err(CommandError::BadArgument { .. })
+        ));
+        session.set_data_folders((0..100).map(|i| dir.join(i.to_string())).collect());
+        assert_eq!(session.data_folders().len(), MAX_DATA_FOLDERS);
+        assert_eq!(
+            session.execute("file.clear_data_folders", &[]),
+            Ok(Outcome::Done)
+        );
+        assert!(session.data_folders().is_empty());
     }
 
     #[test]

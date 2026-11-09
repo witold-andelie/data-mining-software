@@ -1,5 +1,6 @@
 //! Developer tasks: `cargo xtask <command>`.
 
+mod bundle;
 mod compare;
 mod corpus;
 mod layers;
@@ -16,6 +17,8 @@ const USAGE: &str = "usage: cargo xtask <command>
 
 commands:
   ci                         fmt, clippy -D warnings, tests, layers, parity --check
+  bundle-mac                 build target/dist/Data Mining.app and DataMining-<version>.dmg
+                             (macOS; ad-hoc signed, not notarized)
   layers                     check crate dependency layering
   parity [--check]           regenerate docs/parity-checklist.md (--check: fail if stale)
   corpus record <label> <dir> [ext,...]
@@ -71,6 +74,7 @@ fn main() -> ExitCode {
     let rest = args.get(1..).unwrap_or_default();
     let outcome = match args.first().map(String::as_str) {
         Some("ci") => ci(),
+        Some("bundle-mac") => bundle::run(rest),
         Some("layers") => layers::check(),
         Some("parity") => parity::run(rest.iter().any(|a| a == "--check")),
         Some("corpus") => corpus::run(rest),

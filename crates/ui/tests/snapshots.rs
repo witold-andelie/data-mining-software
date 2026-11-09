@@ -87,7 +87,7 @@ fn canvas_dark_zoomed_with_selection() {
     for _ in 0..2 {
         harness
             .state_mut()
-            .dispatch(&ctx, "view.zoom_in", &mut || None);
+            .dispatch(&ctx, "view.zoom_in", &mut |_| None);
         harness.run();
     }
     assert!(harness.state().state.canvas.zoom > 1.0);
@@ -108,10 +108,10 @@ fn empty_window_offers_open() {
     let ctx = harness.ctx.clone();
     harness
         .state_mut()
-        .dispatch(&ctx, "file.open", &mut || None);
+        .dispatch(&ctx, "file.open", &mut |_| None);
     assert!(harness.state().session.document().is_none());
     // A path that is not a stream reports an error instead of failing.
-    harness.state_mut().dispatch(&ctx, "file.open", &mut || {
+    harness.state_mut().dispatch(&ctx, "file.open", &mut |_| {
         Some(PathBuf::from("no-such-dir/missing.str"))
     });
     harness.run();

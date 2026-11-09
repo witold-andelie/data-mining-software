@@ -26,6 +26,7 @@ mod rule_tree;
 mod rules;
 mod score;
 mod sequence;
+pub mod summary;
 mod tree;
 
 pub use association::{

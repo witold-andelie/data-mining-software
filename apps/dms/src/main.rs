@@ -7,12 +7,20 @@
 //! dms --synthetic N         show a synthetic stream of N nodes
 //! dms --bench N [--vsync]   draw N synthetic nodes while panning, print frame times, exit
 //! dms --frame-time          show the CPU time of each frame in the status bar
+//! dms --data-dir DIR ...    also search DIR for data the stream names (File > Add Data Folder…)
+//! dms FILE.str --run [--report OUT]
+//!                           run the stream once opened; with --report, write a summary of the
+//!                           run (counts and result kinds, no data) to OUT and quit (smoke test)
 //! ```
+//!
+//! On macOS, files double-clicked in Finder, chosen with "Open With" or dropped on the Dock icon
+//! arrive through `dms-macos-open`, installed before the event loop runs.
 
 #[cfg(target_os = "macos")]
 mod macos_menu;
 
 use dms_engine::session::Document;
+use dms_ui::workbench::Pick;
 use dms_ui::{Platform, ShellState, Workbench, synthetic};
 use eframe::egui;
 use std::path::PathBuf;
@@ -33,6 +41,9 @@ struct Options {
     bench: Option<usize>,
     vsync: bool,
     frame_time: bool,
+    run: bool,
+    report: Option<PathBuf>,
+    data_dirs: Vec<PathBuf>,
 }
 
 fn parse_args() -> Result<Options, String> {
@@ -51,6 +62,15 @@ fn parse_args() -> Result<Options, String> {
             Some("--bench") => options.bench = Some(count(args.next(), "--bench")?),
             Some("--vsync") => options.vsync = true,
             Some("--frame-time") => options.frame_time = true,
+            Some("--run") => options.run = true,
+            Some("--data-dir") => options.data_dirs.push(PathBuf::from(
+                args.next().ok_or("--data-dir takes a folder")?,
+            )),
+            Some("--report") => {
+                options.report = Some(PathBuf::from(
+                    args.next().ok_or("--report takes an output file")?,
+                ))
+            }
             Some(flag) if flag.starts_with("--") => return Err(format!("unknown option {flag}")),
             _ => options.file = Some(PathBuf::from(arg)),
         }
@@ -81,12 +101,25 @@ fn main() -> ExitCode {
         // Measure throughput rather than the display's refresh rate.
         native.wgpu_options.surface.present_mode = eframe::wgpu::PresentMode::AutoNoVsync;
     }
-    let result = eframe::run_native(
+    let event_loop =
+        match winit::event_loop::EventLoop::<eframe::UserEvent>::with_user_event().build() {
+            Ok(event_loop) => event_loop,
+            Err(error) => {
+                eprintln!("dms: cannot create the event loop: {error}");
+                return ExitCode::FAILURE;
+            }
+        };
+    // Before the loop runs: files that launch the app arrive while it finishes launching.
+    if cfg!(target_os = "macos") && !dms_macos_open::install() {
+        eprintln!("dms: files opened from Finder or the Dock will not reach this window");
+    }
+    let mut app = eframe::create_native(
         APP_NAME,
         native,
         Box::new(move |cc| Ok(Box::new(DmsApp::new(cc, options, launched)))),
+        &event_loop,
     );
-    match result {
+    match event_loop.run_app(&mut app) {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
             eprintln!("dms: {error}");
@@ -102,8 +135,15 @@ struct Bench {
     cpu_ms: Vec<f32>,
 }
 
+/// `--run [--report OUT]`: run the stream once it is open, then optionally report and quit.
+struct Smoke {
+    started: bool,
+    report: Option<PathBuf>,
+}
+
 struct DmsApp {
     workbench: Workbench,
+    smoke: Option<Smoke>,
     platform: Platform,
     show_frame_time: bool,
     bench: Option<Bench>,
@@ -138,6 +178,8 @@ impl DmsApp {
             }
         };
 
+        // Folders given on the command line join the saved ones for this session.
+        state.data_folders.extend(options.data_dirs.iter().cloned());
         let synthetic_nodes = options.bench.or(options.synthetic);
         let mut workbench = match synthetic_nodes {
             Some(nodes) => Workbench::with_document(
@@ -152,8 +194,15 @@ impl DmsApp {
         if let Some(file) = options.file {
             workbench.open_path(file);
         }
+        workbench.connect_repaint(&cc.egui_ctx);
+        let repaint = cc.egui_ctx.clone();
+        dms_macos_open::set_waker(Some(Box::new(move || repaint.request_repaint())));
         DmsApp {
             workbench,
+            smoke: options.run.then_some(Smoke {
+                started: false,
+                report: options.report,
+            }),
             platform: Platform {
                 mac: cfg!(target_os = "macos"),
                 native_menu,
@@ -169,6 +218,38 @@ impl DmsApp {
             #[cfg(target_os = "macos")]
             menu,
         }
+    }
+
+    fn smoke_step(&mut self, ctx: &egui::Context) {
+        let Some(smoke) = &mut self.smoke else {
+            return;
+        };
+        if !smoke.started {
+            if self.workbench.session.document().is_some() {
+                smoke.started = true;
+                self.workbench.dispatch(ctx, "run.stream", &mut |_| None);
+            }
+            return;
+        }
+        if !matches!(
+            self.workbench.session.run_state(),
+            dms_engine::session::RunState::Idle
+        ) {
+            return;
+        }
+        let Some(report_path) = smoke.report.take() else {
+            self.smoke = None;
+            return;
+        };
+        let text = match self.workbench.session.results() {
+            Some(results) => run_summary(&results.report),
+            None => "no results\n".to_string(),
+        };
+        if let Err(error) = std::fs::write(&report_path, text) {
+            eprintln!("dms: cannot write {}: {error}", report_path.display());
+        }
+        self.smoke = None;
+        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
     }
 
     fn bench_step(&mut self, ctx: &egui::Context, cpu_ms: Option<f32>) {
@@ -191,7 +272,7 @@ impl DmsApp {
         }
         if bench.frame == 2 {
             // One zoom step in from "fit": all 200 nodes stay on screen and labels are drawn.
-            self.workbench.dispatch(ctx, "view.zoom_in", &mut || None);
+            self.workbench.dispatch(ctx, "view.zoom_in", &mut |_| None);
         }
         let Some(bench) = &mut self.bench else {
             return;
@@ -230,6 +311,11 @@ impl eframe::App for DmsApp {
         self.platform.frame_cpu_ms = if self.show_frame_time { cpu_ms } else { None };
         let ctx = ui.ctx().clone();
 
+        // Files from Finder or the Dock: this app shows one stream, so the last one wins.
+        if let Some(path) = dms_macos_open::take_paths().pop() {
+            eprintln!("dms: asked to open {}", path.display());
+            self.workbench.open_path(path);
+        }
         #[allow(unused_mut)]
         let mut requested = self.workbench.ui(ui, &self.platform);
         #[cfg(target_os = "macos")]
@@ -238,9 +324,10 @@ impl eframe::App for DmsApp {
             menu.sync_enabled(&self.workbench.session);
         }
         for id in requested {
-            self.workbench.dispatch(&ctx, id, &mut pick_stream);
+            self.workbench.dispatch(&ctx, id, &mut pick);
         }
         self.bench_step(&ctx, cpu_ms);
+        self.smoke_step(&ctx);
     }
 
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
@@ -248,10 +335,36 @@ impl eframe::App for DmsApp {
     }
 }
 
-/// The native open dialog (runs on the main thread, as macOS requires).
-fn pick_stream() -> Option<PathBuf> {
-    rfd::FileDialog::new()
-        .set_title("Open Stream")
-        .add_filter("Streams", &["str"])
-        .pick_file()
+/// Counts and result kinds of a run, without any data values.
+fn run_summary(report: &dms_engine::run::RunReport) -> String {
+    let mut lines = vec![
+        format!("targets {}", report.targets.len()),
+        format!("evaluated {}", report.results.len()),
+        format!("root_causes {}", report.root_causes.len()),
+        format!("elapsed_ms {}", report.elapsed.as_millis()),
+    ];
+    for uid in &report.targets {
+        let kind = report
+            .results
+            .get(uid)
+            .map_or("missing", dms_ui::results::result_kind);
+        lines.push(format!("target {uid} {kind}"));
+    }
+    for error in &report.root_causes {
+        lines.push(format!("root_cause {error}"));
+    }
+    lines.join("\n") + "\n"
+}
+
+/// The native open and folder dialogs (run on the main thread, as macOS requires).
+fn pick(kind: Pick) -> Option<PathBuf> {
+    match kind {
+        Pick::Stream => rfd::FileDialog::new()
+            .set_title("Open Stream")
+            .add_filter("Streams", &["str"])
+            .pick_file(),
+        Pick::Folder => rfd::FileDialog::new()
+            .set_title("Add Data Folder")
+            .pick_folder(),
+    }
 }

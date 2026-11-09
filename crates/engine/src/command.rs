@@ -235,6 +235,22 @@ pub const COMMANDS: &[CommandSpec] = &[
         Requires::Document
     ),
     command!(
+        "file.add_data_folder",
+        "Add Data Folder…",
+        File,
+        2,
+        Shortcuts::NONE,
+        Requires::Nothing
+    ),
+    command!(
+        "file.clear_data_folders",
+        "Forget Data Folders",
+        File,
+        2,
+        Shortcuts::NONE,
+        Requires::Nothing
+    ),
+    command!(
         "file.save",
         "Save",
         File,

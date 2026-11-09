@@ -2,7 +2,7 @@
 
 use crate::job::{JobContext, Progress};
 use dms_exec::{ErrorKind, EvalEvent, ExecContext, FileResolver, NodeError, NodeResult, Plan};
-use dms_stream::Stream;
+use dms_stream::{NodeRef, Stream};
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -33,15 +33,32 @@ pub struct RunReport {
 }
 
 /// Plans and runs here so neither a plan nor its operators have to cross thread boundaries.
+/// The nodes "Run Stream" runs: the terminal nodes in their saved run order, except nodes with
+/// neither inputs nor a place in the saved order (an unconnected model nugget left on the
+/// canvas cannot run, and running the stream does not ask it to).
+fn stream_targets(stream: &Stream, plan: &Plan) -> Vec<String> {
+    let saved: HashSet<&str> = stream
+        .diagram
+        .terminal_order
+        .iter()
+        .filter_map(|node| match node {
+            NodeRef::Uid(uid) => Some(uid.as_str()),
+            NodeRef::Unresolved(_) => None,
+        })
+        .collect();
+    plan.terminals_in_run_order()
+        .into_iter()
+        .filter(|uid| saved.contains(uid) || !plan.inputs_of(uid).is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
 pub fn run_stream(request: RunRequest, ctx: &JobContext) -> RunReport {
     let started = Instant::now();
     let plan = Plan::new(&request.stream);
     let (targets, sequential) = match request.targets {
         RunTargets::Stream => (
-            plan.terminals_in_run_order()
-                .into_iter()
-                .map(str::to_string)
-                .collect::<Vec<_>>(),
+            stream_targets(&request.stream, &plan),
             plan.nodes()
                 .iter()
                 .any(|node| node.catalog_id == Some("set_globals")),
@@ -293,6 +310,28 @@ pub(crate) mod tests {
                 },
             ]
         );
+    }
+
+    #[test]
+    fn stream_runs_skip_unconnected_nodes_unless_saved_as_terminals() {
+        let s = stream(
+            vec![
+                node("mystery", "Mystery"),
+                node("out", "TableNode"),
+                node("lonely", "TableNode"),
+            ],
+            &[("mystery", "out")],
+            &[],
+        );
+        let (report, _) = run(request(s.clone(), RunTargets::Stream));
+        assert_eq!(report.targets, ["out"]);
+        let mut saved = s;
+        saved
+            .diagram
+            .terminal_order
+            .push(NodeRef::Uid("lonely".into()));
+        let (report, _) = run(request(saved, RunTargets::Stream));
+        assert_eq!(report.targets, ["lonely", "out"]);
     }
 
     #[test]

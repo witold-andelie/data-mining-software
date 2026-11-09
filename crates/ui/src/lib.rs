@@ -5,7 +5,11 @@
 pub mod canvas;
 pub mod document_view;
 pub mod graph;
+pub mod icon;
 pub mod menu;
+pub mod model_view;
+pub mod results;
+pub mod results_table;
 pub mod synthetic;
 pub mod theme;
 pub mod workbench;
