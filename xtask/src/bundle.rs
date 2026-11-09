@@ -15,6 +15,8 @@ use std::process::Command;
 
 const APP_NAME: &str = "Data Mining";
 const BUNDLE_ID: &str = "io.github.witold-andelie.dms";
+/// Our exported native stream type.
+const DMS_TYPE_ID: &str = "io.github.witold-andelie.dms.stream";
 /// Our identifier for the `.str` file type (imported: another application defines the format).
 const STR_TYPE_ID: &str = "io.github.witold-andelie.dms.modeler-stream";
 const ICON_SIZES: &[u32] = &[16, 32, 128, 256, 512];
@@ -136,6 +138,16 @@ fn info_plist(version: &str) -> String {
 	<array>
 		<dict>
 			<key>CFBundleTypeName</key>
+			<string>Data Mining Stream</string>
+			<key>CFBundleTypeRole</key>
+			<string>Editor</string>
+			<key>LSHandlerRank</key>
+			<string>Owner</string>
+			<key>LSItemContentTypes</key>
+			<array><string>{DMS_TYPE_ID}</string></array>
+		</dict>
+		<dict>
+			<key>CFBundleTypeName</key>
 			<string>Modeler Stream</string>
 			<key>CFBundleTypeRole</key>
 			<string>Viewer</string>
@@ -145,6 +157,22 @@ fn info_plist(version: &str) -> String {
 			<array>
 				<string>{STR_TYPE_ID}</string>
 			</array>
+		</dict>
+	</array>
+	<key>UTExportedTypeDeclarations</key>
+	<array>
+		<dict>
+			<key>UTTypeIdentifier</key>
+			<string>{DMS_TYPE_ID}</string>
+			<key>UTTypeDescription</key>
+			<string>Data Mining Stream</string>
+			<key>UTTypeConformsTo</key>
+			<array><string>public.data</string></array>
+			<key>UTTypeTagSpecification</key>
+			<dict>
+				<key>public.filename-extension</key>
+				<array><string>dms</string></array>
+			</dict>
 		</dict>
 	</array>
 	<key>UTImportedTypeDeclarations</key>
@@ -269,5 +297,18 @@ mod tests {
             plist.matches("<array>").count(),
             plist.matches("</array>").count()
         );
+    }
+
+    #[test]
+    fn info_plist_exports_native_stream_as_owner_and_editor() {
+        let plist = info_plist("1.2.3");
+        assert!(plist.contains("<key>UTExportedTypeDeclarations</key>"));
+        assert!(plist.contains("<string>io.github.witold-andelie.dms.stream</string>"));
+        assert!(plist.contains("<string>dms</string>"));
+        assert!(plist.contains("<string>Editor</string>"));
+        assert!(plist.contains("<string>Owner</string>"));
+        assert!(plist.contains("<string>public.data</string>"));
+        assert!(plist.contains("<string>Viewer</string>"));
+        assert!(plist.contains("<string>Default</string>"));
     }
 }

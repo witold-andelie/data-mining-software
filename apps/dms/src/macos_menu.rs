@@ -14,6 +14,7 @@ pub struct NativeMenu {
     _menu: muda::Menu,
     items: Vec<(&'static str, MenuItem)>,
     enabled: Vec<bool>,
+    labels: Vec<String>,
     events: mpsc::Receiver<MenuEvent>,
 }
 
@@ -43,7 +44,12 @@ impl NativeMenu {
                         &PredefinedMenuItem::separator(),
                     ])?;
                 }
-                let item = MenuItem::with_id(spec.id, spec.label, false, accelerator(spec));
+                let item = MenuItem::with_id(
+                    spec.id,
+                    display_label(spec, spec.label),
+                    false,
+                    accelerator(spec),
+                );
                 submenu.append(&item)?;
                 items.push((spec.id, item));
             }
@@ -70,10 +76,12 @@ impl NativeMenu {
             repaint.request_repaint();
         }));
         let enabled = vec![false; items.len()];
+        let labels = vec![String::new(); items.len()];
         Ok(NativeMenu {
             _menu: menu,
             items,
             enabled,
+            labels,
             events,
         })
     }
@@ -92,14 +100,50 @@ impl NativeMenu {
     }
 
     /// Enables exactly the items whose commands can run now.
-    pub fn sync_enabled(&mut self, session: &Session) {
-        for ((id, item), was) in self.items.iter().zip(self.enabled.iter_mut()) {
-            let now = session.is_enabled(id);
+    pub fn sync_enabled(&mut self, session: &Session, text_focus: bool) {
+        for (((id, item), was), label) in self
+            .items
+            .iter()
+            .zip(self.enabled.iter_mut())
+            .zip(self.labels.iter_mut())
+        {
+            let now = session.is_enabled(id)
+                || (text_focus
+                    && matches!(
+                        *id,
+                        "edit.copy" | "edit.cut" | "edit.paste" | "edit.select_all"
+                    ));
             if now != *was {
                 item.set_enabled(now);
                 *was = now;
             }
+            if let (Some(spec), Some(source)) =
+                (dms_engine::command::by_id(id), session.command_label(id))
+            {
+                let next = display_label(spec, &source);
+                if *label != next {
+                    item.set_text(&next);
+                    *label = next;
+                }
+            }
         }
+    }
+}
+
+fn display_label(spec: &CommandSpec, source: &str) -> String {
+    match spec.shortcuts.mac.filter(|s| !s.command).map(|s| s.key) {
+        Some(key) => format!(
+            "{source}\t{}",
+            match key {
+                Key::Backspace => "⌫",
+                Key::Delete => "Delete",
+                Key::Enter => "↩",
+                Key::F2 => "F2",
+                Key::Escape => "Esc",
+                _ => "",
+            }
+        ),
+        None => source.into(),
     }
 }
 
@@ -111,6 +155,9 @@ fn accelerator(spec: &CommandSpec) -> Option<Accelerator> {
         alt,
         mac_control,
     } = spec.shortcuts.mac?;
+    if !command {
+        return None;
+    }
     let mut modifiers = Modifiers::empty();
     if command {
         modifiers |= Modifiers::META;
@@ -151,4 +198,19 @@ fn accelerator(spec: &CommandSpec) -> Option<Accelerator> {
         Key::F2 => Code::F2,
     };
     Some(Accelerator::new(modifiers, code))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn plain_keys_are_labels_without_native_accelerators() {
+        for spec in dms_engine::command::COMMANDS {
+            if spec.shortcuts.mac.is_some_and(|s| !s.command) {
+                assert!(accelerator(spec).is_none());
+                assert!(display_label(spec, spec.label).contains('\t'));
+            }
+        }
+    }
 }
