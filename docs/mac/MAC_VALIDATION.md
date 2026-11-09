@@ -66,6 +66,14 @@ tar -xzf ~/Downloads/dms-data-d1d2836.tar.gz -C "$HOME" modeler-home
 cargo xtask corpus verify
 ```
 
+`test-corpus` 里有两个测试读 `oracle/probes/` 下的探针标准答案：`dms-clem` 的 `oracle` 测试读 `clem_semantics/`，`dms-io` 的 `statistics_corpus` 读 `sav_to_csv/`。这两个目录在补充包 `dms-probes-oracle.tar.gz`（4.5 MB，SHA-256 `a17bae815641927b498b0289b37e7dc4cfdc307c95df3f30bbd551113ebd0e26`）里，在仓库根目录解压：
+
+```sh
+tar -xzf ~/Downloads/dms-probes-oracle.tar.gz   # 得到 oracle/probes/clem_semantics 和 oracle/probes/sav_to_csv
+```
+
+`dms-exec` 的 `database` 测试里，`live` 部分通过 Access 数据库的 DSN `dms_access` 录制，而 Access 的 ODBC 驱动只有 Windows 版，所以这部分只在 Windows 上编译运行，Mac 上不会出现。
+
 `mac-steps.sh` 默认使用 `$HOME/modeler-home` 作为 `DMS_MODELER_HOME`（回归按文件名在它的 `Demos/` 里找数据）。`.sha256` 文件是 Windows 上生成的（文件名前有 `*`）；如果 `-c` 不认，就用 `shasum -a 256 dms-data-d1d2836.tar.gz` 和文末的哈希值手动对比。
 
 ## 第 1、3、4 步：交给 opencode 子代理

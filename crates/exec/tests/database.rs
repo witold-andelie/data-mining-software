@@ -8,7 +8,7 @@
 use dms_exec::nodes::database::{build_export, build_import};
 use dms_stream::StreamNode;
 use dms_strfmt::fastinfoset::{Element, Node, QualifiedName};
-#[cfg(feature = "corpus")]
+#[cfg(all(feature = "corpus", windows))]
 use std::sync::Arc;
 
 fn element(name: &str, children: Vec<Node>) -> Element {
@@ -208,7 +208,9 @@ fn nested_and_duplicate_settings_fail_closed() {
     );
 }
 
-#[cfg(feature = "corpus")]
+// The oracles were recorded through the DSN `dms_access`, a Microsoft Access database. The
+// Access ODBC driver exists only for Windows, so this live comparison cannot run elsewhere.
+#[cfg(all(feature = "corpus", windows))]
 mod live {
     use super::*;
     use dms_exec::{ExecContext, FileResolver, NodeOutput, Plan};
