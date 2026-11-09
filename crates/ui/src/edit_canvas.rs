@@ -34,6 +34,8 @@ pub struct Editor {
     /// Retain a rejected connection's explanation after release.
     pub rejection: Option<String>,
     context_link: Option<(String, String)>,
+    /// "Connect From Here": the next node clicked becomes the target (Esc cancels).
+    pub connect_from: Option<String>,
 }
 
 impl Editor {
@@ -47,6 +49,18 @@ impl Editor {
         }
     }
 }
+
+/// How a connection is made, shown while the pointer is over a node.
+pub fn connect_hint(mac: bool) -> &'static str {
+    if mac {
+        "To connect: drag from the circle on the right edge, Option-drag the node, or right-click > Connect From Here"
+    } else {
+        "To connect: drag from the circle on the right edge, Alt-drag the node, or right-click > Connect From Here"
+    }
+}
+
+/// Screen radius within which a press starts a connection from a node's output port.
+const PORT_HIT: f32 = 14.0;
 
 /// Bounded, iterative reachability over the displayed top-level graph.
 fn connection_error(graph: &StreamGraph, from: usize, to: usize) -> Option<&'static str> {
@@ -142,15 +156,20 @@ pub fn show(
     background.widget_info(|| WidgetInfo::labeled(Role::Button, true, "Stream canvas"));
     let origin = rect.min;
     let mut actions = Vec::new();
-    let (pointer, pressed, released, shift, space) = ui.input(|i| {
+    let (pointer, pressed, released, shift, space, alt, escape) = ui.input(|i| {
         (
             i.pointer.interact_pos(),
             i.pointer.primary_pressed(),
             i.pointer.primary_released(),
             i.modifiers.shift,
             i.key_down(Key::Space),
+            i.modifiers.alt,
+            i.key_pressed(Key::Escape),
         )
     });
+    if escape {
+        editor.connect_from = None;
+    }
     let inside = pointer.is_some_and(|p| rect.contains(p))
         && ui.ctx().layer_id_at(pointer.unwrap_or(rect.min)) == Some(ui.layer_id());
     if inside {
@@ -197,7 +216,7 @@ pub fn show(
     let port = pointer.filter(|_| inside).and_then(|p| {
         graph.nodes.iter().enumerate().rev().find_map(|(i, _)| {
             center(i)
-                .filter(|c| p.distance(*c + vec2(TILE.x * view.zoom / 2.0, 0.0)) <= 9.0)
+                .filter(|c| p.distance(*c + vec2(TILE.x * view.zoom / 2.0, 0.0)) <= PORT_HIT)
                 .map(|_| i)
         })
     });
@@ -292,13 +311,29 @@ pub fn show(
         port_response.widget_info(|| {
             WidgetInfo::labeled(Role::Button, true, format!("Connect from {}", node.title))
         });
-        if hovered == Some(i) || port == Some(i) {
-            painter.circle_filled(port_pos, 4.0, ui.visuals().selection.stroke.color);
+        // The output port: always shown (a ring), filled and larger under the pointer.
+        let accent = ui.visuals().selection.stroke.color;
+        let ring = (4.5 * view.zoom).clamp(3.0, 6.0);
+        if port == Some(i) || editor.connect_from.as_deref() == Some(node.uid.as_str()) {
+            painter.circle_filled(port_pos, ring + 2.0, accent);
+        } else if hovered == Some(i) {
+            painter.circle_filled(port_pos, ring + 1.0, accent);
+        } else if view.zoom >= 0.3 {
+            painter.circle(
+                port_pos,
+                ring,
+                canvas::canvas_background(dark),
+                Stroke::new(1.5, accent),
+            );
         }
         if response.double_clicked() {
             actions.push(Action::Rename(node.uid.clone()));
         }
         response.context_menu(|ui| {
+            if ui.button("Connect From Here").clicked() {
+                editor.connect_from = Some(node.uid.clone());
+                ui.close();
+            }
             for (label, id) in [
                 ("Run to Here", "run.node"),
                 ("Rename", "node.rename"),
@@ -331,9 +366,22 @@ pub fn show(
     if pressed && inside && editor.rename.is_none() {
         editor.focused = true;
         editor.rejection = None;
-        if space {
+        if let Some(from_uid) = editor.connect_from.take() {
+            // Second click of "Connect From Here": a node completes it, anything else cancels.
+            let from = graph.nodes.iter().position(|n| n.uid == from_uid);
+            if let (Some(from), Some(to)) = (from, hovered) {
+                if let Some(reason) = connection_error(graph, from, to) {
+                    editor.rejection = Some(reason.into());
+                } else if let (Some(a), Some(b)) = (graph.nodes.get(from), graph.nodes.get(to)) {
+                    actions.push(Action::Command(
+                        "node.connect",
+                        vec![Arg::Link(a.uid.clone(), b.uid.clone())],
+                    ));
+                }
+            }
+        } else if space {
             editor.gesture = pointer.map(|last| Gesture::Pan { last });
-        } else if let Some(from) = port {
+        } else if let Some(from) = port.or(hovered.filter(|_| alt)) {
             editor.selected_link = None;
             editor.gesture = Some(Gesture::Connect { from });
         } else if let Some(node) = hovered.and_then(|i| graph.nodes.get(i)) {
@@ -398,6 +446,35 @@ pub fn show(
                     ui.visuals().selection.stroke.color
                 },
             ),
+        );
+    }
+    // "Connect From Here" waiting for its target: a line from the source port to the pointer.
+    if let (Some(from_uid), Some(p)) = (&editor.connect_from, pointer)
+        && let Some(n) = graph.nodes.iter().find(|n| &n.uid == from_uid)
+    {
+        let a = view.to_screen(origin, n.pos) + vec2(TILE.x * view.zoom / 2.0, 0.0);
+        painter.line_segment(
+            [a, p],
+            Stroke::new(2.0, ui.visuals().selection.stroke.color),
+        );
+    }
+    // How to connect, while the pointer rests on a node or a click-to-connect is waiting.
+    let hint = if editor.connect_from.is_some() {
+        Some("Click the node to connect to (Esc cancels)")
+    } else if editor.gesture.is_none() && (hovered.is_some() || port.is_some()) {
+        Some(connect_hint(
+            ui.ctx().os() == egui::os::OperatingSystem::Mac,
+        ))
+    } else {
+        None
+    };
+    if let Some(hint) = hint {
+        painter.text(
+            rect.left_bottom() + vec2(10.0, -8.0),
+            egui::Align2::LEFT_BOTTOM,
+            hint,
+            egui::FontId::proportional(12.0),
+            ui.visuals().weak_text_color(),
         );
     }
     if let Some(reason) = invalid.or(editor.rejection.as_deref()) {
