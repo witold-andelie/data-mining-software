@@ -14,8 +14,18 @@ use egui::{Theme, vec2};
 use egui_kittest::kittest::Queryable;
 use egui_kittest::{Harness, SnapshotOptions};
 use std::path::PathBuf;
+use std::sync::{Mutex, MutexGuard, PoisonError};
 
 const SIZE: egui::Vec2 = vec2(1100.0, 680.0);
+
+/// Creating wgpu devices from several test threads at once crashed the process on Windows
+/// (NVIDIA RTX 4060, driver 560.70: STATUS_ACCESS_VIOLATION in about one run in four). Every
+/// test that renders holds this lock for its whole life, so one renders at a time.
+static GPU: Mutex<()> = Mutex::new(());
+
+fn gpu() -> MutexGuard<'static, ()> {
+    GPU.lock().unwrap_or_else(PoisonError::into_inner)
+}
 
 fn workbench(nodes: usize) -> Workbench {
     Workbench::with_document(
@@ -50,6 +60,7 @@ fn options() -> SnapshotOptions {
 
 #[test]
 fn workbench_light_in_window_menu() {
+    let _gpu = gpu();
     let platform = Platform {
         mac: false,
         native_menu: false,
@@ -61,6 +72,7 @@ fn workbench_light_in_window_menu() {
 
 #[test]
 fn canvas_dark_zoomed_with_selection() {
+    let _gpu = gpu();
     let platform = Platform {
         mac: true,
         native_menu: true,
@@ -84,6 +96,7 @@ fn canvas_dark_zoomed_with_selection() {
 
 #[test]
 fn empty_window_offers_open() {
+    let _gpu = gpu();
     let platform = Platform::default();
     let mut harness = harness(
         Workbench::new(ShellState::default()),
