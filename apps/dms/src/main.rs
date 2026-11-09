@@ -20,7 +20,7 @@
 mod macos_menu;
 
 use dms_engine::session::Document;
-use dms_ui::workbench::Pick;
+use dms_ui::workbench::{Clipboard, Pick};
 use dms_ui::{Platform, ShellState, Workbench, synthetic};
 use eframe::egui;
 use std::path::PathBuf;
@@ -33,6 +33,35 @@ const STATE_KEY: &str = "shell";
 const MAX_SYNTHETIC: usize = 5_000;
 const BENCH_WARMUP: usize = 30;
 const BENCH_FRAMES: usize = 600;
+
+struct SystemClipboard(Result<arboard::Clipboard, String>);
+
+impl Clipboard for SystemClipboard {
+    fn get_text(&mut self) -> Result<String, String> {
+        self.0
+            .as_mut()
+            .map_err(|e| e.clone())?
+            .get_text()
+            .map_err(|e| format!("Cannot read clipboard: {e}"))
+    }
+
+    fn set_text(&mut self, text: &str) -> Result<(), String> {
+        self.0
+            .as_mut()
+            .map_err(|e| e.clone())?
+            .set_text(text)
+            .map_err(|e| format!("Cannot write clipboard: {e}"))
+    }
+}
+
+fn autosave_directory() -> Option<PathBuf> {
+    if cfg!(target_os = "windows") {
+        std::env::var_os("APPDATA").map(|p| PathBuf::from(p).join("Data Mining").join("Autosave"))
+    } else {
+        std::env::var_os("HOME")
+            .map(|p| PathBuf::from(p).join("Library/Application Support/Data Mining/Autosave"))
+    }
+}
 
 #[derive(Debug, Default)]
 struct Options {
@@ -191,6 +220,10 @@ impl DmsApp {
             ),
             None => Workbench::new(state),
         };
+        workbench.set_clipboard(Box::new(SystemClipboard(
+            arboard::Clipboard::new().map_err(|e| format!("System clipboard is unavailable: {e}")),
+        )));
+        workbench.set_autosave_dir(autosave_directory());
         if let Some(file) = options.file {
             workbench.open_path(file);
         }
@@ -316,15 +349,23 @@ impl eframe::App for DmsApp {
             eprintln!("dms: asked to open {}", path.display());
             self.workbench.open_path(path);
         }
-        #[allow(unused_mut)]
-        let mut requested = self.workbench.ui(ui, &self.platform);
         #[cfg(target_os = "macos")]
         if let Some(menu) = &mut self.menu {
-            requested.extend(menu.take_commands());
-            menu.sync_enabled(&self.workbench.session);
+            for id in menu.take_commands() {
+                let filename = self.workbench.save_filename();
+                self.workbench
+                    .dispatch(&ctx, id, &mut |kind| pick(kind, &filename));
+            }
         }
+        let requested = self.workbench.ui(ui, &self.platform);
         for id in requested {
-            self.workbench.dispatch(&ctx, id, &mut pick);
+            let filename = self.workbench.save_filename();
+            self.workbench
+                .dispatch(&ctx, id, &mut |kind| pick(kind, &filename));
+        }
+        #[cfg(target_os = "macos")]
+        if let Some(menu) = &mut self.menu {
+            menu.sync_enabled(&self.workbench.session, ctx.egui_wants_keyboard_input());
         }
         self.bench_step(&ctx, cpu_ms);
         self.smoke_step(&ctx);
@@ -357,14 +398,19 @@ fn run_summary(report: &dms_engine::run::RunReport) -> String {
 }
 
 /// The native open and folder dialogs (run on the main thread, as macOS requires).
-fn pick(kind: Pick) -> Option<PathBuf> {
+fn pick(kind: Pick, filename: &str) -> Option<PathBuf> {
     match kind {
         Pick::Stream => rfd::FileDialog::new()
             .set_title("Open Stream")
-            .add_filter("Streams", &["str"])
+            .add_filter("Streams", &["dms", "str"])
             .pick_file(),
         Pick::Folder => rfd::FileDialog::new()
             .set_title("Add Data Folder")
             .pick_folder(),
+        Pick::Save => rfd::FileDialog::new()
+            .set_title("Save Stream")
+            .add_filter("Data Mining Stream", &["dms"])
+            .set_file_name(filename)
+            .save_file(),
     }
 }

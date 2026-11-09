@@ -864,6 +864,7 @@ dependencies = [
 name = "dms"
 version = "0.1.0"
 dependencies = [
+ "arboard",
  "dms-engine",
  "dms-macos-open",
  "dms-ui",

@@ -207,7 +207,7 @@ pub fn show(
 
 /// A badge at the tile's top-right corner: a ring for running, a dot for done, an exclamation
 /// disc for failed, a hollow square for blocked. Shapes differ, not only colours.
-fn draw_mark(painter: &egui::Painter, tile: Rect, zoom: f32, mark: RunMark, dark: bool) {
+pub(crate) fn draw_mark(painter: &egui::Painter, tile: Rect, zoom: f32, mark: RunMark, dark: bool) {
     let r = (7.0 * zoom).clamp(4.0, 10.0);
     let center = tile.right_top() + vec2(-r * 0.3, r * 0.3);
     let outline = if dark {
@@ -254,7 +254,7 @@ fn draw_mark(painter: &egui::Painter, tile: Rect, zoom: f32, mark: RunMark, dark
     }
 }
 
-fn canvas_background(dark: bool) -> Color32 {
+pub(crate) fn canvas_background(dark: bool) -> Color32 {
     if dark {
         Color32::from_rgb(0x1E, 0x20, 0x24)
     } else {
@@ -262,7 +262,7 @@ fn canvas_background(dark: bool) -> Color32 {
     }
 }
 
-fn draw_grid(painter: &egui::Painter, rect: Rect, view: &CanvasView, dark: bool) {
+pub(crate) fn draw_grid(painter: &egui::Painter, rect: Rect, view: &CanvasView, dark: bool) {
     let step = 40.0 * view.zoom;
     if step < 12.0 {
         return;
@@ -287,7 +287,7 @@ fn draw_grid(painter: &egui::Painter, rect: Rect, view: &CanvasView, dark: bool)
     }
 }
 
-fn draw_link(painter: &egui::Painter, a: Pos2, b: Pos2, zoom: f32, stroke: Stroke) {
+pub(crate) fn draw_link(painter: &egui::Painter, a: Pos2, b: Pos2, zoom: f32, stroke: Stroke) {
     let half = TILE.x * zoom / 2.0;
     let direction = (b - a).normalized();
     if !direction.is_finite() || direction == Vec2::ZERO {
@@ -332,7 +332,7 @@ fn draw_link(painter: &egui::Painter, a: Pos2, b: Pos2, zoom: f32, stroke: Strok
 }
 
 #[allow(clippy::too_many_arguments)]
-fn draw_node(
+pub(crate) fn draw_node(
     painter: &egui::Painter,
     node: &GraphNode,
     tile: Rect,

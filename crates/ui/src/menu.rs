@@ -56,11 +56,27 @@ fn egui_key(key: Key) -> egui::Key {
 /// Commands whose shortcut was pressed this frame (the shortcut is consumed). Shortcuts with
 /// more modifiers are tried first, so ⇧⌘S is not taken for ⌘S.
 pub fn take_shortcuts(ctx: &egui::Context, mac: bool) -> Vec<&'static str> {
+    take_canvas_shortcuts(ctx, mac, false, true)
+}
+
+/// Native menus own command-modified shortcuts; plain keys belong to the canvas only.
+pub fn take_canvas_shortcuts(
+    ctx: &egui::Context,
+    mac: bool,
+    native: bool,
+    canvas_focus: bool,
+) -> Vec<&'static str> {
+    let text_focus = ctx.egui_wants_keyboard_input();
     let mut bound: Vec<(&'static str, KeyboardShortcut)> = COMMANDS
         .iter()
         .filter_map(|spec| {
             spec.shortcuts
                 .for_platform(mac)
+                .filter(|s| {
+                    (!native || !s.command)
+                        && (s.command || canvas_focus)
+                        && (!text_focus || (!spec.id.starts_with("edit.") && s.command))
+                })
                 .map(|s| (spec.id, keyboard_shortcut(s, mac)))
         })
         .collect();
@@ -74,6 +90,18 @@ pub fn take_shortcuts(ctx: &egui::Context, mac: bool) -> Vec<&'static str> {
         for (id, shortcut) in &bound {
             if input.consume_shortcut(shortcut) {
                 fired.push(*id);
+            }
+        }
+        if canvas_focus && !text_focus {
+            for (key, id) in [
+                (egui::Key::Delete, "edit.delete"),
+                (egui::Key::Backspace, "edit.delete"),
+                (egui::Key::Enter, "node.rename"),
+                (egui::Key::F2, "node.rename"),
+            ] {
+                if input.consume_key(Modifiers::NONE, key) && !fired.contains(&id) {
+                    fired.push(id);
+                }
             }
         }
     });
@@ -106,14 +134,23 @@ pub fn menu_bar(ui: &mut Ui, session: &Session, mac: bool) -> Vec<&'static str> 
                         ui.separator();
                     }
                     group = Some(spec.group);
-                    let mut button = Button::new(spec.label);
+                    let mut button = Button::new(
+                        session
+                            .command_label(spec.id)
+                            .unwrap_or_else(|| spec.label.into()),
+                    );
                     if let Some(shortcut) = spec.shortcuts.for_platform(mac) {
                         button = button.shortcut_text(
                             ui.ctx().format_shortcut(&keyboard_shortcut(shortcut, mac)),
                         );
                     }
                     let availability = session.availability(spec.id);
-                    let response = ui.add_enabled(availability.is_ok(), button);
+                    let text_edit = ui.ctx().egui_wants_keyboard_input()
+                        && matches!(
+                            spec.id,
+                            "edit.copy" | "edit.cut" | "edit.paste" | "edit.select_all"
+                        );
+                    let response = ui.add_enabled(availability.is_ok() || text_edit, button);
                     let response = match &availability {
                         Err(reason) => response.on_disabled_hover_text(reason),
                         Ok(()) => response,

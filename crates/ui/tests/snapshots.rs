@@ -80,7 +80,16 @@ fn canvas_dark_zoomed_with_selection() {
     };
     let mut workbench = workbench(14);
     workbench.state.show_palette = false;
-    workbench.state.canvas.selected = Some("synthetic00004".to_string());
+    // Selection belongs to the session (v0.2); select through the command, as a click does.
+    workbench
+        .session
+        .execute(
+            "edit.select",
+            &[dms_engine::session::Arg::Nodes(vec![
+                "synthetic00004".to_string(),
+            ])],
+        )
+        .unwrap();
     let mut harness = harness(workbench, Theme::Dark, platform);
     // Zoom in twice around the centre, as ⌘= would.
     let ctx = harness.ctx.clone();

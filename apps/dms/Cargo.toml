@@ -17,6 +17,7 @@ dms-macos-open.workspace = true
 dms-ui.workspace = true
 eframe.workspace = true
 rfd.workspace = true
+arboard.workspace = true
 winit.workspace = true
 
 [target.'cfg(target_os = "macos")'.dependencies]
