@@ -37,6 +37,7 @@ curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --defaul
 source "$HOME/.cargo/env"
 cd ~/dev/data-mining-software   # 仓库位置以实际 clone 的为准
 rustup show                     # 按 rust-toolchain.toml 自动安装 1.95.0 + rustfmt + clippy
+brew install unixodbc           # dms-io 的 odbc-api 在 macOS 上链接 libodbc；缺少时 xtask 链接失败（ld: library 'odbc' not found）
 git switch -c mac-validation
 ```
 
