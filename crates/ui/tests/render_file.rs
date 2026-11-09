@@ -99,7 +99,7 @@ fn render_stream_file() {
             .map(|g| {
                 g.nodes
                     .iter()
-                    .filter(|n| n.title == title)
+                    .filter(|n| n.title.trim() == title.trim())
                     .map(|n| n.uid.clone())
                     .collect()
             })
@@ -110,6 +110,7 @@ fn render_stream_file() {
             .find(|uid| targets.contains(uid))
             .or(matching.first())
             .cloned();
+        println!("focus {title:?}: matching {matching:?}, chosen {uid:?}");
         if let Some(uid) = uid {
             harness.state_mut().focus_node(&uid);
             harness.run();
