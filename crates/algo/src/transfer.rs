@@ -322,7 +322,70 @@ pub fn fit(y: &[f64], x: &[Vec<f64>], template: &TransferSpec) -> Result<Fit, Al
         }
         at += e.denominator.len();
     }
-    let (parameters, iterations) = time_series::lm(initial, &bounds, residuals)?;
+    let guide = template.effects.iter().all(|e| e.denominator.is_empty());
+    if guide {
+        // Section 6: regress on the delayed/differenced zeroth numerator terms.
+        // Initialization precedes the additional numerator-lag discard used by
+        // the likelihood; using its shorter history changes the stopping point.
+        let first = template
+            .effects
+            .iter()
+            .map(|e| e.difference + e.delay)
+            .max()
+            .unwrap_or(0);
+        let mut columns = vec![vec![1.0; y.len() - first]];
+        let mut at = 2;
+        let mut numerator_slots = Vec::new();
+        for effect in &template.effects {
+            let mut basis = vec![0.0; k];
+            if let Some(v) = basis.get_mut(at) {
+                *v = 1.0;
+            }
+            let (_, signal) = make(&basis).signal(x, y.len())?;
+            columns.push(signal.into_iter().skip(first).collect());
+            numerator_slots.push(at);
+            at += effect.numerator.len();
+        }
+        let matrix = columns
+            .iter()
+            .map(|a| {
+                columns
+                    .iter()
+                    .map(|b| a.iter().zip(b).map(|(a, b)| a * b).sum())
+                    .collect()
+            })
+            .collect();
+        let rhs = columns
+            .iter()
+            .map(|a| a.iter().zip(y.iter().skip(first)).map(|(a, b)| a * b).sum())
+            .collect();
+        let coefficients = time_series::solve(matrix, rhs)?;
+        if let (Some(slot), Some(value)) = (initial.first_mut(), coefficients.first()) {
+            *slot = *value;
+        }
+        for (slot, value) in numerator_slots.iter().zip(coefficients.iter().skip(1)) {
+            if let Some(v) = initial.get_mut(*slot) {
+                *v = *value;
+            }
+        }
+        let (_, signal) = make(&initial).signal(x, y.len())?;
+        let noise: Vec<_> = y
+            .iter()
+            .zip(signal)
+            .skip(first)
+            .map(|(a, b)| a - b)
+            .collect();
+        if let Some(v) = initial.get_mut(1) {
+            *v = time_series::guide_acf1(&noise)?;
+        }
+    }
+    let (parameters, iterations) = if guide {
+        time_series::marquardt_guide(initial, residuals, |p| {
+            Ok(p.iter().all(|v| v.is_finite()) && p.get(1).is_some_and(|v| v.abs() < 1.0))
+        })?
+    } else {
+        time_series::lm(initial, &bounds, residuals)?
+    };
     let mut spec = make(&parameters);
     let adjusted = spec.adjusted(y, x)?;
     let (r, _) =
