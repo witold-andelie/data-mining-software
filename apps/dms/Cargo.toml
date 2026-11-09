@@ -1,0 +1,24 @@
+[package]
+name = "dms"
+description = "Desktop application"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "dms"
+path = "src/main.rs"
+
+[dependencies]
+dms-engine.workspace = true
+dms-ui.workspace = true
+eframe.workspace = true
+rfd.workspace = true
+
+[target.'cfg(target_os = "macos")'.dependencies]
+muda.workspace = true
+
+[lints]
+workspace = true
