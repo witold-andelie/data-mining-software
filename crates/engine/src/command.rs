@@ -66,6 +66,15 @@ pub enum Key {
     Equals,
     Num0,
     F11,
+    X,
+    C,
+    V,
+    D,
+    A,
+    Backspace,
+    Delete,
+    Enter,
+    F2,
 }
 
 /// A key with modifiers. `command` is ⌘ on macOS and Ctrl elsewhere; `mac_control` is the
@@ -201,7 +210,7 @@ pub const COMMANDS: &[CommandSpec] = &[
     ),
     command!(
         "app.quit",
-        "Quit Data Mining",
+        "Quit",
         App,
         9,
         Shortcuts {
@@ -216,7 +225,7 @@ pub const COMMANDS: &[CommandSpec] = &[
         File,
         0,
         Shortcuts::both(Shortcut::command(Key::N)),
-        Requires::Planned(PHASE_B)
+        Requires::Nothing
     ),
     command!(
         "file.open",
@@ -256,7 +265,7 @@ pub const COMMANDS: &[CommandSpec] = &[
         File,
         1,
         Shortcuts::both(Shortcut::command(Key::S)),
-        Requires::Planned(PHASE_B)
+        Requires::Document
     ),
     command!(
         "file.save_as",
@@ -264,7 +273,7 @@ pub const COMMANDS: &[CommandSpec] = &[
         File,
         1,
         Shortcuts::both(Shortcut::command_shift(Key::S)),
-        Requires::Planned(PHASE_B)
+        Requires::Document
     ),
     command!(
         "edit.undo",
@@ -272,7 +281,7 @@ pub const COMMANDS: &[CommandSpec] = &[
         Edit,
         0,
         Shortcuts::both(Shortcut::command(Key::Z)),
-        Requires::Planned(PHASE_B)
+        Requires::Document
     ),
     command!(
         "edit.redo",
@@ -283,7 +292,117 @@ pub const COMMANDS: &[CommandSpec] = &[
             mac: Some(Shortcut::command_shift(Key::Z)),
             other: Some(Shortcut::command_shift(Key::Z))
         },
-        Requires::Planned(PHASE_B)
+        Requires::Document
+    ),
+    command!(
+        "edit.cut",
+        "Cut",
+        Edit,
+        1,
+        Shortcuts::both(Shortcut::command(Key::X)),
+        Requires::Document
+    ),
+    command!(
+        "edit.copy",
+        "Copy",
+        Edit,
+        1,
+        Shortcuts::both(Shortcut::command(Key::C)),
+        Requires::Document
+    ),
+    command!(
+        "edit.paste",
+        "Paste",
+        Edit,
+        1,
+        Shortcuts::both(Shortcut::command(Key::V)),
+        Requires::Document
+    ),
+    command!(
+        "edit.duplicate",
+        "Duplicate",
+        Edit,
+        2,
+        Shortcuts::both(Shortcut::command(Key::D)),
+        Requires::Document
+    ),
+    command!(
+        "edit.select_all",
+        "Select All",
+        Edit,
+        3,
+        Shortcuts::both(Shortcut::command(Key::A)),
+        Requires::Document
+    ),
+    command!(
+        "edit.delete",
+        "Delete",
+        Edit,
+        2,
+        Shortcuts {
+            mac: Some(Shortcut::plain(Key::Backspace)),
+            other: Some(Shortcut::plain(Key::Delete))
+        },
+        Requires::Document
+    ),
+    command!(
+        "edit.select",
+        "Select",
+        Edit,
+        3,
+        Shortcuts::NONE,
+        Requires::Document
+    ),
+    command!(
+        "node.rename",
+        "Rename…",
+        Edit,
+        2,
+        Shortcuts {
+            mac: Some(Shortcut::plain(Key::Enter)),
+            other: Some(Shortcut::plain(Key::F2))
+        },
+        Requires::Document
+    ),
+    command!(
+        "node.add",
+        "Add Node",
+        Edit,
+        4,
+        Shortcuts::NONE,
+        Requires::Document
+    ),
+    command!(
+        "node.move",
+        "Move",
+        Edit,
+        4,
+        Shortcuts::NONE,
+        Requires::Document
+    ),
+    command!(
+        "node.connect",
+        "Connect",
+        Edit,
+        4,
+        Shortcuts::NONE,
+        Requires::Document
+    ),
+    command!(
+        "node.disconnect",
+        "Disconnect",
+        Edit,
+        4,
+        Shortcuts::NONE,
+        Requires::Document
+    ),
+    command!(
+        "file.recover",
+        "Recover",
+        File,
+        3,
+        Shortcuts::NONE,
+        Requires::Nothing
     ),
     command!(
         "view.zoom_in",
@@ -416,6 +535,13 @@ mod tests {
         assert_eq!(mac("file.save"), Shortcut::command(Key::S));
         assert_eq!(mac("file.save_as"), Shortcut::command_shift(Key::S));
         assert_eq!(mac("edit.undo"), Shortcut::command(Key::Z));
+        assert_eq!(mac("edit.cut"), Shortcut::command(Key::X));
+        assert_eq!(mac("edit.copy"), Shortcut::command(Key::C));
+        assert_eq!(mac("edit.paste"), Shortcut::command(Key::V));
+        assert_eq!(mac("edit.duplicate"), Shortcut::command(Key::D));
+        assert_eq!(mac("edit.select_all"), Shortcut::command(Key::A));
+        assert_eq!(mac("edit.delete"), Shortcut::plain(Key::Backspace));
+        assert_eq!(mac("node.rename"), Shortcut::plain(Key::Enter));
         assert_eq!(mac("edit.redo"), Shortcut::command_shift(Key::Z));
         assert_eq!(mac("file.close"), Shortcut::command(Key::W));
         assert_eq!(mac("app.quit"), Shortcut::command(Key::Q));

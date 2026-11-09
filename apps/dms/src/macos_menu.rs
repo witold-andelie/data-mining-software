@@ -140,6 +140,15 @@ fn accelerator(spec: &CommandSpec) -> Option<Accelerator> {
         Key::Equals => Code::Equal,
         Key::Num0 => Code::Digit0,
         Key::F11 => Code::F11,
+        Key::X => Code::KeyX,
+        Key::C => Code::KeyC,
+        Key::V => Code::KeyV,
+        Key::D => Code::KeyD,
+        Key::A => Code::KeyA,
+        Key::Backspace => Code::Backspace,
+        Key::Delete => Code::Delete,
+        Key::Enter => Code::Enter,
+        Key::F2 => Code::F2,
     };
     Some(Accelerator::new(modifiers, code))
 }
