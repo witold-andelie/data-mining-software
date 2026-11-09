@@ -2,6 +2,8 @@
 
 执行日期 2026-11-09。协调者：Claude Code（Opus 5.5）。第 1、3、4 步由 opencode 子代理（`opencode/glm-5.3-flash-free`）运行，其余步骤和全部核查由协调者完成。
 
+每个结论所依据的原始输出摘录（错误原文、汇总行、逐流根因、子代理的工具调用记录和汇报原文、time_series 分叉点与 bisect）见 [`MAC_EVIDENCE.md`](MAC_EVIDENCE.md)。
+
 ## 结论
 
 - **回归与 Windows 基线一致。** 修复两个平台问题后，Mac 上 1596 个流：1464 match、91 statistical、41 known GAPs、0 regressions。与 Windows 基线（1597 个流：1465 match、91 statistical、41 known GAPs）相比，唯一的差别是 `sources/excel_named_range`。它的 oracle 按约定没有打进数据包，在 Mac 上显示为 `absent`。两边都有的 1596 个流，分类和 `detail` 列（每个流匹配的终端输入数）逐行相同。
