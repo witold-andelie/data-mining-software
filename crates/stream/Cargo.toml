@@ -9,6 +9,10 @@ publish.workspace = true
 
 [dependencies]
 dms-strfmt.workspace = true
+# v0.2 native format (docs/gui/V02_HANDOFF.md): TOML file, settings kept as XML text.
+roxmltree = "0.20"
+serde.workspace = true
+toml.workspace = true
 
 [features]
 corpus = []
