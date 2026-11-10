@@ -242,7 +242,7 @@ fn live_language_settings_menus_toolbar_and_undo_restore_english() {
             .language,
         Language::SimplifiedChinese
     );
-    h.get_all_by_label("Remove").next().unwrap().click();
+    h.get_all_by_label(tr("Remove")).next().unwrap().click();
     h.run();
     assert_eq!(
         h.state().state.data_folders,
@@ -252,7 +252,7 @@ fn live_language_settings_menus_toolbar_and_undo_restore_english() {
         h.state().session.data_folders(),
         h.state().state.data_folders
     );
-    h.get_by_label("Add…").click();
+    h.get_by_label(tr("Add…")).click();
     h.run();
     assert_eq!(
         h.state().state.data_folders.last().unwrap(),
@@ -262,7 +262,7 @@ fn live_language_settings_menus_toolbar_and_undo_restore_english() {
         h.state().session.data_folders(),
         h.state().state.data_folders
     );
-    h.get_by_label("Language").click();
+    h.get_by_label(tr("Language")).click();
     h.run();
     h.get_by_label("English").click();
     h.run();

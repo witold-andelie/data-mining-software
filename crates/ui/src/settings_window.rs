@@ -19,7 +19,8 @@ pub(crate) fn show(ctx: &egui::Context, open: &mut bool, state: &mut ShellState)
             let before = state.language;
             let label = |language| match language {
                 Language::System => tr("System"),
-                Language::English => tr("English"),
+                // Language names are autonyms, so they read the same in every language.
+                Language::English => "English",
                 Language::SimplifiedChinese => "简体中文",
             };
             egui::ComboBox::from_label(tr("Language"))

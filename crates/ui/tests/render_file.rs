@@ -2,7 +2,8 @@
 //! real streams without committing them (corpus streams are never committed, and neither are
 //! their pictures). Ignored by default:
 //! `DMS_RENDER_STREAM=corpus/team/x.str cargo test -p dms-ui --test render_file -- --ignored`
-//! (`DMS_RENDER_RUN=1` also runs the stream and renders its results).
+//! (`DMS_RENDER_RUN=1` also runs the stream and renders its results; `DMS_RENDER_LANG=zh` renders
+//! the Chinese interface with the system fonts, as the app draws it).
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test tool")]
 
 use dms_engine::session::Session;
@@ -50,6 +51,18 @@ fn render_stream_file() {
     harness
         .ctx
         .set_missing_glyph_policy(egui::MissingGlyphPolicy::Tofu);
+    if std::env::var("DMS_RENDER_LANG").is_ok_and(|lang| lang.starts_with("zh")) {
+        dms_ui::i18n::set_language(dms_ui::i18n::Language::SimplifiedChinese);
+        harness.ctx.set_fonts(egui::FontDefinitions::empty());
+        harness.ctx.set_font_providers(vec![std::sync::Arc::new(
+            egui_system_font_provider::SystemFontProvider::new(),
+        )]);
+        // The provider loads the system fonts in the background.
+        for _ in 0..200 {
+            harness.step();
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+    }
     harness.run();
     if std::env::var_os("DMS_RENDER_RUN").is_some() {
         // Run the stream, then render the window with its results.
