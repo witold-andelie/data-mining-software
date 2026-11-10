@@ -81,12 +81,12 @@ cargo xtask regress --label team --label models --label models_ml --label ts_mor
 
 ### 9.2 文件
 
-只能改：新文件 `crates/ui/src/chart.rs`（可拆成 `crates/ui/src/chart/` 目录）；`crates/ui/src/results.rs`（图表节点的结果标签页先显示图，旁边有 “Chart / Data” 切换，Data 是现在的表格）；`crates/ui/src/lib.rs`（加 `pub mod`）；`crates/ui/i18n/zh-Hans.toml`（新键）；新测试 `crates/ui/tests/chart.rs`（不截图）。不改 `crates/exec`、`crates/engine`、`workbench.rs`；接口不够时停下说明。
+只能改：新文件 `crates/ui/src/chart.rs`（可拆成 `crates/ui/src/chart/` 目录）；`crates/ui/src/results.rs`（图表节点的结果标签页先显示图，旁边有 “Chart / Data” 切换，Data 是现在的表格）；`crates/ui/src/lib.rs`（加 `pub mod`）；`crates/ui/i18n/zh-Hans.toml`（新键）；新测试 `crates/ui/tests/chart.rs`（不截图）；`crates/ui/src/workbench.rs` **只改调用 `results::show_results` 的地方**，把结果所属节点的设置（`StreamNode::settings`，从 `session.document()` 的流里按 uid 找）传进去，`results::show_results` 的签名可以相应加参数。不改 `crates/exec`、`crates/engine`；接口不够时停下说明。
 
 ### 9.3 设计
 
-- 纯函数部分（可测）：`pub fn chart_for(node_type: &str, document: &Document) -> Option<Chart>`，从节点类型（目录 id，如 `histogram`）和结果表构造与绘图库无关的 `Chart { kind, title, x_label, y_label, series: Vec<Series> }`。读不懂的表返回 `None`，界面退回只显示表格（不报错、不崩溃）。数字用 `str::parse::<f64>`，`$null$`、空单元格、`NaN` 跳过。
-- 覆盖：Histogram（柱状，叠加字段时按值分组堆叠或并列）、Distribution（按类别的柱状，有叠加时分组）、Plot（散点；`plot` 设置为线时画线）、Multiplot 和 Time Plot（多条线）、Evaluation（增益/提升/响应等曲线，每个模型一条，含基线）、Collection（按类别的柱状）。Web、Graphboard、E-Plot 本版只显示表格。
+- 纯函数部分（可测）：`pub fn chart_for(node_type: &str, settings: Option<&Element>, document: &Document) -> Option<Chart>`，从节点类型（目录 id，如 `histogram`）、节点设置（读法用 `dms_exec::settings` 的 `text`/`flag`/`children` 等，键名见 `docs/formats/nodes/` 和各图表节点源文件开头的说明）和结果表构造与绘图库无关的 `Chart { kind, title, x_label, y_label, series: Vec<Series> }`。读不懂的表返回 `None`，界面退回只显示表格（不报错、不崩溃）。数字用 `str::parse::<f64>`，`$null$`、空单元格、`NaN` 跳过。
+- 覆盖：Histogram（柱状，叠加字段时按值分组堆叠或并列）、Distribution（按类别的柱状，有叠加时分组）、Plot（散点；`plot` 设置为线时画线）、Multiplot 和 Time Plot（多条线）、Evaluation（增益/提升/响应等曲线，每个模型一条，含基线）、Collection（按类别的柱状）。Web、Graphboard、E-Plot 本版只显示表格。设置不足以确定画法时（例如 Evaluation 的曲线类型、Multiplot 的面板），按执行器读取的同一设置判断；仍不能确定的情况返回 `None` 退回表格，并在汇报里列出。
 - 绘制用 `egui_plot`：坐标轴标签、图例（多于一个序列时）、悬停显示数值；颜色用我们主题里的一组序列色（在 `crates/ui/src/theme.rs` 现有颜色里选，或在 `chart.rs` 里定义一组新的；不用 IBM 的配色），浅色和深色主题都要清楚。
 - 上限：每个序列最多画 100 000 个点，超过时均匀抽样并在图下注明“显示 N / M 个点”；类别最多 500 个，超过的合并为 “Other”。
 - 图表视图记住每个标签页选的是 Chart 还是 Data（不持久化）。
