@@ -9,6 +9,7 @@ pub mod icon;
 pub mod menu;
 pub mod model_view;
 pub mod node_icons;
+pub mod properties;
 pub mod results;
 pub mod results_table;
 pub mod synthetic;

@@ -126,3 +126,29 @@ fn empty_window_offers_open() {
     harness.run();
     harness.get_by_label_contains("cannot open");
 }
+
+/// The settings form generated from a node's schema (a Select node without saved settings
+/// shows its defaults).
+#[test]
+fn properties_form_light() {
+    let _gpu = gpu();
+    let platform = Platform {
+        mac: true,
+        native_menu: true,
+        frame_cpu_ms: None,
+    };
+    let mut workbench = workbench(14);
+    workbench.state.show_palette = false;
+    workbench
+        .session
+        .execute(
+            "edit.select",
+            &[dms_engine::session::Arg::Nodes(vec![
+                "synthetic00002".to_string(),
+            ])],
+        )
+        .unwrap();
+    let mut harness = harness(workbench, Theme::Light, platform);
+    harness.get_by_label_contains("Select");
+    harness.snapshot_options("properties_form_light", &options());
+}

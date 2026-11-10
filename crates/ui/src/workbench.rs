@@ -76,6 +76,8 @@ impl ShellState {
 pub enum Pick {
     /// A stream file to open.
     Stream,
+    /// A data file, filtered by the parameter schema except on macOS.
+    DataFile { extensions: &'static [&'static str] },
     /// A folder (data folders).
     Folder,
     /// Native .dms save dialog (suggested filename is available on the workbench).
@@ -122,6 +124,7 @@ pub struct Workbench {
     recovery: Vec<dms_engine::session::Recovery>,
     palette_drag: Option<String>,
     autosave_error: Option<String>,
+    properties: crate::properties::Properties,
 }
 
 impl Workbench {
@@ -149,6 +152,7 @@ impl Workbench {
             recovery: Vec::new(),
             palette_drag: None,
             autosave_error: None,
+            properties: crate::properties::Properties::default(),
         }
     }
 
@@ -200,6 +204,7 @@ impl Workbench {
             .map(|document| StreamGraph::from_diagram(&document.stream.diagram));
         self.graph_revision = self.session.document().map(|_| self.session.revision());
         self.editor = Editor::default();
+        self.properties = crate::properties::Properties::default();
         self.state.canvas.selected = None;
         self.results_tab = None;
         self.fit_pending = fit && self.graph.is_some();
@@ -331,6 +336,18 @@ impl Workbench {
             && !matches!(id, "file.save" | "file.save_as")
             && self.force_next.is_none()
         {
+            return;
+        }
+        if id == "node.set_param" {
+            if let Some(request) = self.properties.take_file_request()
+                && let Some(path) = pick(Pick::DataFile {
+                    extensions: request.extensions,
+                })
+            {
+                self.properties
+                    .picked_file(&mut self.session, request, path);
+                ctx.request_repaint();
+            }
             return;
         }
         if ctx.egui_wants_keyboard_input()
@@ -774,7 +791,11 @@ impl Workbench {
             egui::Panel::right("properties")
                 .resizable(true)
                 .default_size(230.0)
-                .show(ui, |ui| self.properties_panel(ui));
+                .show(ui, |ui| {
+                    if self.properties_panel(ui) {
+                        requested.push("node.set_param");
+                    }
+                });
         }
         egui::CentralPanel::default()
             .frame(egui::Frame::NONE)
@@ -924,7 +945,7 @@ impl Workbench {
         }
     }
 
-    fn properties_panel(&self, ui: &mut Ui) {
+    fn properties_panel(&mut self, ui: &mut Ui) -> bool {
         ui.heading("Properties");
         ui.separator();
         let node = self.state.canvas.selected.as_ref().and_then(|uid| {
@@ -934,7 +955,7 @@ impl Workbench {
         });
         let Some(node) = node else {
             ui.weak("Select a node to see its settings.");
-            return;
+            return false;
         };
         ui.label(RichText::new(&node.title).strong());
         egui::Grid::new("node_facts").num_columns(2).show(ui, |ui| {
@@ -958,7 +979,7 @@ impl Workbench {
             ui.label(results::error_text(error));
         }
         ui.separator();
-        ui.weak("Settings forms arrive in a later version.");
+        self.properties.show(ui, &mut self.session, &node.uid)
     }
 
     /// The status line. Returns a command when its Stop button is pressed.

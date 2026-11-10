@@ -8,6 +8,7 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
+dms-clem.workspace = true
 dms-engine.workspace = true
 dms-exec.workspace = true
 dms-pmml.workspace = true

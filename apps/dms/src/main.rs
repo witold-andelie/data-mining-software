@@ -413,6 +413,15 @@ fn pick(kind: Pick, filename: &str) -> Option<PathBuf> {
             };
             dialog.pick_file()
         }
+        Pick::DataFile { extensions } => {
+            let dialog = rfd::FileDialog::new().set_title("Choose Data File");
+            let dialog = if cfg!(target_os = "macos") || extensions.is_empty() {
+                dialog
+            } else {
+                dialog.add_filter("Data files", extensions)
+            };
+            dialog.pick_file()
+        }
         Pick::Folder => rfd::FileDialog::new()
             .set_title("Add Data Folder")
             .pick_folder(),
