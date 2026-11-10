@@ -232,49 +232,51 @@ impl Operator for Build {
         &self,
         inputs: &[Arc<Table>],
         _model: Option<Arc<Pmml>>,
-        _context: &ExecContext,
+        context: &ExecContext,
     ) -> Result<NodeOutput, OperatorError> {
-        let input = inputs
-            .first()
-            .ok_or_else(|| OperatorError::Inputs("Feature Selection needs one input".into()))?;
-        let (table, target, fitted) = self.fit(input)?;
-        let selected: BTreeSet<_> = fitted.selected.iter().copied().collect();
-        let schema = std::iter::once(dms_algo::mining_field(&table, target, Usage::Target))
-            .chain(fitted.inputs.iter().map(|p| {
-                dms_algo::mining_field(
-                    &table,
-                    *p,
-                    if selected.contains(p) {
-                        Usage::Active
-                    } else {
-                        Usage::Supplementary
+        dms_algo::with_cancel(&context.cancel, || {
+            let input = inputs
+                .first()
+                .ok_or_else(|| OperatorError::Inputs("Feature Selection needs one input".into()))?;
+            let (table, target, fitted) = self.fit(input)?;
+            let selected: BTreeSet<_> = fitted.selected.iter().copied().collect();
+            let schema = std::iter::once(dms_algo::mining_field(&table, target, Usage::Target))
+                .chain(fitted.inputs.iter().map(|p| {
+                    dms_algo::mining_field(
+                        &table,
+                        *p,
+                        if selected.contains(p) {
+                            Usage::Active
+                        } else {
+                            Usage::Supplementary
+                        },
+                    )
+                }))
+                .flatten()
+                .collect();
+            let dictionary = std::iter::once(target)
+                .chain(fitted.inputs)
+                .filter_map(|p| dms_algo::data_field(&table, p))
+                .collect();
+            Ok(NodeOutput::Model(Arc::new(Pmml {
+                version: "4.3".into(),
+                data_dictionary: dictionary,
+                transformations: Vec::new(),
+                functions: Vec::new(),
+                model: Model::Mining(MiningModel {
+                    header: ModelHeader {
+                        name: self.name.clone(),
+                        function: MiningFunction::Other("featureSelection".into()),
+                        algorithm: Some(ENVELOPE.into()),
+                        mining_schema: schema,
+                        output: Vec::new(),
+                        local_transformations: Vec::new(),
                     },
-                )
-            }))
-            .flatten()
-            .collect();
-        let dictionary = std::iter::once(target)
-            .chain(fitted.inputs)
-            .filter_map(|p| dms_algo::data_field(&table, p))
-            .collect();
-        Ok(NodeOutput::Model(Arc::new(Pmml {
-            version: "4.3".into(),
-            data_dictionary: dictionary,
-            transformations: Vec::new(),
-            functions: Vec::new(),
-            model: Model::Mining(MiningModel {
-                header: ModelHeader {
-                    name: self.name.clone(),
-                    function: MiningFunction::Other("featureSelection".into()),
-                    algorithm: Some(ENVELOPE.into()),
-                    mining_schema: schema,
-                    output: Vec::new(),
-                    local_transformations: Vec::new(),
-                },
-                method: ENVELOPE.into(),
-                segments: Vec::new(),
-            }),
-        })))
+                    method: ENVELOPE.into(),
+                    segments: Vec::new(),
+                }),
+            })))
+        })
     }
 }
 

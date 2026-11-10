@@ -10,6 +10,8 @@ pub struct NodeError {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ErrorKind {
+    /// Execution stopped before this node could complete; not a root failure.
+    Cancelled,
     /// No implementation for this node type (catalog id, or the stream's type identifier).
     Unsupported(String),
     /// The node's settings could not be interpreted.
@@ -39,6 +41,7 @@ impl fmt::Display for NodeError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "node {}: ", self.uid)?;
         match &self.kind {
+            ErrorKind::Cancelled => f.write_str("cancelled"),
             ErrorKind::Unsupported(what) => write!(f, "unsupported node type {what}"),
             ErrorKind::Settings(message) => write!(f, "settings: {message}"),
             ErrorKind::Inputs(message) => write!(f, "inputs: {message}"),
@@ -55,6 +58,7 @@ impl std::error::Error for NodeError {}
 /// Errors from an operator, before the executor attributes them to a node.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum OperatorError {
+    Cancelled,
     Settings(String),
     Inputs(String),
     Io(String),
@@ -64,11 +68,18 @@ pub enum OperatorError {
 impl OperatorError {
     pub fn at(self, uid: &str) -> NodeError {
         let kind = match self {
+            OperatorError::Cancelled => ErrorKind::Cancelled,
             OperatorError::Settings(message) => ErrorKind::Settings(message),
             OperatorError::Inputs(message) => ErrorKind::Inputs(message),
             OperatorError::Io(message) => ErrorKind::Io(message),
             OperatorError::Data(message) => ErrorKind::Data(message),
         };
         NodeError::new(uid, kind)
+    }
+}
+
+impl From<dms_types::Cancelled> for OperatorError {
+    fn from(_: dms_types::Cancelled) -> Self {
+        Self::Cancelled
     }
 }

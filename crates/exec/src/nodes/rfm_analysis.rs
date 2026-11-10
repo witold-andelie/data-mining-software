@@ -196,7 +196,7 @@ impl Operator for RfmAnalysis {
                 .map(|row| {
                     let value = row.get(p).unwrap_or(&Value::Null);
                     number(value, temporal)?;
-                    Ok(value)
+                    Ok::<_, OperatorError>(value)
                 })
                 .collect::<Result<_, _>>()?;
             let descending = index == 0 && !temporal;

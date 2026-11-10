@@ -290,304 +290,316 @@ impl Operator for Build {
         _model: Option<Arc<Pmml>>,
         context: &ExecContext,
     ) -> Result<NodeOutput, OperatorError> {
-        let input = inputs
-            .first()
-            .ok_or_else(|| OperatorError::Inputs("a build node needs one input".into()))?;
-        if matches!(self.algorithm, Algorithm::LinearAs(_))
-            && input
-                .model()
-                .fields()
-                .iter()
-                .any(|f| matches!(f.role, Role::Split | Role::Frequency | Role::Partition))
-        {
-            return Err(OperatorError::Settings(
-                "GAP: Linear-AS split/weight/partition fields".into(),
-            ));
-        }
-        let table = self.training_records(input)?;
-        if let Algorithm::LinearAs(custom) = &self.algorithm {
-            let (target, fields) = supervised_fields(
-                &table,
-                custom.as_ref().map(|(target, _)| target.as_str()),
-                custom.as_ref().map(|(_, inputs)| inputs.as_slice()),
-            )?;
-            let model = dms_algo::linear_as::train(&Dataset {
-                table: &table,
-                target,
-                inputs: &fields,
-                frequency: None,
-            })
-            .map_err(|error| match error {
-                dms_algo::AlgoError::Unsupported(_) | dms_algo::AlgoError::Settings(_) => {
-                    OperatorError::Settings(format!("GAP: {error}"))
-                }
-                _ => OperatorError::Data(error.to_string()),
-            })?;
-            return Ok(NodeOutput::Model(Arc::new(model.pmml)));
-        }
-        if let Algorithm::DecisionList((settings, target, inputs)) = &self.algorithm {
-            let (target, fields) = supervised_fields(&table, target.as_deref(), inputs.as_deref())?;
-            let pmml = decision_list::train(
-                &Dataset {
+        dms_algo::with_cancel(&context.cancel, || {
+            let input = inputs
+                .first()
+                .ok_or_else(|| OperatorError::Inputs("a build node needs one input".into()))?;
+            if matches!(self.algorithm, Algorithm::LinearAs(_))
+                && input
+                    .model()
+                    .fields()
+                    .iter()
+                    .any(|f| matches!(f.role, Role::Split | Role::Frequency | Role::Partition))
+            {
+                return Err(OperatorError::Settings(
+                    "GAP: Linear-AS split/weight/partition fields".into(),
+                ));
+            }
+            let table = self.training_records(input)?;
+            if let Algorithm::LinearAs(custom) = &self.algorithm {
+                let (target, fields) = supervised_fields(
+                    &table,
+                    custom.as_ref().map(|(target, _)| target.as_str()),
+                    custom.as_ref().map(|(_, inputs)| inputs.as_slice()),
+                )?;
+                let model = dms_algo::linear_as::train(&Dataset {
                     table: &table,
                     target,
                     inputs: &fields,
                     frequency: None,
-                },
-                settings,
-            )
-            .map_err(|error| OperatorError::Data(format!("Decision List: {error}")))?;
-            return Ok(NodeOutput::Model(Arc::new(pmml)));
-        }
-        if let Algorithm::TreeAs(settings) = &self.algorithm {
-            if table
-                .model()
-                .fields()
-                .iter()
-                .any(|f| matches!(f.role, Role::Split | Role::Frequency | Role::Partition))
-            {
-                return Err(OperatorError::Settings(
-                    "GAP: Analytic Engine training with split/weight/partition fields".into(),
-                ));
+                })
+                .map_err(|error| match error {
+                    dms_algo::AlgoError::Cancelled => OperatorError::Cancelled,
+                    dms_algo::AlgoError::Unsupported(_) | dms_algo::AlgoError::Settings(_) => {
+                        OperatorError::Settings(format!("GAP: {error}"))
+                    }
+                    _ => OperatorError::Data(error.to_string()),
+                })?;
+                return Ok(NodeOutput::Model(Arc::new(model.pmml)));
             }
-            if table.row_count() >= 1_000_000 {
-                return Err(OperatorError::Settings(
-                    "GAP: Tree-AS record-threshold effect-size path".into(),
-                ));
+            if let Algorithm::DecisionList((settings, target, inputs)) = &self.algorithm {
+                let (target, fields) =
+                    supervised_fields(&table, target.as_deref(), inputs.as_deref())?;
+                let pmml = decision_list::train(
+                    &Dataset {
+                        table: &table,
+                        target,
+                        inputs: &fields,
+                        frequency: None,
+                    },
+                    settings,
+                )
+                .map_err(|error| OperatorError::Data(format!("Decision List: {error}")))?;
+                return Ok(NodeOutput::Model(Arc::new(pmml)));
             }
-            let (target, fields) = supervised_fields(&table, None, None)?;
-            let dataset = Dataset {
-                table: &table,
-                target,
-                inputs: &fields,
-                frequency: None,
-            };
-            let result = dms_algo::tree_as::train(&dataset, settings);
-            let pmml = result.map_err(|error| match error {
-                dms_algo::AlgoError::Unsupported(_) | dms_algo::AlgoError::Settings(_) => {
-                    OperatorError::Settings(format!("GAP: {error}"))
+            if let Algorithm::TreeAs(settings) = &self.algorithm {
+                if table
+                    .model()
+                    .fields()
+                    .iter()
+                    .any(|f| matches!(f.role, Role::Split | Role::Frequency | Role::Partition))
+                {
+                    return Err(OperatorError::Settings(
+                        "GAP: Analytic Engine training with split/weight/partition fields".into(),
+                    ));
                 }
-                _ => OperatorError::Data(error.to_string()),
-            })?;
-            return Ok(NodeOutput::Model(Arc::new(pmml)));
-        }
-        if let Algorithm::Lsvm(settings) = &self.algorithm {
-            if table
-                .model()
-                .fields()
-                .iter()
-                .any(|f| matches!(f.role, Role::Split | Role::Frequency | Role::Partition))
-            {
-                return Err(OperatorError::Settings(
-                    "GAP: Linear SVM with split/weight/partition fields".into(),
-                ));
+                if table.row_count() >= 1_000_000 {
+                    return Err(OperatorError::Settings(
+                        "GAP: Tree-AS record-threshold effect-size path".into(),
+                    ));
+                }
+                let (target, fields) = supervised_fields(&table, None, None)?;
+                let dataset = Dataset {
+                    table: &table,
+                    target,
+                    inputs: &fields,
+                    frequency: None,
+                };
+                let result = dms_algo::tree_as::train(&dataset, settings);
+                let pmml = result.map_err(|error| match error {
+                    dms_algo::AlgoError::Cancelled => OperatorError::Cancelled,
+                    dms_algo::AlgoError::Unsupported(_) | dms_algo::AlgoError::Settings(_) => {
+                        OperatorError::Settings(format!("GAP: {error}"))
+                    }
+                    _ => OperatorError::Data(error.to_string()),
+                })?;
+                return Ok(NodeOutput::Model(Arc::new(pmml)));
             }
-            let (target, fields) = supervised_fields(&table, None, None)?;
-            let dataset = Dataset {
-                table: &table,
-                target,
-                inputs: &fields,
-                frequency: None,
-            };
-            // Statistical parity: the documented objective is solved to convergence
-            // (`dms_algo::lsvm`), so our coefficients are the optimum, not Modeler's
-            // early-stopped ones.
-            let pmml = lsvm::train(&dataset, settings).map_err(|error| match error {
-                dms_algo::AlgoError::Unsupported(_) | dms_algo::AlgoError::Settings(_) => {
-                    OperatorError::Settings(format!("GAP: {error}"))
+            if let Algorithm::Lsvm(settings) = &self.algorithm {
+                if table
+                    .model()
+                    .fields()
+                    .iter()
+                    .any(|f| matches!(f.role, Role::Split | Role::Frequency | Role::Partition))
+                {
+                    return Err(OperatorError::Settings(
+                        "GAP: Linear SVM with split/weight/partition fields".into(),
+                    ));
                 }
-                _ => OperatorError::Data(format!("Linear SVM: {error}")),
-            })?;
-            return Ok(NodeOutput::Model(Arc::new(pmml)));
-        }
-        if let Algorithm::RandomTrees(settings) = &self.algorithm {
-            if table
-                .model()
-                .fields()
-                .iter()
-                .any(|field| matches!(field.role, Role::Split | Role::Frequency | Role::Partition))
-            {
-                return Err(OperatorError::Settings(
-                    "GAP: Random Trees with split, frequency or partition fields".into(),
-                ));
+                let (target, fields) = supervised_fields(&table, None, None)?;
+                let dataset = Dataset {
+                    table: &table,
+                    target,
+                    inputs: &fields,
+                    frequency: None,
+                };
+                // Statistical parity: the documented objective is solved to convergence
+                // (`dms_algo::lsvm`), so our coefficients are the optimum, not Modeler's
+                // early-stopped ones.
+                let pmml = lsvm::train(&dataset, settings).map_err(|error| match error {
+                    dms_algo::AlgoError::Cancelled => OperatorError::Cancelled,
+                    dms_algo::AlgoError::Unsupported(_) | dms_algo::AlgoError::Settings(_) => {
+                        OperatorError::Settings(format!("GAP: {error}"))
+                    }
+                    _ => OperatorError::Data(format!("Linear SVM: {error}")),
+                })?;
+                return Ok(NodeOutput::Model(Arc::new(pmml)));
             }
-            let (target, fields) = supervised_fields(&table, None, None)?;
-            let dataset = Dataset {
-                table: &table,
-                target,
-                inputs: &fields,
-                frequency: None,
-            };
-            let pmml = random_trees::train(&dataset, settings).map_err(|error| match error {
-                dms_algo::AlgoError::Unsupported(_) | dms_algo::AlgoError::Settings(_) => {
-                    OperatorError::Settings(format!("GAP: {error}"))
+            if let Algorithm::RandomTrees(settings) = &self.algorithm {
+                if table.model().fields().iter().any(|field| {
+                    matches!(field.role, Role::Split | Role::Frequency | Role::Partition)
+                }) {
+                    return Err(OperatorError::Settings(
+                        "GAP: Random Trees with split, frequency or partition fields".into(),
+                    ));
                 }
-                _ => OperatorError::Data(format!("Random Trees: {error}")),
-            })?;
-            return Ok(NodeOutput::Model(Arc::new(pmml)));
-        }
-        if let Algorithm::Apriori(settings) = &self.algorithm {
-            let pmml = apriori::train(&table, settings).map_err(apriori_error)?;
-            return Ok(NodeOutput::Model(Arc::new(pmml)));
-        }
-        if let Algorithm::Carma(settings) = &self.algorithm {
-            let pmml = carma::train(&table, settings).map_err(apriori_error)?;
-            return Ok(NodeOutput::Model(Arc::new(pmml)));
-        }
-        if let Algorithm::Sequence(settings) = &self.algorithm {
-            // Statistical parity (`docs/statistical-parity.md`, rule 4): the rules and their
-            // statistics are Modeler's; only the order within a tie group is ours.
-            let pmml = sequence::train(&table, settings).map_err(|error| match error {
-                dms_algo::AlgoError::Unsupported(_) | dms_algo::AlgoError::Settings(_) => {
-                    OperatorError::Settings(format!("Sequence: {error}"))
+                let (target, fields) = supervised_fields(&table, None, None)?;
+                let dataset = Dataset {
+                    table: &table,
+                    target,
+                    inputs: &fields,
+                    frequency: None,
+                };
+                let pmml =
+                    random_trees::train(&dataset, settings).map_err(|error| match error {
+                        dms_algo::AlgoError::Cancelled => OperatorError::Cancelled,
+                        dms_algo::AlgoError::Unsupported(_) | dms_algo::AlgoError::Settings(_) => {
+                            OperatorError::Settings(format!("GAP: {error}"))
+                        }
+                        _ => OperatorError::Data(format!("Random Trees: {error}")),
+                    })?;
+                return Ok(NodeOutput::Model(Arc::new(pmml)));
+            }
+            if let Algorithm::Apriori(settings) = &self.algorithm {
+                let pmml = apriori::train(&table, settings).map_err(apriori_error)?;
+                return Ok(NodeOutput::Model(Arc::new(pmml)));
+            }
+            if let Algorithm::Carma(settings) = &self.algorithm {
+                let pmml = carma::train(&table, settings).map_err(apriori_error)?;
+                return Ok(NodeOutput::Model(Arc::new(pmml)));
+            }
+            if let Algorithm::Sequence(settings) = &self.algorithm {
+                // Statistical parity (`docs/statistical-parity.md`, rule 4): the rules and their
+                // statistics are Modeler's; only the order within a tie group is ours.
+                let pmml = sequence::train(&table, settings).map_err(|error| match error {
+                    dms_algo::AlgoError::Cancelled => OperatorError::Cancelled,
+                    dms_algo::AlgoError::Unsupported(_) | dms_algo::AlgoError::Settings(_) => {
+                        OperatorError::Settings(format!("Sequence: {error}"))
+                    }
+                    dms_algo::AlgoError::Data(message) => {
+                        OperatorError::Data(format!("Sequence: {message}"))
+                    }
+                })?;
+                return Ok(NodeOutput::Model(Arc::new(pmml)));
+            }
+            if let Algorithm::KMeans((settings, custom)) = &self.algorithm {
+                let fields = cluster_inputs(&table, custom.as_deref())?;
+                let pmml = kmeans::train(&table, &fields, settings)
+                    .map_err(|error| OperatorError::Data(format!("K-Means: {error}")))?;
+                return Ok(NodeOutput::Model(Arc::new(pmml)));
+            }
+            if let Algorithm::Kohonen((settings, custom)) = &self.algorithm {
+                let fields = cluster_inputs(&table, custom.as_deref())?;
+                let pmml =
+                    kohonen::train(&table, &fields, settings).map_err(|error| match error {
+                        dms_algo::AlgoError::Cancelled => OperatorError::Cancelled,
+                        dms_algo::AlgoError::Unsupported(_) | dms_algo::AlgoError::Settings(_) => {
+                            OperatorError::Settings(format!("GAP: {error}"))
+                        }
+                        _ => OperatorError::Data(format!("Kohonen: {error}")),
+                    })?;
+                return Ok(NodeOutput::Model(Arc::new(pmml)));
+            }
+            if let Algorithm::Factor((settings, custom)) = &self.algorithm {
+                let fields = cluster_inputs(&table, custom.as_deref())?;
+                let pmml = factor::train(&table, &fields, settings)
+                    .map_err(|error| OperatorError::Data(format!("PCA/Factor: {error}")))?;
+                return Ok(NodeOutput::Model(Arc::new(pmml)));
+            }
+            if let Algorithm::Anomaly((settings, custom)) = &self.algorithm {
+                let fields = cluster_inputs(&table, custom.as_deref())?;
+                let pmml = anomaly::train(&table, &fields, settings)
+                    .map_err(|error| OperatorError::Data(format!("Anomaly: {error}")))?;
+                return Ok(NodeOutput::Model(Arc::new(pmml)));
+            }
+            if let Algorithm::TwoStep((settings, custom)) = &self.algorithm {
+                let fields = cluster_inputs(&table, custom.as_deref())?;
+                let pmml = twostep::train(&table, &fields, settings)
+                    .map_err(|error| OperatorError::Data(format!("TwoStep: {error}")))?;
+                return Ok(NodeOutput::Model(Arc::new(pmml)));
+            }
+            if let Algorithm::Logistic((settings, target, inputs)) = &self.algorithm {
+                let (target, fields) =
+                    supervised_fields(&table, target.as_deref(), inputs.as_deref())?;
+                let dataset = Dataset {
+                    table: &table,
+                    target,
+                    inputs: &fields,
+                    frequency: None,
+                };
+                let pmml = logistic::train(&dataset, settings)
+                    .map_err(|error| OperatorError::Data(format!("Logistic: {error}")))?;
+                return Ok(NodeOutput::Model(Arc::new(pmml)));
+            }
+            if let Algorithm::Gle((settings, target, inputs)) = &self.algorithm {
+                let (target, fields) =
+                    supervised_fields(&table, target.as_deref(), inputs.as_deref())?;
+                let dataset = Dataset {
+                    table: &table,
+                    target,
+                    inputs: &fields,
+                    frequency: None,
+                };
+                let pmml = gle::train(&dataset, settings).map_err(|error| match error {
+                    dms_algo::AlgoError::Cancelled => OperatorError::Cancelled,
+                    dms_algo::AlgoError::Unsupported(_) | dms_algo::AlgoError::Settings(_) => {
+                        OperatorError::Settings(format!("GAP: {error}"))
+                    }
+                    _ => OperatorError::Data(format!("GLE: {error}")),
+                })?;
+                return Ok(NodeOutput::Model(Arc::new(pmml)));
+            }
+            if let Algorithm::Regression((settings, target, inputs)) = &self.algorithm {
+                let (target, fields) =
+                    supervised_fields(&table, target.as_deref(), inputs.as_deref())?;
+                let dataset = Dataset {
+                    table: &table,
+                    target,
+                    inputs: &fields,
+                    frequency: None,
+                };
+                let pmml = linear::train(&dataset, settings)
+                    .map_err(|error| OperatorError::Data(format!("Regression: {error}")))?;
+                return Ok(NodeOutput::Model(Arc::new(pmml)));
+            }
+            if matches!(self.algorithm, Algorithm::NeuralNet) {
+                let parameters = self.parameters(context)?;
+                let settings = neural_settings(&parameters)?;
+                let fields = table.model().fields();
+                if parameters.flag("role_use")? {
+                    return Err(OperatorError::Settings(
+                        "GAP: Neural Net custom fields (role_use) have no oracle".into(),
+                    ));
                 }
-                dms_algo::AlgoError::Data(message) => {
-                    OperatorError::Data(format!("Sequence: {message}"))
-                }
-            })?;
-            return Ok(NodeOutput::Model(Arc::new(pmml)));
-        }
-        if let Algorithm::KMeans((settings, custom)) = &self.algorithm {
-            let fields = cluster_inputs(&table, custom.as_deref())?;
-            let pmml = kmeans::train(&table, &fields, settings)
-                .map_err(|error| OperatorError::Data(format!("K-Means: {error}")))?;
-            return Ok(NodeOutput::Model(Arc::new(pmml)));
-        }
-        if let Algorithm::Kohonen((settings, custom)) = &self.algorithm {
-            let fields = cluster_inputs(&table, custom.as_deref())?;
-            let pmml = kohonen::train(&table, &fields, settings).map_err(|error| match error {
-                dms_algo::AlgoError::Unsupported(_) | dms_algo::AlgoError::Settings(_) => {
-                    OperatorError::Settings(format!("GAP: {error}"))
-                }
-                _ => OperatorError::Data(format!("Kohonen: {error}")),
-            })?;
-            return Ok(NodeOutput::Model(Arc::new(pmml)));
-        }
-        if let Algorithm::Factor((settings, custom)) = &self.algorithm {
-            let fields = cluster_inputs(&table, custom.as_deref())?;
-            let pmml = factor::train(&table, &fields, settings)
-                .map_err(|error| OperatorError::Data(format!("PCA/Factor: {error}")))?;
-            return Ok(NodeOutput::Model(Arc::new(pmml)));
-        }
-        if let Algorithm::Anomaly((settings, custom)) = &self.algorithm {
-            let fields = cluster_inputs(&table, custom.as_deref())?;
-            let pmml = anomaly::train(&table, &fields, settings)
-                .map_err(|error| OperatorError::Data(format!("Anomaly: {error}")))?;
-            return Ok(NodeOutput::Model(Arc::new(pmml)));
-        }
-        if let Algorithm::TwoStep((settings, custom)) = &self.algorithm {
-            let fields = cluster_inputs(&table, custom.as_deref())?;
-            let pmml = twostep::train(&table, &fields, settings)
-                .map_err(|error| OperatorError::Data(format!("TwoStep: {error}")))?;
-            return Ok(NodeOutput::Model(Arc::new(pmml)));
-        }
-        if let Algorithm::Logistic((settings, target, inputs)) = &self.algorithm {
-            let (target, fields) = supervised_fields(&table, target.as_deref(), inputs.as_deref())?;
-            let dataset = Dataset {
-                table: &table,
-                target,
-                inputs: &fields,
-                frequency: None,
-            };
-            let pmml = logistic::train(&dataset, settings)
-                .map_err(|error| OperatorError::Data(format!("Logistic: {error}")))?;
-            return Ok(NodeOutput::Model(Arc::new(pmml)));
-        }
-        if let Algorithm::Gle((settings, target, inputs)) = &self.algorithm {
-            let (target, fields) = supervised_fields(&table, target.as_deref(), inputs.as_deref())?;
-            let dataset = Dataset {
-                table: &table,
-                target,
-                inputs: &fields,
-                frequency: None,
-            };
-            let pmml = gle::train(&dataset, settings).map_err(|error| match error {
-                dms_algo::AlgoError::Unsupported(_) | dms_algo::AlgoError::Settings(_) => {
-                    OperatorError::Settings(format!("GAP: {error}"))
-                }
-                _ => OperatorError::Data(format!("GLE: {error}")),
-            })?;
-            return Ok(NodeOutput::Model(Arc::new(pmml)));
-        }
-        if let Algorithm::Regression((settings, target, inputs)) = &self.algorithm {
-            let (target, fields) = supervised_fields(&table, target.as_deref(), inputs.as_deref())?;
-            let dataset = Dataset {
-                table: &table,
-                target,
-                inputs: &fields,
-                frequency: None,
-            };
-            let pmml = linear::train(&dataset, settings)
-                .map_err(|error| OperatorError::Data(format!("Regression: {error}")))?;
-            return Ok(NodeOutput::Model(Arc::new(pmml)));
-        }
-        if matches!(self.algorithm, Algorithm::NeuralNet) {
+                let targets: Vec<usize> = (0..fields.len())
+                    .filter(|&i| fields[i].role == Role::Target)
+                    .collect();
+                let inputs: Vec<usize> = (0..fields.len())
+                    .filter(|&i| matches!(fields[i].role, Role::Input | Role::Both))
+                    .collect();
+                let data = dms_algo::neural_net::NeuralData {
+                    table: &table,
+                    targets: &targets,
+                    inputs: &inputs,
+                };
+                let pmml = dms_algo::neural_net::train(&data, &settings)
+                    .map_err(|error| OperatorError::Data(format!("Neural Net: {error}")))?;
+                return Ok(NodeOutput::Model(Arc::new(pmml)));
+            }
             let parameters = self.parameters(context)?;
-            let settings = neural_settings(&parameters)?;
-            let fields = table.model().fields();
-            if parameters.flag("role_use")? {
-                return Err(OperatorError::Settings(
-                    "GAP: Neural Net custom fields (role_use) have no oracle".into(),
-                ));
-            }
-            let targets: Vec<usize> = (0..fields.len())
-                .filter(|&i| fields[i].role == Role::Target)
-                .collect();
-            let inputs: Vec<usize> = (0..fields.len())
-                .filter(|&i| matches!(fields[i].role, Role::Input | Role::Both))
-                .collect();
-            let data = dms_algo::neural_net::NeuralData {
-                table: &table,
-                targets: &targets,
-                inputs: &inputs,
+            tree_checks(&parameters)?;
+            let prefix = match self.algorithm {
+                Algorithm::Linear => "linreg.",
+                _ => "tree.",
             };
-            let pmml = dms_algo::neural_net::train(&data, &settings)
-                .map_err(|error| OperatorError::Data(format!("Neural Net: {error}")))?;
-            return Ok(NodeOutput::Model(Arc::new(pmml)));
-        }
-        let parameters = self.parameters(context)?;
-        tree_checks(&parameters)?;
-        let prefix = match self.algorithm {
-            Algorithm::Linear => "linreg.",
-            _ => "tree.",
-        };
-        let (target, fields) = roles(&table, &parameters, prefix)?;
-        let dataset = Dataset {
-            table: &table,
-            target,
-            inputs: &fields,
-            frequency: None,
-        };
-        let pmml = match self.algorithm {
-            Algorithm::Quest => dms_algo::quest::train(&dataset, &quest_settings(&parameters)?)
-                .map_err(|error| OperatorError::Settings(format!("GAP: QUEST: {error}")))?,
-            Algorithm::Cart => cart::train(&dataset, &cart_settings(&parameters)?)
-                .map_err(|error| OperatorError::Data(format!("C&R Tree: {error}")))?,
-            Algorithm::Chaid => chaid::train(&dataset, &chaid_settings(&parameters)?)
-                .map_err(|error| OperatorError::Data(format!("CHAID: {error}")))?,
-            Algorithm::Linear => train_linear(&dataset, &linear_settings(&parameters)?)
-                .map_err(|error| OperatorError::Data(format!("Linear: {error}")))?,
-            Algorithm::KMeans(_)
-            | Algorithm::NeuralNet
-            | Algorithm::Kohonen(_)
-            | Algorithm::TreeAs(_)
-            | Algorithm::LinearAs(_)
-            | Algorithm::Lsvm(_)
-            | Algorithm::RandomTrees(_)
-            | Algorithm::TwoStep(_)
-            | Algorithm::Logistic(_)
-            | Algorithm::Gle(_)
-            | Algorithm::Regression(_)
-            | Algorithm::Factor(_)
-            | Algorithm::Anomaly(_)
-            | Algorithm::Apriori(_)
-            | Algorithm::Carma(_)
-            | Algorithm::Sequence(_)
-            | Algorithm::DecisionList(_) => {
-                return Err(OperatorError::Settings("clustering has no target".into()));
-            }
-        };
-        Ok(NodeOutput::Model(Arc::new(pmml)))
+            let (target, fields) = roles(&table, &parameters, prefix)?;
+            let dataset = Dataset {
+                table: &table,
+                target,
+                inputs: &fields,
+                frequency: None,
+            };
+            let pmml = match self.algorithm {
+                Algorithm::Quest => dms_algo::quest::train(&dataset, &quest_settings(&parameters)?)
+                    .map_err(|error| OperatorError::Settings(format!("GAP: QUEST: {error}")))?,
+                Algorithm::Cart => cart::train(&dataset, &cart_settings(&parameters)?)
+                    .map_err(|error| OperatorError::Data(format!("C&R Tree: {error}")))?,
+                Algorithm::Chaid => chaid::train(&dataset, &chaid_settings(&parameters)?)
+                    .map_err(|error| OperatorError::Data(format!("CHAID: {error}")))?,
+                Algorithm::Linear => train_linear(&dataset, &linear_settings(&parameters)?)
+                    .map_err(|error| OperatorError::Data(format!("Linear: {error}")))?,
+                Algorithm::KMeans(_)
+                | Algorithm::NeuralNet
+                | Algorithm::Kohonen(_)
+                | Algorithm::TreeAs(_)
+                | Algorithm::LinearAs(_)
+                | Algorithm::Lsvm(_)
+                | Algorithm::RandomTrees(_)
+                | Algorithm::TwoStep(_)
+                | Algorithm::Logistic(_)
+                | Algorithm::Gle(_)
+                | Algorithm::Regression(_)
+                | Algorithm::Factor(_)
+                | Algorithm::Anomaly(_)
+                | Algorithm::Apriori(_)
+                | Algorithm::Carma(_)
+                | Algorithm::Sequence(_)
+                | Algorithm::DecisionList(_) => {
+                    return Err(OperatorError::Settings("clustering has no target".into()));
+                }
+            };
+            Ok(NodeOutput::Model(Arc::new(pmml)))
+        })
     }
 }
 
@@ -988,6 +1000,7 @@ fn random_trees_settings(node: &StreamNode) -> Result<RandomTreesSettings, Opera
 
 fn apriori_error(error: dms_algo::AlgoError) -> OperatorError {
     match error {
+        dms_algo::AlgoError::Cancelled => OperatorError::Cancelled,
         dms_algo::AlgoError::Settings(message) | dms_algo::AlgoError::Unsupported(message) => {
             OperatorError::Settings(format!("Apriori: {message}"))
         }

@@ -10,6 +10,8 @@ const MAX_SEARCH_DEPTH: usize = 4;
 
 #[derive(Debug, Clone, Default)]
 pub struct ExecContext {
+    /// The same cooperative flag used by the owning worker job.
+    pub cancel: dms_types::CancelToken,
     pub files: FileResolver,
     /// The stream's saved properties (`stream/properties`: date and time formats, decimal symbol,
     /// date baselines, ...); see docs/formats/stream-properties.md.

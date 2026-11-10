@@ -61,6 +61,7 @@ fn train(case: &str) -> AssociationModel {
         .map(|attachment| (attachment.name, attachment.bytes.into()))
         .collect();
     let context = dms_exec::ExecContext {
+        cancel: Default::default(),
         files: dms_exec::FileResolver {
             data_dirs: vec![root.join("corpus/models_next")],
         },

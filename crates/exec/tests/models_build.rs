@@ -111,6 +111,7 @@ fn tree_build_nodes_train_modelers_trees() {
             .map(|a| (a.name, a.bytes.into()))
             .collect();
         let context = dms_exec::ExecContext {
+            cancel: Default::default(),
             files: dms_exec::FileResolver {
                 data_dirs: vec![root_dir.join("corpus/models")],
             },

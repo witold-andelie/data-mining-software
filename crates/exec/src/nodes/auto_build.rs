@@ -527,68 +527,71 @@ impl Operator for AutoBuild {
         _model: Option<Arc<Pmml>>,
         context: &ExecContext,
     ) -> Result<NodeOutput, OperatorError> {
-        let [input] = inputs else {
-            return Err(OperatorError::Inputs(format!(
-                "{} training needs one input",
-                self.target.node_name()
-            )));
-        };
-        if input
-            .model()
-            .fields()
-            .iter()
-            .any(|f| matches!(f.role, Role::Partition | Role::Split | Role::Frequency))
-        {
-            return Err(gap(self.target, "partition, split or frequency fields"));
-        }
-        let (target, true_value) = target_field(self.target, input)?;
-        let mut trained = Vec::new();
-        for (index, component) in self.components.iter().enumerate() {
-            trained.push(self.train(
-                component,
-                index,
-                input,
-                target,
-                true_value.as_ref(),
-                context,
-            )?);
-        }
-        let mut ranked: Vec<&Trained> = trained
-            .iter()
-            .filter(|t| {
-                self.limits.iter().all(|limit| {
-                    let value = t.value(limit.measure);
-                    if limit.at_least {
-                        value >= limit.cutoff
-                    } else {
-                        value <= limit.cutoff
-                    }
-                })
-            })
-            .collect();
-        // Stable: ties keep the saved component order. Fewer fields rank first for a continuous
-        // target, more for a flag target; every other measure ranks the larger value first.
-        let ascending = self.measure == Measure::Fields && self.target == Target::Continuous;
-        ranked.sort_by(|a, b| {
-            let (a, b) = (a.value(self.measure), b.value(self.measure));
-            if ascending {
-                a.total_cmp(&b)
-            } else {
-                b.total_cmp(&a)
+        dms_algo::with_cancel(&context.cancel, || {
+            let [input] = inputs else {
+                return Err(OperatorError::Inputs(format!(
+                    "{} training needs one input",
+                    self.target.node_name()
+                )));
+            };
+            if input
+                .model()
+                .fields()
+                .iter()
+                .any(|f| matches!(f.role, Role::Partition | Role::Split | Role::Frequency))
+            {
+                return Err(gap(self.target, "partition, split or frequency fields"));
             }
-        });
-        ranked.truncate(self.keep);
-        if ranked.is_empty() {
-            return Err(OperatorError::Data(format!(
-                "{}: no component model passed the limits",
-                self.target.node_name()
-            )));
-        }
-        Ok(NodeOutput::Model(Arc::new(ensemble(
-            self.target,
-            input,
-            &ranked,
-        )?)))
+            let (target, true_value) = target_field(self.target, input)?;
+            let mut trained = Vec::new();
+            for (index, component) in self.components.iter().enumerate() {
+                dms_algo::check_cancelled()?;
+                trained.push(self.train(
+                    component,
+                    index,
+                    input,
+                    target,
+                    true_value.as_ref(),
+                    context,
+                )?);
+            }
+            let mut ranked: Vec<&Trained> = trained
+                .iter()
+                .filter(|t| {
+                    self.limits.iter().all(|limit| {
+                        let value = t.value(limit.measure);
+                        if limit.at_least {
+                            value >= limit.cutoff
+                        } else {
+                            value <= limit.cutoff
+                        }
+                    })
+                })
+                .collect();
+            // Stable: ties keep the saved component order. Fewer fields rank first for a continuous
+            // target, more for a flag target; every other measure ranks the larger value first.
+            let ascending = self.measure == Measure::Fields && self.target == Target::Continuous;
+            ranked.sort_by(|a, b| {
+                let (a, b) = (a.value(self.measure), b.value(self.measure));
+                if ascending {
+                    a.total_cmp(&b)
+                } else {
+                    b.total_cmp(&a)
+                }
+            });
+            ranked.truncate(self.keep);
+            if ranked.is_empty() {
+                return Err(OperatorError::Data(format!(
+                    "{}: no component model passed the limits",
+                    self.target.node_name()
+                )));
+            }
+            Ok(NodeOutput::Model(Arc::new(ensemble(
+                self.target,
+                input,
+                &ranked,
+            )?)))
+        })
     }
 }
 

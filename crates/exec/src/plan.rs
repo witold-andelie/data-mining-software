@@ -262,7 +262,14 @@ impl Plan {
             Ok(mut execution) => execution.evaluate(targets, context),
             Err(error) => targets
                 .iter()
-                .map(|uid| ((*uid).to_string(), Err(error.clone().at(uid))))
+                .map(|uid| {
+                    let error = if context.cancel.is_cancelled() {
+                        crate::OperatorError::Cancelled
+                    } else {
+                        error.clone()
+                    };
+                    ((*uid).to_string(), Err(error.at(uid)))
+                })
                 .collect(),
         }
     }
@@ -294,7 +301,14 @@ impl Plan {
                     set(
                         &mut results,
                         index,
-                        Err(NodeError::new(&node.uid, ErrorKind::Cycle)),
+                        Err(NodeError::new(
+                            &node.uid,
+                            if context.cancel.is_cancelled() {
+                                ErrorKind::Cancelled
+                            } else {
+                                ErrorKind::Cycle
+                            },
+                        )),
                     );
                     set_state(&mut state, index, Visit::Done);
                 }
@@ -308,6 +322,15 @@ impl Plan {
                     }
                 }
                 (Some(Visit::Expanded), true) => {
+                    if context.cancel.is_cancelled() {
+                        set(
+                            &mut results,
+                            index,
+                            Err(NodeError::new(&node.uid, ErrorKind::Cancelled)),
+                        );
+                        set_state(&mut state, index, Visit::Done);
+                        continue;
+                    }
                     observer(EvalEvent::NodeStarted {
                         uid: &node.uid,
                         index: started,
@@ -374,6 +397,10 @@ impl Plan {
         context: &ExecContext,
         globals: &mut dms_clem::GlobalValues,
     ) -> NodeResult {
+        context
+            .cancel
+            .check()
+            .map_err(|_| NodeError::new(&node.uid, ErrorKind::Cancelled))?;
         let operator = node.operator.as_ref().map_err(Clone::clone)?;
         let mut inputs = Vec::with_capacity(node.inputs.len());
         for &input in &node.inputs {
@@ -623,6 +650,72 @@ mod tests {
             assert_eq!(pair[0], (uid.into(), true, index, 3));
             assert_eq!(pair[1], (uid.into(), false, 1, 0));
         }
+    }
+
+    #[test]
+    fn cancellation_preserves_finished_nodes_and_does_not_start_the_rest() {
+        let stream = stream(
+            vec![
+                node("source", "UserInputNode"),
+                node("done", "TableNode"),
+                node("out", "TableNode"),
+            ],
+            &[("source", "done"), ("done", "out")],
+        );
+        let plan = Plan::with_factories(&stream, lookup);
+        let context = ExecContext::default();
+        let mut starts = Vec::new();
+        let results = plan.execution().unwrap().evaluate_observed(
+            &["out"],
+            &context,
+            &mut |event| match event {
+                EvalEvent::NodeStarted { uid, .. } => starts.push(uid.to_string()),
+                EvalEvent::NodeFinished { uid: "done", .. } => context.cancel.cancel(),
+                _ => {}
+            },
+        );
+        assert_eq!(starts, ["source", "done"]);
+        assert!(results["source"].is_ok());
+        assert!(results["done"].is_ok());
+        assert!(matches!(&results["out"], Err(error) if error.kind == ErrorKind::Cancelled));
+    }
+
+    #[test]
+    fn a_never_triggered_token_preserves_every_result() {
+        let stream = stream(
+            vec![node("source", "UserInputNode"), node("out", "TableNode")],
+            &[("source", "out")],
+        );
+        let plan = Plan::with_factories(&stream, lookup);
+        let baseline = comparable(plan.evaluate(&["out"], &ExecContext::default()));
+        let context = ExecContext {
+            cancel: dms_types::CancelToken::new(),
+            ..Default::default()
+        };
+        assert_eq!(baseline, comparable(plan.evaluate(&["out"], &context)));
+    }
+
+    #[test]
+    fn cancellation_before_evaluation_marks_all_reachable_nodes_including_cycles() {
+        let stream = stream(
+            vec![node("a", "TableNode"), node("b", "TableNode")],
+            &[("a", "b"), ("b", "a")],
+        );
+        let plan = Plan::new(&stream);
+        let context = ExecContext::default();
+        context.cancel.cancel();
+        let results = plan
+            .execution()
+            .unwrap()
+            .evaluate_observed(&["a"], &context, &mut |_| {
+                panic!("cancelled nodes must not start")
+            });
+        assert_eq!(results.len(), 2);
+        assert!(
+            results
+                .values()
+                .all(|result| matches!(result, Err(error) if error.kind == ErrorKind::Cancelled))
+        );
     }
 
     #[test]

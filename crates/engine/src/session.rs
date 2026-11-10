@@ -138,6 +138,9 @@ pub enum RunState {
         job: JobId,
         progress: Progress,
     },
+    Stopping {
+        job: JobId,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -170,6 +173,7 @@ pub struct Session {
     jobs: JobManager<RunReport>,
     pub(crate) results: Option<RunResults>,
     run_state: RunState,
+    stop_started: Option<std::time::Instant>,
 }
 
 impl Session {
@@ -230,7 +234,7 @@ impl Session {
                     }
                 }
                 JobEvent::Finished { job, output } => {
-                    if matches!(self.run_state, RunState::Running { job: current, .. } if current == job)
+                    if matches!(self.run_state, RunState::Running { job: current, .. } | RunState::Stopping { job: current } if current == job)
                     {
                         notices.push(RunNotice::Finished {
                             job,
@@ -244,31 +248,47 @@ impl Session {
                             revision: self.run_revision,
                         });
                         self.run_state = RunState::Idle;
+                        self.stop_started = None;
                     }
                 }
                 JobEvent::Panicked { job, message } => {
-                    if matches!(self.run_state, RunState::Running { job: current, .. } if current == job)
+                    if matches!(self.run_state, RunState::Running { job: current, .. } | RunState::Stopping { job: current } if current == job)
                     {
                         self.run_state = RunState::Idle;
+                        self.stop_started = None;
                         notices.push(RunNotice::Failed { job, message });
                     }
                 }
                 JobEvent::Cancelled { job } => {
-                    if matches!(self.run_state, RunState::Running { job: current, .. } if current == job)
+                    if matches!(self.run_state, RunState::Running { job: current, .. } | RunState::Stopping { job: current } if current == job)
                     {
                         self.run_state = RunState::Idle;
+                        self.stop_started = None;
                     }
                     notices.push(RunNotice::Cancelled { job });
                 }
             }
         }
+        if let RunState::Stopping { job } = self.run_state
+            && self
+                .stop_started
+                .is_some_and(|started| started.elapsed() >= std::time::Duration::from_secs(2))
+        {
+            self.jobs.cancel(job);
+            self.run_state = RunState::Idle;
+            self.stop_started = None;
+            // Drain the detachment event now; a later run must not see a stale notice.
+            self.jobs.poll();
+            notices.push(RunNotice::Cancelled { job });
+        }
         notices
     }
 
     pub(crate) fn cancel_run(&mut self) {
-        if let RunState::Running { job, .. } = self.run_state {
+        if let RunState::Running { job, .. } | RunState::Stopping { job } = self.run_state {
             self.jobs.cancel(job);
             self.run_state = RunState::Idle;
+            self.stop_started = None;
         }
     }
 
@@ -375,7 +395,7 @@ impl Session {
             Requires::DocumentIdle if self.document.is_none() => {
                 Err("No stream is open".to_string())
             }
-            Requires::DocumentIdle if matches!(self.run_state, RunState::Running { .. }) => {
+            Requires::DocumentIdle if !matches!(self.run_state, RunState::Idle) => {
                 Err("A stream is already running".to_string())
             }
             Requires::DocumentIdle => Ok(()),
@@ -434,9 +454,10 @@ impl Session {
             "run.cancel" => {
                 // Keep a completed-but-unpolled job active until its final event is applied.
                 if let RunState::Running { job, .. } = self.run_state
-                    && self.jobs.cancel(job)
+                    && self.jobs.request_cancel(job)
                 {
-                    self.run_state = RunState::Idle;
+                    self.run_state = RunState::Stopping { job };
+                    self.stop_started = Some(std::time::Instant::now());
                 }
                 Ok(Outcome::Done)
             }
@@ -564,6 +585,7 @@ mod tests {
             ready.send(()).unwrap();
             gate.recv_timeout(Duration::from_secs(10)).unwrap();
             RunReport {
+                cancelled: false,
                 targets: Vec::new(),
                 results: HashMap::new(),
                 root_causes: Vec::new(),
@@ -580,11 +602,101 @@ mod tests {
         };
         arrived.recv_timeout(Duration::from_secs(10)).unwrap();
         session.execute("run.cancel", &[]).unwrap();
+        assert_eq!(session.run_state(), RunState::Stopping { job });
+        assert!(!session.is_enabled("run.stream"));
+        assert!(!session.is_enabled("run.node"));
+        assert!(!session.is_enabled("run.cancel"));
+        assert!(session.poll_jobs().is_empty());
+        session.execute("file.close", &[]).unwrap();
         assert_eq!(session.run_state(), RunState::Idle);
         assert_eq!(session.poll_jobs(), [RunNotice::Cancelled { job }]);
-        session.execute("file.close", &[]).unwrap();
         release.send(()).unwrap();
         session.execute("file.open", &[]).unwrap();
+        assert!(session.poll_jobs().is_empty());
+        assert!(session.results().is_none());
+    }
+
+    #[test]
+    fn cooperative_stop_retains_the_workers_partial_report() {
+        let mut session = with_stream();
+        let (ready, arrived) = std::sync::mpsc::channel();
+        let job = session.jobs.spawn(move |ctx| {
+            ready.send(()).unwrap();
+            let deadline = Instant::now() + Duration::from_secs(10);
+            while !ctx.cancel_token().is_cancelled() {
+                assert!(Instant::now() < deadline);
+                std::thread::yield_now();
+            }
+            RunReport {
+                cancelled: true,
+                targets: vec!["out".into()],
+                results: HashMap::from([(
+                    "out".into(),
+                    Err(dms_exec::NodeError::new(
+                        "out",
+                        dms_exec::ErrorKind::Cancelled,
+                    )),
+                )]),
+                root_causes: Vec::new(),
+                elapsed: Duration::from_millis(1),
+            }
+        });
+        session.run_state = RunState::Running {
+            job,
+            progress: Progress {
+                done: 0,
+                total: 1,
+                current: None,
+            },
+        };
+        arrived.recv_timeout(Duration::from_secs(10)).unwrap();
+        session.execute("run.cancel", &[]).unwrap();
+        assert_eq!(session.run_state(), RunState::Stopping { job });
+        assert!(matches!(
+            wait_for_notice(&mut session).as_slice(),
+            [RunNotice::Finished { root_causes: 0, .. }]
+        ));
+        assert_eq!(session.run_state(), RunState::Idle);
+        assert!(session.results().unwrap().report.cancelled);
+        assert_eq!(session.results().unwrap().report.results.len(), 1);
+    }
+
+    #[test]
+    fn uncooperative_stop_detaches_after_two_seconds_without_a_report() {
+        let mut session = with_stream();
+        let (release, gate) = std::sync::mpsc::channel();
+        let (ended, finished) = std::sync::mpsc::channel();
+        let job = session.jobs.spawn(move |_| {
+            gate.recv_timeout(Duration::from_secs(10)).unwrap();
+            ended.send(()).unwrap();
+            RunReport {
+                cancelled: false,
+                targets: Vec::new(),
+                results: HashMap::new(),
+                root_causes: Vec::new(),
+                elapsed: Duration::ZERO,
+            }
+        });
+        session.run_state = RunState::Running {
+            job,
+            progress: Progress {
+                done: 0,
+                total: 1,
+                current: None,
+            },
+        };
+        let started = Instant::now();
+        session.execute("run.cancel", &[]).unwrap();
+        assert!(
+            matches!(wait_for_notice(&mut session).as_slice(), [RunNotice::Cancelled { job: id }] if *id == job)
+        );
+        assert!(started.elapsed() >= Duration::from_secs(2));
+        assert!(started.elapsed() < Duration::from_secs(5));
+        assert_eq!(session.run_state(), RunState::Idle);
+        assert!(session.results().is_none());
+        assert!(session.is_enabled("run.stream"));
+        release.send(()).unwrap();
+        finished.recv_timeout(Duration::from_secs(10)).unwrap();
         assert!(session.poll_jobs().is_empty());
         assert!(session.results().is_none());
     }
@@ -599,6 +711,7 @@ mod tests {
                 ready.send(()).unwrap();
                 gate.recv_timeout(Duration::from_secs(10)).unwrap();
                 RunReport {
+                    cancelled: false,
                     targets: Vec::new(),
                     results: HashMap::new(),
                     root_causes: Vec::new(),

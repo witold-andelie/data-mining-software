@@ -118,6 +118,7 @@ fn tmp_dir(subdir: &str) -> PathBuf {
 
 fn ctx_with_dir(dir: PathBuf) -> ExecContext {
     ExecContext {
+        cancel: Default::default(),
         files: FileResolver {
             data_dirs: vec![dir],
         },

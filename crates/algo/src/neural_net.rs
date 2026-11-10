@@ -200,6 +200,9 @@ fn is_continuous(table: &Table, position: usize) -> bool {
 
 /// A cell as the network reads it: a number, a category text, or missing.
 fn cell(table: &Table, row: &[Value], position: usize) -> Option<Value> {
+    if crate::check_cancelled().is_err() {
+        return None;
+    }
     let field = table.model().fields().get(position)?;
     let value = row.get(position)?;
     if field.is_missing(value) {
@@ -230,6 +233,7 @@ fn sorted_by_name(table: &Table, positions: &[usize]) -> Vec<usize> {
 }
 
 fn encode(data: &NeuralData<'_>, missing: MissingValues) -> Result<Encoded, AlgoError> {
+    crate::check_cancelled()?;
     let table = data.table;
     let inputs = sorted_by_name(table, data.inputs);
     let targets = sorted_by_name(table, data.targets);
@@ -272,6 +276,7 @@ fn encode(data: &NeuralData<'_>, missing: MissingValues) -> Result<Encoded, Algo
         }),
         MissingValues::Impute => {
             for (i, (&p, cats)) in inputs.iter().zip(&input_categories).enumerate() {
+                crate::check_cancelled()?;
                 let present: Vec<&Vec<Value>> = kept
                     .iter()
                     .copied()
@@ -363,11 +368,13 @@ fn encode(data: &NeuralData<'_>, missing: MissingValues) -> Result<Encoded, Algo
     };
     let mut input_columns = Vec::with_capacity(inputs.len());
     for (i, &p) in inputs.iter().enumerate() {
+        crate::check_cancelled()?;
         let values: Vec<Value> = kept.iter().filter_map(|row| value_at(row, i)).collect();
         input_columns.push(column(p, values, input_categories[i].clone())?);
     }
     let mut target_columns = Vec::with_capacity(targets.len());
     for &p in &targets {
+        crate::check_cancelled()?;
         let values: Vec<Value> = kept.iter().filter_map(|row| row.get(p).cloned()).collect();
         let cats = if is_continuous(table, p) {
             Vec::new()
@@ -408,6 +415,7 @@ fn encode(data: &NeuralData<'_>, missing: MissingValues) -> Result<Encoded, Algo
     let mut x = Vec::with_capacity(kept.len());
     let mut y = Vec::with_capacity(kept.len());
     for row in &kept {
+        crate::check_cancelled()?;
         let mut xi = Vec::new();
         for (i, column) in input_columns.iter().enumerate() {
             encode_value(column, value_at(row, i).as_ref(), &mut xi)?;
@@ -427,6 +435,7 @@ fn encode(data: &NeuralData<'_>, missing: MissingValues) -> Result<Encoded, Algo
     let mut groups = Vec::new();
     let mut start = 0;
     for column in &target_columns {
+        crate::check_cancelled()?;
         let width = column.width();
         groups.push((start, width, matches!(column, Column::Categorical { .. })));
         start += width;
@@ -489,11 +498,18 @@ impl Net {
     }
 
     /// The error over the records and its gradient.
-    fn error_gradient(&self, w: &[f64], xs: &[&Vec<f64>], ys: &[&Vec<f64>]) -> (f64, Vec<f64>) {
+    fn error_gradient(
+        &self,
+        w: &[f64],
+        xs: &[&Vec<f64>],
+        ys: &[&Vec<f64>],
+    ) -> Result<(f64, Vec<f64>), AlgoError> {
+        crate::check_cancelled()?;
         let mut grad = vec![0.0; w.len()];
         let mut error = 0.0;
         let layers = self.sizes.len() - 1;
         for (x, y) in xs.iter().zip(ys) {
+            crate::check_cancelled()?;
             let acts = self.forward(w, x);
             let out = &acts[layers];
             let mut delta: Vec<f64> = out.iter().zip(y.iter()).map(|(o, t)| o - t).collect();
@@ -534,27 +550,30 @@ impl Net {
                 }
             }
         }
-        (error, grad)
+        Ok((error, grad))
     }
 
-    fn error(&self, w: &[f64], xs: &[&Vec<f64>], ys: &[&Vec<f64>]) -> f64 {
-        self.error_gradient(w, xs, ys).0
+    fn error(&self, w: &[f64], xs: &[&Vec<f64>], ys: &[&Vec<f64>]) -> Result<f64, AlgoError> {
+        crate::check_cancelled()?;
+        Ok(self.error_gradient(w, xs, ys)?.0)
     }
 }
 
 /// The error of predicting every output by its mean (the Guide's error-ratio denominator).
-fn null_error(net: &Net, ys: &[&Vec<f64>]) -> f64 {
+fn null_error(net: &Net, ys: &[&Vec<f64>]) -> Result<f64, AlgoError> {
+    crate::check_cancelled()?;
     let Some(first) = ys.first() else {
-        return 0.0;
+        return Ok(0.0);
     };
     let n = ys.len() as f64;
     let mut mean = vec![0.0; first.len()];
     for y in ys {
+        crate::check_cancelled()?;
         for (m, v) in mean.iter_mut().zip(y.iter()) {
             *m += v / n;
         }
     }
-    if net.softmax {
+    Ok(if net.softmax {
         -ys.iter()
             .map(|y| {
                 y.iter()
@@ -573,7 +592,7 @@ fn null_error(net: &Net, ys: &[&Vec<f64>]) -> f64 {
                     .sum::<f64>()
             })
             .sum::<f64>()
-    }
+    })
 }
 
 /// Percentage of records whose categorical targets are all predicted right; for continuous
@@ -584,7 +603,8 @@ fn accuracy(
     xs: &[&Vec<f64>],
     ys: &[&Vec<f64>],
     groups: &[(usize, usize, bool)],
-) -> f64 {
+) -> Result<f64, AlgoError> {
+    crate::check_cancelled()?;
     let layers = net.sizes.len() - 1;
     let categorical: Vec<_> = groups.iter().filter(|g| g.2).collect();
     if categorical.is_empty() {
@@ -594,37 +614,44 @@ fn accuracy(
                 softmax: false,
             },
             ys,
-        );
+        )?;
         let sse = 0.5
             * xs.iter()
                 .zip(ys)
                 .map(|(x, y)| {
+                    crate::check_cancelled()?;
                     let acts = net.forward(w, x);
-                    acts[layers]
-                        .iter()
-                        .zip(y.iter())
-                        .map(|(o, t)| (o - t) * (o - t))
-                        .sum::<f64>()
+                    Ok::<_, AlgoError>(
+                        acts[layers]
+                            .iter()
+                            .zip(y.iter())
+                            .map(|(o, t)| (o - t) * (o - t))
+                            .sum::<f64>(),
+                    )
                 })
-                .sum::<f64>();
-        return if null > 0.0 {
+                .sum::<Result<f64, AlgoError>>()?;
+        return Ok(if null > 0.0 {
             100.0 * (1.0 - sse / null)
         } else {
             0.0
-        };
+        });
     }
     let right = xs
         .iter()
         .zip(ys)
-        .filter(|(x, y)| {
+        .map(|(x, y)| {
+            crate::check_cancelled()?;
             let acts = net.forward(w, x);
             let out = &acts[layers];
-            categorical.iter().all(|&&(start, width, _)| {
+            Ok::<_, AlgoError>(categorical.iter().all(|&&(start, width, _)| {
                 argmax(&out[start..start + width]) == argmax(&y[start..start + width])
-            })
+            }))
         })
+        .collect::<Result<Vec<_>, _>>()?
+        .into_iter()
+        .filter(|right| *right)
         .count();
-    100.0 * right as f64 / xs.len().max(1) as f64
+    Ok(100.0 * right as f64 / xs.len().max(1) as f64)
 }
 
 fn argmax(values: &[f64]) -> usize {
@@ -655,10 +682,11 @@ fn scg(
     test: Option<&Split<'_>>,
     stop: &Stopping,
     groups: &[(usize, usize, bool)],
-) -> Vec<f64> {
+) -> Result<Vec<f64>, AlgoError> {
+    crate::check_cancelled()?;
     let n = w.len();
-    let null = null_error(net, &train.ys);
-    let (mut e, mut g) = net.error_gradient(&w, &train.xs, &train.ys);
+    let null = null_error(net, &train.ys)?;
+    let (mut e, mut g) = net.error_gradient(&w, &train.xs, &train.ys)?;
     let mut r: Vec<f64> = g.iter().map(|v| -v).collect();
     let mut p = r.clone();
     let mut success = true;
@@ -666,9 +694,12 @@ fn scg(
     let mut lambda_bar = 0.0;
     let mut delta = 0.0;
     let mut p_norm2 = 0.0;
-    let mut best_test = test.map(|t| (net.error(&w, &t.xs, &t.ys), w.clone()));
+    let mut best_test = test
+        .map(|t| net.error(&w, &t.xs, &t.ys).map(|error| (error, w.clone())))
+        .transpose()?;
     let dot = |a: &[f64], b: &[f64]| a.iter().zip(b).map(|(x, y)| x * y).sum::<f64>();
     for k in 1..=stop.max_epochs {
+        crate::check_cancelled()?;
         if success {
             p_norm2 = dot(&p, &p);
             if p_norm2 <= 0.0 || !p_norm2.is_finite() {
@@ -676,7 +707,7 @@ fn scg(
             }
             let sigma = SIGMA0 / p_norm2.sqrt();
             let probe: Vec<f64> = w.iter().zip(&p).map(|(a, b)| a + sigma * b).collect();
-            let (_, g2) = net.error_gradient(&probe, &train.xs, &train.ys);
+            let (_, g2) = net.error_gradient(&probe, &train.xs, &train.ys)?;
             let s: Vec<f64> = g2.iter().zip(&g).map(|(a, b)| (a - b) / sigma).collect();
             delta = dot(&p, &s);
         }
@@ -692,7 +723,7 @@ fn scg(
         }
         let alpha = mu / delta;
         let candidate: Vec<f64> = w.iter().zip(&p).map(|(a, b)| a + alpha * b).collect();
-        let (e_new, g_new) = net.error_gradient(&candidate, &train.xs, &train.ys);
+        let (e_new, g_new) = net.error_gradient(&candidate, &train.xs, &train.ys)?;
         let comparison = 2.0 * delta * (e - e_new) / (mu * mu);
         let previous = e;
         if comparison >= 0.0 && e_new.is_finite() {
@@ -723,18 +754,18 @@ fn scg(
             continue;
         }
         if let (Some(t), Some(best)) = (test, best_test.as_mut()) {
-            let err = net.error(&w, &t.xs, &t.ys);
+            let err = net.error(&w, &t.xs, &t.ys)?;
             if err < best.0 {
                 *best = (err, w.clone());
             }
         }
         if let Some(target) = stop.min_accuracy {
             let reached = match test {
-                Some(t) => accuracy(net, &w, &t.xs, &t.ys, groups),
-                None => accuracy(net, &w, &train.xs, &train.ys, groups),
+                Some(t) => accuracy(net, &w, &t.xs, &t.ys, groups)?,
+                None => accuracy(net, &w, &train.xs, &train.ys, groups)?,
             };
             if reached >= target {
-                return w;
+                return Ok(w);
             }
         }
         if previous.abs() > 0.0 && ((previous - e) / previous).abs() < RELATIVE_CHANGE {
@@ -744,10 +775,10 @@ fn scg(
             break;
         }
     }
-    match best_test {
+    Ok(match best_test {
         Some((_, best)) => best,
         None => w,
-    }
+    })
 }
 
 fn random_weights(net: &Net, rng: &mut Rng) -> Vec<f64> {
@@ -757,16 +788,23 @@ fn random_weights(net: &Net, rng: &mut Rng) -> Vec<f64> {
 }
 
 /// The best of `draws` uniform weight vectors by training error.
-fn best_draw(net: &Net, train: &Split<'_>, rng: &mut Rng, draws: usize) -> Vec<f64> {
+fn best_draw(
+    net: &Net,
+    train: &Split<'_>,
+    rng: &mut Rng,
+    draws: usize,
+) -> Result<Vec<f64>, AlgoError> {
+    crate::check_cancelled()?;
     let mut best: Option<(f64, Vec<f64>)> = None;
     for _ in 0..draws {
+        crate::check_cancelled()?;
         let w = random_weights(net, rng);
-        let e = net.error(&w, &train.xs, &train.ys);
+        let e = net.error(&w, &train.xs, &train.ys)?;
         if best.as_ref().is_none_or(|(b, _)| e < *b) {
             best = Some((e, w));
         }
     }
-    best.map(|(_, w)| w).unwrap_or_default()
+    Ok(best.map(|(_, w)| w).unwrap_or_default())
 }
 
 /// Alternated simulated annealing and training (K1 = K2 = 4, K3 = 3) from `start`, or from the
@@ -778,11 +816,12 @@ fn annealed(
     train: &Split<'_>,
     rng: &mut Rng,
     groups: &[(usize, usize, bool)],
-) -> Vec<f64> {
+) -> Result<Vec<f64>, AlgoError> {
+    crate::check_cancelled()?;
     const K1: usize = 4;
     const K2: usize = 4;
     const K3: usize = 3;
-    let null = null_error(net, &train.ys);
+    let null = null_error(net, &train.ys)?;
     let ratio = |e: f64| if null > 0.0 { e / null } else { 0.0 };
     let stop = Stopping {
         max_epochs: AUTOMATIC_EPOCHS,
@@ -790,14 +829,15 @@ fn annealed(
     };
     let mut results: Vec<(f64, Vec<f64>)> = Vec::new();
     for round in 0..K3 {
+        crate::check_cancelled()?;
         let mut w = match (&start, round) {
             (Some(s), 0) => s.clone(),
-            _ => best_draw(net, train, rng, K2),
+            _ => best_draw(net, train, rng, K2)?,
         };
         let mut k1 = 0;
         loop {
-            w = scg(net, w, train, None, &stop, groups);
-            let e = net.error(&w, &train.xs, &train.ys);
+            w = scg(net, w, train, None, &stop, groups)?;
+            let e = net.error(&w, &train.xs, &train.ys)?;
             if ratio(e) <= 0.05 {
                 break;
             }
@@ -809,7 +849,7 @@ fn annealed(
             let mut best: Option<(f64, Vec<f64>)> = None;
             for _ in 0..K2 {
                 let candidate: Vec<f64> = w.iter().map(|v| v + rng.uniform(-a, a)).collect();
-                let ce = net.error(&candidate, &train.xs, &train.ys);
+                let ce = net.error(&candidate, &train.xs, &train.ys)?;
                 if best.as_ref().is_none_or(|(b, _)| ce < *b) {
                     best = Some((ce, candidate));
                 }
@@ -819,17 +859,17 @@ fn annealed(
                 _ => break,
             }
         }
-        let e = net.error(&w, &train.xs, &train.ys);
+        let e = net.error(&w, &train.xs, &train.ys)?;
         results.push((e, w));
         if ratio(e) <= 0.1 {
             break;
         }
     }
-    results
+    Ok(results
         .into_iter()
         .min_by(|a, b| a.0.total_cmp(&b.0))
         .map(|(_, w)| w)
-        .unwrap_or_default()
+        .unwrap_or_default())
 }
 
 /// The network without hidden unit `unit` of its single hidden layer.
@@ -888,7 +928,8 @@ fn select_architecture(
     records: &Split<'_>,
     rng: &mut Rng,
     groups: &[(usize, usize, bool)],
-) -> (Net, Vec<f64>) {
+) -> Result<(Net, Vec<f64>), AlgoError> {
+    crate::check_cancelled()?;
     // 70/30 split of the training sample (at most 1000 records).
     let mut train = Split {
         xs: Vec::new(),
@@ -927,31 +968,32 @@ fn select_architecture(
         sizes: vec![inputs, k0, outputs],
         softmax,
     };
-    let w0 = annealed(&net0, None, &train, rng, groups);
-    let null = null_error(&net0, &train.ys);
+    let w0 = annealed(&net0, None, &train, rng, groups)?;
+    let null = null_error(&net0, &train.ys)?;
     let ratio = |net: &Net, w: &[f64]| {
         if null > 0.0 {
-            net.error(w, &train.xs, &train.ys) / null
+            Ok::<_, AlgoError>(net.error(w, &train.xs, &train.ys)? / null)
         } else {
-            0.0
+            Ok(0.0)
         }
     };
     let test_error = |net: &Net, w: &[f64]| net.error(w, &test.xs, &test.ys);
-    let mut best = (test_error(&net0, &w0), net0.clone(), w0.clone());
+    let mut best = (test_error(&net0, &w0)?, net0.clone(), w0.clone());
     let mut tried: Vec<usize> = vec![k0];
     let mut down = k0 > min;
-    if !down && ratio(&net0, &w0) <= 0.01 {
-        return (best.1, best.2);
+    if !down && ratio(&net0, &w0)? <= 0.01 {
+        return Ok((best.1, best.2));
     }
     let (mut net, mut w, mut previous) = (net0.clone(), w0.clone(), best.0);
     loop {
+        crate::check_cancelled()?;
         let (next_net, start) = if down {
             // Remove the hidden unit whose removal leaves the smallest test error.
             let hidden = net.sizes[1];
             let mut weakest: Option<(f64, Net, Vec<f64>)> = None;
             for unit in 0..hidden {
                 let (smaller, sw) = without_unit(&net, &w, unit);
-                let e = test_error(&smaller, &sw);
+                let e = test_error(&smaller, &sw)?;
                 if weakest.as_ref().is_none_or(|(b, _, _)| e < *b) {
                     weakest = Some((e, smaller, sw));
                 }
@@ -968,8 +1010,8 @@ fn select_architecture(
             break;
         }
         tried.push(k);
-        let trained = annealed(&next_net, Some(start), &train, rng, groups);
-        let e = test_error(&next_net, &trained);
+        let trained = annealed(&next_net, Some(start), &train, rng, groups)?;
+        let e = test_error(&next_net, &trained)?;
         if e < best.0 || (e == best.0 && k < best.1.sizes[1]) {
             best = (e, next_net.clone(), trained.clone());
         }
@@ -977,7 +1019,7 @@ fn select_architecture(
             let keep_going = if down {
                 k > min.max(1)
             } else {
-                k < max && ratio(&next_net, &trained) > 0.01
+                k < max && ratio(&next_net, &trained)? > 0.01
             };
             previous = e;
             net = next_net;
@@ -987,21 +1029,22 @@ fn select_architecture(
             }
             break;
         }
-        if down && k + 1 == k0 && ratio(&net0, &w0) > 0.01 {
+        if down && k + 1 == k0 && ratio(&net0, &w0)? > 0.01 {
             // The first step down failed: search upward from the initial network.
             down = false;
             net = net0.clone();
             w = w0.clone();
-            previous = test_error(&net0, &w0);
+            previous = test_error(&net0, &w0)?;
             continue;
         }
         break;
     }
-    (best.1, best.2)
+    Ok((best.1, best.2))
 }
 
 /// Train a multilayer perceptron and write it as Modeler's `NeuralNetwork` PMML.
 pub fn train(data: &NeuralData<'_>, settings: &NeuralSettings) -> Result<Pmml, AlgoError> {
+    crate::check_cancelled()?;
     let encoded = encode(data, settings.missing)?;
     let inputs = encoded.x.first().map_or(0, Vec::len);
     let outputs = encoded.y.first().map_or(0, Vec::len);
@@ -1031,6 +1074,7 @@ pub fn train(data: &NeuralData<'_>, settings: &NeuralSettings) -> Result<Pmml, A
         ys: Vec::new(),
     };
     for (x, y) in encoded.x.iter().zip(&encoded.y) {
+        crate::check_cancelled()?;
         if settings.overfit_share > 0.0 && rng.unit() < settings.overfit_share {
             test.xs.push(x);
             test.ys.push(y);
@@ -1056,7 +1100,7 @@ pub fn train(data: &NeuralData<'_>, settings: &NeuralSettings) -> Result<Pmml, A
                     "the network has too many weights".into(),
                 ));
             }
-            let w = best_draw(&net, &train, &mut rng, 4);
+            let w = best_draw(&net, &train, &mut rng, 4)?;
             (net, w)
         }
         Hidden::Automatic { min, max } => select_architecture(
@@ -1067,13 +1111,13 @@ pub fn train(data: &NeuralData<'_>, settings: &NeuralSettings) -> Result<Pmml, A
             &train,
             &mut rng,
             &encoded.groups,
-        ),
+        )?,
     };
     let stop = Stopping {
         max_epochs: settings.max_epochs.unwrap_or(AUTOMATIC_EPOCHS),
         min_accuracy: settings.min_accuracy,
     };
-    let weights = scg(&net, start, &train, test.as_ref(), &stop, &encoded.groups);
+    let weights = scg(&net, start, &train, test.as_ref(), &stop, &encoded.groups)?;
     let layers = perceptron_layers(&net, &weights);
     Ok(pmml(
         data.table,
@@ -1094,6 +1138,7 @@ fn radial_basis(
     encoded: &Encoded,
     settings: &NeuralSettings,
 ) -> Result<Pmml, AlgoError> {
+    crate::check_cancelled()?;
     let unsupported = |what: &str| Err(AlgoError::Unsupported(format!("GAP: RBF {what}")));
     let units = match &settings.hidden {
         Hidden::Custom(layers) if layers.len() == 1 => layers[0],
@@ -1142,6 +1187,7 @@ fn radial_basis(
     let mut centers = Vec::with_capacity(clusters.len());
     let mut widths = Vec::with_capacity(clusters.len());
     for cluster in &clusters {
+        crate::check_cancelled()?;
         let m = cluster.n;
         let mut center = Vec::with_capacity(p);
         let mut variance = 0.0;
@@ -1196,6 +1242,7 @@ fn radial_basis(
     // Step 3: output weights by least squares on the normalized activations.
     let mut design = Vec::with_capacity(encoded.x.len());
     for x in &encoded.x {
+        crate::check_cancelled()?;
         let raw: Vec<f64> = centers
             .iter()
             .zip(&widths)
@@ -1523,13 +1570,14 @@ mod tests {
                 softmax,
                 ..net.clone()
             };
-            let (_, g) = net.error_gradient(&w, &x, &y);
+            let (_, g) = net.error_gradient(&w, &x, &y).unwrap();
             for (i, gi) in g.iter().enumerate() {
                 let mut up = w.clone();
                 up[i] += 1e-6;
                 let mut down = w.clone();
                 down[i] -= 1e-6;
-                let numeric = (net.error(&up, &x, &y) - net.error(&down, &x, &y)) / 2e-6;
+                let numeric =
+                    (net.error(&up, &x, &y).unwrap() - net.error(&down, &x, &y).unwrap()) / 2e-6;
                 assert!((numeric - gi).abs() < 1e-5, "weight {i}: {numeric} vs {gi}");
             }
         }

@@ -481,6 +481,7 @@
 "Stop the corresponding fitting loop at this limit." = "相应拟合循环达到此限制时停止。"
 "Stop the run" = "停止运行"
 "Stopped" = "已停止"
+"Stopped before this node ran." = "在运行到此节点前已停止。"
 "Storage from field formats" = "存储类型来自字段格式"
 "Stream canvas" = "流画布"
 "Stream setting" = "流设置"

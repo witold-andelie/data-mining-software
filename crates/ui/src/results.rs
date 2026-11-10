@@ -325,6 +325,7 @@ pub fn result_kind(result: &dms_exec::NodeResult) -> &'static str {
 /// The error without the node id prefix (the tab already names the node).
 pub fn error_text(error: &NodeError) -> String {
     match &error.kind {
+        ErrorKind::Cancelled => tr("Stopped before this node ran.").to_string(),
         ErrorKind::Unsupported(what) => tr_fmt(
             "This node type is not supported yet ({what}).",
             &[("what", what)],

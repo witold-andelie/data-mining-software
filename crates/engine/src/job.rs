@@ -1,4 +1,4 @@
-//! Toolkit-independent worker jobs. Cancelling detaches the result, never kills the thread.
+//! Toolkit-independent worker jobs, with cooperative stop and explicit result detachment.
 
 use std::collections::HashMap;
 use std::fmt;
@@ -28,6 +28,7 @@ const CANCELLED: u8 = 2;
 /// Handed to the work closure. The sender erases only the manager's output type; progress
 /// and final events still travel through the same FIFO channel.
 pub struct JobContext {
+    cancel: dms_exec::CancelToken,
     id: JobId,
     sender: Box<dyn Fn(Progress) + Send + Sync>,
     waker: SharedWaker,
@@ -47,7 +48,11 @@ impl JobContext {
     }
 
     pub fn is_cancelled(&self) -> bool {
-        self.state.load(Ordering::Acquire) == CANCELLED
+        self.cancel.is_cancelled()
+    }
+
+    pub fn cancel_token(&self) -> dms_exec::CancelToken {
+        self.cancel.clone()
     }
 }
 
@@ -60,6 +65,7 @@ pub enum JobEvent<T> {
 }
 
 struct Job {
+    cancel: dms_exec::CancelToken,
     state: Arc<AtomicU8>,
     progress: Option<Progress>,
 }
@@ -111,15 +117,18 @@ impl<T: Send + 'static> JobManager<T> {
             }
         };
         let state = Arc::new(AtomicU8::new(RUNNING));
+        let cancel = dms_exec::CancelToken::new();
         self.jobs.insert(
             id,
             Job {
+                cancel: cancel.clone(),
                 state: Arc::clone(&state),
                 progress: None,
             },
         );
         let progress_sender = self.sender.clone();
         let context = JobContext {
+            cancel,
             id,
             sender: Box::new(move |progress| {
                 let _ = progress_sender.send(JobEvent::Progress { job: id, progress });
@@ -159,6 +168,20 @@ impl<T: Send + 'static> JobManager<T> {
         id
     }
 
+    /// Ask the worker to stop, retaining its output and final event.
+    pub fn request_cancel(&mut self, job: JobId) -> bool {
+        let Some(entry) = self.jobs.get(&job) else {
+            return false;
+        };
+        if entry.state.load(Ordering::Acquire) != RUNNING {
+            return false;
+        }
+        entry.cancel.cancel();
+        wake(&self.waker);
+        true
+    }
+
+    /// Detach immediately (document closed, or cooperative stop timed out).
     pub fn cancel(&mut self, job: JobId) -> bool {
         let Some(entry) = self.jobs.get(&job) else {
             return false;
@@ -170,6 +193,7 @@ impl<T: Send + 'static> JobManager<T> {
         {
             return false;
         }
+        entry.cancel.cancel();
         let _ = self.sender.send(JobEvent::Cancelled { job });
         wake(&self.waker);
         true

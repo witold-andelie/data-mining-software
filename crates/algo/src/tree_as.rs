@@ -10,6 +10,7 @@ use dms_pmml::{DataType, DerivedField, DiscretizeBin, Expr, OpType, Pmml};
 use dms_types::{DataModel, Measurement, Table, Value, ValueSpec};
 
 pub fn train(dataset: &Dataset<'_>, settings: &chaid::ChaidSettings) -> Result<Pmml, AlgoError> {
+    crate::check_cancelled()?;
     if *settings
         != (chaid::ChaidSettings {
             max_depth: settings.max_depth,
@@ -38,6 +39,7 @@ pub fn train(dataset: &Dataset<'_>, settings: &chaid::ChaidSettings) -> Result<P
     }
     let mut seen = std::collections::HashSet::new();
     for &position in dataset.inputs {
+        crate::check_cancelled()?;
         if position == dataset.target || !seen.insert(position) {
             return Err(AlgoError::Settings(
                 "Tree-AS inputs must be distinct and exclude the target".into(),
@@ -48,6 +50,7 @@ pub fn train(dataset: &Dataset<'_>, settings: &chaid::ChaidSettings) -> Result<P
     let mut rows = dataset.table.rows().to_vec();
     let mut transformations = Vec::new();
     for field in &mut fields {
+        crate::check_cancelled()?;
         if let ValueSpec::Flag {
             true_value,
             false_value,
@@ -57,6 +60,7 @@ pub fn train(dataset: &Dataset<'_>, settings: &chaid::ChaidSettings) -> Result<P
         }
     }
     for &position in std::iter::once(&dataset.target).chain(dataset.inputs) {
+        crate::check_cancelled()?;
         let field = fields
             .get(position)
             .ok_or_else(|| AlgoError::Settings("Tree-AS field out of range".into()))?;
@@ -163,6 +167,7 @@ pub fn train(dataset: &Dataset<'_>, settings: &chaid::ChaidSettings) -> Result<P
     )?;
     pmml.data_dictionary = crate::data_dictionary(dataset);
     for field in &mut pmml.data_dictionary {
+        crate::check_cancelled()?;
         if let Some(true_value) = &field.flag_true_value
             && let Some(position) = field.values.iter().position(|v| v == true_value)
         {

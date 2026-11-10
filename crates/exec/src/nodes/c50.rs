@@ -195,62 +195,63 @@ impl Operator for Build {
         &self,
         inputs: &[Arc<Table>],
         _: Option<Arc<Pmml>>,
-        _: &ExecContext,
+        context: &ExecContext,
     ) -> Result<NodeOutput, OperatorError> {
-        let input = inputs
-            .first()
-            .ok_or_else(|| OperatorError::Inputs("C5.0 needs one input".into()))?;
-        let fields = input.model().fields();
-        if fields.iter().any(|f| f.role == Role::Split) {
-            return Err(unsupported("split-field training"));
-        }
-        if fields.iter().any(|f| f.role == Role::Frequency) {
-            return Err(unsupported("Type frequency role"));
-        }
-        let target = if let Some(name) = &self.target {
-            input
-                .model()
-                .position(name)
-                .ok_or_else(|| OperatorError::Data(format!("C5.0 missing target {name}")))?
-        } else {
-            let targets: Vec<usize> = fields
-                .iter()
-                .enumerate()
-                .filter(|(_, f)| matches!(f.role, Role::Target | Role::Both))
-                .map(|(i, _)| i)
-                .collect();
-            let [target] = targets.as_slice() else {
-                return Err(OperatorError::Settings(
-                    "C5.0 needs exactly one target".into(),
-                ));
-            };
-            *target
-        };
-        let active = if let Some(names) = &self.inputs {
-            if names.is_empty() {
-                return Err(OperatorError::Settings(
-                    "C5.0 custom inputs are empty".into(),
-                ));
+        dms_algo::with_cancel(&context.cancel, || {
+            let input = inputs
+                .first()
+                .ok_or_else(|| OperatorError::Inputs("C5.0 needs one input".into()))?;
+            let fields = input.model().fields();
+            if fields.iter().any(|f| f.role == Role::Split) {
+                return Err(unsupported("split-field training"));
             }
-            names
-                .iter()
-                .map(|n| {
-                    input
-                        .model()
-                        .position(n)
-                        .ok_or_else(|| OperatorError::Data(format!("C5.0 missing input {n}")))
-                })
-                .collect::<Result<Vec<_>, _>>()?
-        } else {
-            fields
-                .iter()
-                .enumerate()
-                .filter(|(i, f)| *i != target && matches!(f.role, Role::Input | Role::Both))
-                .map(|(i, _)| i)
-                .collect()
-        };
-        let weight_field =
-            self.weight
+            if fields.iter().any(|f| f.role == Role::Frequency) {
+                return Err(unsupported("Type frequency role"));
+            }
+            let target = if let Some(name) = &self.target {
+                input
+                    .model()
+                    .position(name)
+                    .ok_or_else(|| OperatorError::Data(format!("C5.0 missing target {name}")))?
+            } else {
+                let targets: Vec<usize> = fields
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, f)| matches!(f.role, Role::Target | Role::Both))
+                    .map(|(i, _)| i)
+                    .collect();
+                let [target] = targets.as_slice() else {
+                    return Err(OperatorError::Settings(
+                        "C5.0 needs exactly one target".into(),
+                    ));
+                };
+                *target
+            };
+            let active = if let Some(names) = &self.inputs {
+                if names.is_empty() {
+                    return Err(OperatorError::Settings(
+                        "C5.0 custom inputs are empty".into(),
+                    ));
+                }
+                names
+                    .iter()
+                    .map(|n| {
+                        input
+                            .model()
+                            .position(n)
+                            .ok_or_else(|| OperatorError::Data(format!("C5.0 missing input {n}")))
+                    })
+                    .collect::<Result<Vec<_>, _>>()?
+            } else {
+                fields
+                    .iter()
+                    .enumerate()
+                    .filter(|(i, f)| *i != target && matches!(f.role, Role::Input | Role::Both))
+                    .map(|(i, _)| i)
+                    .collect()
+            };
+            let weight_field = self
+                .weight
                 .as_ref()
                 .map(|name| {
                     input.model().position(name).ok_or_else(|| {
@@ -258,26 +259,27 @@ impl Operator for Build {
                     })
                 })
                 .transpose()?;
-        let active: Vec<usize> = active
-            .into_iter()
-            .filter(|&i| Some(i) != weight_field)
-            .collect();
-        let settings = C50Settings {
-            weight_field,
-            ..self.settings.clone()
-        };
-        let table = training_partition(input, self.use_partition)?;
-        let pmml = c50::train(
-            &Dataset {
-                table: &table,
-                target,
-                inputs: &active,
-                frequency: None,
-            },
-            &settings,
-        )
-        .map_err(|e| OperatorError::Data(format!("C5.0: {e}")))?;
-        Ok(NodeOutput::Model(Arc::new(pmml)))
+            let active: Vec<usize> = active
+                .into_iter()
+                .filter(|&i| Some(i) != weight_field)
+                .collect();
+            let settings = C50Settings {
+                weight_field,
+                ..self.settings.clone()
+            };
+            let table = training_partition(input, self.use_partition)?;
+            let pmml = c50::train(
+                &Dataset {
+                    table: &table,
+                    target,
+                    inputs: &active,
+                    frequency: None,
+                },
+                &settings,
+            )
+            .map_err(|e| OperatorError::Data(format!("C5.0: {e}")))?;
+            Ok(NodeOutput::Model(Arc::new(pmml)))
+        })
     }
 }
 

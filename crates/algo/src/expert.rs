@@ -31,6 +31,7 @@ enum OrderMethod {
 
 /// `arima::expert_arima`: the selected specification.
 pub fn expert_arima(y: &[f64], period: usize) -> Result<ArimaSpec, ArimaError> {
+    crate::check_cancelled()?;
     select(y, period)
 }
 
@@ -124,6 +125,9 @@ pub(crate) fn tf_noise_residuals(
         let mut ld = 0.0;
         let mut residuals = Vec::with_capacity(w.len());
         for (row, variance) in kal.v.iter().zip(&kal.f) {
+            if crate::check_cancelled().is_err() {
+                return None;
+            }
             if *variance <= 0.0 || !variance.is_finite() {
                 return None;
             }
@@ -134,6 +138,9 @@ pub(crate) fn tf_noise_residuals(
     } else {
         let mut residuals = vec![0.0; w.len()];
         for t in 0..w.len() {
+            if crate::check_cancelled().is_err() {
+                return None;
+            }
             let mut value = 0.0;
             for (lag, coef) in ar.iter().enumerate() {
                 value += coef
@@ -428,6 +435,9 @@ fn lyapunov(t: &[Vec<f64>], rr: &[Vec<f64>]) -> Option<Vec<Vec<f64>>> {
     let mut p = rr.to_vec();
     let mut a = t.to_vec();
     for _ in 0..64 {
+        if crate::check_cancelled().is_err() {
+            return None;
+        }
         let apa = mat_mul(&mat_mul(&a, &p), &transpose(&a));
         let max_p = p.iter().flatten().fold(0.0_f64, |m, v| m.max(v.abs()));
         let max_apa = apa.iter().flatten().fold(0.0_f64, |m, v| m.max(v.abs()));
@@ -526,6 +536,9 @@ fn kalman(ar: &[f64], ma: &[f64], w: &[f64], constant: bool) -> Option<Kalman> {
         .collect();
     let mut t = vec![vec![0.0; r]; r];
     for i in 0..r {
+        if crate::check_cancelled().is_err() {
+            return None;
+        }
         if let Some(c) = t.get_mut(i).and_then(|row| row.get_mut(0)) {
             *c = tcol.get(i).copied().unwrap_or(0.0);
         }
@@ -537,6 +550,9 @@ fn kalman(ar: &[f64], ma: &[f64], w: &[f64], constant: bool) -> Option<Kalman> {
     }
     let mut rr = vec![vec![0.0; r]; r];
     for i in 0..r {
+        if crate::check_cancelled().is_err() {
+            return None;
+        }
         for j in 0..r {
             if let Some(c) = rr.get_mut(i).and_then(|row| row.get_mut(j)) {
                 *c = rv.get(i).copied().unwrap_or(0.0) * rv.get(j).copied().unwrap_or(0.0);
@@ -549,6 +565,9 @@ fn kalman(ar: &[f64], ma: &[f64], w: &[f64], constant: bool) -> Option<Kalman> {
     let mut v = vec![vec![0.0; cols]; w.len()];
     let mut f = vec![0.0; w.len()];
     for ti in 0..w.len() {
+        if crate::check_cancelled().is_err() {
+            return None;
+        }
         let fval = state_p
             .first()
             .and_then(|row| row.first())
@@ -661,6 +680,9 @@ struct NllOut {
 /// profiled out by GLS. Returns the penalty value and `None` when the parameters are
 /// inadmissible or the filter fails.
 fn arima_nll(x: &[f64], spec: &Spec, y: &[f64]) -> (f64, Option<NllOut>) {
+    if crate::check_cancelled().is_err() {
+        return (f64::INFINITY, None);
+    }
     let (ar, ma) = polys(spec, x);
     let penalty = 1e8 + 1e4 * x.iter().map(|v| v.abs()).sum::<f64>();
     if !admissible(&ar) || !admissible(&ma) {
@@ -677,6 +699,9 @@ fn arima_nll(x: &[f64], spec: &Spec, y: &[f64]) -> (f64, Option<NllOut>) {
     let mut e_std = Vec::with_capacity(n);
     let mut log_det = 0.0;
     for (t, fval) in kal.f.iter().enumerate() {
+        if crate::check_cancelled().is_err() {
+            return (f64::INFINITY, None);
+        }
         if !fval.is_finite() || *fval <= 0.0 {
             return (1e9, None);
         }
@@ -688,6 +713,9 @@ fn arima_nll(x: &[f64], spec: &Spec, y: &[f64]) -> (f64, Option<NllOut>) {
     let (mu, s) = if spec.constant {
         let mut e_one = Vec::with_capacity(n);
         for (t, fval) in kal.f.iter().enumerate() {
+            if crate::check_cancelled().is_err() {
+                return (f64::INFINITY, None);
+            }
             let root = fval.sqrt();
             e_one.push(kal.v.get(t).and_then(|r| r.get(1)).copied().unwrap_or(0.0) / root);
         }
@@ -702,6 +730,9 @@ fn arima_nll(x: &[f64], spec: &Spec, y: &[f64]) -> (f64, Option<NllOut>) {
             .map(|(a, b)| (a - mu * b) * (a - mu * b))
             .sum();
         for (slot, one) in e_std.iter_mut().zip(&e_one) {
+            if crate::check_cancelled().is_err() {
+                return (f64::INFINITY, None);
+            }
             *slot -= mu * one;
         }
         (mu, s)
@@ -802,6 +833,9 @@ fn inverse_diag(a: &[Vec<f64>]) -> Option<Vec<f64>> {
     let n = a.len();
     let mut out = Vec::with_capacity(n);
     for i in 0..n {
+        if crate::check_cancelled().is_err() {
+            return None;
+        }
         let mut rhs = vec![0.0; n];
         if let Some(v) = rhs.get_mut(i) {
             *v = 1.0;
@@ -990,6 +1024,9 @@ fn ml_local(y: &[f64], spec: &Spec, x_start: &[f64]) -> Option<Vec<f64>> {
     // Shrink the start toward zero until admissible (up to 60 shrinks of 0.95).
     let mut x = x_start.to_vec();
     for _ in 0..60 {
+        if crate::check_cancelled().is_err() {
+            return None;
+        }
         if arima_nll(&x, spec, y).1.is_some() {
             break;
         }
@@ -1002,6 +1039,9 @@ fn ml_local(y: &[f64], spec: &Spec, x_start: &[f64]) -> Option<Vec<f64>> {
     let mut f = obj(&x);
     let mut g = gradient(&obj, &x);
     for _ in 0..300 {
+        if crate::check_cancelled().is_err() {
+            return None;
+        }
         let mut gp = g.clone();
         for (i, (lo, hi)) in bounds.iter().enumerate() {
             let xi = x.get(i).copied().unwrap_or(0.0);
@@ -1084,6 +1124,9 @@ fn ml_marquardt(y: &[f64], spec: &Spec, x_start: &[f64]) -> Option<Vec<f64>> {
     }
     let mut x = x_start.to_vec();
     for _ in 0..60 {
+        if crate::check_cancelled().is_err() {
+            return None;
+        }
         if arima_nll(&x, spec, y).1.is_some() {
             break;
         }
@@ -1096,6 +1139,9 @@ fn ml_marquardt(y: &[f64], spec: &Spec, x_start: &[f64]) -> Option<Vec<f64>> {
     let mut val: f64 = r.iter().map(|v| v * v).sum();
     let mut lam = 1e-3_f64;
     for _ in 0..200 {
+        if crate::check_cancelled().is_err() {
+            return None;
+        }
         let mut jac = Vec::with_capacity(kc);
         for j in 0..kc {
             let xj = x.get(j).copied().unwrap_or(0.0);
@@ -1218,6 +1264,9 @@ fn ml_t(
     if let Some(base) = weighted(&b) {
         let mut jac = Vec::with_capacity(b.len());
         for (i, bi) in b.iter().enumerate() {
+            if crate::check_cancelled().is_err() {
+                return None;
+            }
             let delta = if *bi > 0.0 { -1e-4 } else { 1e-4 };
             let mut moved = b.clone();
             if let Some(v) = moved.get_mut(i) {
@@ -1240,6 +1289,9 @@ fn ml_t(
             && let Some(diag) = inverse_diag(&mat_t_j(&jac))
         {
             for ((slot, bi), di) in tv.iter_mut().zip(&b).zip(&diag) {
+                if crate::check_cancelled().is_err() {
+                    return None;
+                }
                 *slot = bi / (sigma2 * di).max(1e-300).sqrt();
             }
         }
@@ -1265,6 +1317,9 @@ fn ml_t(
             let mut malags = model.ma.clone();
             malags.sort_unstable();
             for (idx, lag) in malags.iter().enumerate() {
+                if crate::check_cancelled().is_err() {
+                    return None;
+                }
                 let v = x.get(na.saturating_add(idx)).copied().unwrap_or(0.0);
                 if let Some(slot) = poly.get_mut(*lag) {
                     *slot = v;
@@ -1272,6 +1327,9 @@ fn ml_t(
             }
             if at_boundary(&poly) {
                 for i in na..na.saturating_add(nm) {
+                    if crate::check_cancelled().is_err() {
+                        return None;
+                    }
                     if let Some(v) = tv.get_mut(c.saturating_add(i)) {
                         *v = 0.0;
                     }
@@ -1986,6 +2044,7 @@ fn choose_orders(prep: &Prepared) -> Choice {
 }
 
 fn select(y: &[f64], period: usize) -> Result<ArimaSpec, ArimaError> {
+    crate::check_cancelled()?;
     let prep = prepare(y, period)?;
     let choice = choose_orders(&prep);
     let seasonal = prep.s > 1;
@@ -2010,6 +2069,7 @@ fn select(y: &[f64], period: usize) -> Result<ArimaSpec, ArimaError> {
     let add = diagnose(&prep.transformed, &model, prep.d, prep.dd, prep.s);
     if !add.is_empty() {
         for (kind, lag) in &add {
+            crate::check_cancelled()?;
             model.add(*kind, *lag);
         }
         prune_cls(&prep.w, &mut model, prep.s);

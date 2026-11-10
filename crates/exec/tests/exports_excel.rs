@@ -105,6 +105,7 @@ fn check_case(root: &Path, case_dir: &Path) -> Result<String, String> {
     }
     std::fs::create_dir_all(&export_dir).map_err(|error| error.to_string())?;
     let context = ExecContext {
+        cancel: Default::default(),
         files: FileResolver { data_dirs },
         stream_properties: stream.properties.clone().map(Arc::new),
         attachments: Arc::new(attachments),

@@ -149,11 +149,13 @@ pub struct GleFit {
 
 /// Train a Phase I GLE model.
 pub fn train(dataset: &Dataset<'_>, settings: &GleSettings) -> Result<Pmml, AlgoError> {
+    crate::check_cancelled()?;
     Ok(fit(dataset, settings)?.pmml)
 }
 
 /// Fit a Phase I GLE model and keep the coefficients for tests and predictions.
 pub fn fit(dataset: &Dataset<'_>, settings: &GleSettings) -> Result<GleFit, AlgoError> {
+    crate::check_cancelled()?;
     if dataset.frequency.is_some() {
         return Err(AlgoError::Unsupported("GAP: GLE frequency weights".into()));
     }
@@ -284,6 +286,7 @@ impl Data {
         }
         let mut seen = std::collections::HashSet::new();
         for &position in dataset.inputs {
+            crate::check_cancelled()?;
             if fields.get(position).is_none()
                 || position == dataset.target
                 || !seen.insert(position)
@@ -349,6 +352,7 @@ impl Data {
         let mut factors = Vec::new();
         let mut covariates = Vec::new();
         for &position in dataset.inputs {
+            crate::check_cancelled()?;
             let input = fields
                 .get(position)
                 .ok_or_else(|| AlgoError::Data("GLE input field is out of range".into()))?;
@@ -405,6 +409,7 @@ impl Data {
         let mut y = Vec::new();
         let mut rows = Vec::new();
         for row in table.rows() {
+            crate::check_cancelled()?;
             let Some(target_value) = row.get(dataset.target).filter(|v| !target.is_missing(v))
             else {
                 continue;
@@ -498,6 +503,9 @@ fn slot<T>(values: &mut [T], index: usize) -> Result<&mut T, AlgoError> {
 fn design_row(row: &[Value], fields: &[dms_types::Field], columns: &[Column]) -> Option<Vec<f64>> {
     let mut x = Vec::with_capacity(columns.len());
     for column in columns {
+        if crate::check_cancelled().is_err() {
+            return None;
+        }
         match &column.kind {
             ColumnKind::Intercept => x.push(1.0),
             ColumnKind::Covariate { position, .. } => {
@@ -545,6 +553,7 @@ impl Work {
         let mut scale = vec![1.0; p];
         let nf = n as f64;
         for (j, column) in data.columns.iter().enumerate() {
+            crate::check_cancelled()?;
             match column.kind {
                 ColumnKind::Intercept | ColumnKind::Indicator { .. } => {}
                 ColumnKind::Covariate { .. } => {
@@ -575,6 +584,7 @@ impl Work {
         }
         let mut x = Vec::with_capacity(n);
         for row in &data.rows {
+            crate::check_cancelled()?;
             let mut xt = Vec::with_capacity(p);
             for j in 0..p {
                 let v = at(row, j)?;
@@ -637,6 +647,7 @@ fn estimate(
     let mut iterations = 0usize;
     let mut fisher_step = k_fisher >= 1;
     while iterations < settings.max_iterations {
+        crate::check_cancelled()?;
         iterations = iterations.saturating_add(1);
         let Some(delta) = sweep_solve(&xtwx, &score, p, settings.singularity) else {
             break;
@@ -691,6 +702,7 @@ fn initial_beta(work: &Work, settings: &GleSettings) -> Result<Vec<f64>, AlgoErr
     ];
     let mut xtwz = vec![0.0; p];
     for i in 0..n {
+        crate::check_cancelled()?;
         let y = at(&work.y, i)?;
         let x = work
             .x
@@ -779,6 +791,9 @@ fn step_halve(
     let mut xi = 1.0;
     let mut undefined_full = None;
     for j in 0..=max_halves {
+        if crate::check_cancelled().is_err() {
+            return None;
+        }
         let mut trial = Vec::with_capacity(beta.len());
         for (b, d) in beta.iter().zip(delta) {
             trial.push(b + xi * d);
@@ -866,6 +881,9 @@ fn derivatives(work: &Work, beta: &[f64], fisher: bool) -> Option<(f64, Vec<f64>
     let mut xtwx = vec![0.0; len];
     let mut undefined = false;
     for i in 0..n {
+        if crate::check_cancelled().is_err() {
+            return None;
+        }
         let y = *work.y.get(i)?;
         let x = work.x.get(i)?;
         let eta = dot(x, beta)?;
@@ -926,6 +944,9 @@ fn derivatives(work: &Work, beta: &[f64], fisher: bool) -> Option<(f64, Vec<f64>
 fn log_likelihood(work: &Work, beta: &[f64]) -> Option<f64> {
     let mut loglik = 0.0;
     for (y, x) in work.y.iter().zip(&work.x) {
+        if crate::check_cancelled().is_err() {
+            return None;
+        }
         let eta = dot(x, beta)?;
         let raw = mu_of(eta, work.link)?;
         if excluded(raw, work) {
@@ -950,6 +971,9 @@ fn dot(x: &[f64], beta: &[f64]) -> Option<f64> {
     }
     let mut s = 0.0;
     for (a, b) in x.iter().zip(beta) {
+        if crate::check_cancelled().is_err() {
+            return None;
+        }
         s += a * b;
     }
     if s.is_finite() { Some(s) } else { None }
@@ -1200,6 +1224,9 @@ fn sweep_solve(matrix: &[f64], rhs: &[f64], n: usize, tol: f64) -> Option<Vec<f6
         .collect();
     let mut swept = vec![false; n];
     for k in 0..n {
+        if crate::check_cancelled().is_err() {
+            return None;
+        }
         let pivot = *a.get(k.saturating_mul(n).saturating_add(k))?;
         let orig = original.get(k).copied().unwrap_or(0.0);
         if !pivot.is_finite() || pivot <= tol * orig.abs() || pivot <= 0.0 {
@@ -1227,6 +1254,9 @@ fn sweep_solve(matrix: &[f64], rhs: &[f64], n: usize, tol: f64) -> Option<Vec<f6
     }
     let mut x = vec![0.0; n];
     for i in (0..n).filter(|&i| swept.get(i) == Some(&true)) {
+        if crate::check_cancelled().is_err() {
+            return None;
+        }
         let mut s = 0.0;
         for j in (0..n).filter(|&j| swept.get(j) == Some(&true)) {
             s += -a.get(i.saturating_mul(n).saturating_add(j))? * rhs.get(j)?;
@@ -1284,6 +1314,7 @@ fn to_pmml(
         schema.push(field);
     }
     for &position in dataset.inputs {
+        crate::check_cancelled()?;
         if let Some(field) = data_field(table, position) {
             dictionary.push(field);
         }
@@ -1298,6 +1329,7 @@ fn to_pmml(
         .collect();
     let mut pp_matrix = Vec::new();
     for column in &data.columns {
+        crate::check_cancelled()?;
         match &column.kind {
             ColumnKind::Covariate { name, .. } => pp_matrix.push(PPCell {
                 value: "1".into(),
@@ -1315,6 +1347,7 @@ fn to_pmml(
     let classification = settings.distribution == Distribution::Binomial;
     let mut param_matrix = Vec::new();
     for (column, value) in data.columns.iter().zip(beta) {
+        crate::check_cancelled()?;
         param_matrix.push(PCell {
             target_category: if classification {
                 data.success.clone()

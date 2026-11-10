@@ -62,6 +62,7 @@ fn frequent(
         .collect();
     let mut all = level.clone();
     for _ in 2..=max_size {
+        crate::check_cancelled()?;
         let mut next = Vec::new();
         for (mask, _) in &level {
             let highest = 63 - mask.leading_zeros() as usize;
@@ -115,6 +116,7 @@ fn antecedents(items: &[usize]) -> Vec<Vec<usize>> {
 }
 
 pub fn train(table: &Table, settings: &CarmaSettings) -> Result<Pmml, AlgoError> {
+    crate::check_cancelled()?;
     if !(1..=32).contains(&settings.max_size) {
         return Err(AlgoError::Unsupported(format!(
             "CARMA maxLengthSet {} (GAP: 1 to 32)",
@@ -159,6 +161,7 @@ pub fn train(table: &Table, settings: &CarmaSettings) -> Result<Pmml, AlgoError>
     })?;
     let mut rules = Vec::new();
     for (mask, union_count) in unions.iter().filter(|(m, _)| m.count_ones() >= 2) {
+        crate::check_cancelled()?;
         let items: Vec<usize> = (0..names.len()).filter(|i| mask & (1 << i) != 0).collect();
         for antecedent in antecedents(&items) {
             let ant_mask = antecedent.iter().fold(0u64, |m, i| m | (1 << i));
@@ -219,6 +222,7 @@ pub fn train(table: &Table, settings: &CarmaSettings) -> Result<Pmml, AlgoError>
     // CARMA's fields carry no direction (`carma_default`), unlike Apriori's `BOTH`.
     if let dms_pmml::Model::Association(model) = &mut pmml.model {
         for field in &mut model.header.mining_schema {
+            crate::check_cancelled()?;
             field.direction = None;
         }
         let support: std::collections::HashMap<String, f64> = model
@@ -227,6 +231,7 @@ pub fn train(table: &Table, settings: &CarmaSettings) -> Result<Pmml, AlgoError>
             .map(|itemset| (itemset.id.clone(), itemset.support))
             .collect();
         for rule in &mut model.rules {
+            crate::check_cancelled()?;
             rule.confidence = fifteen_digits(rule.confidence);
             if let Some(consequent) = support.get(&rule.consequent).filter(|s| **s > 0.0) {
                 rule.lift = rule.confidence / consequent;

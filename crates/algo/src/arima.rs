@@ -87,6 +87,7 @@ pub struct SeriesScore {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ArimaError {
+    Cancelled,
     Data(String),
     Settings(String),
 }
@@ -94,6 +95,7 @@ pub enum ArimaError {
 impl fmt::Display for ArimaError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            ArimaError::Cancelled => f.write_str("cancelled"),
             ArimaError::Data(message) => f.write_str(message),
             ArimaError::Settings(message) => f.write_str(message),
         }
@@ -109,6 +111,7 @@ pub fn score(
     horizon: usize,
     conf_percent: f64,
 ) -> Result<SeriesScore, ArimaError> {
+    crate::check_cancelled()?;
     score_with_signal(spec, y, horizon, conf_percent, &[])
 }
 
@@ -211,6 +214,7 @@ fn score_signal(
 
     let mut fitted = vec![None; z.len()];
     for (t, slot) in fitted.iter_mut().enumerate().skip(degree) {
+        crate::check_cancelled()?;
         let w_index = t.saturating_sub(degree);
         let what = *hats.get(w_index).ok_or_else(|| {
             ArimaError::Data("Time Series innovations is short of the history".into())
@@ -241,6 +245,7 @@ fn score_signal(
     let mut forecasts = Vec::with_capacity(horizon);
     let mut extended = z.clone();
     for (what, var_factor) in w_forecasts.iter().zip(&var_factors) {
+        crate::check_cancelled()?;
         let zhat = invert_difference(
             &diff,
             &extended,
@@ -278,6 +283,7 @@ impl ArimaSpec {
     fn difference_polynomial(&self) -> Result<Vec<f64>, ArimaError> {
         let mut poly = vec![1.0];
         for _ in 0..self.d {
+            crate::check_cancelled()?;
             poly = polynomial_product(&poly, &[1.0, -1.0]);
         }
         if self.seasonal_d > 0 {
@@ -289,6 +295,7 @@ impl ArimaSpec {
                 *v = -1.0;
             }
             for _ in 0..self.seasonal_d {
+                crate::check_cancelled()?;
                 poly = polynomial_product(&poly, &seasonal);
             }
         }
@@ -377,6 +384,7 @@ fn expand_coefficients(
         *v = 1.0;
     }
     for (i, c) in season.iter().enumerate() {
+        crate::check_cancelled()?;
         if let Some(v) = sp.get_mut((i + 1) * period) {
             *v = c * sign;
         }
@@ -500,6 +508,9 @@ fn ols_ar_variance(z: &[f64], lags: &[usize]) -> Option<f64> {
     let mut xtx = vec![vec![0.0; k]; k];
     let mut xtz = vec![0.0; k];
     for (t, target) in z.iter().enumerate().skip(p) {
+        if crate::check_cancelled().is_err() {
+            return None;
+        }
         let x = design(t);
         for (a, xa) in x.iter().enumerate() {
             xtz[a] += xa * target;
@@ -659,6 +670,9 @@ fn ols_se(y: &[f64], cols: &[Vec<f64>]) -> Option<(Vec<f64>, Vec<f64>)> {
     let mut xtx = vec![vec![0.0; k]; k];
     let mut xty = vec![0.0; k];
     for (t, target) in y.iter().enumerate() {
+        if crate::check_cancelled().is_err() {
+            return None;
+        }
         let x = row(t);
         for (a, xa) in x.iter().enumerate() {
             xty[a] += xa * target;
@@ -679,6 +693,9 @@ fn ols_se(y: &[f64], cols: &[Vec<f64>]) -> Option<(Vec<f64>, Vec<f64>)> {
     let sigma2 = sse / (n - k) as f64;
     let mut se = Vec::with_capacity(k);
     for i in 0..k {
+        if crate::check_cancelled().is_err() {
+            return None;
+        }
         let unit: Vec<f64> = (0..k).map(|j| if i == j { 1.0 } else { 0.0 }).collect();
         let column = crate::time_series::solve(xtx.clone(), unit).ok()?;
         se.push((sigma2 * column.get(i).copied()?).max(0.0).sqrt());
@@ -926,6 +943,7 @@ pub(crate) fn difference(z: &[f64], d: usize) -> Vec<f64> {
 fn invert_difference(diff: &[f64], z: &[f64], t: usize, w: f64) -> Result<f64, ArimaError> {
     let mut value = w;
     for (lag, coef) in diff.iter().enumerate().skip(1) {
+        crate::check_cancelled()?;
         let at = t
             .checked_sub(lag)
             .ok_or_else(|| ArimaError::Data("insufficient differencing history".into()))?;
@@ -995,6 +1013,7 @@ fn arma_psi(phi: &[f64], theta: &[f64], n: usize) -> Result<Vec<f64>, ArimaError
     let mut psi = Vec::with_capacity(n);
     psi.push(1.0);
     for j in 1..n {
+        crate::check_cancelled()?;
         let mut v = theta.get(j - 1).copied().unwrap_or(0.0);
         for i in 0..phi.len().min(j) {
             let term =
@@ -1022,6 +1041,7 @@ fn arma_gamma(phi: &[f64], theta: &[f64], lags: usize) -> Result<Vec<f64>, Arima
         let mut gamma = Vec::with_capacity(lags);
         let mut g = p * g0 + t;
         for k in 0..lags {
+            crate::check_cancelled()?;
             gamma.push(if k == 0 { g0 } else { g });
             if k > 0 {
                 g *= p;
@@ -1045,6 +1065,7 @@ fn arma_gamma(phi: &[f64], theta: &[f64], lags: usize) -> Result<Vec<f64>, Arima
     let mut matrix = vec![vec![0.0; p + 1]; p + 1];
     let mut rhs = Vec::with_capacity(p + 1);
     for (k, row) in matrix.iter_mut().enumerate() {
+        crate::check_cancelled()?;
         if let Some(v) = row.get_mut(k) {
             *v = 1.0;
         }
@@ -1061,6 +1082,7 @@ fn arma_gamma(phi: &[f64], theta: &[f64], lags: usize) -> Result<Vec<f64>, Arima
         return Err(ArimaError::Settings("nonstationary covariance".into()));
     }
     for k in gamma.len()..lags {
+        crate::check_cancelled()?;
         let g = forcing(k)
             + phi
                 .iter()
@@ -1108,6 +1130,7 @@ pub fn likelihood_residuals(spec: &ArimaSpec, y: &[f64]) -> Result<(Vec<f64>, f6
     let mut residuals = Vec::with_capacity(w.len());
     let mut log_det = 0.0;
     for ((value, hat), variance) in w.iter().zip(hats).zip(variances) {
+        crate::check_cancelled()?;
         if variance <= 0.0 || !variance.is_finite() {
             return Err(ArimaError::Data(
                 "ARIMA innovation variance is not positive".into(),
@@ -1129,6 +1152,7 @@ fn toeplitz_likelihood(w: &[f64], gamma: &[f64]) -> Result<(Vec<f64>, f64), Arim
     let mut residuals = Vec::with_capacity(w.len());
     let mut log_det = 0.0;
     for (t, value) in w.iter().enumerate() {
+        crate::check_cancelled()?;
         if variance <= 0.0 || !variance.is_finite() {
             return Err(ArimaError::Data(
                 "ARIMA innovation variance is not positive".into(),
@@ -1201,6 +1225,7 @@ fn innovations_with_forecasts(
     let mut hats = vec![0.0; n.saturating_add(1)];
     let mut thetas: Vec<Vec<f64>> = Vec::with_capacity(total);
     for n_obs in 1..=total {
+        crate::check_cancelled()?;
         let mut th = vec![0.0; n_obs.saturating_add(1)];
         if let Some(slot) = th.first_mut() {
             *slot = 1.0;
@@ -1254,6 +1279,7 @@ fn innovations_with_forecasts(
 
     let mut w_forecasts = Vec::with_capacity(horizon);
     for a in 0..horizon {
+        crate::check_cancelled()?;
         let m = n.saturating_add(a);
         let mut pred = 0.0;
         for idx in 0..n {
@@ -1277,6 +1303,7 @@ fn innovations_with_forecasts(
     let mut ar_poly = Vec::with_capacity(ar.len().saturating_add(1));
     ar_poly.push(1.0);
     for coef in ar {
+        crate::check_cancelled()?;
         ar_poly.push(-coef);
     }
     let ar_diff = polynomial_product(&ar_poly, diff);
@@ -1309,6 +1336,7 @@ fn innovations_with_forecasts(
 
     let mut var_factors = Vec::with_capacity(horizon);
     for a in 0..horizon {
+        crate::check_cancelled()?;
         let mut acc_var = 0.0;
         for r_idx in 0..=a {
             let base_r = r_idx.max(a.saturating_sub(q_deg));
@@ -1353,6 +1381,12 @@ fn difference_inverse(diff: &[f64], horizon: usize) -> Vec<f64> {
         }
     }
     psi
+}
+
+impl From<dms_types::Cancelled> for ArimaError {
+    fn from(_: dms_types::Cancelled) -> Self {
+        Self::Cancelled
+    }
 }
 
 #[cfg(test)]

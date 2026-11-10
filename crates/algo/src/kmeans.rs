@@ -69,6 +69,7 @@ pub fn train(
     inputs: &[usize],
     settings: &KMeansSettings,
 ) -> Result<Pmml, AlgoError> {
+    crate::check_cancelled()?;
     if settings.clusters == 0 {
         return Err(AlgoError::Settings(
             "K-Means needs at least one cluster".into(),
@@ -81,6 +82,7 @@ pub fn train(
     }
     let mut encodings = Vec::new();
     for &position in inputs {
+        crate::check_cancelled()?;
         let field = fields
             .get(position)
             .ok_or_else(|| AlgoError::Data(format!("no field at position {position}")))?;
@@ -154,11 +156,12 @@ pub fn train(
         })
         .collect();
 
-    let (centers, sizes) = cluster(&encoded, settings);
+    let (centers, sizes) = cluster(&encoded, settings)?;
 
     // PMML: derived (encoded) fields, then the centers.
     let mut derived = Vec::new();
     for (encoding, &position) in encodings.iter().zip(inputs) {
+        crate::check_cancelled()?;
         let name = fields[position].name.clone();
         let mut push = |expr: Expr| {
             derived.push(DerivedField {
@@ -300,12 +303,16 @@ fn nearest(point: &[f64], centers: &[Vec<f64>]) -> usize {
 }
 
 /// Maximin initial centers, then assign/update iterations: the centers and cluster sizes.
-fn cluster(points: &[Vec<f64>], settings: &KMeansSettings) -> (Vec<Vec<f64>>, Vec<usize>) {
+fn cluster(
+    points: &[Vec<f64>],
+    settings: &KMeansSettings,
+) -> Result<(Vec<Vec<f64>>, Vec<usize>), AlgoError> {
     let k = settings.clusters.min(points.len());
     let mut centers: Vec<Vec<f64>> = vec![points[0].clone()];
     // Each record's distance to its nearest center so far.
     let mut nearest_distance: Vec<f64> = points.iter().map(|p| distance2(p, &points[0])).collect();
     while centers.len() < k {
+        crate::check_cancelled()?;
         let mut far = 0;
         for (i, &d) in nearest_distance.iter().enumerate() {
             if d > nearest_distance[far] {
@@ -314,6 +321,7 @@ fn cluster(points: &[Vec<f64>], settings: &KMeansSettings) -> (Vec<Vec<f64>>, Ve
         }
         let center = points[far].clone();
         for (i, p) in points.iter().enumerate() {
+            crate::check_cancelled()?;
             nearest_distance[i] = nearest_distance[i].min(distance2(p, &center));
         }
         centers.push(center);
@@ -322,10 +330,18 @@ fn cluster(points: &[Vec<f64>], settings: &KMeansSettings) -> (Vec<Vec<f64>>, Ve
     let dimensions = points[0].len();
     let mut assignment: Vec<usize> = Vec::new();
     for _ in 0..settings.max_iterations.max(1) {
-        let next: Vec<usize> = points.iter().map(|p| nearest(p, &centers)).collect();
+        crate::check_cancelled()?;
+        let next: Vec<usize> = points
+            .iter()
+            .map(|p| {
+                crate::check_cancelled()?;
+                Ok(nearest(p, &centers))
+            })
+            .collect::<Result<_, AlgoError>>()?;
         let mut sums = vec![vec![0.0; dimensions]; centers.len()];
         let mut counts = vec![0usize; centers.len()];
         for (p, &j) in points.iter().zip(&next) {
+            crate::check_cancelled()?;
             counts[j] += 1;
             for (s, x) in sums[j].iter_mut().zip(p) {
                 *s += x;
@@ -350,5 +366,5 @@ fn cluster(points: &[Vec<f64>], settings: &KMeansSettings) -> (Vec<Vec<f64>>, Ve
     for &j in &assignment {
         sizes[j] += 1;
     }
-    (centers, sizes)
+    Ok((centers, sizes))
 }

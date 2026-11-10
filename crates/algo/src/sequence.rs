@@ -136,6 +136,7 @@ impl Default for SequenceSettings {
 
 /// Trains a Sequence model on `table` (already restricted to the training partition).
 pub fn train(table: &Table, settings: &SequenceSettings) -> Result<Pmml, AlgoError> {
+    crate::check_cancelled()?;
     validate(settings)?;
     let data = Data::build(table, settings)?;
     if data.groups.is_empty() {
@@ -202,6 +203,7 @@ impl Data {
         let time_at = field_position(table, &settings.time_field)?;
         let mut content_at: Vec<usize> = Vec::new();
         for name in &settings.content_fields {
+            crate::check_cancelled()?;
             let at = field_position(table, name)?;
             if !content_at.contains(&at) {
                 content_at.push(at);
@@ -237,6 +239,7 @@ impl Data {
         let mut slots: HashMap<String, usize> = HashMap::new();
         let mut sets: Vec<Vec<u32>> = Vec::new();
         for (row_index, row) in table.rows().iter().enumerate() {
+            crate::check_cancelled()?;
             let id = row.get(id_at).cloned().unwrap_or(Value::Null);
             if id.is_null() {
                 return Err(AlgoError::Data(format!(
@@ -327,6 +330,7 @@ fn mine(data: &Data, settings: &SequenceSettings) -> Result<Vec<Vec<Frequent>>, 
         .map_err(|_| AlgoError::Data("Sequence has too many items".into()))?;
     let mut first: Vec<Frequent> = Vec::new();
     for item in 0..items {
+        crate::check_cancelled()?;
         let count = data
             .present
             .iter()
@@ -347,10 +351,12 @@ fn mine(data: &Data, settings: &SequenceSettings) -> Result<Vec<Vec<Frequent>>, 
     let frequent_items: Vec<u32> = first.iter().map(|f| f.sets[0][0]).collect();
     let mut levels = vec![first];
     for _ in 2..=settings.max_size {
+        crate::check_cancelled()?;
         let Some(previous) = levels.last() else { break };
         let mut candidates: Vec<Vec<Vec<u32>>> = Vec::new();
         let mut generated: HashSet<Vec<Vec<u32>>> = HashSet::new();
         for sequence in previous {
+            crate::check_cancelled()?;
             // A new itemset after the last one.
             for &item in &frequent_items {
                 let mut next = sequence.sets.clone();
@@ -457,12 +463,14 @@ fn rules(settings: &SequenceSettings, levels: &[Vec<Frequent>]) -> Result<Vec<Mi
     let confidence_basis = percent_basis(settings.min_confidence_percent)?;
     let mut counts: HashMap<Vec<Vec<u32>>, u64> = HashMap::new();
     for level in levels {
+        crate::check_cancelled()?;
         for sequence in level {
             counts.insert(sequence.sets.clone(), sequence.count);
         }
     }
     let mut mined: Vec<Mined> = Vec::new();
     for level in levels {
+        crate::check_cancelled()?;
         for sequence in level {
             if sequence.sets.len() < 2 {
                 continue;
@@ -508,6 +516,7 @@ fn assemble(
     let time_at = field_position(table, &settings.time_field)?;
     let mut content_at: Vec<usize> = Vec::new();
     for name in &settings.content_fields {
+        crate::check_cancelled()?;
         let at = field_position(table, name)?;
         if !content_at.contains(&at) {
             content_at.push(at);
@@ -518,6 +527,7 @@ fn assemble(
         .chain(std::iter::once(&time_at))
         .chain(content_at.iter())
     {
+        crate::check_cancelled()?;
         if let Some(field) = data_field(table, *at)
             && !dictionary.iter().any(|seen| seen.name == field.name)
         {
@@ -531,6 +541,7 @@ fn assemble(
     schema.push(usage_field(table, id_at, Usage::Group)?);
     schema.push(usage_field(table, time_at, Usage::Other)?);
     for &at in &content_at {
+        crate::check_cancelled()?;
         schema.push(usage_field(table, at, Usage::Active)?);
     }
     let model_rules = rules

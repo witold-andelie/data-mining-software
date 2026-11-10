@@ -119,16 +119,18 @@ impl Operator for BuildAutoCluster {
         &self,
         inputs: &[Arc<Table>],
         _model: Option<Arc<Pmml>>,
-        _context: &ExecContext,
+        context: &ExecContext,
     ) -> Result<NodeOutput, OperatorError> {
-        let input = inputs.first().ok_or_else(|| {
-            OperatorError::Inputs("an Auto Cluster build node needs one input".into())
-        })?;
-        let trained = train_settings(&self.settings, input)?;
-        let model = trained
-            .selected_model()
-            .ok_or_else(|| OperatorError::Data("Auto Cluster trained no component".into()))?;
-        Ok(NodeOutput::Model(Arc::new(model.clone())))
+        dms_algo::with_cancel(&context.cancel, || {
+            let input = inputs.first().ok_or_else(|| {
+                OperatorError::Inputs("an Auto Cluster build node needs one input".into())
+            })?;
+            let trained = train_settings(&self.settings, input)?;
+            let model = trained
+                .selected_model()
+                .ok_or_else(|| OperatorError::Data("Auto Cluster trained no component".into()))?;
+            Ok(NodeOutput::Model(Arc::new(model.clone())))
+        })
     }
 }
 
@@ -324,6 +326,7 @@ fn train_settings(
     }
     let mut components = Vec::with_capacity(settings.algorithms.len());
     for algorithm in &settings.algorithms {
+        dms_algo::check_cancelled()?;
         let (kind, label, pmml) = match algorithm {
             ComponentSettings::KMeans(component) => {
                 let pmml = kmeans::train(table, &inputs, component)
@@ -397,6 +400,7 @@ fn train_settings(
 
 fn component_error(name: &str, error: dms_algo::AlgoError) -> OperatorError {
     match error {
+        dms_algo::AlgoError::Cancelled => OperatorError::Cancelled,
         dms_algo::AlgoError::Unsupported(message) => {
             OperatorError::Settings(format!("GAP: {name}: {message}"))
         }

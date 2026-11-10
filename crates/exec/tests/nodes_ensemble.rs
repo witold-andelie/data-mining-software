@@ -124,6 +124,7 @@ fn near(value: &Value, expected: f64) {
 }
 fn message(error: OperatorError) -> String {
     match error {
+        OperatorError::Cancelled => "cancelled".into(),
         OperatorError::Settings(message)
         | OperatorError::Inputs(message)
         | OperatorError::Io(message)

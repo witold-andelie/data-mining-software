@@ -133,6 +133,7 @@ impl Settings {
         .into_iter()
         .flatten()
         {
+            crate::check_cancelled()?;
             if !value.is_finite() || !(0.0..=100.0).contains(&value) {
                 return Err(AlgoError::Settings(
                     "Feature Selection screening percent must be in 0..100".into(),
@@ -278,6 +279,7 @@ pub fn train(
     dataset: &Dataset<'_>,
     settings: &Settings,
 ) -> Result<FeatureSelectionModel, AlgoError> {
+    crate::check_cancelled()?;
     settings.validate()?;
     if dataset.inputs.len() > 256
         || dataset.table.row_count() > 1_000_000
@@ -296,6 +298,7 @@ pub fn train(
     let mut inputs = Vec::new();
     let mut unique = BTreeSet::new();
     for &position in dataset.inputs {
+        crate::check_cancelled()?;
         if position == dataset.target || !unique.insert(position) {
             return Err(AlgoError::Settings(
                 "Feature Selection target/input overlap or duplicate input".into(),
@@ -359,6 +362,7 @@ pub fn train(
         selected: Vec::new(),
     };
     for position in inputs {
+        crate::check_cancelled()?;
         let input = field(dataset, position)?;
         let cat = categorical(input)?;
         let pairs: Vec<_> = rows
@@ -494,6 +498,7 @@ fn below(value: f64, threshold: f64) -> bool {
 fn counts<'a>(values: impl Iterator<Item = &'a Value>) -> Result<BTreeMap<String, f64>, AlgoError> {
     let mut result = BTreeMap::new();
     for v in values {
+        crate::check_cancelled()?;
         *result.entry(v.to_string()).or_insert(0.0) += 1.0;
         if result.len() > 4096 {
             return Err(AlgoError::Data(
@@ -539,6 +544,7 @@ fn categorical_association(
     let y = counts(pairs.iter().map(|(_, y)| *y))?;
     let mut cells = BTreeMap::<(String, String), f64>::new();
     for (a, b) in pairs {
+        crate::check_cancelled()?;
         *cells.entry((a.to_string(), b.to_string())).or_default() += 1.0;
     }
     let n = pairs.len() as f64;
@@ -548,6 +554,7 @@ fn categorical_association(
     let mut likelihood = 0.0;
     let mut conditional_correct = BTreeMap::<&str, f64>::new();
     for ((a, b), observed) in &cells {
+        crate::check_cancelled()?;
         let expected = x.get(a).copied().unwrap_or(0.0) * y.get(b).copied().unwrap_or(0.0) / n;
         if expected > 0.0 {
             pearson += observed * observed / expected;
@@ -605,6 +612,7 @@ fn anova(
     let mut groups = BTreeMap::<String, Vec<f64>>::new();
     let mut values = Vec::new();
     for (x, y) in pairs {
+        crate::check_cancelled()?;
         let (category, continuous) = if predictor_categorical {
             (x, y)
         } else {
@@ -623,6 +631,7 @@ fn anova(
     let mut within = 0.0;
     let mut between = 0.0;
     for group in groups.values() {
+        crate::check_cancelled()?;
         let (group_mean, ss) = moments(group)?;
         within += ss;
         between += group.len() as f64 * (group_mean - mean).powi(2);

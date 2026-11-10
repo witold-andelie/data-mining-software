@@ -140,6 +140,7 @@ pub struct Solution {
 
 /// Trains on the target and inputs of `dataset`.
 pub fn train(dataset: &Dataset<'_>, settings: &LsvmSettings) -> Result<Pmml, AlgoError> {
+    crate::check_cancelled()?;
     solve(dataset, settings).map(|solution| solution.pmml)
 }
 
@@ -301,6 +302,7 @@ fn design_terms(dataset: &Dataset<'_>, intercept: bool) -> Result<Vec<Term>, Alg
     let mut covariates = Vec::new();
     let mut factors = Vec::new();
     for &position in dataset.inputs {
+        crate::check_cancelled()?;
         if position == dataset.target {
             return Err(AlgoError::Settings(
                 "the LSVM target is also an input".into(),
@@ -340,6 +342,7 @@ fn design_terms(dataset: &Dataset<'_>, intercept: bool) -> Result<Vec<Term>, Alg
     }
     terms.extend(covariates);
     for position in factors {
+        crate::check_cancelled()?;
         let field = fields
             .get(position)
             .ok_or_else(|| AlgoError::Settings("an LSVM input is not a field".into()))?;
@@ -441,6 +444,7 @@ impl Problem {
         let mut x = Vec::with_capacity(cells);
         let mut t = Vec::with_capacity(rows.len());
         for row in rows {
+            crate::check_cancelled()?;
             let Some(value) = row
                 .get(target_position)
                 .filter(|value| !target_field.is_missing(value))
@@ -598,6 +602,9 @@ impl Problem {
     fn backtrack(&self, w: &[f64], d: &[f64], f: f64, delta: f64) -> Option<(Vec<f64>, f64)> {
         let mut step = 1.0;
         for _ in 0..60 {
+            if crate::check_cancelled().is_err() {
+                return None;
+            }
             let trial: Vec<f64> = w.iter().zip(d).map(|(w, d)| w + step * d).collect();
             let value = self.objective(&trial);
             if value.is_finite() && value <= f + ARMIJO * step * delta + SLACK * (1.0 + f.abs()) {
@@ -621,6 +628,7 @@ impl Problem {
         let mut f = self.objective(&w);
         let mut measure = f64::INFINITY;
         for iteration in 0..max_iterations {
+            crate::check_cancelled()?;
             let (_, mut gradient, mut hessian) = self.smooth(&w);
             for (j, (g, &wj)) in gradient.iter_mut().zip(&w).enumerate() {
                 *g += 2.0 * self.lambda * wj;
@@ -668,6 +676,7 @@ impl Problem {
         let mut f = self.objective(&w);
         let mut measure = f64::INFINITY;
         for iteration in 0..max_iterations {
+            crate::check_cancelled()?;
             let (_, gradient, mut hessian) = self.smooth(&w);
             measure = w
                 .iter()
@@ -803,6 +812,9 @@ fn cholesky_solve(mut a: Vec<f64>, b: &[f64], p: usize) -> Option<Vec<f64>> {
         return None;
     }
     for j in 0..p {
+        if crate::check_cancelled().is_err() {
+            return None;
+        }
         let mut diagonal = *a.get(j * p + j)?;
         for k in 0..j {
             let l = *a.get(j * p + k)?;
@@ -823,6 +835,9 @@ fn cholesky_solve(mut a: Vec<f64>, b: &[f64], p: usize) -> Option<Vec<f64>> {
     }
     let mut y = vec![0.0; p];
     for i in 0..p {
+        if crate::check_cancelled().is_err() {
+            return None;
+        }
         let mut s = *b.get(i)?;
         for k in 0..i {
             s -= *a.get(i * p + k)? * *y.get(k)?;
@@ -831,6 +846,9 @@ fn cholesky_solve(mut a: Vec<f64>, b: &[f64], p: usize) -> Option<Vec<f64>> {
     }
     let mut x = vec![0.0; p];
     for i in (0..p).rev() {
+        if crate::check_cancelled().is_err() {
+            return None;
+        }
         let mut s = *y.get(i)?;
         for k in (i + 1)..p {
             s -= *a.get(k * p + i)? * *x.get(k)?;
@@ -854,6 +872,7 @@ fn to_pmml(
     let mut covariates = Vec::new();
     let mut factors: Vec<String> = Vec::new();
     for term in terms {
+        crate::check_cancelled()?;
         match term {
             Term::Covariate { name } => covariates.push(name.clone()),
             Term::Level { name, .. } if !factors.contains(name) => factors.push(name.clone()),
@@ -871,6 +890,7 @@ fn to_pmml(
     let mut dictionary = Vec::with_capacity(fields.len());
     let mut category_values = 0usize;
     for position in 0..fields.len() {
+        crate::check_cancelled()?;
         let Some(entry) = data_field(table, position) else {
             continue;
         };
@@ -895,6 +915,7 @@ fn to_pmml(
     let mut schema = Vec::new();
     let mut seen: Vec<usize> = Vec::new();
     for &position in dataset.inputs {
+        crate::check_cancelled()?;
         let Some(field) = fields.get(position) else {
             continue;
         };
@@ -914,6 +935,7 @@ fn to_pmml(
     schema.extend(mining_field(table, dataset.target, Usage::Target));
     // The nugget leaves `invalidValueTreatment` unset, which is the PMML default.
     for mining in &mut schema {
+        crate::check_cancelled()?;
         mining.invalid_treatment = InvalidTreatment::ReturnInvalid;
     }
 
@@ -938,6 +960,7 @@ fn to_pmml(
         ),
     };
     for ((term, name), &beta) in terms.iter().zip(&names).zip(weights) {
+        crate::check_cancelled()?;
         match term {
             Term::Intercept => {}
             Term::Covariate { name: field } => pp_matrix.push(PPCell {
@@ -1011,6 +1034,7 @@ fn pmml_coefficients(pmml: &Pmml) -> Result<(Vec<Term>, Vec<f64>, TargetSpec), A
     let mut terms = Vec::new();
     let mut weights = Vec::new();
     for parameter in &model.parameters {
+        crate::check_cancelled()?;
         let cells: Vec<&PPCell> = model
             .pp_matrix
             .iter()
