@@ -149,7 +149,7 @@ cargo xtask regress --label team --label misc --label sources --out target/schem
 
 ### 5.1 文件
 
-只能改：新文件 `crates/ui/src/properties.rs`；`crates/ui/src/workbench.rs`（属性面板改为调用 `properties.rs`，以及为文件选择新增 `Pick::DataFile`）；`crates/ui/src/lib.rs`（加 `pub mod`）；`apps/dms/src/main.rs`（`Pick::DataFile` 的原生对话框）；新测试 `crates/ui/tests/properties.rs`（不截图）。不改引擎；接口不够时停下说明。
+只能改：新文件 `crates/ui/src/properties.rs`；`crates/ui/src/workbench.rs`（属性面板改为调用 `properties.rs`，以及为文件选择新增 `Pick::DataFile`）；`crates/ui/src/lib.rs`（加 `pub mod`）；`apps/dms/src/main.rs`（`Pick::DataFile` 的原生对话框）；新测试 `crates/ui/tests/properties.rs`（不截图）；`crates/ui/Cargo.toml` 只能加一行 `dms-clem.workspace = true`（工作区已有依赖，用于表达式语法检查）。不改引擎；接口不够时停下说明。
 
 ### 5.2 表单规则
 
