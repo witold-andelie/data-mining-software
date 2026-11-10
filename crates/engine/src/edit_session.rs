@@ -310,6 +310,7 @@ impl Session {
         self.cancel_run();
         self.document_state = state;
         self.results = None;
+        self.result_inputs.clear();
         self.autosave.last = Some(Instant::now());
         self.sync_document();
         Ok(())
@@ -415,6 +416,9 @@ impl Session {
         id: &'static str,
         args: &[Arg],
     ) -> Result<Outcome, CommandError> {
+        if id == "node.set_param" {
+            return self.set_param_command(args);
+        }
         let Some(state) = self.document_state.as_mut() else {
             return Err(bad(id, "an open document"));
         };
@@ -1170,5 +1174,447 @@ pub(crate) mod tests {
                 "{id}"
             );
         }
+    }
+}
+
+// A bounded registry of static command labels keeps undo.rs's existing static-label contract.
+fn parameter_label(spec: &dms_exec::schema::ParamSpec) -> &'static str {
+    static LABELS: std::sync::OnceLock<HashMap<&'static str, String>> = std::sync::OnceLock::new();
+    LABELS
+        .get_or_init(|| {
+            crate::catalog::NODES
+                .iter()
+                .filter_map(|n| dms_exec::schema::schema(n.id))
+                .flatten()
+                .map(|p| (p.label, format!("Change {}", p.label)))
+                .collect()
+        })
+        .get(spec.label)
+        .map(String::as_str)
+        .unwrap_or(spec.label)
+}
+
+impl Session {
+    pub fn node_schema(
+        &self,
+        uid: &str,
+    ) -> Option<(&'static str, &'static [dms_exec::schema::ParamSpec])> {
+        let node = self.document_state.as_ref()?.doc.node(uid)?;
+        let identifier = node.type_identifier();
+        // Applied models have different readers and must not receive builder parameters.
+        if identifier.starts_with("Apply") || node.model_builder.is_some() {
+            return None;
+        }
+        let catalog = crate::catalog::by_modeler_identifier(&identifier)?;
+        Some((catalog.id, dms_exec::schema::schema(catalog.id)?))
+    }
+
+    pub fn node_settings(&self, uid: &str) -> Option<&dms_strfmt::fastinfoset::Element> {
+        self.document_state
+            .as_ref()?
+            .doc
+            .node(uid)?
+            .settings
+            .as_ref()
+    }
+
+    fn parameter_spec(
+        &self,
+        uid: &str,
+        key: &str,
+    ) -> Result<&'static dms_exec::schema::ParamSpec, String> {
+        self.node_schema(uid)
+            .ok_or_else(|| format!("Node {uid} has no editable schema"))?
+            .1
+            .iter()
+            .find(|p| p.key == key)
+            .ok_or_else(|| format!("Unknown parameter {key:?} for node {uid}"))
+    }
+
+    fn parameter_attachment(&self, uid: &str) -> Result<(&str, &[u8]), String> {
+        let state = self.document_state.as_ref().ok_or("No stream is open")?;
+        let node = state
+            .doc
+            .node(uid)
+            .ok_or("Node is not on the top-level canvas")?;
+        let name = node
+            .properties_attachment
+            .as_deref()
+            .ok_or("The node has no parameters attachment")?;
+        let bytes = state
+            .doc
+            .attachments
+            .get(name)
+            .ok_or_else(|| format!("Missing parameters attachment {name}"))?;
+        Ok((name, bytes))
+    }
+
+    pub fn param_value(
+        &self,
+        uid: &str,
+        key: &str,
+    ) -> Result<dms_exec::schema::ParamValue, String> {
+        let spec = self.parameter_spec(uid, key)?;
+        match spec.source {
+            dms_exec::schema::ParamSource::Properties => {
+                dms_exec::schema::read(self.node_settings(uid), spec)
+            }
+            dms_exec::schema::ParamSource::Attachment => {
+                let (_, bytes) = self.parameter_attachment(uid)?;
+                dms_exec::schema::read_attachment(Some(bytes), spec)
+            }
+        }
+    }
+
+    pub fn param_read_only(&self, uid: &str, key: &str) -> Option<String> {
+        let check = || -> Result<(), String> {
+            let spec = self.parameter_spec(uid, key)?;
+            if spec.source == dms_exec::schema::ParamSource::Attachment {
+                let (name, _) = self.parameter_attachment(uid)?;
+                let state = self.document_state.as_ref().ok_or("No stream is open")?;
+                if state.doc.stream.all_nodes().iter().any(|node| {
+                    node.uid != uid
+                        && (node.properties_attachment.as_deref() == Some(name)
+                            || node.containers.iter().any(|c| c.member == name))
+                }) {
+                    return Err(format!(
+                        "Parameters attachment {name} is shared by another node"
+                    ));
+                }
+            }
+            self.param_value(uid, key)?;
+            Ok(())
+        };
+        check().err()
+    }
+
+    pub fn input_fields(&self, uid: &str) -> Option<Vec<crate::session::FieldInfo>> {
+        let state = self.document_state.as_ref()?;
+        state.doc.node(uid)?;
+        let report = &self.results.as_ref()?.report;
+        let inputs = self.result_inputs.get(uid)?;
+        if inputs.is_empty() {
+            return None;
+        }
+        let mut fields = Vec::new();
+        let mut seen = HashSet::new();
+        for input in inputs {
+            let output = report.results.get(input)?.as_ref().ok()?;
+            let Some(table) = output.data() else {
+                continue;
+            };
+            for field in table.model().fields() {
+                if fields.len() >= 100_000 {
+                    return None;
+                }
+                if seen.insert(field.name.clone()) {
+                    let measure = dms_exec::schema::measurement_name(field.measurement).to_string();
+                    fields.push(crate::session::FieldInfo {
+                        name: field.name.clone(),
+                        storage: format!("{:?}", field.storage).to_ascii_lowercase(),
+                        measure,
+                    });
+                }
+            }
+        }
+        (!fields.is_empty()).then_some(fields)
+    }
+
+    fn set_param_command(&mut self, args: &[Arg]) -> Result<Outcome, CommandError> {
+        use dms_exec::schema::{self, ParamSource};
+        const ID: &str = "node.set_param";
+        let Some(uid) = args.iter().find_map(|a| {
+            if let Arg::Node(uid) = a {
+                Some(uid.as_str())
+            } else {
+                None
+            }
+        }) else {
+            return Ok(Outcome::NeedsArgument("node"));
+        };
+        let Some((key, value)) = args.iter().find_map(|a| {
+            if let Arg::Param(key, value) = a {
+                Some((key.as_str(), value))
+            } else {
+                None
+            }
+        }) else {
+            return Ok(Outcome::NeedsArgument("param"));
+        };
+        let spec = self.parameter_spec(uid, key).map_err(|e| failure(ID, e))?;
+        if let Some(reason) = self.param_read_only(uid, key) {
+            return Err(failure(ID, reason));
+        }
+        schema::validate(spec, value).map_err(|e| failure(ID, e))?;
+        let mut edits = Vec::new();
+        match spec.source {
+            ParamSource::Properties => {
+                let old = self.node_settings(uid);
+                let new = schema::write(old, spec, value).map_err(|e| failure(ID, e))?;
+                if old != Some(&new) && !(old.is_none() && new.children.is_empty()) {
+                    edits.push(Edit::SetSettings {
+                        uid: uid.into(),
+                        settings: Some(new),
+                    });
+                }
+            }
+            ParamSource::Attachment => {
+                let (name, old) = self.parameter_attachment(uid).map_err(|e| failure(ID, e))?;
+                let new = schema::write_attachment(old, spec, value).map_err(|e| failure(ID, e))?;
+                if new != old {
+                    edits.push(Edit::PutAttachment {
+                        name: name.into(),
+                        bytes: Some(new.into()),
+                    });
+                }
+            }
+        }
+        let state = self
+            .document_state
+            .as_mut()
+            .ok_or_else(|| bad(ID, "an open document"))?;
+        state
+            .commit(parameter_label(spec), edits, state.selection.clone(), None)
+            .map_err(|e| failure(ID, e))?;
+        self.sync_document();
+        Ok(Outcome::Done)
+    }
+}
+
+#[cfg(test)]
+mod settings_tests {
+    use super::tests::TempDir;
+    use super::*;
+    use crate::run::tests::{node, stream};
+    use dms_exec::schema::ParamValue;
+    use dms_stream::settings_xml::element_from_xml;
+    use std::time::{Duration, Instant};
+
+    fn xml(text: &str) -> dms_strfmt::fastinfoset::Element {
+        element_from_xml(text).unwrap()
+    }
+    fn select_session() -> Session {
+        let mut n = node("s", "SelectNode");
+        n.settings = Some(xml(
+            "<properties><selectCondition>x &gt; 1</selectCondition><future keep='yes'/></properties>",
+        ));
+        Session::with_document(Document::from_stream(
+            PathBuf::from("a.dms"),
+            stream(vec![n], &[], &[]),
+        ))
+    }
+    fn set(
+        session: &mut Session,
+        uid: &str,
+        key: &str,
+        value: ParamValue,
+    ) -> Result<Outcome, CommandError> {
+        session.execute(
+            "node.set_param",
+            &[Arg::Node(uid.into()), Arg::Param(key.into(), value)],
+        )
+    }
+    #[test]
+    fn property_edit_is_one_named_transaction_and_undo_restores_the_save_revision() {
+        let mut s = select_session();
+        assert_eq!(s.node_schema("s").unwrap().0, "select");
+        assert!(s.input_fields("s").is_none());
+        assert!(s.param_read_only("s", "condition").is_none());
+        let original = s.node_settings("s").cloned();
+        set(&mut s, "s", "condition", ParamValue::Text("x > 2".into())).unwrap();
+        assert_eq!(
+            s.param_value("s", "condition").unwrap(),
+            ParamValue::Text("x > 2".into())
+        );
+        assert_eq!(
+            s.command_label("edit.undo").as_deref(),
+            Some("Undo Change Record condition")
+        );
+        assert!(s.is_dirty());
+        assert_eq!(s.revision(), 1);
+        s.execute("edit.undo", &[]).unwrap();
+        assert!(!s.is_dirty());
+        assert_eq!(s.node_settings("s"), original.as_ref());
+        assert!(s.undo_label().is_none());
+        s.execute("edit.redo", &[]).unwrap();
+        assert_eq!(s.revision(), 1);
+        let revision = s.revision();
+        set(&mut s, "s", "condition", ParamValue::Text("x > 2".into())).unwrap();
+        assert_eq!(s.revision(), revision);
+        assert!(set(&mut s, "s", "mode", ParamValue::Text("invalid".into())).is_err());
+        assert!(set(&mut s, "s", "unknown", ParamValue::Bool(true)).is_err());
+        assert_eq!(s.revision(), revision);
+    }
+    fn attachment_session() -> Session {
+        let mut n = node("tree", "CFBuildModelNode");
+        n.extension = Some(Extension::Object {
+            object_id: "Chaid".into(),
+            extension_id: "spss.tree-extension".into(),
+        });
+        n.properties_attachment = Some("params.xml".into());
+        let mut doc = Document::from_stream(PathBuf::from("a.dms"), stream(vec![n], &[], &[]));
+        doc.attachments=Arc::new([("params.xml".into(),Arc::from(b"<?xml version='1.0'?><Parameters>\r\n<Parameter name='tree.MaxTreeDepth' value='5'/><!--unknown--><Parameter name='future' value='&amp;'/></Parameters>".as_slice()))].into_iter().collect());
+        Session::with_document(doc)
+    }
+    #[test]
+    fn attachment_edit_is_one_undo_step_and_restores_exact_bytes_in_both_views() {
+        let mut s = attachment_session();
+        let original = s
+            .document()
+            .unwrap()
+            .attachments
+            .get("params.xml")
+            .unwrap()
+            .clone();
+        let settings = s.node_settings("tree").cloned();
+        set(&mut s, "tree", "max_depth", ParamValue::Int(8)).unwrap();
+        assert_eq!(
+            s.param_value("tree", "max_depth").unwrap(),
+            ParamValue::Int(8)
+        );
+        assert_ne!(
+            s.document().unwrap().attachments.get("params.xml").unwrap(),
+            &original
+        );
+        assert_eq!(s.undo_label(), Some("Change Depth limit"));
+        s.execute("edit.undo", &[]).unwrap();
+        assert!(s.undo_label().is_none());
+        assert!(!s.is_dirty());
+        assert_eq!(
+            s.document().unwrap().attachments.get("params.xml"),
+            Some(&original)
+        );
+        assert_eq!(
+            s.document_state()
+                .unwrap()
+                .doc
+                .attachments
+                .get("params.xml"),
+            Some(&original)
+        );
+        assert_eq!(s.node_settings("tree"), settings.as_ref());
+        s.execute("edit.redo", &[]).unwrap();
+        assert_eq!(
+            s.param_value("tree", "max_depth").unwrap(),
+            ParamValue::Int(8)
+        );
+        let tmp = TempDir::new();
+        let path = tmp.0.join("saved.dms");
+        s.execute("file.save_as", &[Arg::Path(path.clone())])
+            .unwrap();
+        let reopened = Session::with_document(crate::session::open_document(&path).unwrap());
+        assert_eq!(
+            reopened.param_value("tree", "max_depth").unwrap(),
+            ParamValue::Int(8)
+        );
+    }
+    #[test]
+    fn missing_malformed_shared_and_nested_attachments_are_read_only_and_atomic() {
+        for mode in 0..6 {
+            let mut s = attachment_session();
+            let state = s.document_state.as_mut().unwrap();
+            match mode {
+                0 => state.doc.stream.diagram.nodes[0].properties_attachment = None,
+                1 => {
+                    state.doc.attachments.remove("params.xml");
+                }
+                2 => {
+                    state
+                        .doc
+                        .attachments
+                        .insert("params.xml".into(), Arc::from(b"broken".as_slice()));
+                }
+                3 => {
+                    let mut other = node("other", "SelectNode");
+                    other.properties_attachment = Some("params.xml".into());
+                    state.doc.stream.diagram.nodes.push(other);
+                }
+                4 => {
+                    state
+                        .doc
+                        .attachments
+                        .insert("params.xml".into(), Arc::from(b"<Parameters/>".as_slice()));
+                }
+                _ => {
+                    let mut inner = node("inner", "SelectNode");
+                    inner.properties_attachment = Some("params.xml".into());
+                    let mut parent = node("parent", "SuperNode");
+                    parent.subdiagram = Some(dms_stream::Diagram {
+                        nodes: vec![inner],
+                        ..Default::default()
+                    });
+                    state.doc.stream.diagram.nodes.push(parent);
+                }
+            }
+            s.sync_document();
+            let original = native::to_toml(&s.document_state().unwrap().doc).unwrap();
+            assert!(s.param_read_only("tree", "max_depth").is_some());
+            assert!(set(&mut s, "tree", "max_depth", ParamValue::Int(9)).is_err());
+            assert_eq!(
+                native::to_toml(&s.document_state().unwrap().doc).unwrap(),
+                original
+            );
+            assert_eq!(s.revision(), 0);
+            assert!(s.undo_label().is_none());
+        }
+    }
+    #[test]
+    fn fields_come_from_the_last_run_input_instead_of_the_nodes_own_output() {
+        let tmp = TempDir::new();
+        let path = tmp.0.join("input.csv");
+        std::fs::write(&path, "x\n1\n2\n").unwrap();
+        let mut reader = node("reader", "DelimitedFileImportNode");
+        reader.settings = Some(
+            dms_exec::schema::write(
+                None,
+                dms_exec::schema::schema("var_file")
+                    .unwrap()
+                    .iter()
+                    .find(|s| s.key == "full_filename")
+                    .unwrap(),
+                &ParamValue::Text(path.to_string_lossy().into_owned()),
+            )
+            .unwrap(),
+        );
+        let mut derive = node("derive", "DeriveNode");
+        derive.settings = Some(xml(
+            "<properties><deriveSingleFieldName>added</deriveSingleFieldName><deriveFormulaExpression>x * 2</deriveFormulaExpression></properties>",
+        ));
+        let mut s = Session::with_document(Document::from_stream(
+            tmp.0.join("stream.dms"),
+            stream(vec![reader, derive], &[("reader", "derive")], &["derive"]),
+        ));
+        assert!(s.input_fields("derive").is_none());
+        s.execute("run.stream", &[]).unwrap();
+        let end = Instant::now() + Duration::from_secs(10);
+        loop {
+            if !s.poll_jobs().is_empty() {
+                break;
+            }
+            assert!(Instant::now() < end);
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(s.results().unwrap().report.root_causes.is_empty());
+        let fields = s.input_fields("derive").unwrap();
+        assert_eq!(fields.len(), 1);
+        assert_eq!(fields[0].name, "x");
+        assert_eq!(fields[0].storage, "integer");
+        assert_eq!(fields[0].measure, "range");
+        assert!(s.input_fields("reader").is_none());
+        set(
+            &mut s,
+            "derive",
+            "formula_expr",
+            ParamValue::Text("x * 3".into()),
+        )
+        .unwrap();
+        assert!(s.results_stale());
+        assert_eq!(s.input_fields("derive"), Some(fields.clone()));
+        s.execute(
+            "node.disconnect",
+            &[Arg::Link("reader".into(), "derive".into())],
+        )
+        .unwrap();
+        assert_eq!(s.input_fields("derive"), Some(fields));
     }
 }

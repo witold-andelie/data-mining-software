@@ -35,9 +35,17 @@ impl Document {
     }
 }
 
+/// Metadata of a field reaching a node in the latest completed run.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FieldInfo {
+    pub name: String,
+    pub storage: String,
+    pub measure: String,
+}
+
 /// Arguments a command takes. Interfaces collect them (a file dialog, a form); programs pass
 /// them directly.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Arg {
     Path(PathBuf),
     Node(String),
@@ -48,6 +56,7 @@ pub enum Arg {
     Delta(i64, i64),
     Nodes(Vec<String>),
     Link(String, String),
+    Param(String, dms_exec::schema::ParamValue),
 }
 
 /// View changes the engine asks the interface to make; the engine does not own view state.
@@ -153,6 +162,8 @@ pub struct Session {
     pub(crate) document_state: Option<DocumentState>,
     pub(crate) autosave: crate::autosave::Autosave,
     run_revision: u64,
+    run_inputs: HashMap<String, Vec<String>>,
+    pub(crate) result_inputs: HashMap<String, Vec<String>>,
     /// Folders searched by file name for data a stream references, after the stream's own
     /// folder (streams often name files on the machine that saved them).
     data_folders: Vec<PathBuf>,
@@ -226,6 +237,7 @@ impl Session {
                             root_causes: output.root_causes.len(),
                             elapsed: output.elapsed,
                         });
+                        self.result_inputs = std::mem::take(&mut self.run_inputs);
                         self.results = Some(RunResults {
                             job,
                             report: output,
@@ -315,6 +327,19 @@ impl Session {
             ),
             targets,
         };
+        // Capture connectivity with the immutable run snapshot, without building operators on
+        // the interface thread. Results keep this graph even after subsequent canvas edits.
+        self.run_inputs.clear();
+        for link in &state.doc.stream.diagram.links {
+            if let (dms_stream::NodeRef::Uid(from), dms_stream::NodeRef::Uid(to)) =
+                (&link.from, &link.to)
+            {
+                self.run_inputs
+                    .entry(to.clone())
+                    .or_default()
+                    .push(from.clone());
+            }
+        }
         self.run_revision = state.revision;
         let job = self.jobs.spawn(move |ctx| run_stream(request, ctx));
         self.run_state = RunState::Running {
@@ -377,7 +402,7 @@ impl Session {
             | "file.recover" | "app.quit" | "edit.undo" | "edit.redo" | "edit.cut"
             | "edit.copy" | "edit.paste" | "edit.duplicate" | "edit.delete" | "edit.select_all"
             | "edit.select" | "node.add" | "node.move" | "node.connect" | "node.disconnect"
-            | "node.rename" => self.execute_document_command(spec.id, args),
+            | "node.rename" | "node.set_param" => self.execute_document_command(spec.id, args),
             "run.stream" => {
                 self.start_run(RunTargets::Stream);
                 Ok(Outcome::Done)

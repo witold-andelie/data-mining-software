@@ -11,6 +11,7 @@ pub mod output;
 pub mod plan;
 mod random;
 pub mod registry;
+pub mod schema;
 pub mod settings;
 
 pub use context::{ExecContext, FileResolver, Resolved};
