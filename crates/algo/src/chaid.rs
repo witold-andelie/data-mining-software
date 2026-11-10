@@ -94,6 +94,7 @@ const INTERVALS: usize = 10;
 
 /// Trains a CHAID model.
 pub fn train(dataset: &Dataset<'_>, settings: &ChaidSettings) -> Result<Pmml, AlgoError> {
+    crate::check_cancelled()?;
     train_impl(dataset, settings, false)
 }
 
@@ -119,7 +120,7 @@ fn train_impl(
     if data.rows.is_empty() {
         return Err(AlgoError::Data("no records with a valid target".into()));
     }
-    let tree = grow(&data, settings);
+    let tree = grow(&data, settings)?;
     let root = pmml_node(&tree, 0, &data, Predicate::True, analytic);
     let header = ModelHeader {
         name: None,
@@ -204,6 +205,7 @@ impl Data {
         let target = if target_field.measurement == Measurement::Continuous {
             let mut numbers = vec![0.0; table_rows.len()];
             for (i, row) in table_rows.iter().enumerate() {
+                crate::check_cancelled()?;
                 if let Some(y) = target_value(row)
                     .and_then(|v| v.as_f64())
                     .filter(|y| y.is_finite())
@@ -217,6 +219,7 @@ impl Data {
             let mut labels = categories(dataset, dataset.target);
             let mut codes = vec![0; table_rows.len()];
             for (i, row) in table_rows.iter().enumerate() {
+                crate::check_cancelled()?;
                 if let Some(value) = target_value(row) {
                     codes[i] = code_of(&mut labels, value.to_string());
                     rows.push(i);
@@ -227,6 +230,7 @@ impl Data {
 
         let mut predictors = Vec::new();
         for &position in dataset.inputs {
+            crate::check_cancelled()?;
             let input = field(position)?;
             let cell = |row: &[Value]| {
                 row.get(position)
@@ -278,6 +282,7 @@ impl Data {
             Target::Classes { codes, labels } => {
                 let mut totals = vec![0.0; labels.len()];
                 for &row in &rows {
+                    crate::check_cancelled()?;
                     totals[codes[row]] += 1.0;
                 }
                 let n = rows.len() as f64;
@@ -494,6 +499,9 @@ fn merge(
     let regression = data.is_regression();
     let mut cells = vec![Cell::new(classes); predictor.categories + 1];
     for &row in rows {
+        if crate::check_cancelled().is_err() {
+            return None;
+        }
         let code = predictor.codes[row].unwrap_or(predictor.categories);
         cells[code].add_row(&data.target, row);
     }
@@ -526,6 +534,9 @@ fn merge(
     match settings.method {
         Method::Chaid => {
             while groups.len() > 2 {
+                if crate::check_cancelled().is_err() {
+                    return None;
+                }
                 let Some((i, j, p)) = most_similar(&groups, predictor.ordered, &pair_p) else {
                     break;
                 };
@@ -539,6 +550,9 @@ fn merge(
             // Merge down to two groups and keep the set with the smallest p-value.
             let mut best = (full_p(&groups), groups.clone());
             while groups.len() > 2 {
+                if crate::check_cancelled().is_err() {
+                    return None;
+                }
                 let Some((i, j, _)) = most_similar(&groups, predictor.ordered, &pair_p) else {
                     break;
                 };
@@ -554,6 +568,9 @@ fn merge(
 
     // Groups below the minimum child size join their most similar neighbour.
     while groups.len() > 1 {
+        if crate::check_cancelled().is_err() {
+            return None;
+        }
         let Some(small) = groups.iter().position(|g| g.cell.n < min_child) else {
             break;
         };
@@ -622,6 +639,9 @@ fn most_similar(
 ) -> Option<(usize, usize, f64)> {
     let mut best: Option<(usize, usize, f64)> = None;
     for i in 0..groups.len() {
+        if crate::check_cancelled().is_err() {
+            return None;
+        }
         let partners: Vec<usize> = if ordered {
             (i + 1..groups.len().min(i + 2)).collect()
         } else {
@@ -661,7 +681,8 @@ struct GrownNode {
     split: Option<Split>,
 }
 
-fn grow(data: &Data, settings: &ChaidSettings) -> Vec<GrownNode> {
+fn grow(data: &Data, settings: &ChaidSettings) -> Result<Vec<GrownNode>, AlgoError> {
+    crate::check_cancelled()?;
     let total = data.rows.len();
     let min_parent = settings.min_parent.records(total);
     let min_child = settings.min_child.records(total);
@@ -672,6 +693,7 @@ fn grow(data: &Data, settings: &ChaidSettings) -> Vec<GrownNode> {
     }];
     let mut queue = VecDeque::from([(0usize, 0usize)]);
     while let Some((index, depth)) = queue.pop_front() {
+        crate::check_cancelled()?;
         let rows = std::mem::take(&mut nodes[index].rows);
         let candidate = if depth >= settings.max_depth
             || is_pure(data, &rows)
@@ -716,7 +738,7 @@ fn grow(data: &Data, settings: &ChaidSettings) -> Vec<GrownNode> {
         }
         nodes[index].rows = rows;
     }
-    nodes
+    Ok(nodes)
 }
 
 /// The predictor with the smallest adjusted p-value, when it is at most the split alpha.
@@ -728,6 +750,9 @@ fn best_split(
 ) -> Option<(usize, Merged)> {
     let mut best: Option<(usize, Merged)> = None;
     for (index, predictor) in data.predictors.iter().enumerate() {
+        if crate::check_cancelled().is_err() {
+            return None;
+        }
         if let Some(merged) = merge(data, settings, predictor, rows, min_child)
             && best
                 .as_ref()

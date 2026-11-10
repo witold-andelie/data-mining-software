@@ -73,6 +73,7 @@ fn scored(label: &str, stream_path: &Path, uid: &str) -> Arc<Table> {
     let archive = dms_strfmt::container::read_archive(&bytes, &ArchiveLimits::default()).unwrap();
     let stream = Stream::from_document(&archive.document).unwrap();
     let context = ExecContext {
+        cancel: Default::default(),
         files: FileResolver {
             data_dirs: vec![root.join("corpus").join(label)],
         },

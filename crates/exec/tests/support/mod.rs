@@ -73,6 +73,7 @@ pub fn evaluate_stream_output_to(
         .map(|a| (a.name, a.bytes.into()))
         .collect();
     let context = ExecContext {
+        cancel: Default::default(),
         files: FileResolver { data_dirs },
         stream_properties: stream.properties.clone().map(Arc::new),
         attachments: Arc::new(attachments),

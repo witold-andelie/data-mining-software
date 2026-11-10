@@ -148,6 +148,7 @@ fn count(n: usize) -> f64 {
 
 /// Estimate from observations alone; no saved coefficients or oracle values enter this API.
 pub fn fit(y: &[f64], method: Method) -> Result<Fit, AlgoError> {
+    crate::check_cancelled()?;
     validate(y)?;
     match method {
         Method::SeasonalArima(order) => fit_seasonal_arima(y, order, 0, 0),
@@ -370,6 +371,7 @@ fn general_initial(
         let mut cross = 0.0;
         let mut squares = 0.0;
         for j in 0..period {
+            crate::check_cancelled()?;
             let group: Vec<_> = z
                 .iter()
                 .enumerate()
@@ -408,6 +410,7 @@ fn general_initial(
             seasons.iter().sum::<f64>() / count(period)
         };
         for v in &mut seasons {
+            crate::check_cancelled()?;
             if kind == Kind::WintersMul {
                 *v /= center;
             } else {
@@ -453,6 +456,7 @@ fn general_initial(
     // Include t=n, then predict/assimilate t=0 with zero innovation. Reversing
     // time changes the trend sign, after the damped/Brown state update at zero.
     for (i, y) in z.iter().enumerate().rev() {
+        crate::check_cancelled()?;
         g.step(&mut state, Some(*y), i).map_err(data)?;
     }
     let zero = if kind.seasonal() { period - 1 } else { 0 };
@@ -499,6 +503,7 @@ fn fit_general_smooth(
         starts.push(low_other);
     }
     for initial in starts {
+        crate::check_cancelled()?;
         if let Ok((x, iterations)) = lm(initial, &bounds, residuals) {
             let r = residuals(&x)?;
             let value = r.iter().map(|v| v * v).sum::<f64>();
@@ -536,6 +541,7 @@ fn fit_expert_smooth(y: &[f64], period: usize) -> Result<Fit, AlgoError> {
     let n = count(y.len());
     let mut best: Option<(f64, Fit)> = None;
     for kind in candidates {
+        crate::check_cancelled()?;
         let k = count(kind.parameters());
         if n <= k {
             continue;
@@ -644,6 +650,7 @@ fn fit_seasonal_arima(
     let (x, iterations) = if zero_ar == 0 && zero_ma == 0 && (nonseasonal_one || seasonal_one) {
         let mut w = arima::difference(&z, o.d);
         for _ in 0..o.sd {
+            crate::check_cancelled()?;
             if w.len() <= o.period {
                 return Err(data("insufficient seasonal difference history"));
             }
@@ -694,6 +701,7 @@ fn fit_seasonal_arima(
             &[-0.3, 0.1, 0.5]
         };
         for &start in starts {
+            crate::check_cancelled()?;
             let mut x = vec![start; k];
             if o.constant
                 && let Some(v) = x.first_mut()
@@ -929,6 +937,7 @@ pub(crate) fn lm(
     let mut r: Vec<_> = initial.iter().map(|v| v / scale).collect();
     let mut value = norm(&r);
     for iteration in 0..400 {
+        crate::check_cancelled()?;
         if !value.is_finite() {
             return Err(data("nonfinite Time Series objective"));
         }
@@ -1153,6 +1162,7 @@ pub(crate) fn marquardt_guide(
     }
     let mut lambda = 0.001;
     for m in 0..=25 * k {
+        crate::check_cancelled()?;
         let mut jac = Vec::with_capacity(k);
         for (i, v) in x.iter().enumerate() {
             let delta = if *v > 0.0 { -0.0001 } else { 0.0001 };
@@ -1281,6 +1291,7 @@ pub(crate) fn marquardt_guide(
 pub(crate) fn solve(mut a: Vec<Vec<f64>>, mut b: Vec<f64>) -> Result<Vec<f64>, AlgoError> {
     let n = b.len();
     for i in 0..n {
+        crate::check_cancelled()?;
         let pivot = (i..n)
             .max_by(|j, k| {
                 let at = |j: usize| {

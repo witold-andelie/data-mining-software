@@ -111,6 +111,7 @@ pub fn select(
     period: usize,
     all_models: bool,
 ) -> Result<Selection, AlgoError> {
+    crate::check_cancelled()?;
     if !(5..=512).contains(&y.len())
         || y.iter().any(|v| !v.is_finite())
         || !(1..=24).contains(&period)
@@ -163,6 +164,7 @@ pub fn select(
     let w = diff(&z, initial.d, initial.seasonal_d, s);
     let mut inputs = Vec::new();
     for p in predictors {
+        crate::check_cancelled()?;
         if p.values.iter().any(|v| !v.is_finite()) || !varying(&p.values) {
             continue;
         }
@@ -367,6 +369,7 @@ fn estimate(model: &mut Model, w: &[f64], n: usize, ml: bool) -> Result<Estimate
         // Section 6.7.3: previous transfer estimates, default ARMA starts.
         let terms = model.terms.clone();
         for t in terms {
+            crate::check_cancelled()?;
             if matches!(t, Term::Ar(_) | Term::Ma(_) | Term::Sar(_) | Term::Sma(_)) {
                 model.set(t, 0.1);
             }
@@ -418,6 +421,7 @@ fn estimate(model: &mut Model, w: &[f64], n: usize, ml: bool) -> Result<Estimate
     // start, as the univariate ML optimizer does, before exact likelihood.
     if ml {
         for _ in 0..32 {
+            crate::check_cancelled()?;
             if raw(&initial).is_ok() {
                 break;
             }
@@ -441,6 +445,7 @@ fn estimate(model: &mut Model, w: &[f64], n: usize, ml: bool) -> Result<Estimate
     let variance = r.iter().map(|v| v * v).sum::<f64>() / (count - model.terms.len()) as f64;
     let mut jac = Vec::new();
     for (j, v) in p.iter().enumerate() {
+        crate::check_cancelled()?;
         let h = 1e-5 * (1.0 + v.abs());
         let mut plus = p.clone();
         let mut minus = p.clone();
@@ -473,6 +478,7 @@ fn estimate(model: &mut Model, w: &[f64], n: usize, ml: bool) -> Result<Estimate
         .collect();
     let mut t = Vec::new();
     for (i, value) in p.iter().enumerate() {
+        crate::check_cancelled()?;
         let mut unit = vec![0.0; p.len()];
         if let Some(c) = unit.get_mut(i) {
             *c = 1.0;
@@ -618,6 +624,7 @@ fn identify(
     let mut est = estimate(&mut model, w, y.len(), false)?;
     // Whole-series deletion, last first; rebuild m after every deletion.
     for event in [false, true] {
+        crate::check_cancelled()?;
         for _ in 0..16 {
             let drop = (0..model.inputs.len()).rev().find(|&i| {
                 model
@@ -643,6 +650,7 @@ fn identify(
         }
     }
     for _ in 0..2 {
+        crate::check_cancelled()?;
         if prune(&mut model, &est, false, false) {
             est = estimate(&mut model, w, y.len(), false)?;
         }
@@ -655,6 +663,7 @@ fn identify(
         .zip(est.t.iter().copied())
         .collect();
     for i in 0..model.inputs.len() {
+        crate::check_cancelled()?;
         if model.inputs.get(i).is_some_and(|p| p.event) {
             continue;
         }
@@ -711,6 +720,7 @@ fn identify(
         }
     }
     for (ml, den) in [(false, false), (false, true), (true, true)] {
+        crate::check_cancelled()?;
         for _ in 0..128 {
             est = estimate(&mut model, w, y.len(), ml)?;
             if !prune(&mut model, &est, den, true) {
@@ -729,6 +739,7 @@ fn identify(
         .into_iter()
         .filter(|t| *t != Term::Constant)
     {
+        crate::check_cancelled()?;
         if !model.terms.contains(&term) {
             let v = match term {
                 Term::Ar(i) => Some((&mut model.spec.noise.ar, i)),
@@ -753,6 +764,7 @@ fn identify(
             return Ok(None);
         }
         for _ in 0..128 {
+            crate::check_cancelled()?;
             est = estimate(&mut model, w, y.len(), true)?;
             if !prune(&mut model, &est, true, true) {
                 break;

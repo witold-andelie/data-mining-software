@@ -88,6 +88,7 @@ pub fn auc(scores: &[FlagScore]) -> Result<f64, AlgoError> {
     let (mut f, mut t, mut area) = (0usize, 0usize, 0.0);
     let mut i = 0;
     while let Some(first) = sorted.get(i) {
+        crate::check_cancelled()?;
         let (f0, t0) = (f, t);
         while let Some(s) = sorted.get(i).filter(|s| s.propensity == first.propensity) {
             if s.hit {
@@ -120,6 +121,7 @@ pub fn lift(scores: &[FlagScore], percentile: u32) -> Result<f64, AlgoError> {
     let sorted = by_propensity(scores);
     let (mut taken, mut hits, mut i) = (0.0, 0.0, 0);
     while let Some(first) = sorted.get(i).filter(|_| taken < k) {
+        crate::check_cancelled()?;
         let (mut size, mut segment_hits) = (0usize, 0usize);
         while let Some(s) = sorted.get(i).filter(|s| s.propensity == first.propensity) {
             size += 1;
@@ -145,6 +147,7 @@ pub fn max_profit(scores: &[FlagScore], revenue: f64, cost: f64) -> Result<f64, 
     let (mut best, mut running) = (0.0f64, 0.0f64);
     let mut i = 0;
     while let Some(first) = sorted.get(i) {
+        crate::check_cancelled()?;
         while let Some(s) = sorted.get(i).filter(|s| s.propensity == first.propensity) {
             running += if s.hit { revenue - cost } else { -cost };
             i += 1;
@@ -163,6 +166,7 @@ pub fn correlation(pairs: &[(f64, f64)]) -> Result<f64, AlgoError> {
     );
     let (mut sp, mut so, mut spo) = (0.0, 0.0, 0.0);
     for (p, o) in pairs {
+        crate::check_cancelled()?;
         sp += (p - mp).powi(2);
         so += (o - mo).powi(2);
         spo += (p - mp) * (o - mo);

@@ -212,6 +212,7 @@ impl GeneralSpec {
         horizon: usize,
         confidence: f64,
     ) -> Result<SeriesScore, SmoothError> {
+        crate::check_cancelled()?;
         if y.is_empty() || horizon > 512 {
             return Err(SmoothError::Data(
                 "smoothing requires history and horizon <=512".into(),
@@ -241,6 +242,7 @@ impl GeneralSpec {
         let mut state = final_state.clone();
         let mut means = Vec::new();
         for h in 0..horizon {
+            crate::check_cancelled()?;
             means.push(self.step(&mut state, None, z.len().saturating_add(h))?);
         }
         // Impulse propagation is exact for additive component models. Multiplicative
@@ -248,6 +250,7 @@ impl GeneralSpec {
         let mut variance = vec![self.sigma2; horizon];
         let eps = 1e-5 * final_state.level.abs().max(1.0);
         for j in 0..horizon {
+            crate::check_cancelled()?;
             let mut state = final_state.clone();
             for (h, mean) in means.iter().enumerate() {
                 let pred = self.step(&mut state, None, z.len().saturating_add(h))?;
@@ -312,6 +315,7 @@ pub struct SeriesScore {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SmoothError {
+    Cancelled,
     Data(String),
     Settings(String),
 }
@@ -319,6 +323,7 @@ pub enum SmoothError {
 impl fmt::Display for SmoothError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            SmoothError::Cancelled => f.write_str("cancelled"),
             SmoothError::Data(message) | SmoothError::Settings(message) => f.write_str(message),
         }
     }
@@ -333,6 +338,7 @@ pub fn score(
     horizon: usize,
     conf_percent: f64,
 ) -> Result<SeriesScore, SmoothError> {
+    crate::check_cancelled()?;
     if let SmoothSpec::General(g) = spec {
         return g.score(y, horizon, conf_percent);
     }
@@ -367,10 +373,12 @@ pub fn score(
     let mut fitted = Vec::with_capacity(points.len());
     let history_scale = se(spec, 1)?;
     for point in points {
+        crate::check_cancelled()?;
         fitted.push(interval(point, history_scale, tcrit)?);
     }
     let mut forecasts = Vec::with_capacity(horizon);
     for step in 1..=horizon {
+        crate::check_cancelled()?;
         let point = match spec {
             SmoothSpec::General(_) => {
                 return Err(SmoothError::Settings("general smoothing dispatch".into()));
@@ -455,6 +463,7 @@ pub(crate) fn recurse(spec: &SmoothSpec, y: &[f64]) -> Result<(Vec<f64>, f64, f6
             let mut level = *init_level;
             let mut points = Vec::with_capacity(y.len());
             for value in y {
+                crate::check_cancelled()?;
                 points.push(level);
                 level = alpha * value + (1.0 - alpha) * level;
                 if !level.is_finite() {
@@ -476,6 +485,7 @@ pub(crate) fn recurse(spec: &SmoothSpec, y: &[f64]) -> Result<(Vec<f64>, f64, f6
             let mut trend = *init_trend;
             let mut points = Vec::with_capacity(y.len());
             for value in y {
+                crate::check_cancelled()?;
                 let point = level + trend;
                 if !point.is_finite() {
                     return Err(SmoothError::Data(
@@ -561,6 +571,12 @@ fn as_f64(value: usize) -> Result<f64, SmoothError> {
             "GAP: forecast step {value} exceeds the supported maximum"
         ))
     })
+}
+
+impl From<dms_types::Cancelled> for SmoothError {
+    fn from(_: dms_types::Cancelled) -> Self {
+        Self::Cancelled
+    }
 }
 
 #[cfg(test)]

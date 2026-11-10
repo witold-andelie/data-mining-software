@@ -137,6 +137,7 @@ impl Default for CartSettings {
 
 /// Trains a C&R Tree model.
 pub fn train(dataset: &Dataset<'_>, settings: &CartSettings) -> Result<Pmml, AlgoError> {
+    crate::check_cancelled()?;
     if dataset.frequency.is_some() {
         return Err(AlgoError::Unsupported(
             "C&R Tree with a frequency field".into(),
@@ -156,9 +157,9 @@ pub fn train(dataset: &Dataset<'_>, settings: &CartSettings) -> Result<Pmml, Alg
             "the standard error rule for regression trees".into(),
         ));
     }
-    let mut tree = grow(&data, settings);
+    let mut tree = grow(&data, settings)?;
     if settings.prune {
-        prune(&mut tree, &data, settings);
+        prune(&mut tree, &data, settings)?;
     }
     let root = pmml_node(&tree, 0, &data, Predicate::True);
     let header = ModelHeader {
@@ -255,6 +256,7 @@ impl Data {
         let target = if target_field.measurement == Measurement::Continuous {
             let mut numbers = vec![0.0; table_rows.len()];
             for (i, row) in table_rows.iter().enumerate() {
+                crate::check_cancelled()?;
                 if let Some(x) = target_value(row)
                     .and_then(|v| v.as_f64())
                     .filter(|x| x.is_finite())
@@ -268,6 +270,7 @@ impl Data {
             let mut labels = categories(dataset, dataset.target);
             let mut codes = vec![0; table_rows.len()];
             for (i, row) in table_rows.iter().enumerate() {
+                crate::check_cancelled()?;
                 if let Some(value) = target_value(row) {
                     codes[i] = code_of(&mut labels, value.to_string());
                     rows.push(i);
@@ -279,6 +282,7 @@ impl Data {
         let mut names = Vec::new();
         let mut columns = Vec::new();
         for &position in dataset.inputs {
+            crate::check_cancelled()?;
             let input = field(position)?;
             let numeric = matches!(input.storage, Storage::Integer | Storage::Real);
             let cell = |row: &[Value]| {
@@ -318,6 +322,7 @@ impl Data {
             let mut rng = Rng(settings.seed);
             let (mut train, mut overfit) = (Vec::new(), Vec::new());
             for row in valid {
+                crate::check_cancelled()?;
                 if rng.unit() < settings.overfit_share {
                     overfit.push(row);
                 } else {
@@ -345,6 +350,7 @@ impl Data {
             Target::Classes { codes, labels } => {
                 let mut totals = vec![0.0; labels.len()];
                 for &row in &rows {
+                    crate::check_cancelled()?;
                     totals[codes[row]] += 1.0;
                 }
                 let n = rows.len() as f64;
@@ -598,10 +604,16 @@ fn numeric_split(
             let mut left = vec![0.0; labels.len()];
             let mut right = vec![0.0; labels.len()];
             for &row in sorted {
+                if crate::check_cancelled().is_err() {
+                    return None;
+                }
                 right[codes[row]] += 1.0;
             }
             let mut next = 0;
             for &cut in &cuts {
+                if crate::check_cancelled().is_err() {
+                    return None;
+                }
                 while next < cut {
                     left[codes[sorted[next]]] += 1.0;
                     right[codes[sorted[next]]] -= 1.0;
@@ -616,11 +628,17 @@ fn numeric_split(
         Target::Numbers(ys) => {
             let mut total = Moments::default();
             for &row in sorted {
+                if crate::check_cancelled().is_err() {
+                    return None;
+                }
                 total.add(ys[row]);
             }
             let mut left = Moments::default();
             let mut next = 0;
             for &cut in &cuts {
+                if crate::check_cancelled().is_err() {
+                    return None;
+                }
                 while next < cut {
                     left.add(ys[sorted[next]]);
                     next += 1;
@@ -706,9 +724,15 @@ fn categorical_split(
             let root = root_counts(data, |r| codes[r].is_some(), classes, k);
             let mut by_category = vec![vec![0.0; k]; labels.len()];
             for &row in valid {
+                if crate::check_cancelled().is_err() {
+                    return None;
+                }
                 by_category[code(row)][classes[row]] += 1.0;
             }
             for set in subsets(&present)? {
+                if crate::check_cancelled().is_err() {
+                    return None;
+                }
                 let mut left = vec![0.0; k];
                 let mut right = vec![0.0; k];
                 for &c in &present {
@@ -731,10 +755,16 @@ fn categorical_split(
             let mut by_category = vec![Moments::default(); labels.len()];
             let mut total = Moments::default();
             for &row in valid {
+                if crate::check_cancelled().is_err() {
+                    return None;
+                }
                 by_category[code(row)].add(ys[row]);
                 total.add(ys[row]);
             }
             for set in subsets(&present)? {
+                if crate::check_cancelled().is_err() {
+                    return None;
+                }
                 let mut left = Moments::default();
                 for &c in &set {
                     left.merge(&by_category[c]);
@@ -802,6 +832,9 @@ fn best_surrogate(
             let value = |i: usize| values[sorted[i].0].unwrap_or(f64::NAN);
             let mut low_and_left = 0;
             for cut in 1..n {
+                if crate::check_cancelled().is_err() {
+                    return None;
+                }
                 if sorted[cut - 1].1 {
                     low_and_left += 1;
                 }
@@ -833,6 +866,9 @@ fn best_surrogate(
             let mut count = vec![0usize; labels.len()];
             let mut count_left = vec![0usize; labels.len()];
             for &(row, left) in &both {
+                if crate::check_cancelled().is_err() {
+                    return None;
+                }
                 if let Some(code) = codes[row] {
                     count[code] += 1;
                     if left {
@@ -841,6 +877,9 @@ fn best_surrogate(
                 }
             }
             for set in subsets(&present)? {
+                if crate::check_cancelled().is_err() {
+                    return None;
+                }
                 let in_set: usize = set.iter().map(|&c| count[c]).sum();
                 let in_set_left: usize = set.iter().map(|&c| count_left[c]).sum();
                 let set_left = in_set_left + (n - in_set) - (n_left - in_set_left);
@@ -974,7 +1013,8 @@ struct Tree {
     nodes: Vec<GrownNode>,
 }
 
-fn grow(data: &Data, settings: &CartSettings) -> Tree {
+fn grow(data: &Data, settings: &CartSettings) -> Result<Tree, AlgoError> {
+    crate::check_cancelled()?;
     let total = data.rows.len();
     let min_parent = settings.min_parent.records(total);
     let min_child = settings.min_child.records(total);
@@ -987,6 +1027,7 @@ fn grow(data: &Data, settings: &CartSettings) -> Tree {
     let mut next_id = 1;
     let mut queue = VecDeque::from([(0usize, 0usize)]);
     while let Some((index, depth)) = queue.pop_front() {
+        crate::check_cancelled()?;
         let rows = std::mem::take(&mut nodes[index].rows);
         let stop =
             depth >= settings.max_depth || is_pure(data, &rows) || (rows.len() as f64) < min_parent;
@@ -1024,7 +1065,7 @@ fn grow(data: &Data, settings: &CartSettings) -> Tree {
         }
         nodes[index].rows = rows;
     }
-    Tree { nodes }
+    Ok(Tree { nodes })
 }
 
 type MadeSplit = (usize, Rule, Vec<Surrogate>, bool, Vec<usize>, Vec<usize>);
@@ -1038,6 +1079,9 @@ fn split_node(
 ) -> Option<MadeSplit> {
     let mut best: Option<(usize, Candidate)> = None;
     for (input, column) in data.columns.iter().enumerate() {
+        if crate::check_cancelled().is_err() {
+            return None;
+        }
         if let Some(candidate) = best_split(data, settings, column, rows)
             && best
                 .as_ref()
@@ -1056,6 +1100,9 @@ fn split_node(
     let default_left = candidate.left_valid >= candidate.right_valid;
     let (mut left_rows, mut right_rows) = (Vec::new(), Vec::new());
     for &row in rows {
+        if crate::check_cancelled().is_err() {
+            return None;
+        }
         let left = candidate.rule.goes_left(column, row).or_else(|| {
             surrogates.iter().find_map(|s| {
                 s.rule
@@ -1201,11 +1248,13 @@ fn holdout_risk(tree: &Tree, data: &Data) -> Vec<f64> {
 /// Weakest-link pruning (Algorithms Guide, "Pruning"): collapse the splits with the smallest
 /// `g(t) = (R(t) - R(T_t)) / (|T_t| - 1)` until only the root is left, then keep the smallest tree
 /// of that sequence whose risk is within the chosen margin of the minimum.
-fn prune(tree: &mut Tree, data: &Data, settings: &CartSettings) {
+fn prune(tree: &mut Tree, data: &Data, settings: &CartSettings) -> Result<(), AlgoError> {
+    crate::check_cancelled()?;
     let risk = holdout_risk(tree, data);
     let mut kept: Vec<bool> = tree.nodes.iter().map(|n| n.split.is_some()).collect();
     let mut sequence = vec![(kept.clone(), subtree(tree, &kept, &risk, 0).0)];
     while kept[0] {
+        crate::check_cancelled()?;
         let links: Vec<(usize, f64)> = (0..tree.nodes.len())
             .filter(|&index| kept[index])
             .map(|index| {
@@ -1251,6 +1300,8 @@ fn prune(tree: &mut Tree, data: &Data, settings: &CartSettings) {
             }
         }
     }
+
+    Ok(())
 }
 
 /// Risk and leaf count of the subtree under `index` with the `kept` splits.

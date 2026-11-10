@@ -479,190 +479,194 @@ impl Operator for TimeSeriesBuild {
         _model: Option<Arc<Pmml>>,
         context: &ExecContext,
     ) -> Result<NodeOutput, OperatorError> {
-        let input = inputs
-            .first()
-            .ok_or_else(|| OperatorError::Inputs("Time Series needs one training input".into()))?;
-        let predictor_fields: Vec<String> = self
-            .expert_inputs
-            .iter()
-            .cloned()
-            .chain(self.effects.iter().map(|e| e.field.clone()))
-            .collect();
-        let input = &interpolate_predictors(input, &predictor_fields)?;
-        if !(5..=512).contains(&input.row_count()) {
-            return Err(OperatorError::Data(
-                "Time Series estimation requires 5..=512 records".into(),
-            ));
-        }
-        if input.model().fields().iter().any(|f| {
-            matches!(
-                f.role,
-                dms_types::Role::Split | dms_types::Role::Partition | dms_types::Role::Frequency
-            )
-        }) {
-            return Err(OperatorError::Settings(
-                "GAP: Time Series partition/split/frequency role".into(),
-            ));
-        }
-        let period = input
-            .model()
-            .position(&self.period)
-            .ok_or_else(|| OperatorError::Data("Time Series period absent".into()))?;
-        validate_period(input, period, self.monthly)?;
-        let selected = if self.method.is_none() && self.expert_period.is_none() {
-            let member = self
-                .selected_member
-                .as_deref()
-                .ok_or_else(|| OperatorError::Settings("GAP: Expert automatic selection".into()))?;
-            expert_specifications(member, context)?
-        } else {
-            Vec::new()
-        };
-        let mut segments = String::new();
-        for target in &self.targets {
-            // Explicit builders use their persisted settings. Keyed transforms absent
-            // from these streams are not recovered from a pre-rebuild nugget.
-            let at = input.model().position(target).ok_or_else(|| {
-                OperatorError::Data(format!("Time Series target {target:?} absent"))
+        dms_algo::with_cancel(&context.cancel, || {
+            let input = inputs.first().ok_or_else(|| {
+                OperatorError::Inputs("Time Series needs one training input".into())
             })?;
-            let field =
-                input.model().fields().get(at).ok_or_else(|| {
+            let predictor_fields: Vec<String> = self
+                .expert_inputs
+                .iter()
+                .cloned()
+                .chain(self.effects.iter().map(|e| e.field.clone()))
+                .collect();
+            let input = &interpolate_predictors(input, &predictor_fields)?;
+            if !(5..=512).contains(&input.row_count()) {
+                return Err(OperatorError::Data(
+                    "Time Series estimation requires 5..=512 records".into(),
+                ));
+            }
+            if input.model().fields().iter().any(|f| {
+                matches!(
+                    f.role,
+                    dms_types::Role::Split
+                        | dms_types::Role::Partition
+                        | dms_types::Role::Frequency
+                )
+            }) {
+                return Err(OperatorError::Settings(
+                    "GAP: Time Series partition/split/frequency role".into(),
+                ));
+            }
+            let period = input
+                .model()
+                .position(&self.period)
+                .ok_or_else(|| OperatorError::Data("Time Series period absent".into()))?;
+            validate_period(input, period, self.monthly)?;
+            let selected = if self.method.is_none() && self.expert_period.is_none() {
+                let member = self.selected_member.as_deref().ok_or_else(|| {
+                    OperatorError::Settings("GAP: Expert automatic selection".into())
+                })?;
+                expert_specifications(member, context)?
+            } else {
+                Vec::new()
+            };
+            let mut segments = String::new();
+            for target in &self.targets {
+                // Explicit builders use their persisted settings. Keyed transforms absent
+                // from these streams are not recovered from a pre-rebuild nugget.
+                let at = input.model().position(target).ok_or_else(|| {
+                    OperatorError::Data(format!("Time Series target {target:?} absent"))
+                })?;
+                let field = input.model().fields().get(at).ok_or_else(|| {
                     OperatorError::Data("Time Series target metadata absent".into())
                 })?;
-            let y: Result<Vec<_>, _> = input
-                .rows()
-                .iter()
-                .map(|row| {
-                    row.get(at)
-                        .filter(|v| !field.is_missing(v))
-                        .and_then(Value::as_f64)
-                        .filter(|v| v.is_finite())
-                        .ok_or_else(|| {
-                            OperatorError::Data(format!(
-                                "GAP: Time Series missing/nonfinite target {target}"
-                            ))
-                        })
+                let y: Result<Vec<_>, _> = input
+                    .rows()
+                    .iter()
+                    .map(|row| {
+                        row.get(at)
+                            .filter(|v| !field.is_missing(v))
+                            .and_then(Value::as_f64)
+                            .filter(|v| v.is_finite())
+                            .ok_or_else(|| {
+                                OperatorError::Data(format!(
+                                    "GAP: Time Series missing/nonfinite target {target}"
+                                ))
+                            })
+                    })
+                    .collect();
+                let y = y?;
+                let fit = match (self.method, self.expert_period) {
+                    (None, Some(period)) if !self.expert_inputs.is_empty() => {
+                        let mut predictors = Vec::new();
+                        for name in self.expert_inputs.iter().filter(|name| *name != target) {
+                            let at = input.model().position(name).ok_or_else(|| {
+                                OperatorError::Data(format!(
+                                    "Time Series predictor {name:?} absent"
+                                ))
+                            })?;
+                            let field = input.model().fields().get(at).ok_or_else(|| {
+                                OperatorError::Data("Time Series predictor metadata absent".into())
+                            })?;
+                            let values = input
+                                .rows()
+                                .iter()
+                                .map(|row| {
+                                    row.get(at)
+                                        .filter(|v| !field.is_missing(v))
+                                        .and_then(Value::as_f64)
+                                        .unwrap_or(f64::NAN)
+                                })
+                                .collect();
+                            predictors.push(dms_algo::expert_tf::Predictor {
+                                field: name.clone(),
+                                values,
+                                forced: false,
+                                event: self.expert_events.contains(name),
+                            });
+                        }
+                        dms_algo::expert_tf::select(&y, &predictors, period, self.expert_all_models)
+                            .map_err(score_message)?
+                            .fit
+                    }
+                    (None, Some(period)) => {
+                        let selected = arima::expert_arima(&y, period).map_err(|e| {
+                            OperatorError::Data(format!("Expert ARIMA selection: {e}"))
+                        })?;
+                        let arima_fit = estimation::fit(&y, selected_arima_method(&selected)?)
+                            .map_err(score_message)?;
+                        if self.expert_all_models {
+                            // AllModels keeps the family with the smaller original-scale NBIC.
+                            let smooth_fit = estimation::fit(&y, Method::ExpertSmooth { period })
+                                .map_err(score_message)?;
+                            let nbic = |fit: &estimation::Fit| {
+                                estimation::normalized_bic(&fit.spec, &y).map_err(score_message)
+                            };
+                            if nbic(&arima_fit)? < nbic(&smooth_fit)? {
+                                arima_fit
+                            } else {
+                                smooth_fit
+                            }
+                        } else {
+                            arima_fit
+                        }
+                    }
+                    (method, _) => {
+                        let method = match method {
+                            Some(method) => method,
+                            None => selected
+                                .iter()
+                                .find(|(name, _)| name == target)
+                                .map(|(_, method)| *method)
+                                .ok_or_else(|| {
+                                    OperatorError::Settings(format!(
+                                        "GAP: Expert has no selected specification for {target}"
+                                    ))
+                                })?,
+                        };
+                        if self.effects.is_empty() {
+                            estimation::fit(&y, method)
+                        } else {
+                            let x = self
+                                .effects
+                                .iter()
+                                .map(|e| numeric_column(input, &e.field))
+                                .collect::<Result<Vec<_>, _>>()?;
+                            let template = TransferSpec {
+                                noise: ArimaSpec {
+                                    seasonal_d: 0,
+                                    period: 1,
+                                    seasonal_ar: vec![],
+                                    seasonal_ma: vec![],
+                                    transform: Transform::None,
+                                    constant: 0.0,
+                                    d: 0,
+                                    ar: vec![0.0],
+                                    ma: vec![],
+                                    sigma2: 1.0,
+                                    df: 1.0,
+                                },
+                                effects: self.effects.clone(),
+                            };
+                            transfer::fit(&y, &x, &template)
+                        }
+                        .map_err(score_message)?
+                    }
+                };
+                segments.push_str(&format!(
+                    "<Segment><True/>{}</Segment>",
+                    fit.to_xml(target, input.row_count())
+                ));
+            }
+            let xml = format!(
+                "<PMML version=\"4.3\"><DataDictionary/><MiningModel functionName=\"timeSeries\"><MiningSchema/><Segmentation multipleModelMethod=\"selectAll\">{segments}</Segmentation></MiningModel></PMML>"
+            );
+            let mut pmml = Pmml::parse(&xml).map_err(|e| OperatorError::Data(e.to_string()))?;
+            let mut dictionary_names = std::collections::HashSet::new();
+            pmml.data_dictionary = std::iter::once(&self.period)
+                .chain(&self.targets)
+                .chain(&self.expert_inputs)
+                .filter(|name| dictionary_names.insert(*name))
+                .filter_map(|name| {
+                    input
+                        .model()
+                        .position(name)
+                        .and_then(|at| dms_algo::data_field(input, at))
                 })
                 .collect();
-            let y = y?;
-            let fit = match (self.method, self.expert_period) {
-                (None, Some(period)) if !self.expert_inputs.is_empty() => {
-                    let mut predictors = Vec::new();
-                    for name in self.expert_inputs.iter().filter(|name| *name != target) {
-                        let at = input.model().position(name).ok_or_else(|| {
-                            OperatorError::Data(format!("Time Series predictor {name:?} absent"))
-                        })?;
-                        let field = input.model().fields().get(at).ok_or_else(|| {
-                            OperatorError::Data("Time Series predictor metadata absent".into())
-                        })?;
-                        let values = input
-                            .rows()
-                            .iter()
-                            .map(|row| {
-                                row.get(at)
-                                    .filter(|v| !field.is_missing(v))
-                                    .and_then(Value::as_f64)
-                                    .unwrap_or(f64::NAN)
-                            })
-                            .collect();
-                        predictors.push(dms_algo::expert_tf::Predictor {
-                            field: name.clone(),
-                            values,
-                            forced: false,
-                            event: self.expert_events.contains(name),
-                        });
-                    }
-                    dms_algo::expert_tf::select(&y, &predictors, period, self.expert_all_models)
-                        .map_err(score_message)?
-                        .fit
-                }
-                (None, Some(period)) => {
-                    let selected = arima::expert_arima(&y, period)
-                        .map_err(|e| OperatorError::Data(format!("Expert ARIMA selection: {e}")))?;
-                    let arima_fit = estimation::fit(&y, selected_arima_method(&selected)?)
-                        .map_err(score_message)?;
-                    if self.expert_all_models {
-                        // AllModels keeps the family with the smaller original-scale NBIC.
-                        let smooth_fit = estimation::fit(&y, Method::ExpertSmooth { period })
-                            .map_err(score_message)?;
-                        let nbic = |fit: &estimation::Fit| {
-                            estimation::normalized_bic(&fit.spec, &y).map_err(score_message)
-                        };
-                        if nbic(&arima_fit)? < nbic(&smooth_fit)? {
-                            arima_fit
-                        } else {
-                            smooth_fit
-                        }
-                    } else {
-                        arima_fit
-                    }
-                }
-                (method, _) => {
-                    let method = match method {
-                        Some(method) => method,
-                        None => selected
-                            .iter()
-                            .find(|(name, _)| name == target)
-                            .map(|(_, method)| *method)
-                            .ok_or_else(|| {
-                                OperatorError::Settings(format!(
-                                    "GAP: Expert has no selected specification for {target}"
-                                ))
-                            })?,
-                    };
-                    if self.effects.is_empty() {
-                        estimation::fit(&y, method)
-                    } else {
-                        let x = self
-                            .effects
-                            .iter()
-                            .map(|e| numeric_column(input, &e.field))
-                            .collect::<Result<Vec<_>, _>>()?;
-                        let template = TransferSpec {
-                            noise: ArimaSpec {
-                                seasonal_d: 0,
-                                period: 1,
-                                seasonal_ar: vec![],
-                                seasonal_ma: vec![],
-                                transform: Transform::None,
-                                constant: 0.0,
-                                d: 0,
-                                ar: vec![0.0],
-                                ma: vec![],
-                                sigma2: 1.0,
-                                df: 1.0,
-                            },
-                            effects: self.effects.clone(),
-                        };
-                        transfer::fit(&y, &x, &template)
-                    }
-                    .map_err(score_message)?
-                }
-            };
-            segments.push_str(&format!(
-                "<Segment><True/>{}</Segment>",
-                fit.to_xml(target, input.row_count())
-            ));
-        }
-        let xml = format!(
-            "<PMML version=\"4.3\"><DataDictionary/><MiningModel functionName=\"timeSeries\"><MiningSchema/><Segmentation multipleModelMethod=\"selectAll\">{segments}</Segmentation></MiningModel></PMML>"
-        );
-        let mut pmml = Pmml::parse(&xml).map_err(|e| OperatorError::Data(e.to_string()))?;
-        let mut dictionary_names = std::collections::HashSet::new();
-        pmml.data_dictionary = std::iter::once(&self.period)
-            .chain(&self.targets)
-            .chain(&self.expert_inputs)
-            .filter(|name| dictionary_names.insert(*name))
-            .filter_map(|name| {
-                input
-                    .model()
-                    .position(name)
-                    .and_then(|at| dms_algo::data_field(input, at))
-            })
-            .collect();
-        if let dms_pmml::Model::Mining(model) = &mut pmml.model {
-            model.header.mining_schema =
-                self.targets
+            if let dms_pmml::Model::Mining(model) = &mut pmml.model {
+                model.header.mining_schema = self
+                    .targets
                     .iter()
                     .filter_map(|name| {
                         input.model().position(name).and_then(|at| {
@@ -670,8 +674,9 @@ impl Operator for TimeSeriesBuild {
                         })
                     })
                     .collect();
-        }
-        Ok(NodeOutput::Model(Arc::new(pmml)))
+            }
+            Ok(NodeOutput::Model(Arc::new(pmml)))
+        })
     }
 }
 
@@ -1009,8 +1014,10 @@ impl Operator for TimeSeriesApply {
         model: Option<Arc<Pmml>>,
         context: &ExecContext,
     ) -> Result<NodeOutput, OperatorError> {
-        self.score(inputs, model.as_deref(), context)
-            .map(|table| NodeOutput::Data(Arc::new(table)))
+        dms_algo::with_cancel(&context.cancel, || {
+            self.score(inputs, model.as_deref(), context)
+                .map(|table| NodeOutput::Data(Arc::new(table)))
+        })
     }
 }
 

@@ -393,6 +393,7 @@ fn run(path: &Path, args: &[String]) -> Result<(), String> {
         }
     }
     let context = dms_exec::ExecContext {
+        cancel: Default::default(),
         files: dms_exec::FileResolver { data_dirs },
         stream_properties: stream.properties.clone().map(std::sync::Arc::new),
         attachments: std::sync::Arc::new(attachments.into_iter().collect()),

@@ -64,6 +64,7 @@ pub struct Dataset<'a> {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AlgoError {
+    Cancelled,
     /// Settings the algorithm cannot use.
     Settings(String),
     /// Data the algorithm cannot train on (no records, a target without values, ...).
@@ -75,6 +76,7 @@ pub enum AlgoError {
 impl fmt::Display for AlgoError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            AlgoError::Cancelled => f.write_str("cancelled"),
             AlgoError::Settings(message) => write!(f, "invalid settings: {message}"),
             AlgoError::Data(message) => write!(f, "cannot train: {message}"),
             AlgoError::Unsupported(what) => write!(f, "not supported yet: {what}"),
@@ -83,3 +85,57 @@ impl fmt::Display for AlgoError {
 }
 
 impl std::error::Error for AlgoError {}
+
+impl From<dms_types::Cancelled> for AlgoError {
+    fn from(_: dms_types::Cancelled) -> Self {
+        Self::Cancelled
+    }
+}
+
+thread_local! {
+    // Training is synchronous on its worker. A scoped token also reaches numerical
+    // callbacks and Auto/ensemble candidates without changing their numerical APIs.
+    static CANCEL: std::cell::RefCell<Option<dms_types::CancelToken>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Run synchronous training with a cancellation token. Scopes are thread-local and
+/// nest safely; dropping a scope restores the previous token, including on unwind.
+/// Callers outside an execution scope retain the original, never-cancelled API.
+pub fn with_cancel<T, E: From<dms_types::Cancelled>>(
+    cancel: &dms_types::CancelToken,
+    work: impl FnOnce() -> Result<T, E>,
+) -> Result<T, E> {
+    cancel.check()?;
+    let previous = CANCEL.with(|slot| {
+        slot.try_borrow_mut()
+            .map(|mut slot| slot.replace(cancel.clone()))
+            .map_err(|_| dms_types::Cancelled)
+    })?;
+    struct Restore(Option<dms_types::CancelToken>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            CANCEL.with(|slot| {
+                if let Ok(mut slot) = slot.try_borrow_mut() {
+                    *slot = self.0.take();
+                }
+            });
+        }
+    }
+    let _restore = Restore(previous);
+    let result = work();
+    // Some candidate searches intentionally ignore failed candidates. Cancellation
+    // still has to escape them, and must never publish an incomplete model.
+    cancel.check()?;
+    result
+}
+
+/// Cheap checkpoint for iterations and record batches in synchronous algorithms.
+pub fn check_cancelled() -> Result<(), dms_types::Cancelled> {
+    CANCEL.with(|slot| {
+        let slot = slot.try_borrow().map_err(|_| dms_types::Cancelled)?;
+        match slot.as_ref() {
+            Some(cancel) => cancel.check(),
+            None => Ok(()),
+        }
+    })
+}

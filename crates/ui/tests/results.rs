@@ -78,6 +78,7 @@ fn report() -> RunReport {
         )),
     );
     RunReport {
+        cancelled: false,
         targets: vec!["t".to_string(), "doc".to_string(), "after".to_string()],
         results,
         root_causes: vec![bad],

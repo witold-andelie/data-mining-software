@@ -60,6 +60,7 @@ fn all_fifteen_nuggets_preserve_oracle_fields_rows_and_metadata() {
             .find(|n| n.type_identifier() == "TypeNode")
             .unwrap();
         let context = ExecContext {
+            cancel: Default::default(),
             files: FileResolver {
                 data_dirs: vec![root.join("corpus/models_stats")],
             },

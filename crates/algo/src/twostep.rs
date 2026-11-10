@@ -303,6 +303,9 @@ fn closest<'a>(
 ) -> Option<(usize, f64)> {
     let mut best: Option<(usize, f64)> = None;
     for (k, cf) in cfs.enumerate() {
+        if crate::check_cancelled().is_err() {
+            return None;
+        }
         let d = measure.distance(cf, record);
         if best.is_none_or(|(_, b)| d < b) {
             best = Some((k, d));
@@ -348,6 +351,7 @@ fn partition<T>(
     let mut right = Vec::new();
     let mut pending = Vec::new();
     for (k, item) in items.into_iter().enumerate() {
+        crate::check_cancelled()?;
         if k == a {
             left.push(item);
         } else if k == b {
@@ -357,6 +361,7 @@ fn partition<T>(
         }
     }
     while !pending.is_empty() {
+        crate::check_cancelled()?;
         let mut best: Option<(usize, f64, f64, f64)> = None;
         for (k, item) in pending.iter().enumerate() {
             let dl = measure.distance(cf(item), &left_cf);
@@ -388,6 +393,7 @@ pub fn train(
     inputs: &[usize],
     settings: &TwoStepSettings,
 ) -> Result<Pmml, AlgoError> {
+    crate::check_cancelled()?;
     let fields = table.model().fields();
     let missing = |position: usize, value: Option<&Value>| match value {
         None | Some(Value::Null) => true,
@@ -405,6 +411,7 @@ pub fn train(
 
     let mut columns = Vec::new();
     for &position in inputs {
+        crate::check_cancelled()?;
         let field = fields
             .get(position)
             .ok_or_else(|| AlgoError::Data(format!("no field at position {position}")))?;
@@ -478,6 +485,7 @@ pub fn train(
     let records: Vec<Cf> = rows.iter().map(|row| record_cf(row)).collect();
     let mut deltas = Vec::new();
     for k in 0..records[0].sum.len() {
+        crate::check_cancelled()?;
         if !settings.standardize {
             deltas.push(1.0);
             continue;
@@ -546,6 +554,7 @@ pub(crate) fn cluster(
     let mut root = Node::Leaf(Vec::new());
     let mut levels = 1;
     for record in records {
+        crate::check_cancelled()?;
         if let Some((left, right)) = root.insert(record, &measure)? {
             levels += 1;
             if levels > MAX_LEVEL {
@@ -568,7 +577,7 @@ pub(crate) fn cluster(
     } else {
         settings.clusters.max(1)
     };
-    let (solutions, distances) = agglomerate(leaves, &measure, keep);
+    let (solutions, distances) = agglomerate(leaves, &measure, keep)?;
     let criterion = |j: usize| -> Option<f64> {
         let clusters = solutions.get(&j)?;
         let fit: f64 = clusters.iter().map(|c| c.log_likelihood(deltas)).sum();
@@ -593,17 +602,20 @@ pub(crate) fn cluster(
 
 /// Merges the leaf entries down to one cluster. Returns the solutions with at most `keep`
 /// clusters by size, and `distances[j]`: the distance of the merge that leaves `j` clusters.
+type Agglomeration = (std::collections::BTreeMap<usize, Vec<Cf>>, Vec<f64>);
+
 fn agglomerate(
     leaves: Vec<Cf>,
     measure: &Measure<'_>,
     keep: usize,
-) -> (std::collections::BTreeMap<usize, Vec<Cf>>, Vec<f64>) {
+) -> Result<Agglomeration, AlgoError> {
     let mut solutions = std::collections::BTreeMap::new();
     let mut clusters = leaves;
     let mut distances = vec![0.0; clusters.len()];
     let mut matrix: Vec<Vec<f64>> = (0..clusters.len())
         .map(|i| {
-            (0..clusters.len())
+            crate::check_cancelled()?;
+            Ok((0..clusters.len())
                 .map(|j| {
                     if j > i {
                         measure.distance(&clusters[i], &clusters[j])
@@ -611,15 +623,17 @@ fn agglomerate(
                         0.0
                     }
                 })
-                .collect()
+                .collect())
         })
-        .collect();
+        .collect::<Result<_, AlgoError>>()?;
     if clusters.len() <= keep {
         solutions.insert(clusters.len(), clusters.clone());
     }
     while clusters.len() > 1 {
+        crate::check_cancelled()?;
         let mut best = (0, 1, f64::INFINITY);
         for (i, row) in matrix.iter().enumerate() {
+            crate::check_cancelled()?;
             for (j, &d) in row.iter().enumerate().skip(i + 1) {
                 if d < best.2 {
                     best = (i, j, d);
@@ -644,7 +658,7 @@ fn agglomerate(
             solutions.insert(clusters.len(), clusters.clone());
         }
     }
-    (solutions, distances)
+    Ok((solutions, distances))
 }
 
 /// The automatic number of clusters (see the module docs).

@@ -158,6 +158,7 @@ impl Parameter {
 
 /// Train a Linear or Regression model; the build node maps Linear's ADP/stepwise defaults.
 pub fn train(dataset: &Dataset<'_>, settings: &LinearSettings) -> Result<Pmml, AlgoError> {
+    crate::check_cancelled()?;
     validate(settings)?;
     if dataset.frequency.is_some() {
         return Err(AlgoError::Unsupported("Linear frequency weights".into()));
@@ -169,6 +170,7 @@ pub fn train(dataset: &Dataset<'_>, settings: &LinearSettings) -> Result<Pmml, A
     }
     let mut seen = std::collections::HashSet::new();
     for &position in dataset.inputs {
+        crate::check_cancelled()?;
         if dataset.table.model().fields().get(position).is_none()
             || position == dataset.target
             || !seen.insert(position)
@@ -237,6 +239,7 @@ pub fn train(dataset: &Dataset<'_>, settings: &LinearSettings) -> Result<Pmml, A
         })
         .collect();
     for &position in std::iter::once(&dataset.target).chain(dataset.inputs.iter()) {
+        crate::check_cancelled()?;
         if field(position)?.measurement == Measurement::Continuous
             && rows.iter().any(|r| {
                 r.get(position)
@@ -272,6 +275,7 @@ pub fn train(dataset: &Dataset<'_>, settings: &LinearSettings) -> Result<Pmml, A
         }))
         .collect();
     for &position in &ordered {
+        crate::check_cancelled()?;
         if field(position)?.measurement == Measurement::Continuous {
             parameters.push(Parameter::Covariate { position });
             continue;
@@ -325,6 +329,7 @@ pub fn train(dataset: &Dataset<'_>, settings: &LinearSettings) -> Result<Pmml, A
     let mut pp_matrix = Vec::new();
     let mut param_matrix = Vec::new();
     for (index, parameter) in parameters.iter().enumerate() {
+        crate::check_cancelled()?;
         let name = match (settings.style, parameter) {
             (Style::Linear, _) => format!("P{:07}", index + 1),
             (Style::Regression, Parameter::Intercept) => "(Constant)".to_string(),
@@ -444,6 +449,7 @@ pub(crate) fn bounded_categories(
     match &f.values {
         ValueSpec::Categories(cats) => {
             for v in cats {
+                crate::check_cancelled()?;
                 if add(v) {
                     break;
                 }
@@ -458,6 +464,7 @@ pub(crate) fn bounded_categories(
         }
         _ => {
             for row in table.rows() {
+                crate::check_cancelled()?;
                 if row.get(position).is_some_and(&mut add) {
                     break;
                 }
@@ -492,6 +499,7 @@ struct Fit {
 }
 
 fn fit(parameters: &[Parameter], rows: &[&Vec<Value>], y: &[f64]) -> Result<Fit, AlgoError> {
+    crate::check_cancelled()?;
     let estimated: Vec<_> = parameters.iter().filter(|p| p.estimated()).collect();
     let design: Vec<Vec<f64>> = rows
         .iter()
@@ -563,6 +571,7 @@ fn eligible(
 ) -> Result<bool, AlgoError> {
     let columns: Vec<_> = parameters.iter().filter(|p| p.estimated()).collect();
     for (j, column) in columns.iter().enumerate() {
+        crate::check_cancelled()?;
         if matches!(column, Parameter::Intercept) {
             continue;
         }
@@ -603,6 +612,7 @@ fn select(
     y: &[f64],
     s: &LinearSettings,
 ) -> Result<Vec<usize>, AlgoError> {
+    crate::check_cancelled()?;
     if s.selection == Selection::None {
         return Ok(effects.to_vec());
     }
@@ -613,6 +623,7 @@ fn select(
     let mut steps = 0;
     let limit = s.max_steps.unwrap_or(effects.len().saturating_mul(3));
     while steps < limit && selected.len() < s.max_effects.unwrap_or(effects.len()) {
+        crate::check_cancelled()?;
         let mut best: Option<(Vec<usize>, Fit, f64)> = None;
         for &effect in effects.iter().filter(|p| !selected.contains(p)) {
             let candidate: Vec<usize> = effects
@@ -715,6 +726,7 @@ pub(crate) fn least_squares(
     let mut pivot = 0;
     let mut order = Vec::new();
     for j in 0..p {
+        crate::check_cancelled()?;
         let norm = (pivot..n).map(|i| a[i][j] * a[i][j]).sum::<f64>().sqrt();
         if pivot >= n || norm <= 1e-6 * scale[j].max(f64::MIN_POSITIVE) {
             active[j] = false;
@@ -741,6 +753,7 @@ pub(crate) fn least_squares(
     }
     let mut beta = vec![0.0; p];
     for &(row, j) in order.iter().rev() {
+        crate::check_cancelled()?;
         let s: f64 = (j + 1..p)
             .filter(|&k| active[k])
             .map(|k| a[row][k] * beta[k])

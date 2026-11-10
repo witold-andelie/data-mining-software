@@ -120,6 +120,7 @@ pub fn train(
     inputs: &[usize],
     settings: &KohonenSettings,
 ) -> Result<Pmml, AlgoError> {
+    crate::check_cancelled()?;
     validate(settings)?;
     let fields = table.model().fields();
     let rows = table.rows();
@@ -132,6 +133,7 @@ pub fn train(
 
     let mut encodings = Vec::with_capacity(inputs.len());
     for &position in inputs {
+        crate::check_cancelled()?;
         let field = fields
             .get(position)
             .ok_or_else(|| AlgoError::Data(format!("no field at position {position}")))?;
@@ -249,6 +251,7 @@ pub fn train(
 
     let last_phase = settings.phases.len().saturating_sub(1);
     for (phase_index, phase) in settings.phases.iter().enumerate() {
+        crate::check_cancelled()?;
         let cycles = phase.cycles.max(1);
         let low_eta = settings
             .phases
@@ -256,10 +259,12 @@ pub fn train(
             .map_or(phase.eta, |next| phase.eta.min(next.eta));
         let mut eta = phase.eta;
         for cycle in 0..cycles {
+            crate::check_cancelled()?;
             // "Input records are presented to the network in random order": a fresh shuffle
             // every cycle, from the same generator that drew the initial weights.
             shuffle(&mut order, &mut rng);
             for &record in &order {
+                crate::check_cancelled()?;
                 let Some(point) = encoded.get(record) else {
                     continue;
                 };
@@ -298,6 +303,7 @@ pub fn train(
     // Cluster sizes: the training records' winning units after the final weights.
     let mut sizes = vec![0usize; units];
     for point in &encoded {
+        crate::check_cancelled()?;
         if let Some(size) = sizes.get_mut(nearest(point, &weights)) {
             *size += 1;
         }
@@ -307,6 +313,7 @@ pub fn train(
     // fields, then one cluster per map position in X-major, Y-minor order (Modeler's order).
     let mut derived = Vec::new();
     for (encoding, &position) in encodings.iter().zip(inputs) {
+        crate::check_cancelled()?;
         let name = fields[position].name.clone();
         let mut push = |expr: Expr| {
             derived.push(DerivedField {
@@ -427,6 +434,7 @@ fn validate(settings: &KohonenSettings) -> Result<(), AlgoError> {
         ));
     }
     for (index, phase) in settings.phases.iter().enumerate() {
+        crate::check_cancelled()?;
         if phase.neighbourhood == 0 {
             return Err(AlgoError::Settings(format!(
                 "Kohonen phase {} needs a positive neighbourhood",

@@ -5,9 +5,12 @@
 //! the layers that own those settings.
 
 pub mod calendar;
+pub mod cancel;
 pub mod field;
 pub mod table;
 pub mod value;
+
+pub use cancel::{CancelToken, Cancelled};
 
 pub use field::{
     CheckMode, DataModel, DisplayFormat, Field, Measurement, MissingSpec, ModelError, Role,

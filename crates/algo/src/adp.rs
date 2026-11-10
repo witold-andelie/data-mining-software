@@ -98,6 +98,7 @@ pub(crate) fn prepare(dataset: &Dataset<'_>, s: &AdpSettings) -> Result<Prepared
     let mut inputs = Vec::new();
     let mut transformations = Vec::new();
     for &position in dataset.inputs {
+        crate::check_cancelled()?;
         let field = fields
             .get(position)
             .ok_or_else(|| AlgoError::Data("Linear ADP input position out of range".into()))?
@@ -354,12 +355,14 @@ pub fn robust_moments(values: &[f64], mean: f64, sd: f64) -> Result<(f64, f64), 
     };
     let mut counts = [0usize; 8];
     for &x in values {
+        crate::check_cancelled()?;
         if let Some(n) = counts.get_mut(bin(x)) {
             *n += 1;
         }
     }
     let (mut lo, mut hi, mut removed) = (0usize, 7usize, 0usize);
     while lo < hi {
+        crate::check_cancelled()?;
         let (Some(&left), Some(&right)) = (counts.get(lo), counts.get(hi)) else {
             break;
         };

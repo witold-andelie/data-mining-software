@@ -58,6 +58,7 @@ struct Train<'a> {
 }
 
 pub fn train(dataset: &Dataset<'_>, settings: &C50Settings) -> Result<Pmml, AlgoError> {
+    crate::check_cancelled()?;
     let tree = c50::rule_tree(dataset, settings)?;
     let train = Train::read(dataset)?;
     let cf = (100.0 - settings.pruning_severity) / 100.0;
@@ -100,6 +101,7 @@ impl<'a> Train<'a> {
         }
         let mut rows = Vec::new();
         for (index, row) in dataset.table.rows().iter().enumerate() {
+            crate::check_cancelled()?;
             let Some(value) = row.get(dataset.target).filter(|v| !target.is_missing(v)) else {
                 continue;
             };
@@ -130,6 +132,7 @@ impl<'a> Train<'a> {
         let mut total = 0.0;
         let mut correct = 0.0;
         for row in &self.rows {
+            crate::check_cancelled()?;
             if matches_all(self, row.index, conditions)? {
                 total += 1.0;
                 if row.class == class {
@@ -174,6 +177,7 @@ fn collect_paths(
             .ok_or_else(|| AlgoError::Data(format!("C5.0 unknown leaf class {score:?}")))?;
         let mut conditions = Vec::new();
         for pred in prefix.iter() {
+            crate::check_cancelled()?;
             push_atoms(pred, &mut conditions, 0)?;
         }
         simplify(&mut conditions, train, class, cf)?;
@@ -188,6 +192,7 @@ fn collect_paths(
         return Ok(());
     }
     for child in &node.children {
+        crate::check_cancelled()?;
         if prefix.len() >= MAX_CONDITIONS {
             return Err(AlgoError::Unsupported(
                 "C5.0 rule condition limit exceeded".into(),
@@ -217,6 +222,7 @@ fn push_atoms(pred: &Predicate, out: &mut Vec<Predicate>, depth: usize) -> Resul
             predicates,
         } => {
             for p in predicates {
+                crate::check_cancelled()?;
                 push_atoms(p, out, depth.saturating_add(1))?;
             }
             Ok(())
@@ -234,6 +240,7 @@ fn simplify(
     cf: f64,
 ) -> Result<(), AlgoError> {
     for _ in 0..MAX_CONDITIONS {
+        crate::check_cancelled()?;
         if conditions.is_empty() {
             break;
         }
@@ -343,6 +350,7 @@ fn emit_rules(drafts: &[Draft], train: &Train<'_>) -> Result<Vec<SimpleRule>, Al
     });
     let mut rules = Vec::new();
     for (id, &index) in order.iter().enumerate() {
+        crate::check_cancelled()?;
         let Some(draft) = drafts.get(index) else {
             continue;
         };
@@ -390,6 +398,7 @@ fn emit_predicate(conditions: &[Predicate]) -> Predicate {
 fn default_class(train: &Train<'_>) -> Result<String, AlgoError> {
     let mut counts = vec![0.0; train.classes.len()];
     for row in &train.rows {
+        crate::check_cancelled()?;
         if let Some(slot) = counts.get_mut(row.class) {
             *slot += 1.0;
         }
@@ -415,6 +424,7 @@ fn matches_all(
         return Ok(false);
     };
     for pred in conditions {
+        crate::check_cancelled()?;
         if !matches_atom(train.fields, row, pred)? {
             return Ok(false);
         }
@@ -501,6 +511,7 @@ fn matches_atom(fields: &[Field], row: &[Value], pred: &Predicate) -> Result<boo
             predicates,
         } => {
             for p in predicates {
+                crate::check_cancelled()?;
                 if !matches_atom(fields, row, p)? {
                     return Ok(false);
                 }

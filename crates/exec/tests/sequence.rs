@@ -118,6 +118,7 @@ fn context(
 ) -> dms_exec::ExecContext {
     let root = support::repo_root();
     dms_exec::ExecContext {
+        cancel: Default::default(),
         files: dms_exec::FileResolver {
             data_dirs: vec![root.join(format!("corpus/{label}"))],
         },

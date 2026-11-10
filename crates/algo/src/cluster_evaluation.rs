@@ -179,6 +179,7 @@ pub fn evaluate(
     let mut variables = Vec::with_capacity(inputs.len());
     let mut column = 0usize;
     for &position in inputs {
+        crate::check_cancelled()?;
         let field = fields
             .get(position)
             .ok_or_else(|| AlgoError::Data(format!("no field at position {position}")))?;
@@ -264,6 +265,7 @@ pub fn evaluate(
     let mut valid: Vec<Vec<bool>> = Vec::with_capacity(rows.len());
     let mut assignment: Vec<usize> = Vec::with_capacity(rows.len());
     for row in rows {
+        crate::check_cancelled()?;
         let mut point = vec![0.0; dimensions];
         let mut valid_variables = Vec::with_capacity(variables.len());
         for variable in &variables {
@@ -331,6 +333,7 @@ pub fn evaluate(
 
     let mut sizes = vec![0usize; clustering.clusters.len()];
     for &cluster in &assignment {
+        crate::check_cancelled()?;
         if let Some(size) = sizes.get_mut(cluster) {
             *size = size.saturating_add(1);
         }
@@ -350,6 +353,7 @@ pub fn evaluate(
     let mut sums = vec![vec![0.0f64; dimensions]; clustering.clusters.len()];
     let mut counts = vec![vec![0usize; dimensions]; clustering.clusters.len()];
     for ((point, valid_variables), &cluster) in points.iter().zip(&valid).zip(&assignment) {
+        crate::check_cancelled()?;
         let Some(cluster_sums) = sums.get_mut(cluster) else {
             continue;
         };
@@ -402,6 +406,7 @@ pub fn evaluate(
     let mut total = 0.0f64;
     let mut cases = 0usize;
     for ((point, valid_variables), &own) in points.iter().zip(&valid).zip(&assignment) {
+        crate::check_cancelled()?;
         let Some(own_centroid) = centroids.get(own) else {
             continue;
         };
@@ -511,6 +516,9 @@ fn distance(
     let mut shared = false;
     let mut column = 0usize;
     for (variable, &is_valid) in variables.iter().zip(valid) {
+        if crate::check_cancelled().is_err() {
+            return None;
+        }
         let dimensions = variable.dimensions();
         if is_valid {
             for offset in 0..dimensions {

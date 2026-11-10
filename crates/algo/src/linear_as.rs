@@ -85,6 +85,7 @@ fn gap(what: &str) -> AlgoError {
 
 /// Train only the verified forward-stepwise, adjusted-R² defaults.
 pub fn train(data: &Dataset<'_>) -> Result<TrainedModel, AlgoError> {
+    crate::check_cancelled()?;
     if data.frequency.is_some() {
         return Err(gap("frequency weights"));
     }
@@ -105,6 +106,7 @@ pub fn train(data: &Dataset<'_>) -> Result<TrainedModel, AlgoError> {
     }
     let mut dictionary_categories = 0usize;
     for (p, field) in fields.iter().enumerate() {
+        crate::check_cancelled()?;
         if field.measurement != Measurement::Continuous {
             let count = bounded_categories(table, p, MAX_PARAMETERS)?.len();
             dictionary_categories = dictionary_categories.saturating_add(count);
@@ -125,6 +127,7 @@ pub fn train(data: &Dataset<'_>) -> Result<TrainedModel, AlgoError> {
     let mut factors = Vec::new();
     let mut covariates = Vec::new();
     for &p in data.inputs {
+        crate::check_cancelled()?;
         let field = fields
             .get(p)
             .ok_or_else(|| AlgoError::Settings("Linear-AS input position out of range".into()))?;
@@ -160,6 +163,7 @@ pub fn train(data: &Dataset<'_>) -> Result<TrainedModel, AlgoError> {
         ));
     }
     for row in &rows {
+        crate::check_cancelled()?;
         for p in std::iter::once(data.target).chain(covariates.iter().copied()) {
             if row
                 .get(p)
@@ -176,6 +180,7 @@ pub fn train(data: &Dataset<'_>) -> Result<TrainedModel, AlgoError> {
     let mut effects = Vec::new();
     let mut levels = Vec::new();
     for &factor in &factors {
+        crate::check_cancelled()?;
         levels = bounded_categories(table, factor, MAX_PARAMETERS)?;
         if levels
             .len()
@@ -197,6 +202,7 @@ pub fn train(data: &Dataset<'_>) -> Result<TrainedModel, AlgoError> {
         });
     }
     for square in [false, true] {
+        crate::check_cancelled()?;
         for &p in &covariates {
             let start = columns.len();
             columns.push(Column {
@@ -210,6 +216,7 @@ pub fn train(data: &Dataset<'_>) -> Result<TrainedModel, AlgoError> {
         }
     }
     for &factor in &factors {
+        crate::check_cancelled()?;
         for &covariate in &covariates {
             if interaction_p(&rows, data.target, factor, &levels, covariate)? < 0.05 {
                 if columns.len().saturating_add(levels.len()) >= MAX_PARAMETERS {
@@ -237,6 +244,7 @@ pub fn train(data: &Dataset<'_>) -> Result<TrainedModel, AlgoError> {
     }
     let mut moments = Moments::new(width);
     for row in &rows {
+        crate::check_cancelled()?;
         let mut values = columns
             .iter()
             .map(|c| c.value(row))
@@ -280,6 +288,7 @@ impl Moments {
         let n = self.n as f64;
         let delta: Vec<_> = values.iter().zip(&self.mean).map(|(x, m)| x - m).collect();
         for (i, row) in self.cross.iter_mut().enumerate() {
+            crate::check_cancelled()?;
             for (j, cell) in row.iter_mut().enumerate() {
                 *cell += (1.0 - 1.0 / n) * delta[i] * delta[j];
                 if !cell.is_finite() {
@@ -288,6 +297,7 @@ impl Moments {
             }
         }
         for (mean, delta) in self.mean.iter_mut().zip(delta) {
+            crate::check_cancelled()?;
             *mean += delta / n;
         }
         Ok(())
@@ -324,6 +334,7 @@ fn interaction_p(
     let mut groups: Vec<_> = levels.iter().map(|_| Moments::new(2)).collect();
     let mut total = Moments::new(1);
     for row in rows {
+        crate::check_cancelled()?;
         let y = row
             .get(target)
             .and_then(Value::as_f64)
@@ -347,6 +358,7 @@ fn interaction_p(
     }
     let (mut xx, mut xy, mut yy, mut full, mut s, mut rank) = (0.0, 0.0, 0.0, 0.0, 0usize, 0usize);
     for g in groups.iter().filter(|g| g.n > 0) {
+        crate::check_cancelled()?;
         s += 1;
         rank += 1 + usize::from(g.cross[0][0] > 0.0);
         xx += g.cross[0][0];
@@ -432,6 +444,9 @@ fn candidate(
     let mut next = current.clone();
     let mut count = 0;
     for k in effect.columns.clone() {
+        if crate::check_cancelled().is_err() {
+            return None;
+        }
         if (entering && next.matrix[k][k] >= TOLERANCE) || (!entering && next.swept[k]) {
             sweep(&mut next.matrix, k);
             next.swept[k] = entering;
@@ -543,6 +558,7 @@ fn make_model(
         .enumerate()
         .filter(|(i, _)| state.effects[*i])
     {
+        crate::check_cancelled()?;
         for k in effect.columns.clone() {
             let c = &columns[k];
             let parameter = format!("P{:07}", names.len() + 1);

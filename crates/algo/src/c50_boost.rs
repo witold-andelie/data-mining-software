@@ -124,6 +124,7 @@ impl Reweighting {
             ));
         }
         for (&pred, &truth) in predicted.iter().zip(actual.iter()) {
+            crate::check_cancelled()?;
             if pred >= self.n_classes || truth >= self.n_classes {
                 return Err(AlgoError::Data(
                     "C5.0 boosting class index is out of range".into(),
@@ -135,6 +136,7 @@ impl Reweighting {
 
     fn add_votes(&mut self, predicted: &[usize]) -> Result<(), AlgoError> {
         for (case, &class) in predicted.iter().enumerate() {
+            crate::check_cancelled()?;
             let slot = self.slot(case, class)?;
             let vote = self.votes.get_mut(slot).ok_or_else(|| {
                 AlgoError::Data("C5.0 boosting vote index is out of range".into())
@@ -151,6 +153,7 @@ impl Reweighting {
         let votes = &self.votes;
         let mut dropping = Vec::new();
         for (case, (&active, &truth)) in self.active.iter().zip(actual).enumerate() {
+            crate::check_cancelled()?;
             if !active {
                 continue;
             }
@@ -168,6 +171,7 @@ impl Reweighting {
             }
         }
         for case in dropping {
+            crate::check_cancelled()?;
             if let Some(flag) = self.active.get_mut(case) {
                 *flag = false;
             }
@@ -186,6 +190,7 @@ impl Reweighting {
             .zip(self.weights.iter())
             .zip(predicted.iter().zip(actual.iter()))
         {
+            crate::check_cancelled()?;
             if !active {
                 continue;
             }
@@ -256,6 +261,7 @@ impl Reweighting {
             .zip(predicted.iter().zip(actual.iter()))
             .enumerate()
         {
+            crate::check_cancelled()?;
             if !active {
                 continue;
             }
@@ -274,6 +280,7 @@ impl Reweighting {
         let mut active_count = 0usize;
         let mut sum = 0.0;
         for (&active, &weight) in self.active.iter().zip(self.weights.iter()) {
+            crate::check_cancelled()?;
             if !active {
                 continue;
             }
@@ -300,6 +307,7 @@ impl Reweighting {
             ));
         }
         for (active, weight) in self.active.iter().zip(self.weights.iter_mut()) {
+            crate::check_cancelled()?;
             if *active {
                 *weight *= scale;
                 if !weight.is_finite() {
@@ -349,6 +357,7 @@ pub fn train(
     _settings: &C50Settings,
     _trials: usize,
 ) -> Result<Pmml, AlgoError> {
+    crate::check_cancelled()?;
     Err(AlgoError::Unsupported("C5.0 boosting".into()))
 }
 

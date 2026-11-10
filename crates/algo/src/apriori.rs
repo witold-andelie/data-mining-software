@@ -208,6 +208,7 @@ struct Assigned {
 
 /// Trains an Apriori model. `table` is already restricted to the training partition.
 pub fn train(table: &Table, settings: &AprioriSettings) -> Result<Pmml, AlgoError> {
+    crate::check_cancelled()?;
     validate(settings)?;
     let prepared = prepare(table, settings)?;
     if prepared.transactions.is_empty() {
@@ -298,6 +299,7 @@ pub(crate) fn prepare_flags(
     let mut order = Vec::new();
     let mut only_flags = true;
     for name in &antecedents {
+        crate::check_cancelled()?;
         let position = field_position(table, name)?;
         let field = table
             .model()
@@ -324,6 +326,7 @@ pub(crate) fn prepare_flags(
     // mines 4 items, no `jam`).
     if only_flags && settings.only_true_values {
         for name in &antecedents {
+            crate::check_cancelled()?;
             let position = field_position(table, name)?;
             let field =
                 table.model().fields().get(position).ok_or_else(|| {
@@ -346,6 +349,7 @@ pub(crate) fn prepare_flags(
         // `prepare` order for ranking is the antecedent field order.
         let mut transactions = Vec::with_capacity(table.rows().len());
         for row in table.rows() {
+            crate::check_cancelled()?;
             let mut basket = Vec::new();
             for column in &columns_flags {
                 if row.get(column.position) == Some(&column.true_value) {
@@ -372,6 +376,7 @@ pub(crate) fn prepare_flags(
     // Include consequent-only fields in the dictionary order? No: mining only uses
     // antecedent fields (`antecons_diff_tab` mines 4 items). Keep antecedent order.
     for name in &field_order {
+        crate::check_cancelled()?;
         let position = field_position(table, name)?;
         let field = table
             .model()
@@ -421,6 +426,7 @@ pub(crate) fn prepare_flags(
     // Append first-seen values not in the declared set (transactional-style safety;
     // training files here declare all values, so this rarely adds).
     for row in table.rows() {
+        crate::check_cancelled()?;
         for column in &columns_valued {
             let Some(value) = row.get(column.position) else {
                 continue;
@@ -436,6 +442,7 @@ pub(crate) fn prepare_flags(
     }
     let mut transactions = Vec::with_capacity(table.rows().len());
     for row in table.rows() {
+        crate::check_cancelled()?;
         let mut basket = Vec::new();
         for column in &columns_valued {
             let Some(value) = row.get(column.position) else {
@@ -498,6 +505,7 @@ fn prepare_transactions(table: &Table, settings: &AprioriSettings) -> Result<Pre
         let mut seen = HashSet::new();
         let mut current: Option<Value> = None;
         for (index, row) in table.rows().iter().enumerate() {
+            crate::check_cancelled()?;
             let id = row.get(id_at).cloned().unwrap_or(Value::Null);
             if id == Value::Null {
                 return Err(AlgoError::Data(format!(
@@ -544,6 +552,7 @@ fn prepare_transactions(table: &Table, settings: &AprioriSettings) -> Result<Pre
     let mut grouped: HashMap<String, (Value, Vec<String>, HashSet<String>)> = HashMap::new();
     let mut ids: Vec<String> = Vec::new();
     for (index, row) in table.rows().iter().enumerate() {
+        crate::check_cancelled()?;
         let id = row.get(id_at).cloned().unwrap_or(Value::Null);
         if id == Value::Null {
             return Err(AlgoError::Data(format!(
@@ -603,6 +612,7 @@ fn mine(
     let conf = percent_basis(settings.min_confidence_percent)?;
     let mut counts: HashMap<String, u64> = HashMap::new();
     for basket in &prepared.transactions {
+        crate::check_cancelled()?;
         for item in basket {
             let count = counts.entry(item.clone()).or_insert(0);
             *count = count.saturating_add(1);
@@ -644,6 +654,7 @@ fn mine(
         frequent_levels(prepared, &provisional_names, supp, conf, n, max_size)?;
     let mut in_sets = vec![0usize; ranked.len()];
     for items in provisional_counts.keys().filter(|items| items.len() >= 2) {
+        crate::check_cancelled()?;
         for &rank in items {
             if let Some(slot) = provisional
                 .get(usize::from(rank))
@@ -666,6 +677,7 @@ fn mine(
     let (counts_of, levels) = frequent_levels(prepared, &names, supp, conf, n, max_size)?;
     let mut rules = Vec::new();
     for level in levels.iter().skip(1) {
+        crate::check_cancelled()?;
         for node in level {
             // Most frequent consequent first. Rank increases with support, and `items` is
             // sorted by rank, so a higher index is tried sooner.
@@ -757,6 +769,7 @@ fn frequent_levels(
         .collect();
     let mut baskets = Vec::with_capacity(prepared.transactions.len());
     for basket in &prepared.transactions {
+        crate::check_cancelled()?;
         let mut ranks = Vec::new();
         for name in basket {
             if let Some(rank) = rank_of.get(name.as_str()) {
@@ -769,6 +782,7 @@ fn frequent_levels(
     }
     let mut tids: Vec<Vec<u32>> = vec![Vec::new(); names.len()];
     for (row, basket) in baskets.iter().enumerate() {
+        crate::check_cancelled()?;
         let Some(row) = u32::try_from(row).ok() else {
             return Err(AlgoError::Data("too many transactions".into()));
         };
@@ -782,6 +796,7 @@ fn frequent_levels(
     let mut frequent: HashSet<Vec<u16>> = HashSet::new();
     let mut level = Vec::new();
     for (rank, list) in tids.into_iter().enumerate() {
+        crate::check_cancelled()?;
         let Some(rank) = u16::try_from(rank).ok() else {
             return Err(AlgoError::Data("too many items".into()));
         };
@@ -796,6 +811,7 @@ fn frequent_levels(
     }
     let mut levels = vec![level];
     while levels.len() < max_size {
+        crate::check_cancelled()?;
         let next = join(levels.last(), &frequent, supp, conf, n, &mut counts_of)?;
         if next.is_empty() {
             break;
@@ -825,7 +841,9 @@ fn join(
     let prefix = width.saturating_sub(1);
     let mut next = Vec::new();
     for i in 0..previous.len() {
+        crate::check_cancelled()?;
         for j in (i + 1)..previous.len() {
+            crate::check_cancelled()?;
             let Some(left) = previous.get(i) else {
                 continue;
             };
@@ -1017,6 +1035,7 @@ fn assign_ids(names: &[String], rules: &[Mined]) -> Result<Assigned, AlgoError> 
     let mut next_item: u32 = 0;
     let mut next_itemset: u32 = 0;
     for rule in rules {
+        crate::check_cancelled()?;
         let mut antecedent_ids = Vec::new();
         for rank in &rule.antecedent {
             let name = names
@@ -1126,6 +1145,7 @@ fn dictionary(
     match &prepared.columns {
         Columns::Flags(columns) => {
             for column in columns {
+                crate::check_cancelled()?;
                 push(
                     column.position,
                     Usage::Active,
@@ -1140,6 +1160,7 @@ fn dictionary(
                 .iter()
                 .filter(|name| !prepared.antecedent.contains(*name))
             {
+                crate::check_cancelled()?;
                 // Valued items contain `=`; flags here never do (onlyTrue True path).
                 if name.contains('=') {
                     continue;
@@ -1154,6 +1175,7 @@ fn dictionary(
         }
         Columns::Valued(columns) => {
             for column in columns {
+                crate::check_cancelled()?;
                 push(column.position, Usage::Active, Some("BOTH".into()), None)?;
             }
         }

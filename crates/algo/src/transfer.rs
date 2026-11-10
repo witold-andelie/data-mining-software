@@ -65,6 +65,7 @@ impl TransferSpec {
         let mut signal = vec![0.0; n];
         let mut start = 0;
         for (e, x) in self.effects.iter().zip(x) {
+            crate::check_cancelled()?;
             if e.difference > 2
                 || e.seasonal_difference > 2
                 || !(1..=64).contains(&e.period)
@@ -168,6 +169,7 @@ impl TransferSpec {
                 .saturating_add(noise.seasonal_d.saturating_mul(noise.period));
             let mut z = arima::difference(&transformed, noise.d);
             for _ in 0..noise.seasonal_d {
+                crate::check_cancelled()?;
                 z = z
                     .iter()
                     .skip(noise.period)
@@ -195,6 +197,7 @@ impl TransferSpec {
         horizon: usize,
         confidence: f64,
     ) -> Result<arima::SeriesScore, AlgoError> {
+        crate::check_cancelled()?;
         if horizon > 512 || y.len() > 512 {
             return Err(error("transfer scoring history/horizon exceeds 512"));
         }
@@ -247,6 +250,7 @@ impl TransferSpec {
 
 /// Fit only the supplied orders; template coefficients and noise state are discarded.
 pub fn fit(y: &[f64], x: &[Vec<f64>], template: &TransferSpec) -> Result<Fit, AlgoError> {
+    crate::check_cancelled()?;
     if template.noise.transform != arima::Transform::None
         || template.noise.d != 0
         || template.noise.seasonal_d != 0
@@ -316,6 +320,7 @@ pub fn fit(y: &[f64], x: &[Vec<f64>], template: &TransferSpec) -> Result<Fit, Al
     }
     let mut at = 2;
     for e in &template.effects {
+        crate::check_cancelled()?;
         at += e.numerator.len();
         for v in bounds.iter_mut().skip(at).take(e.denominator.len()) {
             *v = stationary;
@@ -337,6 +342,7 @@ pub fn fit(y: &[f64], x: &[Vec<f64>], template: &TransferSpec) -> Result<Fit, Al
         let mut at = 2;
         let mut numerator_slots = Vec::new();
         for effect in &template.effects {
+            crate::check_cancelled()?;
             let mut basis = vec![0.0; k];
             if let Some(v) = basis.get_mut(at) {
                 *v = 1.0;
@@ -364,6 +370,7 @@ pub fn fit(y: &[f64], x: &[Vec<f64>], template: &TransferSpec) -> Result<Fit, Al
             *slot = *value;
         }
         for (slot, value) in numerator_slots.iter().zip(coefficients.iter().skip(1)) {
+            crate::check_cancelled()?;
             if let Some(v) = initial.get_mut(*slot) {
                 *v = *value;
             }

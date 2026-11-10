@@ -451,6 +451,7 @@ fn results_remember_chart_or_data_for_each_tab() {
     let uids: Vec<_> = stream.diagram.nodes.iter().map(|n| n.uid.clone()).collect();
     let doc = Arc::new(document(&["x", "y"], &[&["1", "2"]]));
     let report = RunReport {
+        cancelled: false,
         targets: uids.clone(),
         results: uids
             .iter()

@@ -128,6 +128,7 @@ impl Default for RandomTreesSettings {
 
 /// Trains a Random Trees ensemble.
 pub fn train(dataset: &Dataset<'_>, settings: &RandomTreesSettings) -> Result<Pmml, AlgoError> {
+    crate::check_cancelled()?;
     validate(settings)?;
     if dataset.frequency.is_some() {
         return Err(AlgoError::Unsupported(
@@ -187,6 +188,7 @@ fn validate(settings: &RandomTreesSettings) -> Result<(), AlgoError> {
         ("_maxPCTmissing", settings.max_missing_percent),
         ("_excludeSingleCatPCT", settings.single_category_percent),
     ] {
+        crate::check_cancelled()?;
         if !value.is_finite() || !(0.0..=100.0).contains(&value) {
             return Err(bad(&format!("{name} must be from 0 to 100")));
         }
@@ -274,6 +276,7 @@ impl Data {
         let target = if target_field.measurement == Measurement::Continuous {
             let mut values = vec![0.0; table_rows.len()];
             for (i, row) in table_rows.iter().enumerate() {
+                crate::check_cancelled()?;
                 if let Some(x) = target_number(row) {
                     values[i] = x;
                     target_valid[i] = true;
@@ -284,6 +287,7 @@ impl Data {
             let labels = category_order(dataset.table, dataset.target);
             let mut codes = vec![0usize; table_rows.len()];
             for (i, row) in table_rows.iter().enumerate() {
+                crate::check_cancelled()?;
                 if let Some(text) = target_text(row)
                     && let Some(code) = labels.iter().position(|label| *label == text)
                 {
@@ -297,6 +301,7 @@ impl Data {
         // Raw predictor values.
         let mut raw: Vec<RawColumn> = Vec::new();
         for &position in dataset.inputs {
+            crate::check_cancelled()?;
             let input = field(position)?;
             let numeric = matches!(input.storage, Storage::Integer | Storage::Real);
             let continuous = input.measurement == Measurement::Continuous;
@@ -346,6 +351,7 @@ impl Data {
         // Rows with a valid target and at least one predictor present.
         let mut rows = Vec::new();
         for row in 0..table_rows.len() {
+            crate::check_cancelled()?;
             if !target_valid.get(row).copied().unwrap_or(false) {
                 continue;
             }
@@ -368,6 +374,7 @@ impl Data {
         // Filtering (guide 5.1) and imputation values.
         let mut usable = Vec::new();
         for (index, column) in raw.iter().enumerate() {
+            crate::check_cancelled()?;
             let keep = match column {
                 RawColumn::Skipped => false,
                 RawColumn::Numeric {
@@ -432,6 +439,7 @@ impl Data {
 
         let mut columns = Vec::new();
         for index in usable {
+            crate::check_cancelled()?;
             let column = raw
                 .get(index)
                 .ok_or_else(|| AlgoError::Data("Random Trees column index".into()))?;
@@ -502,6 +510,7 @@ impl Data {
                     .collect();
                 let mut counts = vec![0.0; labels.len()];
                 for &code in &compact {
+                    crate::check_cancelled()?;
                     if let Some(count) = counts.get_mut(code) {
                         *count += 1.0;
                     }
@@ -715,6 +724,7 @@ fn grow(data: &Data, settings: &RandomTreesSettings) -> Result<(Vec<Tree>, usize
     let mut baseline_size = 1usize;
     let mut window_accuracy = f64::NEG_INFINITY;
     for index in 0..settings.max_trees {
+        crate::check_cancelled()?;
         let counts = bootstrap(data.rows, settings.seed, index);
         let tree = grow_tree(data, settings, index, &counts)?;
         // Guide 6.3 and 7.1: a case evaluates the ensemble only through the trees that took it
@@ -845,6 +855,7 @@ fn grow_tree(
         Target::Classes { codes, labels } => {
             let mut totals = vec![0.0; labels.len()];
             for case in &cases {
+                crate::check_cancelled()?;
                 if let Some(code) = codes.get(case.row)
                     && let Some(total) = totals.get_mut(*code)
                 {
@@ -862,6 +873,7 @@ fn grow_tree(
     }];
     let mut queue = VecDeque::from([(0usize, 0usize)]);
     while let Some((index, depth)) = queue.pop_front() {
+        crate::check_cancelled()?;
         if depth >= settings.max_depth || nodes.len().saturating_add(2) > settings.max_nodes {
             continue;
         }
@@ -1008,6 +1020,9 @@ fn best_split(
 ) -> Option<(usize, Rule)> {
     let mut best: Option<(f64, usize, Rule)> = None;
     for &input in selected {
+        if crate::check_cancelled().is_err() {
+            return None;
+        }
         let column = data.columns.get(input)?;
         let candidate = match &column.kind {
             Kind::Numeric(values) => numeric_split(data, min_child, values, cases, class_totals),
@@ -1064,6 +1079,9 @@ fn numeric_split(
             let mut left = vec![0.0; classes];
             let mut right = vec![0.0; classes];
             for case in &sorted {
+                if crate::check_cancelled().is_err() {
+                    return None;
+                }
                 if let Some(code) = codes.get(case.row)
                     && let Some(weight) = right.get_mut(*code)
                 {
@@ -1072,6 +1090,9 @@ fn numeric_split(
             }
             let mut left_weight = 0.0;
             for cut in 1..sorted.len() {
+                if crate::check_cancelled().is_err() {
+                    return None;
+                }
                 let case = sorted[cut - 1];
                 if let Some(code) = codes.get(case.row) {
                     if let Some(weight) = left.get_mut(*code) {
@@ -1104,12 +1125,18 @@ fn numeric_split(
         Target::Numbers(ys) => {
             let mut total = WeightedMoments::default();
             for case in &sorted {
+                if crate::check_cancelled().is_err() {
+                    return None;
+                }
                 if let Some(y) = ys.get(case.row) {
                     total.add(*y, case.weight);
                 }
             }
             let mut left = WeightedMoments::default();
             for cut in 1..sorted.len() {
+                if crate::check_cancelled().is_err() {
+                    return None;
+                }
                 let case = sorted[cut - 1];
                 if let Some(y) = ys.get(case.row) {
                     left.add(*y, case.weight);
@@ -1145,6 +1172,9 @@ fn categorical_split(
 ) -> Option<(f64, Rule)> {
     let mut present = vec![false; labels.len()];
     for case in cases {
+        if crate::check_cancelled().is_err() {
+            return None;
+        }
         if let Some(code) = codes.get(case.row)
             && let Some(slot) = present.get_mut(*code)
         {
@@ -1181,6 +1211,9 @@ fn categorical_split(
             let k = classes_labels.len();
             let mut by_category = vec![vec![0.0; k]; labels.len()];
             for case in cases {
+                if crate::check_cancelled().is_err() {
+                    return None;
+                }
                 if let Some(code) = codes.get(case.row)
                     && let Some(target) = classes.get(case.row)
                     && let Some(counts) = by_category.get_mut(*code)
@@ -1191,12 +1224,18 @@ fn categorical_split(
             }
             let mut parent = vec![0.0; k];
             for counts in &by_category {
+                if crate::check_cancelled().is_err() {
+                    return None;
+                }
                 for (total, count) in parent.iter_mut().zip(counts) {
                     *total += count;
                 }
             }
             let subsets = candidate_subsets(&present, ordered);
             for set in subsets {
+                if crate::check_cancelled().is_err() {
+                    return None;
+                }
                 let mut left = vec![0.0; k];
                 for &code in &set {
                     if let Some(counts) = by_category.get(code) {
@@ -1227,6 +1266,9 @@ fn categorical_split(
             let mut by_category = vec![WeightedMoments::default(); labels.len()];
             let mut total = WeightedMoments::default();
             for case in cases {
+                if crate::check_cancelled().is_err() {
+                    return None;
+                }
                 if let Some(code) = codes.get(case.row)
                     && let Some(y) = ys.get(case.row)
                     && let Some(moments) = by_category.get_mut(*code)
@@ -1236,6 +1278,9 @@ fn categorical_split(
                 }
             }
             for set in candidate_subsets(&present, ordered) {
+                if crate::check_cancelled().is_err() {
+                    return None;
+                }
                 let mut left = WeightedMoments::default();
                 for &code in &set {
                     if let Some(moments) = by_category.get(code) {
@@ -1460,6 +1505,9 @@ impl Ensemble {
                 let mut seen = 0usize;
                 let mut correct = 0usize;
                 for (row, entry) in votes.iter().enumerate() {
+                    if crate::check_cancelled().is_err() {
+                        return None;
+                    }
                     if entry.is_empty() {
                         continue;
                     }
@@ -1487,6 +1535,9 @@ impl Ensemble {
                 let mut seen = 0usize;
                 let mut mean = 0.0;
                 for (row, &n) in count.iter().enumerate() {
+                    if crate::check_cancelled().is_err() {
+                        return None;
+                    }
                     if n > 0
                         && let Some(value) = values.get(row)
                     {
@@ -1501,6 +1552,9 @@ impl Ensemble {
                 let mut sse = 0.0;
                 let mut sst = 0.0;
                 for (row, &n) in count.iter().enumerate() {
+                    if crate::check_cancelled().is_err() {
+                        return None;
+                    }
                     let Some(value) = values.get(row) else {
                         continue;
                     };
@@ -1538,6 +1592,7 @@ fn pmml(
     };
     let mut segments = Vec::new();
     for tree in trees {
+        crate::check_cancelled()?;
         let used: Vec<bool> = data
             .columns
             .iter()

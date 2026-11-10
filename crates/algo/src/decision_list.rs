@@ -333,6 +333,7 @@ impl Search<'_> {
         let mut beam = vec![Vec::new()];
         let mut result = Vec::new();
         for depth in 0..self.settings.rule_depth {
+            crate::check_cancelled()?;
             let mut candidates = Vec::new();
             for rule in beam {
                 let xr = self.covered(records, &rule)?;
@@ -388,6 +389,7 @@ impl Search<'_> {
         }];
         let mut last_level = Vec::new();
         for _ in 0..self.settings.list_depth {
+            crate::check_cancelled()?;
             let mut candidates = Vec::new();
             let mut seen = HashSet::new();
             for (parent, list) in kept.iter().enumerate() {
@@ -602,6 +604,7 @@ fn prepare<'a>(
     let mut text_bytes = target.name.len().saturating_add(response.len());
     let mut y = Vec::new();
     for row in table.rows() {
+        crate::check_cancelled()?;
         let v = row
             .get(dataset.target)
             .filter(|v| !target.is_missing(v))
@@ -615,6 +618,7 @@ fn prepare<'a>(
     }
     let mut attrs = Vec::new();
     for &position in dataset.inputs {
+        crate::check_cancelled()?;
         if position == dataset.target {
             return Err(AlgoError::Settings(
                 "Decision List target is also an input".into(),
@@ -809,6 +813,7 @@ fn predicate_key(rule: &Rule, attrs: &[Attribute]) -> String {
 fn emission_rule(rule: &Rule, attrs: &[Attribute]) -> Result<Rule, AlgoError> {
     let mut out: Rule = Vec::new();
     for (f, cats) in rule {
+        crate::check_cancelled()?;
         let attr = attrs
             .get(*f)
             .ok_or_else(|| AlgoError::Data("Decision List predicate field index".into()))?;
@@ -893,6 +898,7 @@ pub fn train_xml(
         .ok_or_else(|| AlgoError::Data("Decision List target index".into()))?;
     let mut used = Vec::new();
     for rule in &list {
+        crate::check_cancelled()?;
         for (f, _) in rule {
             if !used.contains(f) {
                 used.push(*f);
@@ -912,10 +918,12 @@ pub fn train_xml(
         .iter()
         .filter(|v| **v != response)
     {
+        crate::check_cancelled()?;
         xml.push_str(&format!("<Value value=\"{}\"/>", escape(value)));
     }
     xml.push_str("</DataField>");
     for f in dictionary {
+        crate::check_cancelled()?;
         if let Some(a) = search.attrs.get(f) {
             xml.push_str(&format!(
                 "<DataField name=\"{}\" dataType=\"{}\" optype=\"{}\">",
@@ -931,6 +939,7 @@ pub fn train_xml(
     }
     xml.push_str("</DataDictionary><RuleSetModel algorithmName=\"DecisionList\" functionName=\"classification\" modelName=\"RuleSet0\"><MiningSchema>");
     for f in used {
+        crate::check_cancelled()?;
         if let Some(a) = search.attrs.get(f) {
             xml.push_str(&format!("<MiningField name=\"{}\"/>", escape(&a.name)));
         }
@@ -938,6 +947,7 @@ pub fn train_xml(
     xml.push_str(&format!("<MiningField name=\"{}\" usageType=\"predicted\"/></MiningSchema><RuleSet><RuleSelectionMethod criterion=\"firstHit\"/>",escape(&target.name)));
     let mut rest: Vec<usize> = (0..search.y.len()).collect();
     for (i, rule) in list.iter().chain(std::iter::once(&Vec::new())).enumerate() {
+        crate::check_cancelled()?;
         let remainder = i == list.len();
         let cov = search.covered(&rest, rule)?;
         xml.push_str(&format!(
@@ -959,6 +969,7 @@ pub fn train_xml(
 }
 
 pub fn train(dataset: &Dataset<'_>, settings: &DecisionListSettings) -> Result<Pmml, AlgoError> {
+    crate::check_cancelled()?;
     Pmml::parse(&train_xml(dataset, settings)?)
         .map_err(|e| AlgoError::Data(format!("Decision List PMML: {e}")))
 }

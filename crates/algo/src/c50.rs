@@ -408,12 +408,14 @@ impl MisclassificationCosts {
         }
         let mut matrix = vec![vec![self.default_cost; classes.len()]; classes.len()];
         for (i, row) in matrix.iter_mut().enumerate() {
+            crate::check_cancelled()?;
             if let Some(diagonal) = row.get_mut(i) {
                 *diagonal = 0.0;
             }
         }
         let mut seen = std::collections::HashSet::new();
         for (actual, predicted, cost) in &self.entries {
+            crate::check_cancelled()?;
             if !cost.is_finite() || *cost < 0.0 || (actual == predicted && *cost != 0.0) {
                 return Err(AlgoError::Settings(
                     "C5.0 costs must be finite, nonnegative, and zero on the diagonal".into(),
@@ -492,6 +494,7 @@ impl Data {
         let mut row_indices = Vec::new();
         let mut targets = Vec::new();
         for (i, row) in dataset.table.rows().iter().enumerate() {
+            crate::check_cancelled()?;
             let Some(value) = row.get(dataset.target).filter(|v| !target.is_missing(v)) else {
                 continue;
             };
@@ -544,6 +547,7 @@ impl Data {
         };
         let mut columns = Vec::new();
         for &position in dataset.inputs {
+            crate::check_cancelled()?;
             if position == dataset.target {
                 return Err(AlgoError::Settings("C5.0 target is also an input".into()));
             }
@@ -718,6 +722,9 @@ fn candidate(
             let mut cuts = 0usize;
             let mut n = 0.0;
             for pair in sorted.windows(2) {
+                if crate::check_cancelled().is_err() {
+                    return None;
+                }
                 let [(value, class, weight), (next, _, _)] = pair else {
                     continue;
                 };
@@ -880,6 +887,9 @@ fn ordinal_cut(
     let mut best: Option<(f64, f64, usize)> = None;
     let mut cuts = 0usize;
     for cut in 1..groups.len() {
+        if crate::check_cancelled().is_err() {
+            return None;
+        }
         // Values absent from the node stay in the cut's sorted range, a cut following
         // a present value (`c50_weighted/c50_rc12_loose`: `{high, low}` with no `high`;
         // `c50_rc13_loose`: `{low, middle}` with no `middle`).
@@ -1115,6 +1125,7 @@ fn grow(
         let mut positive = 0usize;
         let mut sum = 0.0;
         for split in &candidates {
+            crate::check_cancelled()?;
             if split.gain > 1e-10 {
                 positive = positive.saturating_add(1);
                 sum += split.gain;
@@ -1128,6 +1139,7 @@ fn grow(
     };
     let mut best: Option<Split> = None;
     for split in candidates {
+        crate::check_cancelled()?;
         if split.gain > 1e-10
             && split.gain >= average - 1e-9
             && best.as_ref().is_none_or(|s| split.ratio > s.ratio + 1e-12)
@@ -1138,6 +1150,7 @@ fn grow(
     if let Some(split) = best {
         let mut children_errors = 0.0;
         for (predicate, group) in split.groups {
+            crate::check_cancelled()?;
             let mut child = grow(data, &group, settings, class, depth + 1, budget)?;
             child.predicate = predicate;
             children_errors += grown_errors(data, &child, &group);
@@ -1343,6 +1356,7 @@ fn prune_regrown(
     let mut largest = None;
     let mut largest_cases = 0;
     for (index, (child, group)) in node.children.iter_mut().zip(&groups).enumerate() {
+        crate::check_cancelled()?;
         subtree += prune_regrown(data, group, child, settings, depth.saturating_add(1))?;
         if !child.children.is_empty() && (largest.is_none() || group.len() > largest_cases) {
             largest = Some(index);
@@ -1409,11 +1423,13 @@ fn redistribute(
     node.score = data.classes.get(class).cloned();
     node.record_count = Some(data.weight(rows));
     for (distribution, count) in node.distribution.iter_mut().zip(counts) {
+        crate::check_cancelled()?;
         distribution.record_count = count;
     }
     refresh_distribution(node);
     let groups = branch_rows(data, rows, node);
     for (child, group) in node.children.iter_mut().zip(groups) {
+        crate::check_cancelled()?;
         redistribute(data, &group, child, class, depth.saturating_add(1))?;
     }
     Ok(())
@@ -1443,6 +1459,7 @@ fn prune(
     let mut largest = None;
     let mut largest_cases = 0;
     for (index, (child, group)) in node.children.iter_mut().zip(&groups).enumerate() {
+        crate::check_cancelled()?;
         subtree += prune(
             data,
             group,
@@ -1498,6 +1515,7 @@ fn prune(
         }
         let promoted = branch_rows(data, rows, &candidate);
         for (child, group) in candidate.children.iter_mut().zip(promoted) {
+            crate::check_cancelled()?;
             let predicate = child.predicate.clone();
             *child = grow(
                 data,
@@ -1638,9 +1656,15 @@ const RAISED_UNINFORMATIVE: &str = "raised-uninformative";
 /// test, to 23, where it carries 0.20 bits against four positive tests; Modeler keeps it).
 /// Tests regrown below a raised test and raised again while those are pruned are judged
 /// where they stand (`c50_global/wn100_sev65`, `wn49_c3F`, `c50_presets/c50_wn100_expert`).
-fn collapse_uninformative(data: &Data, node: &mut Node, rows: &[usize], settings: &C50Settings) {
+fn collapse_uninformative(
+    data: &Data,
+    node: &mut Node,
+    rows: &[usize],
+    settings: &C50Settings,
+) -> Result<(), AlgoError> {
+    crate::check_cancelled()?;
     if node.children.is_empty() {
-        return;
+        return Ok(());
     }
     for child in &mut node.children {
         let sub: Vec<usize> = rows
@@ -1648,10 +1672,10 @@ fn collapse_uninformative(data: &Data, node: &mut Node, rows: &[usize], settings
             .copied()
             .filter(row_matcher(data, &child.predicate))
             .collect();
-        collapse_uninformative(data, child, &sub, settings);
+        collapse_uninformative(data, child, &sub, settings)?;
     }
     if node.children.iter().any(|c| !c.children.is_empty()) {
-        return;
+        return Ok(());
     }
     let keep = match node.id.as_deref() {
         Some(RAISED_INFORMATIVE) => true,
@@ -1661,6 +1685,8 @@ fn collapse_uninformative(data: &Data, node: &mut Node, rows: &[usize], settings
     if !keep {
         node.children.clear();
     }
+
+    Ok(())
 }
 
 /// Whether `node`'s test passes the information test on `rows`; a node without a field
@@ -1708,12 +1734,14 @@ fn informative(data: &Data, rows: &[usize], node: &Node, settings: &C50Settings)
 ///   group only when it improves on the best score from before its subtree was scanned.
 /// - The disjoint group, in post-order, is collapsed as a whole when its summed increase fits
 ///   the remaining allowance. Otherwise global pruning stops.
-fn global_prune(data: &Data, root: &mut Node) {
+fn global_prune(data: &Data, root: &mut Node) -> Result<(), AlgoError> {
+    crate::check_cancelled()?;
     let rows: Vec<usize> = (0..data.targets.len()).collect();
     let n = rows.len() as f64;
     let errors = subtree_errors(data, root, &rows).1;
     let mut remaining = (errors * (1.0 - errors / n)).max(0.0).sqrt();
     loop {
+        crate::check_cancelled()?;
         if remaining <= 0.0 {
             break;
         }
@@ -1721,7 +1749,7 @@ fn global_prune(data: &Data, root: &mut Node) {
             best: f32::MAX,
             group: Vec::new(),
         };
-        scan_candidates(data, root, &rows, &mut Vec::new(), remaining, &mut scan);
+        scan_candidates(data, root, &rows, &mut Vec::new(), remaining, &mut scan)?;
         if scan.group.is_empty() {
             break;
         }
@@ -1738,6 +1766,8 @@ fn global_prune(data: &Data, root: &mut Node) {
             remaining -= step.added;
         }
     }
+
+    Ok(())
 }
 
 /// One internal node selected for collapse: its child-index path from the root and the
@@ -1783,9 +1813,10 @@ fn scan_candidates(
     path: &mut Vec<usize>,
     remaining: f64,
     scan: &mut PruneScan,
-) {
+) -> Result<(), AlgoError> {
+    crate::check_cancelled()?;
     if node.children.is_empty() {
-        return;
+        return Ok(());
     }
     let best_before = scan.best;
     for (index, child) in node.children.iter().enumerate() {
@@ -1798,13 +1829,13 @@ fn scan_candidates(
             continue;
         }
         path.push(index);
-        scan_candidates(data, child, &sub, path, remaining, scan);
+        scan_candidates(data, child, &sub, path, remaining, scan)?;
         path.pop();
     }
     let (leaf, sub, leaves) = counted_errors(data, node, rows);
     let added = leaf - sub;
     if added > remaining || leaves < 2 {
-        return;
+        return Ok(());
     }
     let score = added / (leaves - 1) as f64;
     let best = f64::from(scan.best);
@@ -1819,12 +1850,14 @@ fn scan_candidates(
             scan.group.retain(|step| !step.path.starts_with(&inside));
         }
     } else {
-        return;
+        return Ok(());
     }
     scan.group.push(CollapseStep {
         path: path.clone(),
         added,
     });
+
+    Ok(())
 }
 
 fn column_name(column: &Column) -> &str {
@@ -1984,6 +2017,7 @@ fn winnow_columns(data: &Data, settings: &C50Settings) -> Result<Vec<bool>, Algo
     let mut seen = vec![0usize; data.classes.len()];
     let (mut front, mut rear) = (Vec::new(), Vec::new());
     for (row, &class) in data.targets.iter().enumerate() {
+        crate::check_cancelled()?;
         let Some(count) = seen.get_mut(class) else {
             continue;
         };
@@ -2165,6 +2199,7 @@ fn refresh_distribution(node: &mut Node) {
 /// whose C count is the sum of its children's) are not reproduced.
 fn finalize_weighted_counts(node: &mut Node) -> Result<(), AlgoError> {
     for d in &mut node.distribution {
+        crate::check_cancelled()?;
         d.record_count = format!("{:.7e}", d.record_count)
             .parse::<f64>()
             .map_err(|e| AlgoError::Data(format!("C5.0 weighted count formatting: {e}")))?;
@@ -2173,6 +2208,7 @@ fn finalize_weighted_counts(node: &mut Node) -> Result<(), AlgoError> {
         node.record_count = Some(node.distribution.iter().map(|d| d.record_count).sum());
     } else {
         for child in &mut node.children {
+            crate::check_cancelled()?;
             finalize_weighted_counts(child)?;
         }
         node.record_count = Some(node.children.iter().filter_map(|c| c.record_count).sum());
@@ -2182,6 +2218,7 @@ fn finalize_weighted_counts(node: &mut Node) -> Result<(), AlgoError> {
 }
 
 pub fn train(dataset: &Dataset<'_>, settings: &C50Settings) -> Result<Pmml, AlgoError> {
+    crate::check_cancelled()?;
     if let Some(trials) = settings.boost_trials {
         return crate::c50_boost::train(dataset, settings, trials);
     }
@@ -2211,9 +2248,9 @@ pub fn train_tree(dataset: &Dataset<'_>, settings: &C50Settings) -> Result<Pmml,
     prune(&data, &rows, &mut root, settings, 0, &mut budget)?;
     if settings.global_pruning {
         if data.costs.is_none() {
-            collapse_uninformative(&data, &mut root, &rows, settings);
+            collapse_uninformative(&data, &mut root, &rows, settings)?;
         }
-        global_prune(&data, &mut root);
+        global_prune(&data, &mut root)?;
     }
     merge_leaves(&mut root);
     if settings.weight_field.is_some() {

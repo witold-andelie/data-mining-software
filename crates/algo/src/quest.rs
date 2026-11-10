@@ -127,6 +127,7 @@ fn validate(dataset: &Dataset<'_>, settings: &QuestSettings) -> Result<(), AlgoE
         .iter()
         .chain(std::iter::once(&dataset.target))
     {
+        crate::check_cancelled()?;
         let field = fields.get(position).ok_or_else(|| gap("field index"))?;
         if categories(dataset, position).len() > 32 && field.measurement != Measurement::Continuous
         {
@@ -236,6 +237,7 @@ fn select_split(
     };
     let mut tests = Vec::new();
     for (input, column) in data.columns.iter().enumerate() {
+        crate::check_cancelled()?;
         // A field with text categories takes the chi-square test even when it is ordinal
         // (`quest_edge_ordinal`: Modeler splits on `ord`, whose F test on the category order
         // high < low < middle it saves gives p 0.078; its chi-square p is 0.0017).
@@ -256,6 +258,7 @@ fn select_split(
     if p >= settings.alpha / data.columns.len() as f64 {
         tests.clear();
         for (input, column) in data.columns.iter().enumerate() {
+            crate::check_cancelled()?;
             if !matches!(column, Column::Numeric { ordinal: false, .. }) {
                 continue;
             }
@@ -341,6 +344,7 @@ fn qda(
 ) -> Result<f64, AlgoError> {
     let mut groups = vec![Moments::default(); classes];
     for &(x, j) in values {
+        crate::check_cancelled()?;
         if let Some(g) = groups.get_mut(j) {
             g.add(x);
         }
@@ -370,22 +374,26 @@ fn qda(
         // (`quest_edge_levene`: A and B, 20 records each, mean 0).
         let mut count = vec![0usize; classes];
         for &r in rows {
+            crate::check_cancelled()?;
             if let Some(c) = target.get(r).and_then(|&j| count.get_mut(j)) {
                 *c += 1;
             }
         }
         let mut best = present[0].0;
         for &(j, _) in &present {
+            crate::check_cancelled()?;
             if count[j] > count[best] {
                 best = j;
             }
         }
         for &(j, _) in &present {
+            crate::check_cancelled()?;
             assignment[j] = j != best;
         }
         converged = true;
     }
     for _ in 0..100 {
+        crate::check_cancelled()?;
         if converged {
             break;
         }
@@ -424,11 +432,13 @@ fn qda(
     let mut moments = [Moments::default(); 2];
     let mut mass = [0.0_f64; 2];
     for &(x, j) in values {
+        crate::check_cancelled()?;
         if let Some(m) = moments.get_mut(usize::from(assignment.get(j).copied().unwrap_or(false))) {
             m.add(x);
         }
     }
     for &r in rows {
+        crate::check_cancelled()?;
         if let Some(j) = target.get(r)
             && let Some(m) = mass.get_mut(usize::from(assignment.get(*j).copied().unwrap_or(false)))
         {
@@ -508,6 +518,7 @@ fn crimcoord(
     let mut cells = vec![vec![0.0; categories]; classes];
     let mut totals = vec![0.0; classes];
     for &r in rows {
+        crate::check_cancelled()?;
         if let (Some(Some(c)), Some(j)) = (codes.get(r), target.get(r)) {
             if let Some(n) = counts.get_mut(*c) {
                 *n += 1.0;
@@ -524,6 +535,7 @@ fn crimcoord(
     let mut total = vec![vec![0.0; categories]; categories];
     let mut between = total.clone();
     for (i, row) in total.iter_mut().enumerate() {
+        crate::check_cancelled()?;
         for (j, value) in row.iter_mut().enumerate() {
             *value = if i == j { counts[i] } else { 0.0 } - counts[i] * counts[j] / n;
             between[i][j] = cells
@@ -553,6 +565,7 @@ fn crimcoord(
         .collect();
     let mut reduced = vec![vec![0.0; rank]; rank];
     for (i, row) in reduced.iter_mut().enumerate() {
+        crate::check_cancelled()?;
         for (j, v) in row.iter_mut().enumerate() {
             for (r, brow) in between.iter().enumerate() {
                 for (c, b) in brow.iter().enumerate() {
@@ -621,6 +634,7 @@ impl Default for QuestSettings {
 
 /// Trains a QUEST model.
 pub fn train(dataset: &Dataset<'_>, settings: &QuestSettings) -> Result<Pmml, AlgoError> {
+    crate::check_cancelled()?;
     if dataset.frequency.is_some() {
         return Err(AlgoError::Unsupported(
             "QUEST with a frequency field".into(),
@@ -656,11 +670,13 @@ pub fn train(dataset: &Dataset<'_>, settings: &QuestSettings) -> Result<Pmml, Al
     }
     let mut queue = VecDeque::from([&root]);
     while let Some(node) = queue.pop_front() {
+        crate::check_cancelled()?;
         predicate_fields(&node.predicate, &mut used);
         queue.extend(&node.children);
     }
     schema.sort_by_key(|f| used.iter().position(|s| s == &f.name).unwrap_or(usize::MAX));
     for field in &mut schema {
+        crate::check_cancelled()?;
         field.invalid_treatment = dms_pmml::InvalidTreatment::ReturnInvalid;
     }
     let header = ModelHeader {
@@ -758,6 +774,7 @@ impl Data {
         let target = if target_field.measurement == Measurement::Continuous {
             let mut numbers = vec![0.0; table_rows.len()];
             for (i, row) in table_rows.iter().enumerate() {
+                crate::check_cancelled()?;
                 if let Some(x) = target_value(row)
                     .and_then(|v| v.as_f64())
                     .filter(|x| x.is_finite())
@@ -771,6 +788,7 @@ impl Data {
             let mut labels = categories(dataset, dataset.target);
             let mut codes = vec![0; table_rows.len()];
             for (i, row) in table_rows.iter().enumerate() {
+                crate::check_cancelled()?;
                 if let Some(value) = target_value(row) {
                     codes[i] = code_of(&mut labels, value.to_string());
                     rows.push(i);
@@ -782,6 +800,7 @@ impl Data {
         let mut names = Vec::new();
         let mut columns = Vec::new();
         for &position in dataset.inputs {
+            crate::check_cancelled()?;
             let input = field(position)?;
             let numeric = matches!(input.storage, Storage::Integer | Storage::Real);
             let cell = |row: &[Value]| {
@@ -828,6 +847,7 @@ impl Data {
             let mut rng = Rng(settings.seed);
             let (mut train, mut overfit) = (Vec::new(), Vec::new());
             for row in valid {
+                crate::check_cancelled()?;
                 if rng.unit() < settings.overfit_share {
                     overfit.push(row);
                 } else {
@@ -855,6 +875,7 @@ impl Data {
             Target::Classes { codes, labels } => {
                 let mut totals = vec![0.0; labels.len()];
                 for &row in &rows {
+                    crate::check_cancelled()?;
                     totals[codes[row]] += 1.0;
                 }
                 let n = rows.len() as f64;
@@ -1147,6 +1168,9 @@ fn best_surrogate(
     let mut left_counts = vec![0.0; labels.len()];
     let mut right_counts = left_counts.clone();
     for &(r, _) in labeled {
+        if crate::check_cancelled().is_err() {
+            return None;
+        }
         if primary_rule.goes_left(&data.columns[primary], r) == Some(true) {
             left_counts[codes[r]] += 1.0;
         } else {
@@ -1166,6 +1190,9 @@ fn best_surrogate(
             sorted.sort_by(f64::total_cmp);
             sorted.dedup();
             for pair in sorted.windows(2) {
+                if crate::check_cancelled().is_err() {
+                    return None;
+                }
                 if let [low, high] = pair {
                     candidates.push(Rule::Threshold(if *ordinal {
                         *low
@@ -1184,12 +1211,18 @@ fn best_surrogate(
             let present = present_categories(codes, labels.len(), &rows);
             if *ordinal {
                 for set in subsets(&present)? {
+                    if crate::check_cancelled().is_err() {
+                        return None;
+                    }
                     candidates.push(categories_rule(&present, set));
                 }
             } else {
                 let mut left = vec![0usize; labels.len()];
                 let mut right = left.clone();
                 for &(r, side) in &both {
+                    if crate::check_cancelled().is_err() {
+                        return None;
+                    }
                     if let Some(code) = codes.get(r).copied().flatten()
                         && let Some(count) = if side {
                             left.get_mut(code)
@@ -1213,6 +1246,9 @@ fn best_surrogate(
     }
     let mut best: Option<(usize, f64, Rule, bool)> = None;
     for rule in candidates {
+        if crate::check_cancelled().is_err() {
+            return None;
+        }
         let mut counts = [[0.0_f64; 2]; 2];
         for &(r, left) in &both {
             if let Some(hit) = rule.goes_left(column, r) {
@@ -1372,6 +1408,7 @@ fn grow(data: &Data, settings: &QuestSettings) -> Result<Tree, AlgoError> {
     let mut next_id = 1;
     let mut queue = VecDeque::from([(0usize, 0usize)]);
     while let Some((index, depth)) = queue.pop_front() {
+        crate::check_cancelled()?;
         let rows = std::mem::take(&mut nodes[index].rows);
         let stop =
             depth >= settings.max_depth || is_pure(data, &rows) || (rows.len() as f64) < min_parent;
@@ -1476,6 +1513,7 @@ fn split_node(
             > weighted_probability(data, rows, |r| rule.goes_left(column, r) == Some(false));
     let (mut left_rows, mut right_rows) = (Vec::new(), Vec::new());
     for &row in rows {
+        crate::check_cancelled()?;
         let left = rule.goes_left(column, row).or_else(|| {
             surrogates.iter().find_map(|s| {
                 s.rule

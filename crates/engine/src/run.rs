@@ -24,9 +24,10 @@ pub struct RunRequest {
 
 #[derive(Debug)]
 pub struct RunReport {
+    pub cancelled: bool,
     pub targets: Vec<String>,
     pub results: HashMap<String, NodeResult>,
-    /// Where the run broke (errors other than `Upstream`), one per node: nodes that failed while
+    /// Where the run broke (excluding `Upstream` and `Cancelled`), one per node: nodes that failed while
     /// running, in evaluation order, then errors set without running a node (cycles) by uid.
     pub root_causes: Vec<NodeError>,
     pub elapsed: Duration,
@@ -66,6 +67,7 @@ pub fn run_stream(request: RunRequest, ctx: &JobContext) -> RunReport {
         RunTargets::Nodes(uids) => (uids, false),
     };
     let mut report = RunReport {
+        cancelled: false,
         targets: Vec::new(),
         results: HashMap::new(),
         root_causes: Vec::new(),
@@ -74,12 +76,18 @@ pub fn run_stream(request: RunRequest, ctx: &JobContext) -> RunReport {
     let mut execution = match plan.execution() {
         Ok(execution) => execution,
         Err(error) => {
+            report.cancelled = ctx.is_cancelled();
             report.targets = targets.clone();
             let mut seen = HashSet::new();
             for target in targets {
-                let error = error.clone().at(&target);
+                let error = if report.cancelled {
+                    dms_exec::OperatorError::Cancelled
+                } else {
+                    error.clone()
+                }
+                .at(&target);
                 report.results.insert(target, Err(error.clone()));
-                if seen.insert(error.uid.clone()) {
+                if error.kind != ErrorKind::Cancelled && seen.insert(error.uid.clone()) {
                     report.root_causes.push(error);
                 }
             }
@@ -88,6 +96,7 @@ pub fn run_stream(request: RunRequest, ctx: &JobContext) -> RunReport {
         }
     };
     let context = ExecContext {
+        cancel: ctx.cancel_token(),
         files: FileResolver {
             data_dirs: request.data_dirs,
         },
@@ -104,12 +113,9 @@ pub fn run_stream(request: RunRequest, ctx: &JobContext) -> RunReport {
     let mut done = 0usize;
     let mut total = 0usize;
     for batch in batches {
-        if ctx.is_cancelled() {
-            break;
-        }
         let base = total;
         let completed = done;
-        // Nodes that failed, in evaluation order: their non-Upstream errors are the root causes.
+        // Run failures in evaluation order; cancellation is not a root cause.
         let mut failed: Vec<String> = Vec::new();
         let results = execution.evaluate_observed(&batch, &context, &mut |event| {
             let current = match event {
@@ -138,7 +144,7 @@ pub fn run_stream(request: RunRequest, ctx: &JobContext) -> RunReport {
         });
         for uid in &failed {
             if let Some(Err(error)) = results.get(uid)
-                && !matches!(error.kind, ErrorKind::Upstream(_))
+                && !matches!(error.kind, ErrorKind::Upstream(_) | ErrorKind::Cancelled)
                 && !report
                     .root_causes
                     .iter()
@@ -151,7 +157,7 @@ pub fn run_stream(request: RunRequest, ctx: &JobContext) -> RunReport {
         let mut unreported: Vec<&NodeError> = results
             .values()
             .filter_map(|result| result.as_ref().err())
-            .filter(|error| !matches!(error.kind, ErrorKind::Upstream(_)))
+            .filter(|error| !matches!(error.kind, ErrorKind::Upstream(_) | ErrorKind::Cancelled))
             .filter(|error| {
                 !report
                     .root_causes
@@ -164,8 +170,15 @@ pub fn run_stream(request: RunRequest, ctx: &JobContext) -> RunReport {
         report.root_causes.extend(unreported.into_iter().cloned());
         report.targets.extend(batch.into_iter().map(str::to_string));
         // Sequential terminal evaluations recompute shared nodes; retain their latest result.
-        report.results.extend(results);
+        for (uid, result) in results {
+            if matches!(&result, Err(error) if error.kind == ErrorKind::Cancelled) {
+                report.results.entry(uid).or_insert(result);
+            } else {
+                report.results.insert(uid, result);
+            }
+        }
     }
+    report.cancelled = ctx.is_cancelled();
     report.elapsed = started.elapsed();
     report
 }
@@ -588,9 +601,16 @@ pub(crate) mod tests {
         let report = report_receiver
             .recv_timeout(Duration::from_secs(10))
             .unwrap();
-        assert_eq!(report.targets, ["globals"]);
-        assert_eq!(report.results.len(), 2);
-        assert!(!report.results.contains_key("out"));
+        assert_eq!(report.targets, ["globals", "out"]);
+        assert_eq!(report.results.len(), 3);
+        assert!(matches!(&report.results["out"], Err(error) if error.kind == ErrorKind::Cancelled));
+        assert!(report.cancelled);
+        assert!(
+            report
+                .root_causes
+                .iter()
+                .all(|error| error.kind != ErrorKind::Cancelled)
+        );
         assert!(matches!(jobs.poll().as_slice(), [JobEvent::Cancelled { job }] if *job == id));
     }
 }

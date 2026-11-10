@@ -137,6 +137,7 @@ const MAX_PARAMETERS: usize = 4096;
 
 /// Trains a logistic regression model on the target and inputs of `dataset`.
 pub fn train(dataset: &Dataset<'_>, settings: &LogisticSettings) -> Result<Pmml, AlgoError> {
+    crate::check_cancelled()?;
     if dataset.frequency.is_some() {
         return Err(AlgoError::Unsupported(
             "logistic regression with a frequency field".into(),
@@ -300,6 +301,7 @@ impl Data {
         let mut factors = Vec::new();
         let mut covariates = Vec::new();
         for &position in dataset.inputs {
+            crate::check_cancelled()?;
             let input = field(position)?;
             match input.measurement {
                 Measurement::Typeless | Measurement::Collection | Measurement::Geospatial => {
@@ -346,6 +348,7 @@ impl Data {
         let mut est_of = Vec::with_capacity(params.len());
         let mut p_est = 0usize;
         for param in &params {
+            crate::check_cancelled()?;
             let estimated = match param.kind {
                 ParamKind::Factor { redundant, .. } => !redundant,
                 _ => true,
@@ -380,6 +383,7 @@ impl Data {
         }
         let mut records = Vec::new();
         for row in table_rows {
+            crate::check_cancelled()?;
             let Some(target_value) = row
                 .get(dataset.target)
                 .filter(|value| !target_field.is_missing(value))
@@ -478,6 +482,9 @@ fn design_row(
         x.push(1.0);
     }
     for covariate in covariates {
+        if crate::check_cancelled().is_err() {
+            return None;
+        }
         let field = fields.get(covariate.position)?;
         let value = row
             .get(covariate.position)
@@ -486,6 +493,9 @@ fn design_row(
         x.push(number);
     }
     for factor in factors {
+        if crate::check_cancelled().is_err() {
+            return None;
+        }
         let field = fields.get(factor.position)?;
         let value = row.get(factor.position).filter(|v| !field.is_missing(v))?;
         let code = class_of(&factor.labels, value)?;
@@ -515,6 +525,7 @@ fn newton(data: &Data, settings: &LogisticSettings) -> Result<Vec<f64>, AlgoErro
         ));
     }
     for iteration in 0..settings.max_iterations {
+        crate::check_cancelled()?;
         // From the 20th iteration on, complete separation (every record predicted in its own
         // category) stops at the current estimates (`models/logreg_multinomial`: Modeler's
         // coefficients are the 19th iterate's, log-likelihood -1.33358e-5).
@@ -623,6 +634,9 @@ fn derivatives(data: &Data, beta: &[f64]) -> Option<(f64, Vec<f64>, Vec<f64>)> {
     let mut score = vec![0.0; npar];
     let mut info = vec![0.0; npar.checked_mul(npar)?];
     for record in &data.records {
+        if crate::check_cancelled().is_err() {
+            return None;
+        }
         let pi = softmax_non_ref(&record.x, beta, m, p)?;
         let y_non_ref = data.non_ref.iter().position(|&c| c == record.class);
         let ll = case_loglik(y_non_ref, &record.x, beta, m, p)?;
@@ -664,6 +678,9 @@ fn softmax_non_ref(x: &[f64], beta: &[f64], m: usize, p: usize) -> Option<Vec<f6
     let eta = linear_predictors(x, beta, m, p)?;
     let mut max_z = 0.0;
     for &e in &eta {
+        if crate::check_cancelled().is_err() {
+            return None;
+        }
         if e > max_z {
             max_z = e;
         }
@@ -671,6 +688,9 @@ fn softmax_non_ref(x: &[f64], beta: &[f64], m: usize, p: usize) -> Option<Vec<f6
     let mut weights = Vec::with_capacity(m);
     let mut sum = (0.0 - max_z).exp();
     for &e in &eta {
+        if crate::check_cancelled().is_err() {
+            return None;
+        }
         let w = (e - max_z).exp();
         sum += w;
         weights.push(w);
@@ -687,6 +707,9 @@ fn linear_predictors(x: &[f64], beta: &[f64], m: usize, p: usize) -> Option<Vec<
     }
     let mut eta = vec![0.0; m];
     for j in 0..m {
+        if crate::check_cancelled().is_err() {
+            return None;
+        }
         let start = j.saturating_mul(p);
         let slot = eta.get_mut(j)?;
         *slot = 0.0;
@@ -709,12 +732,18 @@ fn case_loglik(
     let eta = linear_predictors(x, beta, m, p)?;
     let mut max_z = 0.0;
     for &e in &eta {
+        if crate::check_cancelled().is_err() {
+            return None;
+        }
         if e > max_z {
             max_z = e;
         }
     }
     let mut sum = (0.0 - max_z).exp();
     for &e in &eta {
+        if crate::check_cancelled().is_err() {
+            return None;
+        }
         sum += (e - max_z).exp();
     }
     if !sum.is_finite() || sum <= 0.0 {
@@ -732,6 +761,9 @@ fn loglik_at(data: &Data, beta: &[f64]) -> Option<f64> {
     let p = data.p_est;
     let mut loglik = 0.0;
     for record in &data.records {
+        if crate::check_cancelled().is_err() {
+            return None;
+        }
         let y_non_ref = data.non_ref.iter().position(|&c| c == record.class);
         let ll = case_loglik(y_non_ref, &record.x, beta, m, p)?;
         loglik += record.weight * ll;
@@ -748,6 +780,9 @@ fn step_halve(
 ) -> Option<(Vec<f64>, f64)> {
     let mut xi = 1.0;
     for _ in 0..=max_halves {
+        if crate::check_cancelled().is_err() {
+            return None;
+        }
         let mut trial = Vec::with_capacity(beta.len());
         for (b, d) in beta.iter().zip(delta) {
             trial.push(b + xi * d);
@@ -781,6 +816,9 @@ fn solve_system(matrix: &[f64], rhs: &[f64], n: usize, tol: f64) -> Option<Vec<f
     let original: Vec<f64> = (0..n).map(|k| a[k * n + k]).collect();
     let mut swept = vec![false; n];
     for k in 0..n {
+        if crate::check_cancelled().is_err() {
+            return None;
+        }
         let pivot = a[k * n + k];
         if !pivot.is_finite() || pivot <= tol * original[k].abs() || pivot <= 0.0 {
             continue;
@@ -802,6 +840,9 @@ fn solve_system(matrix: &[f64], rhs: &[f64], n: usize, tol: f64) -> Option<Vec<f
     // The swept block of `a` now holds minus the inverse of that block of `matrix`.
     let mut x = vec![0.0; n];
     for i in (0..n).filter(|&i| swept[i]) {
+        if crate::check_cancelled().is_err() {
+            return None;
+        }
         x[i] = (0..n)
             .filter(|&j| swept[j])
             .map(|j| -a[i * n + j] * rhs[j])
@@ -973,6 +1014,7 @@ fn fit(
     inputs: &[usize],
     settings: &LogisticSettings,
 ) -> Result<Fit, AlgoError> {
+    crate::check_cancelled()?;
     let subset = Dataset { inputs, ..*dataset };
     let data = Data::read(&subset, settings)?;
     let beta = newton(&data, settings)?;
@@ -998,6 +1040,9 @@ fn score_statistic(fit: &Fit, larger: &Data, settings: &LogisticSettings) -> Opt
     let small_p = fit.data.p_est;
     let mut small: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
     for (param, est) in fit.data.params.iter().zip(&fit.data.est_of) {
+        if crate::check_cancelled().is_err() {
+            return None;
+        }
         if let Some(s) = est {
             small.insert(param_key(param), *s);
         }
@@ -1005,6 +1050,9 @@ fn score_statistic(fit: &Fit, larger: &Data, settings: &LogisticSettings) -> Opt
     let mut beta = vec![0.0; m.checked_mul(p)?];
     let mut added = 0usize;
     for (param, est) in larger.params.iter().zip(&larger.est_of) {
+        if crate::check_cancelled().is_err() {
+            return None;
+        }
         let Some(s) = est else { continue };
         match small.get(&param_key(param)) {
             Some(&t) => {
@@ -1048,6 +1096,7 @@ fn select_effects(
         let current = fit(dataset, &ordered(chosen), settings)?;
         let mut worst: Option<(usize, f64)> = None;
         for &effect in chosen.iter() {
+            crate::check_cancelled()?;
             if Some(effect) == keep {
                 continue;
             }
@@ -1069,13 +1118,16 @@ fn select_effects(
         }
     };
     if settings.method == Method::Backwards {
-        while !chosen.is_empty() && removal(&mut chosen, None)? {}
+        while !chosen.is_empty() && removal(&mut chosen, None)? {
+            crate::check_cancelled()?;
+        }
         return Ok(ordered(&chosen));
     }
     // Forward entry; stepwise also removes after each entry. Each subset is entered at most
     // once, so the search ends.
     let mut seen: Vec<Vec<usize>> = vec![ordered(&chosen)];
     loop {
+        crate::check_cancelled()?;
         let current = fit(dataset, &ordered(&chosen), settings)?;
         let mut best: Option<(usize, f64)> = None;
         for &candidate in all.iter().filter(|p| !chosen.contains(p)) {

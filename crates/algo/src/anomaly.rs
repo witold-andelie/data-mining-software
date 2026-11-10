@@ -127,6 +127,7 @@ pub fn train(
     inputs: &[usize],
     settings: &AnomalySettings,
 ) -> Result<Pmml, AlgoError> {
+    crate::check_cancelled()?;
     let fields = table.model().fields();
     let rows = table.rows();
     if rows.is_empty() {
@@ -147,6 +148,7 @@ pub fn train(
     let mut categorical = Vec::new();
     let mut continuous = Vec::new();
     for &position in inputs {
+        crate::check_cancelled()?;
         let field = fields
             .get(position)
             .ok_or_else(|| AlgoError::Data(format!("no field at position {position}")))?;
@@ -187,6 +189,7 @@ pub fn train(
     // Records as CFs, with imputed values.
     let mut records = Vec::with_capacity(rows.len());
     for row in rows {
+        crate::check_cancelled()?;
         let mut sum = Vec::new();
         let mut counts = Vec::new();
         for column in &columns {
@@ -230,6 +233,7 @@ pub fn train(
     let n = records.len() as f64;
     let mut deltas = Vec::new();
     for k in 0..records[0].sum.len() {
+        crate::check_cancelled()?;
         let mean = records.iter().map(|r| r.sum[k]).sum::<f64>() / n;
         let var = records
             .iter()
@@ -244,6 +248,7 @@ pub fn train(
         deltas.push(var / settings.adjustment);
     }
     for (k, column) in columns.iter().enumerate() {
+        crate::check_cancelled()?;
         if let Input::Categorical { .. } = column {
             let seen = records
                 .first()
@@ -284,6 +289,7 @@ pub fn train(
     let mut centers = merged;
     let mut assignment: Vec<usize> = Vec::new();
     for _ in 0..100 {
+        crate::check_cancelled()?;
         let next: Vec<usize> = records
             .iter()
             .map(|record| {
@@ -351,6 +357,7 @@ pub fn train(
         return Err(AlgoError::Data("not a clustering model".into()));
     };
     for (index, cluster) in model.clusters.iter_mut().enumerate() {
+        crate::check_cancelled()?;
         let deviations: Vec<f64> = scores
             .iter()
             .filter(|s| s.cluster == index)

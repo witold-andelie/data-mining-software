@@ -57,6 +57,7 @@ pub fn train(
     inputs: &[usize],
     settings: &FactorSettings,
 ) -> Result<Pmml, AlgoError> {
+    crate::check_cancelled()?;
     if inputs.is_empty() || inputs.len() > MAX_INPUTS {
         return Err(AlgoError::Data(
             "PCA/Factor needs between 1 and 256 numeric inputs".into(),
@@ -65,6 +66,7 @@ pub fn train(
     let fields = table.model().fields();
     let mut data: Vec<Vec<f64>> = Vec::new();
     'rows: for row in table.rows().iter().take(MAX_ROWS) {
+        crate::check_cancelled()?;
         let mut values = Vec::with_capacity(inputs.len());
         for &p in inputs {
             let field = fields
@@ -106,6 +108,7 @@ pub fn train(
     }
     let mut corr = vec![vec![0.0; p]; p];
     for a in 0..p {
+        crate::check_cancelled()?;
         for b in a..p {
             let c = data
                 .iter()
@@ -129,6 +132,7 @@ pub fn train(
         .map(|c| (0..p).map(|j| vectors[j][c]).collect())
         .collect();
     for column in &mut v {
+        crate::check_cancelled()?;
         if column.iter().sum::<f64>() < 0.0 {
             for x in column.iter_mut() {
                 *x = -*x;
@@ -140,7 +144,7 @@ pub fn train(
             let loadings: Vec<Vec<f64>> = (0..p)
                 .map(|j| (0..k).map(|c| v[c][j] * values[c].sqrt()).collect())
                 .collect();
-            varimax(&loadings, sweeps)
+            varimax(&loadings, sweeps)?
         }
         _ => identity(k),
     };
@@ -242,7 +246,7 @@ fn identity(k: usize) -> Vec<Vec<f64>> {
 }
 
 /// Kaiser-normalized varimax by pairwise rotations; returns the k x k rotation matrix.
-fn varimax(loadings: &[Vec<f64>], sweeps: usize) -> Vec<Vec<f64>> {
+fn varimax(loadings: &[Vec<f64>], sweeps: usize) -> Result<Vec<Vec<f64>>, AlgoError> {
     let p = loadings.len();
     let k = loadings.first().map_or(0, Vec::len);
     let h: Vec<f64> = loadings
@@ -261,8 +265,10 @@ fn varimax(loadings: &[Vec<f64>], sweeps: usize) -> Vec<Vec<f64>> {
     let mut t = identity(k);
     let pf = p as f64;
     for _ in 0..sweeps {
+        crate::check_cancelled()?;
         let mut changed = false;
         for i in 0..k {
+            crate::check_cancelled()?;
             for j in i + 1..k {
                 let (mut sa, mut sb, mut sc, mut sd) = (0.0, 0.0, 0.0, 0.0);
                 for row in &a {
@@ -297,5 +303,5 @@ fn varimax(loadings: &[Vec<f64>], sweeps: usize) -> Vec<Vec<f64>> {
             break;
         }
     }
-    t
+    Ok(t)
 }
