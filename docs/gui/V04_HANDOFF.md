@@ -30,7 +30,7 @@ WP8 和 WP9 的文件不重叠，同时在两个副本里运行。两者都整�
 
 ### 8.2 文件
 
-只能改：`crates/types/src/`（新增 `cancel.rs` 和 `lib.rs` 里的导出）；`crates/exec/src/{context.rs,error.rs,plan.rs,lib.rs}`；`crates/exec/src/nodes/*.rs` 里**调用耗时算法的地方**（把取消标记传下去）；`crates/algo/src/**/*.rs` 里**耗时的循环**（加检查和参数）；`crates/engine/src/{run.rs,job.rs,session.rs}`；对应的测试文件；`apps/dms-cli/src/main.rs` 和 `xtask/src/` 只在 `ExecContext` 的构造需要补字段时改（用 `Default` 一类的写法，行为不变）。不改 `crates/ui`、`apps/dms`。
+只能改：`crates/types/src/`（新增 `cancel.rs` 和 `lib.rs` 里的导出）；`crates/exec/src/{context.rs,error.rs,plan.rs,lib.rs}`；`crates/exec/src/nodes/*.rs` 里**调用耗时算法的地方**（把取消标记传下去）；`crates/algo/src/**/*.rs` 里**耗时的循环**（加检查和参数）；`crates/engine/src/{run.rs,job.rs,session.rs}`；对应的测试文件；`apps/dms-cli/src/main.rs` 和 `xtask/src/` 只在 `ExecContext` 的构造需要补字段时改（用 `Default` 一类的写法，行为不变）。不改 `crates/ui`、`apps/dms`，**例外**：`crates/ui/src/results.rs` 的 `error_text` 只加一个分支 `ErrorKind::Cancelled => tr("Stopped before this node ran.").to_string()`，`crates/ui/i18n/zh-Hans.toml` 只按字母序加这一个键（`"Stopped before this node ran." = "在运行到此节点前已停止。"`）；其余界面处理归 WP10。WP9 同时在改 `results.rs`，协调者整合时合并。
 
 ### 8.3 设计
 
