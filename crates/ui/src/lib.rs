@@ -3,6 +3,7 @@
 //! serializable data. See docs/gui/DESIGN.md.
 
 pub mod canvas;
+pub mod chart;
 pub mod document_view;
 pub mod graph;
 pub mod i18n;

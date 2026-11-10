@@ -2,6 +2,7 @@
 //! has a result. Data shows as a virtualized table, statistics and text outputs as documents,
 //! trained models as their summary, failures with their cause and a way to the failing node.
 
+use crate::chart::{Chart, chart_for, settings_are_bounded, show_chart};
 use crate::document_view::show_document;
 use crate::graph::NodeKind;
 use crate::graph::StreamGraph;
@@ -11,8 +12,78 @@ use crate::results_table::show_table;
 use dms_engine::catalog::Palette;
 use dms_engine::run::RunReport;
 use dms_exec::{ErrorKind, NodeError, NodeOutput};
+use dms_strfmt::fastinfoset::Element;
 use egui::{RichText, Ui};
 use std::path::Path;
+use std::sync::Arc;
+
+/// Cache only the currently displayed document, so large charts are not rebuilt every frame.
+#[derive(Clone)]
+struct ChartCache {
+    document: Arc<dms_exec::Document>,
+    settings: Option<Element>,
+    node_type: String,
+    chart: Option<Chart>,
+}
+
+fn show_graph_document(
+    ui: &mut Ui,
+    uid: &str,
+    node_type: &str,
+    settings: Option<&Element>,
+    document: &Arc<dms_exec::Document>,
+) {
+    if !matches!(
+        node_type,
+        "histogram"
+            | "distribution"
+            | "plot"
+            | "multiplot"
+            | "time_plot"
+            | "evaluation"
+            | "collection"
+    ) || !settings_are_bounded(settings)
+    {
+        show_document(ui, document);
+        return;
+    }
+    let cache_id = ui.scope_id().with("result_chart_cache");
+    let cached = ui.data(|data| data.get_temp::<Arc<ChartCache>>(cache_id));
+    let cached = cached
+        .filter(|cache| {
+            Arc::ptr_eq(&cache.document, document)
+                && cache.node_type == node_type
+                && cache.settings.as_ref() == settings
+        })
+        .unwrap_or_else(|| {
+            let cache = Arc::new(ChartCache {
+                document: Arc::clone(document),
+                settings: settings.cloned(),
+                node_type: node_type.to_string(),
+                chart: chart_for(node_type, settings, document),
+            });
+            ui.data_mut(|data| data.insert_temp(cache_id, Arc::clone(&cache)));
+            cache
+        });
+    let Some(chart) = &cached.chart else {
+        show_document(ui, document);
+        return;
+    };
+    let view_id = ui.scope_id().with(("result_chart_view", uid));
+    let mut data_view = ui
+        .data(|data| data.get_temp::<bool>(view_id))
+        .unwrap_or(false);
+    ui.horizontal(|ui| {
+        ui.selectable_value(&mut data_view, false, tr("Chart"));
+        ui.selectable_value(&mut data_view, true, tr("Data"));
+    });
+    ui.data_mut(|data| data.insert_temp(view_id, data_view));
+    if data_view {
+        show_document(ui, document);
+    } else {
+        show_chart(ui, chart, ("result_chart", uid));
+    }
+}
 
 /// Failures listed by name before the rest are counted.
 const MAX_LISTED_FAILURES: usize = 20;
@@ -63,6 +134,20 @@ pub fn show_results(
     selected: Option<&str>,
     active: &mut Option<String>,
     export_dir: Option<&Path>,
+) -> Option<ResultsAction> {
+    show_results_with_settings(ui, report, graph, selected, active, export_dir, &|_| None)
+}
+
+/// Results with settings looked up by uid in the currently open stream. The original entry
+/// point remains available for callers that only have a report.
+pub fn show_results_with_settings<'a>(
+    ui: &mut Ui,
+    report: &RunReport,
+    graph: Option<&StreamGraph>,
+    selected: Option<&str>,
+    active: &mut Option<String>,
+    export_dir: Option<&Path>,
+    settings: &dyn Fn(&str) -> Option<&'a Element>,
 ) -> Option<ResultsAction> {
     let mut action = None;
     if let (Some(dir), Some(graph)) = (export_dir, graph) {
@@ -170,7 +255,16 @@ pub fn show_results(
     };
     match report.results.get(&uid) {
         Some(Ok(NodeOutput::Data(table))) => show_table(ui, table, ("result", &uid)),
-        Some(Ok(NodeOutput::Document(document))) => show_document(ui, document),
+        Some(Ok(NodeOutput::Document(document))) => {
+            let node_type = graph
+                .and_then(|g| g.nodes.iter().find(|n| n.uid == uid))
+                .map(|n| n.type_id.as_str());
+            if let Some(node_type) = node_type {
+                show_graph_document(ui, &uid, node_type, settings(&uid), document);
+            } else {
+                show_document(ui, document);
+            }
+        }
         Some(Ok(NodeOutput::Model(model))) => show_model(ui, model),
         Some(Err(error)) => {
             ui.label(

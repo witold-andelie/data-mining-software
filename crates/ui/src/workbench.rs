@@ -821,7 +821,7 @@ impl Workbench {
                         });
                     }
                     if let Some(results) = self.session.results() {
-                        action = results::show_results(
+                        action = results::show_results_with_settings(
                             ui,
                             &results.report,
                             self.graph.as_ref(),
@@ -831,6 +831,17 @@ impl Workbench {
                                 .document()
                                 .map(|d| dms_engine::session::export_dir_for(&d.path))
                                 .as_deref(),
+                            &|uid| {
+                                self.session
+                                    .document()?
+                                    .stream
+                                    .diagram
+                                    .nodes
+                                    .iter()
+                                    .find(|node| node.uid == uid)?
+                                    .settings
+                                    .as_ref()
+                            },
                         );
                     }
                 });
