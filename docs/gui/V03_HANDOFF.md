@@ -174,7 +174,7 @@ cargo test -p dms-ui --lib --test properties --test editing --test connect_gestu
 
 ### 6.1 文件
 
-只能改：新文件 `crates/ui/src/i18n.rs`、`crates/ui/i18n/zh-Hans.toml`（只建文件和全部键，值留空字符串）；`crates/ui/src/*.rs` 里的界面文字（改为经过 `tr`）；新文件 `crates/ui/src/settings_window.rs`；`apps/dms/src/main.rs`、`apps/dms/src/macos_menu.rs`（菜单标签经过 `tr`，语言改变后重建菜单）；`crates/macos-open/src/lib.rs` 只能加一个**不含 unsafe** 的函数 `preferred_language() -> Option<String>`（用 objc2-foundation 的 `NSLocale::preferredLanguages`，如需特性只改该 crate 的 `Cargo.toml` 特性列表）；`crates/engine/src/command.rs` 让 `app.settings` 可用（`Requires::Nothing`）。
+只能改：新文件 `crates/ui/src/i18n.rs`、`crates/ui/i18n/zh-Hans.toml`（只建文件和全部键，值留空字符串）；`crates/ui/src/*.rs` 里的界面文字（改为经过 `tr`）；新文件 `crates/ui/src/settings_window.rs`；`apps/dms/src/main.rs`、`apps/dms/src/macos_menu.rs`（菜单标签经过 `tr`，语言改变后重建菜单）；`crates/macos-open/src/lib.rs` 只能加一个**不含 unsafe** 的函数 `preferred_language() -> Option<String>`（用 objc2-foundation 的 `NSLocale::preferredLanguages`，如需特性只改该 crate 的 `Cargo.toml` 特性列表）；`crates/engine/src/command.rs` 让 `app.settings` 可用（`Requires::Nothing`）；新测试文件 `crates/ui/tests/i18n.rs`；现有 `crates/ui/tests/*.rs` 只在界面文字改动导致查找失败时改查找方式（不改断言含义）；`crates/ui/Cargo.toml` 只能加 `toml.workspace = true`（已登记的工作区依赖，读翻译表；也可以不用它，自己解析 `"键" = "值"` 行）。翻译表用 `include_str!` 编进程序。
 
 ### 6.2 规则
 
@@ -182,7 +182,11 @@ cargo test -p dms-ui --lib --test properties --test editing --test connect_gestu
 - 语言：`System`（默认）、`English`、`简体中文`。存进 `ShellState`（`#[serde(default)]`）。System 时用 `preferred_language()`，以 `zh` 开头即中文，否则英文；Windows 暂时总是英文。
 - 设置窗口（⌘, / 应用菜单“Settings…”）：语言下拉框；数据文件夹列表（显示、删除单个、“Add…”）。改语言立即生效。
 - 命令标签、菜单名、按钮、提示、对话框、状态栏消息都要经过 `tr`。节点名称、字段名、用户数据、引擎和执行器返回的错误原文不翻译。
-- 测试：扫描 `crates/ui/src` 和 `apps/dms/src` 的源代码，找出所有 `tr("…")` / `tr_fmt("…"` 的字面量，`zh-Hans.toml` 必须恰好包含这些键（不多不少）；`tr` 在未翻译时返回原文；切换语言后菜单和工具栏文字改变（kittest）。
+- **动态文字也翻译**：命令标签（`COMMANDS` 的 `label`）、菜单名（`Menu::label`）、设置模式里的 `label`、`help`、`group`、`Choice` 的显示标签、`ColumnSpec::label`（`dms_exec::schema::schema` 对 `catalog::NODES` 每个 id 的结果）都是 `&'static str`，显示时经过 `tr(...)`。撤销标签 “Change <label>” 用 `tr_fmt("Change {label}", …)` 并翻译其中的参数标签。
+- **键集合**：`zh-Hans.toml` 的键 = 源代码里 `tr("…")`/`tr_fmt("…"` 的字面量 ∪ 上一条列出的全部动态文字。测试从源代码扫描加从 `COMMANDS`、`Menu::ALL`、全部设置模式收集这个集合，要求表里的键恰好是它（不多不少）。键按字母序写，每个键一行 `"English" = ""`。
+- 语言是进程内的全局状态（`i18n::set_language`），**库内默认英文**；只有 `apps/dms` 启动时按 `ShellState` 的设置（System 时问 `preferred_language()`）设置它。这样现有测试不受系统语言影响。
+- 测试里渲染中文时，字体按 `crates/ui/tests/system_fonts.rs` 的做法加载系统字体，或把 `MissingGlyphPolicy` 设为 `Tofu`；不要让默认的 `Panic` 碰到中文字形。
+- 测试：`tr` 在未翻译时返回原文；表里有译文时返回译文；切换语言后菜单和工具栏文字改变（kittest，用一个测试内临时填入译文的表或 `set_translation_for_test` 一类的钩子，不依赖 WP7 的内容）；切回英文后恢复。
 
 ---
 
