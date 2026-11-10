@@ -13,7 +13,7 @@ dms-stream.workspace = true
 dms-types.workspace = true
 dms-clem.workspace = true
 dms-catalog.workspace = true
-dms-io = { version = "0.1.0", path = "../io" }
+dms-io.workspace = true
 dms-pmml.workspace = true
 dms-algo.workspace = true
 roxmltree = "0.20"
