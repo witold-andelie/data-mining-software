@@ -225,12 +225,13 @@ pub(crate) fn read_state(path: &Path) -> Result<DocumentState, String> {
         .read_to_end(&mut bytes)
         .map_err(|e| e.to_string())?;
     let doc = StreamDoc::import_str(&bytes, &path.to_string_lossy()).map_err(|e| e.to_string())?;
-    Ok(DocumentState::new(
-        doc,
-        None,
-        Some(path.to_path_buf()),
-        false,
-    ))
+    Ok(imported_state(doc, path))
+}
+
+/// A freshly imported `.str` has no changes of ours: it is clean until edited, so quitting or
+/// closing does not ask to save it (it has no `.dms` yet, so Save still asks where).
+fn imported_state(doc: StreamDoc, path: &Path) -> DocumentState {
+    DocumentState::new(doc, None, Some(path.to_path_buf()), true)
 }
 
 pub(crate) fn document_view(state: &DocumentState) -> Document {
@@ -939,6 +940,19 @@ pub(crate) mod tests {
             session.execute("file.save", &[]).unwrap(),
             Outcome::NeedsArgument("save_path")
         );
+    }
+
+    #[test]
+    fn an_unedited_import_is_clean_and_closes_without_asking() {
+        let mut session = Session::new();
+        let state = imported_state(StreamDoc::new(), Path::new("example.str"));
+        session.replace_document(Some(state)).unwrap();
+        assert!(!session.is_dirty());
+        assert_eq!(
+            session.execute("file.save", &[]).unwrap(),
+            Outcome::NeedsArgument("save_path")
+        );
+        assert_eq!(session.execute("app.quit", &[]).unwrap(), Outcome::Quit);
     }
 
     #[test]
