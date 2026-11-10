@@ -691,7 +691,8 @@ mod tests {
         std::fs::remove_file(&path).unwrap();
         assert_eq!(opened, Ok(Outcome::Done));
         assert!(session.results().is_none());
-        assert!(session.is_dirty());
+        // An unedited import is clean (v0.4): quitting does not ask to save it.
+        assert!(!session.is_dirty());
         assert!(session.document_state().unwrap().native_path.is_none());
         assert_eq!(
             session.execute("file.save", &[]),
