@@ -365,6 +365,14 @@ pub const COMMANDS: &[CommandSpec] = &[
         Requires::Document
     ),
     command!(
+        "node.set_param",
+        "Change Parameter",
+        Edit,
+        4,
+        Shortcuts::NONE,
+        Requires::Document
+    ),
+    command!(
         "node.add",
         "Add Node",
         Edit,

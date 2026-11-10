@@ -34,6 +34,10 @@ pub enum Edit {
         uid: String,
         label: Option<String>,
     },
+    SetSettings {
+        uid: String,
+        settings: Option<dms_strfmt::fastinfoset::Element>,
+    },
     SetTerminalOrder {
         order: Vec<NodeRef>,
     },
@@ -314,6 +318,44 @@ impl StreamDoc {
                     label: std::mem::replace(&mut node.label, label),
                 })
             }
+            Edit::SetSettings { uid, settings } => {
+                let index = self.top_index(&uid)?;
+                // Bound both sides: an inverse must remain a valid, exact restoration.
+                for root in settings.iter().chain(
+                    self.stream
+                        .diagram
+                        .nodes
+                        .get(index)
+                        .and_then(|n| n.settings.as_ref()),
+                ) {
+                    let mut pending = vec![(root, 1usize)];
+                    let mut count = 0usize;
+                    while let Some((element, depth)) = pending.pop() {
+                        count = count
+                            .saturating_add(element.children.len())
+                            .saturating_add(element.attributes.len())
+                            .saturating_add(element.namespace_declarations.len());
+                        if depth > 512 || count > 100_000 {
+                            return Err(EditError::Limit("settings depth or item count"));
+                        }
+                        pending.extend(
+                            element
+                                .child_elements()
+                                .map(|e| (e, depth.saturating_add(1))),
+                        );
+                    }
+                }
+                let node = self
+                    .stream
+                    .diagram
+                    .nodes
+                    .get_mut(index)
+                    .ok_or_else(|| EditError::UnknownNode(uid.clone()))?;
+                Ok(Edit::SetSettings {
+                    uid,
+                    settings: std::mem::replace(&mut node.settings, settings),
+                })
+            }
             Edit::SetTerminalOrder { order } => {
                 if order.len() > MAX_NODES {
                     return Err(EditError::Limit("terminal order"));
@@ -494,7 +536,7 @@ pub(crate) mod tests {
             for step in 0..80 {
                 let r = random(&mut seed);
                 let uid = format!("n{}", r % 8);
-                let edit = match r % 8 {
+                let edit = match r % 9 {
                     0 => Edit::AddNode {
                         node: node(&format!("added{round}_{step}")),
                         index: (r as usize) % (doc.stream.diagram.nodes.len() + 1),
@@ -524,6 +566,15 @@ pub(crate) mod tests {
                     },
                     6 => Edit::SetTerminalOrder {
                         order: vec![NodeRef::Uid(uid)],
+                    },
+                    7 => Edit::SetSettings {
+                        uid,
+                        settings: Some(
+                            crate::settings_xml::element_from_xml(&format!(
+                                "<properties><value>{r}</value></properties>"
+                            ))
+                            .unwrap(),
+                        ),
                     },
                     _ => Edit::PutAttachment {
                         name: format!("data/{}", r % 3),
@@ -772,5 +823,82 @@ pub(crate) mod tests {
                 .bytes()
                 .all(|b| b.is_ascii_uppercase() || b.is_ascii_digit())
         );
+    }
+}
+
+#[cfg(test)]
+mod settings_edit_tests {
+    use super::*;
+    use crate::settings_xml::element_from_xml;
+    fn doc() -> StreamDoc {
+        let mut doc = StreamDoc::new();
+        let node = super::tests::node("n");
+        doc.apply(Edit::AddNode { node, index: 0 }).unwrap();
+        doc
+    }
+    #[test]
+    fn settings_restore_absence_and_unknown_infoset_exactly() {
+        let mut doc = doc();
+        let settings=Some(element_from_xml("<properties><future q='keep'><!--keep--><?pi text?></future><value>old</value></properties>").unwrap());
+        let inverse = doc
+            .apply(Edit::SetSettings {
+                uid: "n".into(),
+                settings: settings.clone(),
+            })
+            .unwrap();
+        assert_eq!(doc.node("n").unwrap().settings, settings);
+        doc.apply(inverse).unwrap();
+        assert!(doc.node("n").unwrap().settings.is_none());
+        doc.apply(Edit::SetSettings {
+            uid: "n".into(),
+            settings: settings.clone(),
+        })
+        .unwrap();
+        let undo = doc
+            .apply(Edit::SetSettings {
+                uid: "n".into(),
+                settings: None,
+            })
+            .unwrap();
+        doc.apply(undo).unwrap();
+        assert_eq!(doc.node("n").unwrap().settings, settings);
+    }
+    #[test]
+    fn oversized_unknown_and_inner_settings_edits_are_atomic() {
+        let mut doc = doc();
+        let mut root = element_from_xml("<properties/>").unwrap();
+        root.children = vec![dms_strfmt::fastinfoset::Node::Comment("x".into()); 100_001];
+        assert!(matches!(
+            doc.apply(Edit::SetSettings {
+                uid: "n".into(),
+                settings: Some(root)
+            }),
+            Err(EditError::Limit(_))
+        ));
+        assert!(doc.node("n").unwrap().settings.is_none());
+        assert!(matches!(
+            doc.apply(Edit::SetSettings {
+                uid: "unknown".into(),
+                settings: None
+            }),
+            Err(EditError::UnknownNode(_))
+        ));
+        let mut parent = super::tests::node("parent");
+        parent.subdiagram = Some(crate::Diagram {
+            nodes: vec![super::tests::node("inner")],
+            ..Default::default()
+        });
+        doc.apply(Edit::AddNode {
+            node: parent,
+            index: 1,
+        })
+        .unwrap();
+        assert!(matches!(
+            doc.apply(Edit::SetSettings {
+                uid: "inner".into(),
+                settings: None
+            }),
+            Err(EditError::NotTopLevel(_))
+        ));
     }
 }
