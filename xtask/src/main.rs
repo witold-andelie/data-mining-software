@@ -6,6 +6,7 @@ mod corpus;
 mod layers;
 mod oracle;
 mod parity;
+mod perf;
 mod regress;
 
 use std::path::PathBuf;
@@ -20,6 +21,7 @@ commands:
   bundle-mac                 build target/dist/Data Mining.app and DataMining-<version>.dmg
                              (macOS; ad-hoc signed, not notarized)
   layers                     check crate dependency layering
+  perf                       release CPU frames (200/1000 nodes); 200-node p95 <= 4 ms
   parity [--check]           regenerate docs/parity-checklist.md (--check: fail if stale)
   corpus record <label> <dir> [ext,...]
                              write manifest entries for files under <dir> (default ext: str)
@@ -76,6 +78,7 @@ fn main() -> ExitCode {
         Some("ci") => ci(),
         Some("bundle-mac") => bundle::run(rest),
         Some("layers") => layers::check(),
+        Some("perf") => perf::run(rest),
         Some("parity") => parity::run(rest.iter().any(|a| a == "--check")),
         Some("corpus") => corpus::run(rest),
         Some("oracle") => oracle::run(rest),

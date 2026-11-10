@@ -152,7 +152,7 @@ pub fn take_canvas_shortcuts(
 pub fn menu_items(menu: Menu, mac: bool) -> Vec<&'static CommandSpec> {
     let mut items: Vec<&'static CommandSpec> = COMMANDS
         .iter()
-        .filter(|spec| spec.menu.on_platform(mac, spec.id) == menu)
+        .filter(|spec| spec.menu_visible && spec.menu.on_platform(mac, spec.id) == menu)
         .collect();
     items.sort_by_key(|spec| spec.group);
     items
@@ -207,10 +207,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn every_command_has_a_menu_on_both_platforms() {
+    fn every_visible_command_has_a_menu_on_both_platforms() {
         for mac in [true, false] {
             let listed: usize = Menu::ALL.iter().map(|m| menu_items(*m, mac).len()).sum();
-            assert_eq!(listed, COMMANDS.len());
+            assert_eq!(listed, COMMANDS.iter().filter(|s| s.menu_visible).count());
         }
         assert!(menu_items(Menu::App, false).is_empty());
     }

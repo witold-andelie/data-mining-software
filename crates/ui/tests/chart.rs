@@ -86,6 +86,205 @@ fn distribution_groups_categories_without_plotting_the_tooltip() {
 }
 
 #[test]
+fn normalized_overlays_stack_at_bin_centres_to_one_hundred_percent() {
+    let s = settings(
+        "<graphColorField>group</graphColorField><graphNormalizeData>true</graphNormalizeData>",
+    );
+    for (kind, value_column) in [
+        ("histogram", "__normalized__"),
+        ("distribution", "__count__"),
+    ] {
+        let doc = document(
+            &["x", value_column, "group"],
+            &[
+                &["1", "25", "A"],
+                &["1", "75", "B"],
+                &["2", "100", "B"],
+                &["3", "", "A"],
+            ],
+        );
+        let chart = chart_for(kind, Some(&s), &doc).unwrap();
+        assert!(chart.stacked);
+        let bars = chart.bars();
+        assert_eq!(bars.len(), 2);
+        assert_eq!(bars[0][0].argument, bars[1][0].argument);
+        assert_eq!(bars[0][0].base_offset, Some(0.0));
+        assert_eq!(bars[1][0].base_offset, Some(25.0));
+        assert_eq!(bars[1][0].value + bars[1][0].base_offset.unwrap(), 100.0);
+        assert_eq!(
+            bars[1][1].base_offset,
+            Some(0.0),
+            "missing A cell contributes zero"
+        );
+        assert_eq!(bars[1][1].value, 100.0);
+        let unnormalized = settings("<graphColorField>group</graphColorField>");
+        let grouped = chart_for(kind, Some(&unnormalized), &doc).unwrap();
+        assert!(!grouped.stacked);
+        let bars = grouped.bars();
+        assert!(bars[0][0].argument < bars[1][0].argument);
+    }
+}
+
+#[test]
+fn both_axes_have_uniform_major_ticks_and_draw_interior_labels() {
+    use dms_ui::chart::{axis_ticks, show_chart};
+    use egui_plot::GridInput;
+    for bounds in [(0.0, 100.0), (-5.0, 5.0), (0.001, 0.009)] {
+        let ticks = axis_ticks(GridInput {
+            bounds,
+            base_step_size: (bounds.1 - bounds.0) / 100.0,
+        });
+        assert!(ticks.len() >= 4 && ticks.len() <= 32);
+        for pair in ticks.windows(2) {
+            assert!(
+                (pair[1].value - pair[0].value - pair[0].step_size).abs()
+                    < pair[0].step_size * 1e-9
+            );
+            assert_eq!(pair[0].step_size, pair[1].step_size);
+        }
+    }
+    for bounds in [
+        (f64::NAN, 1.0),
+        (0.0, f64::INFINITY),
+        (1.0, 1.0),
+        (-f64::MAX, f64::MAX),
+    ] {
+        assert!(
+            axis_ticks(GridInput {
+                bounds,
+                base_step_size: 1.0
+            })
+            .is_empty()
+        );
+    }
+    let chart = chart_for(
+        "plot",
+        None,
+        &document(&["x", "y"], &[&["0", "0"], &["100", "100"]]),
+    )
+    .unwrap();
+    let ctx = egui::Context::default();
+    let mut output = None;
+    for _ in 0..3 {
+        let mut frame = ctx.run_ui(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(800.0, 600.0),
+                )),
+                ..Default::default()
+            },
+            |ui| show_chart(ui, &chart, "ticks"),
+        );
+        frame.textures_delta.clear();
+        output = Some(frame);
+    }
+    let labels: Vec<_> = output
+        .unwrap()
+        .shapes
+        .into_iter()
+        .filter_map(|s| {
+            if let egui::Shape::Text(text) = s.shape {
+                Some(text.galley.job.text.clone())
+            } else {
+                None
+            }
+        })
+        .collect();
+    for interior in ["20", "40", "60", "80"] {
+        assert!(
+            labels
+                .iter()
+                .filter(|label| label.as_str() == interior)
+                .count()
+                >= 2,
+            "both axes must label {interior}: {labels:?}"
+        );
+    }
+}
+
+#[test]
+fn automatic_titles_use_fields_and_custom_titles_stay_verbatim() {
+    let chart = chart_for(
+        "histogram",
+        None,
+        &document(&["age", "__count__"], &[&["1", "2"]]),
+    )
+    .unwrap();
+    assert!(chart.title.is_empty());
+    assert_eq!(chart.display_title(), "Histogram of age");
+    let doc = document(&["x", "y"], &[&["1", "2"]]);
+    for (kind, name) in [
+        ("plot", "Plot"),
+        ("multiplot", "Multiplot"),
+        ("collection", "Collection"),
+    ] {
+        let chart = chart_for(kind, None, &doc).unwrap();
+        assert_eq!(chart.display_title(), format!("{name} of x"));
+    }
+    let empty = settings("<graphTitle> </graphTitle>");
+    assert_eq!(
+        chart_for("plot", Some(&empty), &doc)
+            .unwrap()
+            .display_title(),
+        "Plot of x"
+    );
+    let custom = settings("<graphTitle>My saved title</graphTitle>");
+    assert_eq!(
+        chart_for("plot", Some(&custom), &doc)
+            .unwrap()
+            .display_title(),
+        "My saved title"
+    );
+}
+
+#[test]
+fn cached_chart_titles_follow_language_changes() {
+    // Language is process-wide. Isolate this test so parallel Chart/Data interactions keep
+    // their own language, while this same cached chart is checked before and after a switch.
+    const CHILD: &str = "DMS_CHART_TITLE_LANGUAGE_TEST";
+    if std::env::var_os(CHILD).is_none() {
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "cached_chart_titles_follow_language_changes",
+                "--nocapture",
+            ])
+            .env(CHILD, "1")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return;
+    }
+    use dms_ui::i18n::{Language, set_language};
+    let chart = chart_for(
+        "histogram",
+        None,
+        &document(&["年龄", "__count__"], &[&["1", "2"]]),
+    )
+    .unwrap();
+    assert_eq!(chart.display_title(), "Histogram of 年龄");
+    set_language(Language::SimplifiedChinese);
+    assert_eq!(chart.display_title(), "年龄的直方图");
+    let s = settings("<graphTitle>Saved English title</graphTitle>");
+    assert_eq!(
+        chart_for(
+            "histogram",
+            Some(&s),
+            &document(&["年龄", "__count__"], &[&["1", "2"]])
+        )
+        .unwrap()
+        .display_title(),
+        "Saved English title"
+    );
+}
+
+#[test]
 fn plot_is_scatter_unless_the_saved_style_requests_a_line() {
     let doc = document(
         &["x", "y"],

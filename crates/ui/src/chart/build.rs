@@ -127,7 +127,7 @@ fn series(table: &DocumentTable, x: usize, y: usize, name: Label) -> Series {
 
 fn chart(
     kind: ChartKind,
-    document: &Document,
+    _document: &Document,
     s: Settings<'_>,
     x: Label,
     y: Label,
@@ -146,7 +146,10 @@ fn chart(
     };
     Some(Chart {
         kind,
-        title: field(s, "graphTitle").unwrap_or_else(|| document.title.clone()),
+        title: field(s, "graphTitle").unwrap_or_default(),
+        node_type: String::new(),
+        title_field: x.clone(),
+        stacked: false,
         x_label: axis("graphXLabel", "graphAutomaticXLabel", x)?,
         y_label: axis("graphYLabel", "graphAutomaticYLabel", y)?,
         series,
@@ -190,14 +193,28 @@ pub fn chart_for(node_type: &str, s: Settings<'_>, document: &Document) -> Optio
     {
         return None;
     }
-    match node_type {
+    let mut result = match node_type {
         "histogram" => histogram(s, document, table),
         "distribution" => distribution(s, document, table),
         "collection" => collection(s, document, table),
         "plot" | "multiplot" | "time_plot" => lines(node_type, s, document, table),
         "evaluation" => evaluation(s, document, table),
         _ => None,
+    }?;
+    result.node_type = node_type.to_string();
+    result.stacked = matches!(node_type, "histogram" | "distribution")
+        && field(s, "graphColorField").is_some()
+        && flag(s, "graphNormalizeData", false)?;
+    if node_type == "evaluation" {
+        result.title_field = result.y_label.clone();
+    } else if node_type == "time_plot" {
+        result.title_field = if result.series.len() == 1 {
+            result.series.first()?.name.clone()
+        } else {
+            Label::Value
+        };
     }
+    Some(result)
 }
 
 fn numeric_width(series: &[Series], s: Settings<'_>) -> Option<f64> {

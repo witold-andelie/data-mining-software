@@ -186,6 +186,44 @@ fn coordinate(value: i64) -> f32 {
     value.clamp(-MAX_COORDINATE, MAX_COORDINATE) as f32
 }
 
+/// Imported model_builder values usually identify a type, rather than a uid. Link only when
+/// there is one matching build node, so a stream with two trainers does not claim false provenance.
+pub fn model_source(diagram: &Diagram, uid: &str) -> Option<(String, Option<String>)> {
+    let model = diagram.nodes.iter().find(|n| n.uid == uid)?;
+    let builder = model.model_builder.as_deref()?;
+    let is_builder = |n: &&dms_stream::StreamNode| {
+        n.uid != uid
+            && n.model_builder.is_none()
+            && !dms_stream::simple_class_name(&n.class).starts_with("Apply")
+    };
+    let direct = diagram
+        .nodes
+        .iter()
+        .filter(is_builder)
+        .find(|n| n.uid == builder);
+    let mut matches = diagram
+        .nodes
+        .iter()
+        .filter(is_builder)
+        .filter(|n| n.type_identifier() == builder);
+    let first = matches.next();
+    let source = direct.or_else(|| first.filter(|_| matches.next().is_none()));
+    Some(match source {
+        Some(node) => (
+            node.label
+                .clone()
+                .or_else(|| node.name.clone())
+                .or_else(|| {
+                    catalog::by_modeler_identifier(&node.type_identifier())
+                        .map(|s| s.label.to_string())
+                })
+                .unwrap_or_else(|| node.type_identifier()),
+            Some(node.uid.clone()),
+        ),
+        None => (builder.to_string(), None),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
