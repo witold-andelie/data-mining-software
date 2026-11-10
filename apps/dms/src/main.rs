@@ -300,7 +300,7 @@ impl DmsApp {
             eprintln!("dms: cannot write {}: {error}", report_path.display());
         }
         self.smoke = None;
-        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+        self.workbench.quit_without_saving(ctx);
     }
 
     fn bench_step(&mut self, ctx: &egui::Context, cpu_ms: Option<f32>) {

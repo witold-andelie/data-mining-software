@@ -655,3 +655,26 @@ fn recovery_dialog_lists_timestamp_and_recovers_or_discards_only_snapshot() {
     assert!(second.state().w.session.recoverable().is_empty());
     std::fs::remove_dir_all(dir).unwrap();
 }
+
+/// `dms --run` quits on its own after writing the report; an unsaved (imported) stream must
+/// not leave it waiting on the save prompt (it did, in the v0.3 bundle smoke test).
+#[test]
+fn unattended_quit_does_not_wait_for_the_save_prompt() {
+    let mut workbench = Workbench::with_document(
+        Document::from_stream(PathBuf::from("imported.str"), synthetic::stream(3)),
+        ShellState::default(),
+    );
+    workbench
+        .session
+        .execute(
+            "node.move",
+            &[
+                dms_engine::session::Arg::Nodes(vec!["synthetic00000".into()]),
+                dms_engine::session::Arg::Delta(10, 0),
+            ],
+        )
+        .unwrap();
+    assert!(workbench.session.is_dirty());
+    workbench.quit_without_saving(&egui::Context::default());
+    assert!(workbench.session.document().is_none());
+}
