@@ -12,6 +12,7 @@ dms-clem.workspace = true
 dms-engine.workspace = true
 dms-exec.workspace = true
 dms-pmml.workspace = true
+dms-strfmt.workspace = true
 dms-stream.workspace = true
 dms-types.workspace = true
 egui.workspace = true
