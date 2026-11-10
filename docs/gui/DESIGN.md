@@ -407,8 +407,12 @@ pub enum JobEvent { Started(JobId), Progress { id, fraction: Option<f32>, messag
 | `rfd` | 0.18.0 | MIT | 原生文件对话框 | `dms` |
 | `serde` | 1（`derive`） | MIT OR Apache-2.0 | 界面状态序列化（仓库里已间接使用） | `dms-ui` |
 | `serde_json` | 1 | MIT OR Apache-2.0 | 测试里的状态往返（仓库里已在用） | `dms-ui` 测试 |
+| `egui_extras` | 0.37.0（无默认特性） | MIT OR Apache-2.0 | 大表格虚拟滚动（v0.1） | `dms-ui` |
+| `toml` | 1.2.1（`unbounded`） | MIT OR Apache-2.0 | 原生格式 `.dms`（v0.2） | `dms-stream` |
+| `arboard` | 3.7.0 | MIT OR Apache-2.0 | 系统剪贴板（v0.2） | `dms` |
+| `egui_plot` | 0.38.0（无默认特性；对应 egui 0.37） | MIT OR Apache-2.0 | 图表节点结果的图（v0.4）；只新增这一个包 | `dms-ui` |
 
-阶段 B 起计划引入（届时再固定版本并登记）：`egui_extras`（大表格，MIT/Apache）、`egui_plot`（图表，MIT/Apache）、`toml`（原生格式，MIT/Apache，若选 TOML）。停靠面板（`egui_tiles` 或 `egui_dock`）v1 不引入，固定面板已能满足第一版。
+`egui_extras`、`toml`、`arboard`、`egui_plot` 已按计划引入并登记在上表。停靠面板（`egui_tiles` 或 `egui_dock`）v1 不引入，固定面板已能满足第一版。
 
 评估后不采用：`egui-snarl` 0.12（依赖 egui 0.36，见 §1.1）。
 

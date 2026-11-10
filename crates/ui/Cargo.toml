@@ -16,6 +16,7 @@ dms-stream.workspace = true
 dms-types.workspace = true
 egui.workspace = true
 egui_extras.workspace = true
+egui_plot.workspace = true
 serde.workspace = true
 
 [dev-dependencies]

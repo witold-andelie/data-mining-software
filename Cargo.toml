@@ -31,6 +31,8 @@ egui = "=0.37.0"
 eframe = { version = "=0.37.0", default-features = false, features = ["accesskit", "clipboard", "links", "persistence", "system_fonts", "wgpu"] }
 winit = { version = "=0.30.13", default-features = false, features = ["rwh_06"] }
 egui_extras = { version = "=0.37.0", default-features = false }
+# Charts of graph-node results (v0.4, docs/gui/V04_HANDOFF.md).
+egui_plot = { version = "=0.38.0", default-features = false }
 egui_system_font_provider = "=0.37.0"
 egui_kittest = { version = "=0.37.0", features = ["wgpu", "snapshot"] }
 muda = { version = "=0.21.2", default-features = false }
