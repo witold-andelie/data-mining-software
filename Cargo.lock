@@ -1002,6 +1002,7 @@ version = "0.1.0"
 name = "dms-ui"
 version = "0.1.0"
 dependencies = [
+ "dms-clem",
  "dms-engine",
  "dms-exec",
  "dms-pmml",
