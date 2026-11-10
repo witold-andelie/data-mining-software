@@ -5,6 +5,7 @@
 pub mod canvas;
 pub mod document_view;
 pub mod graph;
+pub mod i18n;
 pub mod icon;
 pub mod menu;
 pub mod model_view;
@@ -12,6 +13,7 @@ pub mod node_icons;
 pub mod properties;
 pub mod results;
 pub mod results_table;
+mod settings_window;
 pub mod synthetic;
 pub mod theme;
 pub mod workbench;

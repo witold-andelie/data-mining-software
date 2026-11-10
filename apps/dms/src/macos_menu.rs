@@ -4,69 +4,29 @@
 
 use dms_engine::command::{CommandSpec, Key, Menu, Shortcut};
 use dms_engine::session::Session;
-use dms_ui::menu::menu_items;
+use dms_ui::i18n::{self, Language, tr, tr_fmt};
+use dms_ui::menu::{command_label, menu_items};
 use muda::accelerator::{Accelerator, Code, Modifiers};
 use muda::{MenuEvent, MenuItem, PredefinedMenuItem, Submenu};
 use std::sync::mpsc;
 
+type CommandItems = Vec<(&'static str, MenuItem)>;
+
 pub struct NativeMenu {
     /// Kept alive for as long as the menu is installed.
     _menu: muda::Menu,
-    items: Vec<(&'static str, MenuItem)>,
+    items: CommandItems,
     enabled: Vec<bool>,
     labels: Vec<String>,
     events: mpsc::Receiver<MenuEvent>,
+    language: Language,
 }
 
 impl NativeMenu {
     /// Builds the menu bar and installs it as the application's main menu. Menu events wake the
     /// event loop so they are handled at once.
     pub fn install(ctx: &eframe::egui::Context) -> Result<NativeMenu, muda::Error> {
-        let menu = muda::Menu::new();
-        let mut items = Vec::new();
-        for kind in Menu::ALL {
-            let submenu = Submenu::new(kind.label(), true);
-            let commands = menu_items(kind, true);
-            let mut group = None;
-            for spec in &commands {
-                if group.is_some_and(|g| g != spec.group) {
-                    submenu.append(&PredefinedMenuItem::separator())?;
-                }
-                group = Some(spec.group);
-                // Standard application-menu items sit between Settings and Quit.
-                if kind == Menu::App && spec.id == "app.quit" {
-                    submenu.append_items(&[
-                        &PredefinedMenuItem::services(None),
-                        &PredefinedMenuItem::separator(),
-                        &PredefinedMenuItem::hide(None),
-                        &PredefinedMenuItem::hide_others(None),
-                        &PredefinedMenuItem::show_all(None),
-                        &PredefinedMenuItem::separator(),
-                    ])?;
-                }
-                let item = MenuItem::with_id(
-                    spec.id,
-                    display_label(spec, spec.label),
-                    false,
-                    accelerator(spec),
-                );
-                submenu.append(&item)?;
-                items.push((spec.id, item));
-            }
-            match kind {
-                Menu::Window => {
-                    submenu.append_items(&[
-                        &PredefinedMenuItem::minimize(None),
-                        &PredefinedMenuItem::maximize(None),
-                    ])?;
-                    submenu.set_as_windows_menu_for_nsapp();
-                }
-                Menu::Help => submenu.set_as_help_menu_for_nsapp(),
-                _ => {}
-            }
-            menu.append(&submenu)?;
-        }
-        menu.init_for_nsapp();
+        let (menu, items) = Self::build()?;
 
         let (sender, events) = mpsc::channel();
         let repaint = ctx.clone();
@@ -83,7 +43,77 @@ impl NativeMenu {
             enabled,
             labels,
             events,
+            language: i18n::language(),
         })
+    }
+
+    /// Rebuild labels while retaining the original event channel and handler.
+    pub fn rebuild_if_language_changed(&mut self) -> Result<(), muda::Error> {
+        if self.language != i18n::language() {
+            let (menu, items) = Self::build()?;
+            self._menu = menu;
+            self.enabled = vec![false; items.len()];
+            self.labels = vec![String::new(); items.len()];
+            self.items = items;
+            self.language = i18n::language();
+        }
+        Ok(())
+    }
+
+    fn build() -> Result<(muda::Menu, CommandItems), muda::Error> {
+        let menu = muda::Menu::new();
+        let mut items = Vec::new();
+        for kind in Menu::ALL {
+            let submenu = Submenu::new(tr(kind.label()), true);
+            let commands = menu_items(kind, true);
+            let mut group = None;
+            for spec in &commands {
+                if group.is_some_and(|g| g != spec.group) {
+                    submenu.append(&PredefinedMenuItem::separator())?;
+                }
+                group = Some(spec.group);
+                // Standard application-menu items sit between Settings and Quit.
+                if kind == Menu::App && spec.id == "app.quit" {
+                    let hide = PredefinedMenuItem::hide(None);
+                    let source = hide.text();
+                    hide.set_text(match source.strip_prefix("Hide ") {
+                        Some(app) => tr_fmt("Hide {app}", &[("app", app)]),
+                        None => tr("Hide").into(),
+                    });
+                    submenu.append_items(&[
+                        &PredefinedMenuItem::services(Some(tr("Services"))),
+                        &PredefinedMenuItem::separator(),
+                        &hide,
+                        &PredefinedMenuItem::hide_others(Some(tr("Hide Others"))),
+                        &PredefinedMenuItem::show_all(Some(tr("Show All"))),
+                        &PredefinedMenuItem::separator(),
+                    ])?;
+                }
+                let item = MenuItem::with_id(
+                    spec.id,
+                    display_label(spec, tr(spec.label)),
+                    false,
+                    accelerator(spec),
+                );
+                submenu.append(&item)?;
+                items.push((spec.id, item));
+            }
+            match kind {
+                Menu::Window => {
+                    submenu.append_items(&[
+                        &PredefinedMenuItem::minimize(Some(tr("Minimize"))),
+                        &PredefinedMenuItem::maximize(Some(tr("Zoom"))),
+                    ])?;
+                    submenu.set_as_windows_menu_for_nsapp();
+                }
+                Menu::Help => submenu.set_as_help_menu_for_nsapp(),
+                _ => {}
+            }
+            menu.append(&submenu)?;
+        }
+        menu.init_for_nsapp();
+
+        Ok((menu, items))
     }
 
     /// Commands chosen since the last call.
@@ -117,10 +147,8 @@ impl NativeMenu {
                 item.set_enabled(now);
                 *was = now;
             }
-            if let (Some(spec), Some(source)) =
-                (dms_engine::command::by_id(id), session.command_label(id))
-            {
-                let next = display_label(spec, &source);
+            if let Some(spec) = dms_engine::command::by_id(id) {
+                let next = display_label(spec, &command_label(session, spec));
                 if *label != next {
                     item.set_text(&next);
                     *label = next;

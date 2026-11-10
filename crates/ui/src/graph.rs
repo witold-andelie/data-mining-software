@@ -1,6 +1,7 @@
 //! What the canvas draws: a stream diagram resolved against the node catalog, in canvas
 //! coordinates. Built once per document change, not per frame.
 
+use crate::i18n::tr;
 use dms_engine::catalog::{self, Palette, Resolution, Scope};
 use dms_engine::nodes;
 use dms_stream::{Diagram, NodeRef};
@@ -38,14 +39,14 @@ pub enum NodeStatus {
 impl NodeStatus {
     pub fn explanation(self) -> &'static str {
         match self {
-            NodeStatus::Ready => "Supported",
-            NodeStatus::NotImplemented(Scope::Mvp) => "Not implemented yet",
-            NodeStatus::NotImplemented(Scope::Later) => "Planned for a later release",
+            NodeStatus::Ready => tr("Supported"),
+            NodeStatus::NotImplemented(Scope::Mvp) => tr("Not implemented yet"),
+            NodeStatus::NotImplemented(Scope::Later) => tr("Planned for a later release"),
             NodeStatus::NotImplemented(Scope::LicenseBlocked) => {
-                "Cannot be verified: blocked by the reference licence"
+                tr("Cannot be verified: blocked by the reference licence")
             }
-            NodeStatus::NotImplemented(Scope::OutOfScope) => "Not planned",
-            NodeStatus::Unknown => "Unknown node type: kept as saved, not run",
+            NodeStatus::NotImplemented(Scope::OutOfScope) => tr("Not planned"),
+            NodeStatus::Unknown => tr("Unknown node type: kept as saved, not run"),
         }
     }
 }

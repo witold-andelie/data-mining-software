@@ -5,6 +5,7 @@
 use crate::document_view::show_document;
 use crate::graph::NodeKind;
 use crate::graph::StreamGraph;
+use crate::i18n::{tr, tr_fmt};
 use crate::model_view::show_model;
 use crate::results_table::show_table;
 use dms_engine::catalog::Palette;
@@ -74,8 +75,11 @@ pub fn show_results(
         });
         if exported {
             ui.horizontal_wrapped(|ui| {
-                ui.label(format!("Exported files are in {}", dir.display()));
-                if ui.button("Show in Finder").clicked() {
+                ui.label(tr_fmt(
+                    "Exported files are in {folder}",
+                    &[("folder", &dir.display().to_string())],
+                ));
+                if ui.button(tr("Show in Finder")).clicked() {
                     ui.ctx()
                         .open_url(egui::OpenUrl::same_tab(format!("file://{}", dir.display())));
                 }
@@ -88,16 +92,23 @@ pub fn show_results(
         let count = report.root_causes.len();
         ui.colored_label(
             error_color,
-            format!(
-                "{count} node{} failed; the other nodes ran:",
-                if count == 1 { "" } else { "s" }
-            ),
+            if count == 1 {
+                tr_fmt(
+                    "{count} node failed; the other nodes ran:",
+                    &[("count", &count.to_string())],
+                )
+            } else {
+                tr_fmt(
+                    "{count} nodes failed; the other nodes ran:",
+                    &[("count", &count.to_string())],
+                )
+            },
         );
         for error in report.root_causes.iter().take(MAX_LISTED_FAILURES) {
             ui.horizontal_wrapped(|ui| {
                 if ui
                     .link(title_of(graph, &error.uid))
-                    .on_hover_text("Show this node")
+                    .on_hover_text(tr("Show this node"))
                     .clicked()
                 {
                     action = Some(ResultsAction::Focus(error.uid.clone()));
@@ -106,22 +117,27 @@ pub fn show_results(
             });
         }
         if count > MAX_LISTED_FAILURES {
-            ui.weak(format!("and {} more", count - MAX_LISTED_FAILURES));
+            ui.weak(tr_fmt(
+                "and {count} more",
+                &[(
+                    "count",
+                    &count.saturating_sub(MAX_LISTED_FAILURES).to_string(),
+                )],
+            ));
         }
         if missing_data(report) {
             ui.horizontal_wrapped(|ui| {
                 ui.label(
-                    "A data file the stream names was not found. Add the folder that holds it, \
-                     then run again.",
+                    tr("A data file the stream names was not found. Add the folder that holds it, then run again."),
                 );
-                if ui.button("Add Data Folder…").clicked() {
+                if ui.button(tr("Add Data Folder…")).clicked() {
                     action = Some(ResultsAction::Command("file.add_data_folder"));
                 }
             });
         }
     }
     if tabs.is_empty() {
-        ui.weak("This run produced no results.");
+        ui.weak(tr("This run produced no results."));
         return action;
     }
     if !active.as_ref().is_some_and(|a| tabs.contains(a)) {
@@ -132,7 +148,7 @@ pub fn show_results(
             let preview = !report.targets.contains(uid);
             let mut label = title_of(graph, uid);
             if preview {
-                label = format!("Preview: {label}");
+                label = tr_fmt("Preview: {label}", &[("label", &label)]);
             }
             let failed = matches!(report.results.get(uid), Some(Err(_)));
             let text = if failed {
@@ -157,22 +173,31 @@ pub fn show_results(
         Some(Ok(NodeOutput::Document(document))) => show_document(ui, document),
         Some(Ok(NodeOutput::Model(model))) => show_model(ui, model),
         Some(Err(error)) => {
-            ui.label(RichText::new(format!("{} did not run", title_of(graph, &uid))).strong());
+            ui.label(
+                RichText::new(tr_fmt(
+                    "{title} did not run",
+                    &[("title", &title_of(graph, &uid))],
+                ))
+                .strong(),
+            );
             ui.label(error_text(error));
             if let ErrorKind::Upstream(_) = &error.kind {
                 let root = root_cause_of(report, &uid);
                 if ui
-                    .button(format!("Show {}", title_of(graph, &root)))
+                    .button(tr_fmt(
+                        "Show {title}",
+                        &[("title", &title_of(graph, &root))],
+                    ))
                     .clicked()
                 {
                     action = Some(ResultsAction::Focus(root));
                 }
-            } else if ui.button("Show on canvas").clicked() {
+            } else if ui.button(tr("Show on canvas")).clicked() {
                 action = Some(ResultsAction::Focus(uid.clone()));
             }
         }
         None => {
-            ui.weak("No result for this node.");
+            ui.weak(tr("No result for this node."));
         }
     }
     action
@@ -206,12 +231,15 @@ pub fn result_kind(result: &dms_exec::NodeResult) -> &'static str {
 /// The error without the node id prefix (the tab already names the node).
 pub fn error_text(error: &NodeError) -> String {
     match &error.kind {
-        ErrorKind::Unsupported(what) => format!("This node type is not supported yet ({what})."),
-        ErrorKind::Settings(message) => format!("Settings: {message}"),
-        ErrorKind::Inputs(message) => format!("Inputs: {message}"),
-        ErrorKind::Upstream(_) => "A node it depends on failed.".to_string(),
-        ErrorKind::Io(message) => format!("File: {message}"),
-        ErrorKind::Data(message) => format!("Data: {message}"),
-        ErrorKind::Cycle => "The node is part of a cycle.".to_string(),
+        ErrorKind::Unsupported(what) => tr_fmt(
+            "This node type is not supported yet ({what}).",
+            &[("what", what)],
+        ),
+        ErrorKind::Settings(message) => tr_fmt("Settings: {message}", &[("message", message)]),
+        ErrorKind::Inputs(message) => tr_fmt("Inputs: {message}", &[("message", message)]),
+        ErrorKind::Upstream(_) => tr("A node it depends on failed.").to_string(),
+        ErrorKind::Io(message) => tr_fmt("File: {message}", &[("message", message)]),
+        ErrorKind::Data(message) => tr_fmt("Data: {message}", &[("message", message)]),
+        ErrorKind::Cycle => tr("The node is part of a cycle.").to_string(),
     }
 }

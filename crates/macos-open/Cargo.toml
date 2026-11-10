@@ -10,7 +10,7 @@ publish.workspace = true
 [target.'cfg(target_os = "macos")'.dependencies]
 block2 = "=0.6.2"
 objc2 = "=0.6.5"
-objc2-foundation = { version = "=0.3.2", default-features = false, features = ["std", "block2", "objc2-core-services", "NSAppleEventDescriptor", "NSAppleEventManager", "NSNotification", "NSObject", "NSOperation", "NSString", "NSURL"] }
+objc2-foundation = { version = "=0.3.2", default-features = false, features = ["std", "block2", "objc2-core-services", "NSArray", "NSLocale", "NSAppleEventDescriptor", "NSAppleEventManager", "NSNotification", "NSObject", "NSOperation", "NSString", "NSURL"] }
 objc2-app-kit = { version = "=0.3.2", default-features = false, features = ["std", "NSApplication", "NSResponder"] }
 
 # Not `workspace = true`: the workspace forbids unsafe code, which cannot be relaxed per module.

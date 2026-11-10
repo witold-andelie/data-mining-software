@@ -1,10 +1,11 @@
 //! Statistics and text outputs (`dms_exec::Document`): a title and titled tables.
 
+use crate::i18n::tr;
 use dms_exec::{Document, DocumentTable};
 use egui::Ui;
 
 /// Draws `document` into `ui`: the title as a heading (skipped when empty), then each table: its
-/// title (when present) in strong text, a "Copy" button that puts `table_as_tsv(table)` on the
+/// title (when present) in strong text, a tr("Copy") button that puts `table_as_tsv(table)` on the
 /// clipboard, and the table itself as a striped `egui::Grid` with the header row in strong text
 /// and one row per `rows` entry. Rows may be shorter or longer than the header: only the cells
 /// they have are shown, nothing is indexed out of range. Cells that parse as a number are
@@ -20,7 +21,7 @@ pub fn show_document(ui: &mut Ui, document: &Document) {
             if let Some(title) = &table.title {
                 ui.strong(title.as_str());
             }
-            if ui.button("Copy").clicked() {
+            if ui.button(tr("Copy")).clicked() {
                 ui.ctx().copy_text(table_as_tsv(table));
             }
             egui::Grid::new(ui.scope_id().with(("document_table", index)))
