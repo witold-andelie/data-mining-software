@@ -18,6 +18,20 @@ use std::sync::{Mutex, OnceLock};
 
 type Waker = Box<dyn Fn() + Send + Sync>;
 
+/// First system language preference. Other platforms currently resolve System to English.
+pub fn preferred_language() -> Option<String> {
+    #[cfg(target_os = "macos")]
+    {
+        objc2_foundation::NSLocale::preferredLanguages()
+            .firstObject()
+            .map(|language| language.to_string())
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        None
+    }
+}
+
 /// Upper bound on paths kept between two `take_paths` calls (a mass "Open With" cannot grow
 /// memory without limit).
 const MAX_PENDING: usize = 1024;

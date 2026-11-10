@@ -1,6 +1,7 @@
 //! A trained model in the results area: its kind, target and inputs, then the sections of
 //! `dms_pmml::summary` (facts, the tree as indented text, rule and coefficient tables).
 
+use crate::i18n::{tr, tr_fmt};
 use dms_pmml::Pmml;
 use dms_pmml::summary::{ModelSummary, SectionBody, summarize};
 use egui::{RichText, TextStyle, Ui};
@@ -22,22 +23,22 @@ pub fn show_summary(ui: &mut Ui, summary: &ModelSummary) {
                 .num_columns(2)
                 .show(ui, |ui| {
                     if let Some(name) = &summary.name {
-                        ui.weak("Name");
+                        ui.weak(tr("Name"));
                         ui.label(name);
                         ui.end_row();
                     }
                     if let Some(function) = &summary.function {
-                        ui.weak("Function");
+                        ui.weak(tr("Function"));
                         ui.label(function);
                         ui.end_row();
                     }
                     if !summary.targets.is_empty() {
-                        ui.weak("Target");
+                        ui.weak(tr("Target"));
                         ui.label(summary.targets.join(", "));
                         ui.end_row();
                     }
                     if !summary.inputs.is_empty() {
-                        ui.weak("Inputs");
+                        ui.weak(tr("Inputs"));
                         let listed: Vec<&str> = summary
                             .inputs
                             .iter()
@@ -47,7 +48,10 @@ pub fn show_summary(ui: &mut Ui, summary: &ModelSummary) {
                         let more = summary.inputs.len().saturating_sub(listed.len());
                         let mut text = listed.join(", ");
                         if more > 0 {
-                            text.push_str(&format!(" and {more} more"));
+                            text.push_str(&tr_fmt(
+                                " and {more} more",
+                                &[("more", &more.to_string())],
+                            ));
                         }
                         ui.add(egui::Label::new(text).wrap());
                         ui.end_row();
@@ -97,7 +101,10 @@ pub fn show_summary(ui: &mut Ui, summary: &ModelSummary) {
                             });
                     }
                     SectionBody::Truncated { shown, total } => {
-                        ui.weak(format!("Showing {shown} of {total}."));
+                        ui.weak(tr_fmt(
+                            "Showing {shown} of {total}.",
+                            &[("shown", &shown.to_string()), ("total", &total.to_string())],
+                        ));
                     }
                 }
             }

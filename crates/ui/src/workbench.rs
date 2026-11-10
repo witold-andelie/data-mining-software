@@ -2,6 +2,7 @@
 //! commands by id. Lives in the UI library (not the app) so the whole window can be rendered
 //! off-screen in tests. Layout: docs/gui/DESIGN.md §2.
 
+use crate::i18n::{tr, tr_fmt};
 #[path = "dialogs.rs"]
 mod dialogs;
 #[path = "edit_canvas.rs"]
@@ -51,6 +52,7 @@ pub struct ShellState {
     pub canvas: CanvasView,
     /// Extra folders searched for the data streams reference (File > Add Data Folder…).
     pub data_folders: Vec<PathBuf>,
+    pub language: crate::i18n::Language,
 }
 
 impl Default for ShellState {
@@ -61,6 +63,7 @@ impl Default for ShellState {
             show_results: true,
             canvas: CanvasView::default(),
             data_folders: Vec::new(),
+            language: crate::i18n::Language::System,
         }
     }
 }
@@ -97,8 +100,51 @@ pub struct Platform {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct StatusMessage {
-    text: String,
+    text: StatusText,
     error: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum StatusText {
+    Raw(String),
+    Finished { seconds: String, failures: usize },
+    Failed(String),
+    Stopped,
+    FolderAdded(PathBuf),
+    FoldersCleared,
+}
+
+impl StatusText {
+    fn display(&self) -> String {
+        match self {
+            Self::Raw(text) => text.clone(),
+            Self::Finished {
+                seconds,
+                failures: 0,
+            } => tr_fmt("Finished in {seconds} s", &[("seconds", seconds)]),
+            Self::Finished {
+                seconds,
+                failures: 1,
+            } => tr_fmt(
+                "Finished in {seconds} s · {count} node failed",
+                &[("seconds", seconds), ("count", "1")],
+            ),
+            Self::Finished { seconds, failures } => tr_fmt(
+                "Finished in {seconds} s · {count} nodes failed",
+                &[("seconds", seconds), ("count", &failures.to_string())],
+            ),
+            Self::Failed(message) => tr_fmt(
+                "The run stopped unexpectedly: {message}",
+                &[("message", message)],
+            ),
+            Self::Stopped => tr("Stopped").into(),
+            Self::FolderAdded(folder) => tr_fmt(
+                "Data folder added: {folder} (run again to use it)",
+                &[("folder", &folder.display().to_string())],
+            ),
+            Self::FoldersCleared => tr("Data folders cleared").into(),
+        }
+    }
 }
 
 pub struct Workbench {
@@ -107,6 +153,7 @@ pub struct Workbench {
     graph: Option<StreamGraph>,
     status: Option<StatusMessage>,
     about_open: bool,
+    settings_open: bool,
     fit_pending: bool,
     canvas_rect: Option<Rect>,
     /// The results tab shown (a node uid).
@@ -128,15 +175,17 @@ pub struct Workbench {
 }
 
 impl Workbench {
-    pub fn new(state: ShellState) -> Self {
+    pub fn new(mut state: ShellState) -> Self {
         let mut session = Session::new();
         session.set_data_folders(state.data_folders.clone());
+        state.data_folders = session.data_folders().to_vec();
         Workbench {
             session,
             state,
             graph: None,
             status: None,
             about_open: false,
+            settings_open: false,
             fit_pending: false,
             canvas_rect: None,
             results_tab: None,
@@ -189,7 +238,7 @@ impl Workbench {
             .document()
             .and_then(|d| d.path.file_stem())
             .map(|s| s.to_string_lossy().into_owned())
-            .unwrap_or_else(|| "Untitled".into());
+            .unwrap_or_else(|| tr("Untitled").into());
         format!("{stem}.dms")
     }
 
@@ -240,29 +289,19 @@ impl Workbench {
                     root_causes,
                     elapsed,
                     ..
-                } => {
-                    let seconds = elapsed.as_secs_f64();
-                    if root_causes == 0 {
-                        StatusMessage {
-                            text: format!("Finished in {seconds:.1} s"),
-                            error: false,
-                        }
-                    } else {
-                        StatusMessage {
-                            text: format!(
-                                "Finished in {seconds:.1} s · {root_causes} node{} failed",
-                                if root_causes == 1 { "" } else { "s" }
-                            ),
-                            error: true,
-                        }
-                    }
-                }
+                } => StatusMessage {
+                    text: StatusText::Finished {
+                        seconds: format!("{:.1}", elapsed.as_secs_f64()),
+                        failures: root_causes,
+                    },
+                    error: root_causes != 0,
+                },
                 RunNotice::Failed { message, .. } => StatusMessage {
-                    text: format!("The run stopped unexpectedly: {message}"),
+                    text: StatusText::Failed(message),
                     error: true,
                 },
                 RunNotice::Cancelled { .. } => StatusMessage {
-                    text: "Stopped".to_string(),
+                    text: StatusText::Stopped,
                     error: false,
                 },
             });
@@ -299,7 +338,10 @@ impl Workbench {
     }
 
     fn report_error(&mut self, text: String) {
-        self.status = Some(StatusMessage { text, error: true });
+        self.status = Some(StatusMessage {
+            text: StatusText::Raw(text),
+            error: true,
+        });
     }
 
     fn sync_graph(&mut self) {
@@ -336,6 +378,11 @@ impl Workbench {
             && !matches!(id, "file.save" | "file.save_as")
             && self.force_next.is_none()
         {
+            return;
+        }
+        if id == "app.settings" {
+            self.settings_open = true;
+            ctx.request_repaint();
             return;
         }
         if id == "node.set_param" {
@@ -387,7 +434,7 @@ impl Workbench {
             if self.text_events.len() >= 64
                 || queued_bytes.saturating_add(bytes) > MAX_CLIPBOARD_BYTES
             {
-                self.report_error("Too many pending clipboard operations.".into());
+                self.report_error(tr("Too many pending clipboard operations.").into());
                 return;
             }
             self.text_events.push(event);
@@ -407,7 +454,7 @@ impl Workbench {
             return;
         }
         let Some(spec) = dms_engine::command::by_id(id) else {
-            self.report_error(format!("Unknown command {id}"));
+            self.report_error(tr_fmt("Unknown command {id}", &[("id", id)]));
             return;
         };
         let pending = self.force_next.take().filter(|p| p.id == spec.id);
@@ -422,21 +469,21 @@ impl Workbench {
         let text = self
             .clipboard
             .as_mut()
-            .ok_or("System clipboard is unavailable.")?
+            .ok_or(tr("System clipboard is unavailable."))?
             .get_text()?;
         if text.len() > MAX_CLIPBOARD_BYTES {
-            return Err("Clipboard text exceeds 16 MiB.".into());
+            return Err(tr("Clipboard text exceeds 16 MiB.").into());
         }
         Ok(text)
     }
 
     fn write_clipboard(&mut self, text: &str) -> Result<(), String> {
         if text.len() > MAX_CLIPBOARD_BYTES {
-            return Err("Clipboard text exceeds 16 MiB.".into());
+            return Err(tr("Clipboard text exceeds 16 MiB.").into());
         }
         self.clipboard
             .as_mut()
-            .ok_or("System clipboard is unavailable.")?
+            .ok_or(tr("System clipboard is unavailable."))?
             .set_text(text)
     }
 
@@ -541,11 +588,10 @@ impl Workbench {
                     self.state.data_folders = self.session.data_folders().to_vec();
                     self.status = Some(StatusMessage {
                         text: match self.state.data_folders.last() {
-                            Some(folder) if id == "file.add_data_folder" => format!(
-                                "Data folder added: {} (run again to use it)",
-                                folder.display()
-                            ),
-                            _ => "Data folders cleared".into(),
+                            Some(folder) if id == "file.add_data_folder" => {
+                                StatusText::FolderAdded(folder.clone())
+                            }
+                            _ => StatusText::FoldersCleared,
                         },
                         error: false,
                     });
@@ -578,7 +624,9 @@ impl Workbench {
                     ctx.send_viewport_cmd(ViewportCommand::Close);
                 }
             }
-            Ok(Outcome::NeedsArgument(name)) => self.report_error(format!("{id} needs {name}")),
+            Ok(Outcome::NeedsArgument(name)) => {
+                self.report_error(tr_fmt("{id} needs {name}", &[("id", id), ("name", name)]))
+            }
             Err(error) => {
                 self.save_then_continue = false;
                 self.report_error(error.to_string());
@@ -635,19 +683,20 @@ impl Workbench {
         }
         let title = match self.session.document() {
             Some(document) => format!(
-                "{}{} — Data Mining",
+                "{}{} — {}",
                 document
                     .path
                     .file_name()
                     .map(|n| n.to_string_lossy().into_owned())
                     .unwrap_or_default(),
                 if self.session.is_dirty() {
-                    " — Edited"
+                    tr(" — Edited")
                 } else {
                     ""
-                }
+                },
+                tr("Data Mining")
             ),
-            None => "Data Mining".to_string(),
+            None => tr("Data Mining").to_string(),
         };
         if self.title.as_deref() != Some(title.as_str()) {
             ui.ctx()
@@ -691,31 +740,35 @@ impl Workbench {
                 requested.extend(menu::menu_bar(ui, &self.session, platform.mac));
             }
             ui.horizontal(|ui| {
-                if ui.button("Open…").clicked() {
+                if ui.button(tr("Open…")).clicked() {
                     requested.push("file.open");
                 }
                 ui.separator();
                 let has_document = self.session.document().is_some();
                 ui.add_enabled_ui(has_document, |ui| {
-                    if ui.button("−").on_hover_text("Zoom Out").clicked() {
+                    if ui.button("−").on_hover_text(tr("Zoom Out")).clicked() {
                         requested.push("view.zoom_out");
                     }
-                    if ui.button("Fit").on_hover_text("Zoom to Fit").clicked() {
+                    if ui
+                        .button(tr("Fit"))
+                        .on_hover_text(tr("Zoom to Fit"))
+                        .clicked()
+                    {
                         requested.push("view.zoom_fit");
                     }
-                    if ui.button("+").on_hover_text("Zoom In").clicked() {
+                    if ui.button("+").on_hover_text(tr("Zoom In")).clicked() {
                         requested.push("view.zoom_in");
                     }
                 });
                 ui.separator();
                 for (id, label, hint) in [
-                    ("run.stream", "Run", "Run Stream"),
+                    ("run.stream", tr("Run"), tr("Run Stream")),
                     (
                         "run.node",
-                        "Run Selected",
-                        "Run the selected node and what it needs",
+                        tr("Run Selected"),
+                        tr("Run the selected node and what it needs"),
                     ),
-                    ("run.cancel", "Stop", "Stop the run"),
+                    ("run.cancel", tr("Stop"), tr("Stop the run")),
                 ] {
                     let availability = self.session.availability(id);
                     let response = ui.add_enabled(availability.is_ok(), egui::Button::new(label));
@@ -728,9 +781,9 @@ impl Workbench {
                     }
                 }
                 ui.separator();
-                ui.toggle_value(&mut self.state.show_palette, "Nodes");
-                ui.toggle_value(&mut self.state.show_properties, "Properties");
-                ui.toggle_value(&mut self.state.show_results, "Results");
+                ui.toggle_value(&mut self.state.show_palette, tr("Nodes"));
+                ui.toggle_value(&mut self.state.show_properties, tr("Properties"));
+                ui.toggle_value(&mut self.state.show_results, tr("Results"));
             });
         });
 
@@ -748,11 +801,11 @@ impl Workbench {
                 .show(ui, |ui| {
                     if self.session.results_stale() {
                         ui.horizontal(|ui| {
-                            ui.label("The stream changed since this run.");
+                            ui.label(tr("The stream changed since this run."));
                             if ui
                                 .add_enabled(
                                     self.session.is_enabled("run.stream"),
-                                    egui::Button::new("Run"),
+                                    egui::Button::new(tr("Run")),
                                 )
                                 .clicked()
                             {
@@ -802,15 +855,33 @@ impl Workbench {
             .show(ui, |ui| self.canvas_area(ui, &mut requested));
 
         if self.about_open {
-            egui::Window::new("About")
+            egui::Window::new(tr("About"))
                 .open(&mut self.about_open)
                 .collapsible(false)
                 .resizable(false)
                 .show(ui.ctx(), |ui| {
-                    ui.heading("Data Mining");
-                    ui.label(format!("Version {}", env!("CARGO_PKG_VERSION")));
-                    ui.label("Opens and runs SPSS Modeler streams (.str).");
+                    ui.heading(tr("Data Mining"));
+                    ui.label(tr_fmt(
+                        "Version {version}",
+                        &[("version", env!("CARGO_PKG_VERSION"))],
+                    ));
+                    ui.label(tr("Opens and runs SPSS Modeler streams (.str)."));
                 });
+        }
+        if let Some(action) =
+            crate::settings_window::show(ui.ctx(), &mut self.settings_open, &mut self.state)
+        {
+            match action {
+                crate::settings_window::Action::AddFolder => requested.push("file.add_data_folder"),
+                crate::settings_window::Action::RemoveFolder(index) => {
+                    if index < self.state.data_folders.len() {
+                        self.state.data_folders.remove(index);
+                        self.session
+                            .set_data_folders(self.state.data_folders.clone());
+                        ui.ctx().request_repaint();
+                    }
+                }
+            }
         }
         self.show_dialogs(ui.ctx(), &mut requested);
         requested
@@ -823,7 +894,7 @@ impl Workbench {
                 .document()
                 .and_then(|d| d.path.file_name())
                 .map(|n| n.to_string_lossy().into_owned())
-                .unwrap_or_else(|| "Untitled".into());
+                .unwrap_or_else(|| tr("Untitled").into());
             match dialogs::confirm_discard(ctx, &name) {
                 Some(DiscardChoice::Save) => {
                     self.save_then_continue = true;
@@ -845,8 +916,8 @@ impl Workbench {
             let mut recover = None;
             let mut discard = None;
             egui::Modal::new(egui::Id::unique("recover-streams")).show(ctx, |ui| {
-                ui.heading("Recover Streams");
-                ui.label("Unsaved streams were found from a previous session.");
+                ui.heading(tr("Recover Streams"));
+                ui.label(tr("Unsaved streams were found from a previous session."));
                 for entry in &self.recovery {
                     ui.horizontal(|ui| {
                         let name = entry
@@ -862,10 +933,10 @@ impl Workbench {
                             .unwrap_or_default()
                             .as_secs();
                         ui.label(format!("{name} — {}", recovery_time(seconds)));
-                        if ui.button("Recover").clicked() {
+                        if ui.button(tr("Recover")).clicked() {
                             recover = Some(entry.path.clone());
                         }
-                        if ui.button("Discard").clicked() {
+                        if ui.button(tr("Discard")).clicked() {
                             discard = Some(entry.path.clone());
                         }
                     });
@@ -878,9 +949,13 @@ impl Workbench {
                 // Paths come only from Session::recoverable (bounded app-owned regular files).
                 match std::fs::remove_file(&path) {
                     Ok(()) => self.recovery.retain(|r| r.path != path),
-                    Err(error) => {
-                        self.report_error(format!("Cannot discard {}: {error}", path.display()))
-                    }
+                    Err(error) => self.report_error(tr_fmt(
+                        "Cannot discard {path}: {error}",
+                        &[
+                            ("path", &path.display().to_string()),
+                            ("error", &error.to_string()),
+                        ],
+                    )),
                 }
             }
         }
@@ -893,11 +968,11 @@ impl Workbench {
             ui.centered_and_justified(|ui| {
                 ui.vertical_centered(|ui| {
                     ui.add_space(rect.height() * 0.4);
-                    ui.label(RichText::new("No stream open").heading());
-                    ui.label(
+                    ui.label(RichText::new(tr("No stream open")).heading());
+                    ui.label(tr(
                         "Open or create a stream, or drop a .str or .dms file on this window.",
-                    );
-                    if ui.button("Open…").clicked() {
+                    ));
+                    if ui.button(tr("Open…")).clicked() {
                         requested.push("file.open");
                     }
                 });
@@ -946,7 +1021,7 @@ impl Workbench {
     }
 
     fn properties_panel(&mut self, ui: &mut Ui) -> bool {
-        ui.heading("Properties");
+        ui.heading(tr("Properties"));
         ui.separator();
         let node = self.state.canvas.selected.as_ref().and_then(|uid| {
             self.graph
@@ -954,18 +1029,18 @@ impl Workbench {
                 .and_then(|g| g.nodes.iter().find(|n| &n.uid == uid))
         });
         let Some(node) = node else {
-            ui.weak("Select a node to see its settings.");
+            ui.weak(tr("Select a node to see its settings."));
             return false;
         };
         ui.label(RichText::new(&node.title).strong());
         egui::Grid::new("node_facts").num_columns(2).show(ui, |ui| {
-            ui.weak("Type");
+            ui.weak(tr("Type"));
             ui.label(&node.type_id);
             ui.end_row();
-            ui.weak("Status");
+            ui.weak(tr("Status"));
             ui.label(node.status.explanation());
             ui.end_row();
-            ui.weak("Id");
+            ui.weak(tr("Id"));
             ui.label(&node.uid);
             ui.end_row();
         });
@@ -975,7 +1050,7 @@ impl Workbench {
             .and_then(|r| r.report.results.get(&node.uid))
         {
             ui.separator();
-            ui.colored_label(ui.visuals().error_fg_color, "Last run failed here");
+            ui.colored_label(ui.visuals().error_fg_color, tr("Last run failed here"));
             ui.label(results::error_text(error));
         }
         ui.separator();
@@ -998,22 +1073,22 @@ impl Workbench {
                     .map(|uid| results::title_of(self.graph.as_ref(), uid));
                 ui.spinner();
                 ui.label(match running {
-                    Some(title) => format!("Running {title}"),
-                    None => "Running".to_string(),
+                    Some(title) => tr_fmt("Running {title}", &[("title", &title)]),
+                    None => tr("Running").to_string(),
                 });
                 ui.add(
                     egui::ProgressBar::new(fraction)
                         .desired_width(140.0)
                         .text(format!("{}/{}", progress.done, progress.total)),
                 );
-                if ui.small_button("Stop").clicked() {
+                if ui.small_button(tr("Stop")).clicked() {
                     command = Some("run.cancel");
                 }
                 ui.separator();
             }
             match (&self.status, self.session.document()) {
                 (Some(message), _) if message.error => {
-                    ui.colored_label(ui.visuals().error_fg_color, &message.text);
+                    ui.colored_label(ui.visuals().error_fg_color, message.text.display());
                 }
                 (message, Some(document)) => {
                     let name = document
@@ -1024,34 +1099,39 @@ impl Workbench {
                     ui.label(name);
                     if let Some(message) = message {
                         ui.separator();
-                        ui.label(&message.text);
+                        ui.label(message.text.display());
                     }
                 }
                 _ => {
-                    ui.weak("Ready");
+                    ui.weak(tr("Ready"));
                 }
             }
             if let Some(graph) = &self.graph {
                 ui.separator();
-                ui.label(format!(
-                    "{} nodes · {} links",
-                    graph.nodes.len(),
-                    graph.links.len()
+                ui.label(tr_fmt(
+                    "{nodes} nodes · {links} links",
+                    &[
+                        ("nodes", &graph.nodes.len().to_string()),
+                        ("links", &graph.links.len().to_string()),
+                    ],
                 ));
                 let unsupported = graph.unsupported();
                 if unsupported > 0 {
                     ui.separator();
-                    ui.label(format!("{unsupported} not supported yet"))
-                        .on_hover_text(
-                            "These nodes are kept as saved and shown with a dashed outline.",
-                        );
+                    ui.label(tr_fmt(
+                        "{unsupported} not supported yet",
+                        &[("unsupported", &unsupported.to_string())],
+                    ))
+                    .on_hover_text(tr(
+                        "These nodes are kept as saved and shown with a dashed outline.",
+                    ));
                 }
                 ui.separator();
                 ui.label(format!("{:.0}%", self.state.canvas.zoom * 100.0));
             }
             if let Some(ms) = platform.frame_cpu_ms {
                 ui.separator();
-                ui.monospace(format!("{ms:.1} ms"));
+                ui.monospace(tr_fmt("{ms} ms", &[("ms", &format!("{ms:.1}"))]));
             }
         });
         command
@@ -1075,7 +1155,7 @@ impl Workbench {
     }
 
     fn palette_panel(&mut self, ui: &mut Ui) {
-        ui.heading("Nodes");
+        ui.heading(tr("Nodes"));
         ui.separator();
         egui::ScrollArea::vertical().show(ui, |ui| {
             for palette in Palette::ALL {
@@ -1083,7 +1163,7 @@ impl Workbench {
                 let ready = specs.iter().filter(|s| nodes::is_implemented(s.id)).count();
                 egui::CollapsingHeader::new(format!(
                     "{} ({ready}/{})",
-                    palette.label(),
+                    palette_label(palette),
                     specs.len()
                 ))
                 .default_open(palette == Palette::Source)
@@ -1138,9 +1218,22 @@ fn recovery_time(seconds: u64) -> String {
 
 fn unavailable_reason(scope: Scope) -> &'static str {
     match scope {
-        Scope::Mvp => "Not implemented yet",
-        Scope::Later => "Planned for a later release",
-        Scope::LicenseBlocked => "Cannot be verified: blocked by the reference licence",
-        Scope::OutOfScope => "Not planned",
+        Scope::Mvp => tr("Not implemented yet"),
+        Scope::Later => tr("Planned for a later release"),
+        Scope::LicenseBlocked => tr("Cannot be verified: blocked by the reference licence"),
+        Scope::OutOfScope => tr("Not planned"),
+    }
+}
+
+fn palette_label(palette: Palette) -> &'static str {
+    match palette {
+        Palette::Source => tr("Sources"),
+        Palette::RecordOps => tr("Record Ops"),
+        Palette::FieldOps => tr("Field Ops"),
+        Palette::Graphs => tr("Graphs"),
+        Palette::Modeling => tr("Modeling"),
+        Palette::Output => tr("Output"),
+        Palette::Export => tr("Export"),
+        Palette::Structure => tr("Structure"),
     }
 }

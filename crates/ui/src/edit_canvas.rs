@@ -1,4 +1,5 @@
 //! Transient canvas gestures. Only completed gestures produce engine commands.
+use crate::i18n::{tr, tr_fmt};
 use crate::{
     canvas::{self, CanvasView, RunMark},
     graph::{StreamGraph, TILE},
@@ -34,7 +35,7 @@ pub struct Editor {
     /// Retain a rejected connection's explanation after release.
     pub rejection: Option<String>,
     context_link: Option<(String, String)>,
-    /// "Connect From Here": the next node clicked becomes the target (Esc cancels).
+    /// tr("Connect From Here"): the next node clicked becomes the target (Esc cancels).
     pub connect_from: Option<String>,
 }
 
@@ -53,9 +54,13 @@ impl Editor {
 /// How a connection is made, shown while the pointer is over a node.
 pub fn connect_hint(mac: bool) -> &'static str {
     if mac {
-        "To connect: drag from the circle on the right edge, Option-drag the node, or right-click > Connect From Here"
+        tr(
+            "To connect: drag from the circle on the right edge, Option-drag the node, or right-click > Connect From Here",
+        )
     } else {
-        "To connect: drag from the circle on the right edge, Alt-drag the node, or right-click > Connect From Here"
+        tr(
+            "To connect: drag from the circle on the right edge, Alt-drag the node, or right-click > Connect From Here",
+        )
     }
 }
 
@@ -65,13 +70,13 @@ const PORT_HIT: f32 = 14.0;
 /// Bounded, iterative reachability over the displayed top-level graph.
 fn connection_error(graph: &StreamGraph, from: usize, to: usize) -> Option<&'static str> {
     if graph.hidden_nodes > 0 {
-        return Some("Connections are unavailable while nodes are hidden.");
+        return Some(tr("Connections are unavailable while nodes are hidden."));
     }
     if from == to {
-        return Some("A node cannot connect to itself.");
+        return Some(tr("A node cannot connect to itself."));
     }
     if graph.links.iter().any(|l| l.from == from && l.to == to) {
-        return Some("This connection already exists.");
+        return Some(tr("This connection already exists."));
     }
     let mut outgoing: HashMap<usize, Vec<usize>> = HashMap::new();
     for link in &graph.links {
@@ -81,7 +86,7 @@ fn connection_error(graph: &StreamGraph, from: usize, to: usize) -> Option<&'sta
     let mut stack = vec![to];
     while let Some(current) = stack.pop() {
         if current == from {
-            return Some("This connection would create a cycle.");
+            return Some(tr("This connection would create a cycle."));
         }
         if seen.insert(current)
             && let Some(next) = outgoing.get(&current)
@@ -153,7 +158,7 @@ pub fn show(
     view.sanitize();
     let rect = ui.available_rect_before_wrap();
     let background = ui.allocate_rect(rect, Sense::click_and_drag());
-    background.widget_info(|| WidgetInfo::labeled(Role::Button, true, "Stream canvas"));
+    background.widget_info(|| WidgetInfo::labeled(Role::Button, true, tr("Stream canvas")));
     let origin = rect.min;
     let mut actions = Vec::new();
     let (pointer, pressed, released, shift, space, alt, escape) = ui.input(|i| {
@@ -309,7 +314,11 @@ pub fn show(
             Sense::drag(),
         );
         port_response.widget_info(|| {
-            WidgetInfo::labeled(Role::Button, true, format!("Connect from {}", node.title))
+            WidgetInfo::labeled(
+                Role::Button,
+                true,
+                tr_fmt("Connect from {title}", &[("title", &node.title)]),
+            )
         });
         // The output port: always shown (a ring), filled and larger under the pointer.
         let accent = ui.visuals().selection.stroke.color;
@@ -330,15 +339,15 @@ pub fn show(
             actions.push(Action::Rename(node.uid.clone()));
         }
         response.context_menu(|ui| {
-            if ui.button("Connect From Here").clicked() {
+            if ui.button(tr("Connect From Here")).clicked() {
                 editor.connect_from = Some(node.uid.clone());
                 ui.close();
             }
             for (label, id) in [
-                ("Run to Here", "run.node"),
-                ("Rename", "node.rename"),
-                ("Copy", "edit.copy"),
-                ("Delete", "edit.delete"),
+                (tr("Run to Here"), "run.node"),
+                (tr("Rename"), "node.rename"),
+                (tr("Copy"), "edit.copy"),
+                (tr("Delete"), "edit.delete"),
             ] {
                 if ui.button(label).clicked() {
                     actions.push(Action::Command(
@@ -367,7 +376,7 @@ pub fn show(
         editor.focused = true;
         editor.rejection = None;
         if let Some(from_uid) = editor.connect_from.take() {
-            // Second click of "Connect From Here": a node completes it, anything else cancels.
+            // Second click of tr("Connect From Here"): a node completes it, anything else cancels.
             let from = graph.nodes.iter().position(|n| n.uid == from_uid);
             if let (Some(from), Some(to)) = (from, hovered) {
                 if let Some(reason) = connection_error(graph, from, to) {
@@ -448,7 +457,7 @@ pub fn show(
             ),
         );
     }
-    // "Connect From Here" waiting for its target: a line from the source port to the pointer.
+    // tr("Connect From Here") waiting for its target: a line from the source port to the pointer.
     if let (Some(from_uid), Some(p)) = (&editor.connect_from, pointer)
         && let Some(n) = graph.nodes.iter().find(|n| &n.uid == from_uid)
     {
@@ -460,7 +469,7 @@ pub fn show(
     }
     // How to connect, while the pointer rests on a node or a click-to-connect is waiting.
     let hint = if editor.connect_from.is_some() {
-        Some("Click the node to connect to (Esc cancels)")
+        Some(tr("Click the node to connect to (Esc cancels)"))
     } else if editor.gesture.is_none() && (hovered.is_some() || port.is_some()) {
         Some(connect_hint(
             ui.ctx().os() == egui::os::OperatingSystem::Mac,
@@ -543,7 +552,7 @@ pub fn show(
     }
     background.context_menu(|ui| {
         if let Some((from, to)) = &editor.context_link {
-            if ui.button("Delete Connection").clicked() {
+            if ui.button(tr("Delete Connection")).clicked() {
                 actions.push(Action::Command(
                     "node.disconnect",
                     vec![Arg::Link(from.clone(), to.clone())],
@@ -552,7 +561,10 @@ pub fn show(
                 ui.close();
             }
         } else {
-            for (label, id) in [("Paste", "edit.paste"), ("Select All", "edit.select_all")] {
+            for (label, id) in [
+                (tr("Paste"), "edit.paste"),
+                (tr("Select All"), "edit.select_all"),
+            ] {
                 if ui.button(label).clicked() {
                     actions.push(Action::Command(id, vec![]));
                     ui.close();
@@ -567,7 +579,7 @@ pub fn show(
                 Rect::from_min_size(p, vec2(180.0, 26.0)),
                 egui::TextEdit::singleline(&mut rename.text)
                     .id(ui.scope_id().with("rename"))
-                    .hint_text("Node name")
+                    .hint_text(tr("Node name"))
                     .char_limit(1000),
             );
             if rename.first_frame {

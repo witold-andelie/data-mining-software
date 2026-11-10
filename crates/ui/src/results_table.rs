@@ -1,6 +1,7 @@
 //! Data tables in the results area. Rows are virtualized: only the rows on screen are laid out
 //! and formatted, so a million rows scroll as smoothly as a hundred.
 
+use crate::i18n::tr_fmt;
 use dms_types::{Table, Value};
 use egui::{Align, Layout, RichText, Ui};
 use egui_extras::{Column, TableBuilder};
@@ -16,13 +17,18 @@ pub fn show_table(ui: &mut Ui, table: &Table, id_salt: impl Hash + std::fmt::Deb
     let rows = table.rows();
     let shown = fields.len().min(MAX_COLUMNS);
     ui.horizontal(|ui| {
-        ui.label(format!(
-            "{} rows · {} fields",
-            group_digits(rows.len()),
-            fields.len()
+        ui.label(tr_fmt(
+            "{rows} rows · {fields} fields",
+            &[
+                ("rows", &group_digits(rows.len())),
+                ("fields", &fields.len().to_string()),
+            ],
         ));
         if shown < fields.len() {
-            ui.weak(format!("(first {shown} fields shown)"));
+            ui.weak(tr_fmt(
+                "(first {shown} fields shown)",
+                &[("shown", &shown.to_string())],
+            ));
         }
     });
     if fields.is_empty() {
@@ -49,12 +55,14 @@ pub fn show_table(ui: &mut Ui, table: &Table, id_salt: impl Hash + std::fmt::Deb
                     });
                     for field in fields.iter().take(shown) {
                         header.col(|ui| {
-                            ui.strong(&field.name).on_hover_text(format!(
-                                "{}\nStorage: {:?}\nMeasurement: {:?}\nRole: {:?}",
-                                field.label.as_deref().unwrap_or(&field.name),
-                                field.storage,
-                                field.measurement,
-                                field.role
+                            ui.strong(&field.name).on_hover_text(tr_fmt(
+                                "{label}\nStorage: {storage}\nMeasurement: {measure}\nRole: {role}",
+                                &[
+                                    ("label", field.label.as_deref().unwrap_or(&field.name)),
+                                    ("storage", &format!("{:?}", field.storage)),
+                                    ("measure", &format!("{:?}", field.measurement)),
+                                    ("role", &format!("{:?}", field.role)),
+                                ],
                             ));
                         });
                     }

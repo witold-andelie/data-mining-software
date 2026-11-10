@@ -20,6 +20,7 @@
 mod macos_menu;
 
 use dms_engine::session::Document;
+use dms_ui::i18n::{self, tr, tr_fmt};
 use dms_ui::workbench::{Clipboard, Pick};
 use dms_ui::{Platform, ShellState, Workbench, synthetic};
 use eframe::egui;
@@ -42,7 +43,12 @@ impl Clipboard for SystemClipboard {
             .as_mut()
             .map_err(|e| e.clone())?
             .get_text()
-            .map_err(|e| format!("Cannot read clipboard: {e}"))
+            .map_err(|e| {
+                tr_fmt(
+                    "Cannot read clipboard: {error}",
+                    &[("error", &e.to_string())],
+                )
+            })
     }
 
     fn set_text(&mut self, text: &str) -> Result<(), String> {
@@ -50,7 +56,12 @@ impl Clipboard for SystemClipboard {
             .as_mut()
             .map_err(|e| e.clone())?
             .set_text(text)
-            .map_err(|e| format!("Cannot write clipboard: {e}"))
+            .map_err(|e| {
+                tr_fmt(
+                    "Cannot write clipboard: {error}",
+                    &[("error", &e.to_string())],
+                )
+            })
     }
 }
 
@@ -187,6 +198,8 @@ impl DmsApp {
             .and_then(|storage| eframe::get_value(storage, STATE_KEY))
             .unwrap_or_default();
         state.sanitize();
+        i18n::set_system_language(dms_macos_open::preferred_language().as_deref());
+        i18n::set_language(state.language);
 
         #[cfg(target_os = "macos")]
         let menu = match macos_menu::NativeMenu::install(&cc.egui_ctx) {
@@ -221,7 +234,12 @@ impl DmsApp {
             None => Workbench::new(state),
         };
         workbench.set_clipboard(Box::new(SystemClipboard(
-            arboard::Clipboard::new().map_err(|e| format!("System clipboard is unavailable: {e}")),
+            arboard::Clipboard::new().map_err(|e| {
+                tr_fmt(
+                    "System clipboard is unavailable: {error}",
+                    &[("error", &e.to_string())],
+                )
+            }),
         )));
         workbench.set_autosave_dir(autosave_directory());
         if let Some(file) = options.file {
@@ -365,6 +383,9 @@ impl eframe::App for DmsApp {
         }
         #[cfg(target_os = "macos")]
         if let Some(menu) = &mut self.menu {
+            if let Err(error) = menu.rebuild_if_language_changed() {
+                eprintln!("dms: cannot rebuild native menu: {error}");
+            }
             menu.sync_enabled(&self.workbench.session, ctx.egui_wants_keyboard_input());
         }
         self.bench_step(&ctx, cpu_ms);
@@ -401,7 +422,7 @@ fn run_summary(report: &dms_engine::run::RunReport) -> String {
 fn pick(kind: Pick, filename: &str) -> Option<PathBuf> {
     match kind {
         Pick::Stream => {
-            let dialog = rfd::FileDialog::new().set_title("Open Stream");
+            let dialog = rfd::FileDialog::new().set_title(tr("Open Stream"));
             // No type filter on macOS: the open panel maps an extension to the type this app
             // declares, while `.str` files on a Mac can carry another app's type (Modeler's
             // `com.ibm.spssmac.str`), and then they show greyed out and cannot be chosen. Any
@@ -409,25 +430,25 @@ fn pick(kind: Pick, filename: &str) -> Option<PathBuf> {
             let dialog = if cfg!(target_os = "macos") {
                 dialog
             } else {
-                dialog.add_filter("Streams", &["dms", "str"])
+                dialog.add_filter(tr("Streams"), &["dms", "str"])
             };
             dialog.pick_file()
         }
         Pick::DataFile { extensions } => {
-            let dialog = rfd::FileDialog::new().set_title("Choose Data File");
+            let dialog = rfd::FileDialog::new().set_title(tr("Choose Data File"));
             let dialog = if cfg!(target_os = "macos") || extensions.is_empty() {
                 dialog
             } else {
-                dialog.add_filter("Data files", extensions)
+                dialog.add_filter(tr("Data files"), extensions)
             };
             dialog.pick_file()
         }
         Pick::Folder => rfd::FileDialog::new()
-            .set_title("Add Data Folder")
+            .set_title(tr("Add Data Folder"))
             .pick_folder(),
         Pick::Save => rfd::FileDialog::new()
-            .set_title("Save Stream")
-            .add_filter("Data Mining Stream", &["dms"])
+            .set_title(tr("Save Stream"))
+            .add_filter(tr("Data Mining Stream"), &["dms"])
             .set_file_name(filename)
             .save_file(),
     }

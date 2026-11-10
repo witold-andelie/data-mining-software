@@ -2,9 +2,49 @@
 //! builds the native menu bar from the same registry (apps/dms) and the window shows no menu;
 //! elsewhere [`menu_bar`] draws it in the window and [`take_shortcuts`] handles the keys.
 
+use crate::i18n::{tr, tr_fmt};
 use dms_engine::command::{COMMANDS, CommandSpec, Key, Menu, Shortcut};
 use dms_engine::session::Session;
 use egui::{Button, KeyboardShortcut, Modifiers, Ui};
+
+/// Translate history labels at display time; engine history remains language independent.
+pub fn command_label(session: &Session, spec: &CommandSpec) -> String {
+    let history = match spec.id {
+        "edit.undo" => session.undo_label(),
+        "edit.redo" => session.redo_label(),
+        _ => None,
+    };
+    let Some(history) = history else {
+        return tr(spec.label).into();
+    };
+    let label = if let Some(label) = history.strip_prefix("Change ") {
+        let source = dms_engine::catalog::NODES
+            .iter()
+            .filter_map(|node| dms_exec::schema::schema(node.id))
+            .flatten()
+            .find(|spec| spec.label == label)
+            .map_or(label, |spec| tr(spec.label));
+        tr_fmt("Change {label}", &[("label", source)])
+    } else {
+        match history {
+            "Cut" => tr("Cut"),
+            "Paste" => tr("Paste"),
+            "Duplicate" => tr("Duplicate"),
+            "Delete" => tr("Delete"),
+            "Add Node" => tr("Add Node"),
+            "Move" => tr("Move"),
+            "Connect" => tr("Connect"),
+            "Disconnect" => tr("Disconnect"),
+            "Rename" => tr("Rename"),
+            other => other,
+        }
+        .into()
+    };
+    tr_fmt(
+        "{command} {label}",
+        &[("command", tr(spec.label)), ("label", &label)],
+    )
+}
 
 /// The egui form of a registry shortcut.
 pub fn keyboard_shortcut(shortcut: Shortcut, mac: bool) -> KeyboardShortcut {
@@ -127,18 +167,14 @@ pub fn menu_bar(ui: &mut Ui, session: &Session, mac: bool) -> Vec<&'static str> 
             if items.is_empty() {
                 continue;
             }
-            ui.menu_button(menu.label(), |ui| {
+            ui.menu_button(tr(menu.label()), |ui| {
                 let mut group = None;
                 for spec in items {
                     if group.is_some_and(|g| g != spec.group) {
                         ui.separator();
                     }
                     group = Some(spec.group);
-                    let mut button = Button::new(
-                        session
-                            .command_label(spec.id)
-                            .unwrap_or_else(|| spec.label.into()),
-                    );
+                    let mut button = Button::new(command_label(session, spec));
                     if let Some(shortcut) = spec.shortcuts.for_platform(mac) {
                         button = button.shortcut_text(
                             ui.ctx().format_shortcut(&keyboard_shortcut(shortcut, mac)),

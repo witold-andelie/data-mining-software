@@ -1,5 +1,6 @@
 //! Schema-driven node settings. Draft text belongs to the UI; only validated values reach
 //! the engine, through one `node.set_param` command per change.
+use crate::i18n::{tr, tr_fmt};
 use dms_engine::session::{Arg, FieldInfo, Session};
 use dms_exec::schema::{self, ParamKind, ParamSource, ParamSpec, ParamValue};
 use egui::{Key, RichText, TextEdit, Ui};
@@ -8,7 +9,6 @@ use std::path::PathBuf;
 
 const MAX_TEXT: usize = 1 << 20;
 const MAX_ROWS: usize = 10_000;
-const FIELD_HINT: &str = "Run the stream to list the fields reaching this node.";
 
 #[derive(Default)]
 struct Draft {
@@ -44,7 +44,7 @@ impl Properties {
             };
         }
         let Some((_, specs)) = session.node_schema(uid) else {
-            ui.label("Settings for this node type cannot be edited yet.");
+            ui.label(tr("Settings for this node type cannot be edited yet."));
             self.show_xml(ui, session, uid);
             return false;
         };
@@ -68,7 +68,7 @@ impl Properties {
                     if visible.is_empty() {
                         continue;
                     }
-                    ui.strong(group);
+                    ui.strong(tr(group));
                     for spec in visible {
                         ui.push_id(spec.key, |ui| {
                             let read_only = session.param_read_only(uid, spec.key);
@@ -78,13 +78,23 @@ impl Properties {
                             let mut edit = None;
                             ui.add_enabled_ui(read_only.is_none(), |ui| match &spec.kind {
                                 ParamKind::Table { columns, .. } => {
-                                    ui.label(spec.label).on_hover_text(spec.help);
+                                    ui.label(tr(spec.label)).on_hover_text(tr(spec.help));
                                     edit = self.table(ui, spec, &value, columns, fields.as_deref());
                                 }
                                 ParamKind::FilePath { extensions } => {
-                                    edit = self
-                                        .text(ui, spec.key, spec.label, &spec.kind, &value, false);
-                                    if ui.button("Choose...").on_hover_text(spec.help).clicked() {
+                                    edit = self.text(
+                                        ui,
+                                        spec.key,
+                                        tr(spec.label),
+                                        &spec.kind,
+                                        &value,
+                                        false,
+                                    );
+                                    if ui
+                                        .button(tr("Choose..."))
+                                        .on_hover_text(tr(spec.help))
+                                        .clicked()
+                                    {
                                         self.file_request = Some(FileRequest {
                                             uid: uid.into(),
                                             key: spec.key,
@@ -108,34 +118,42 @@ impl Properties {
                                 ParamKind::Bool => {
                                     let mut checked = matches!(value, ParamValue::Bool(true));
                                     let response = ui
-                                        .checkbox(&mut checked, spec.label)
-                                        .on_hover_text(spec.help);
+                                        .checkbox(&mut checked, tr(spec.label))
+                                        .on_hover_text(tr(spec.help));
                                     if response.changed() {
                                         edit = Some(ParamValue::Bool(checked));
                                     }
                                 }
                                 ParamKind::Choice(choices) => {
                                     let mut text = value_text(&value);
-                                    if choice(ui, spec.label, &mut text, choices, false) {
+                                    if choice(ui, tr(spec.label), &mut text, choices, false) {
                                         edit = Some(ParamValue::Text(text));
                                     }
                                 }
                                 _ => {
-                                    edit = self
-                                        .text(ui, spec.key, spec.label, &spec.kind, &value, false);
+                                    edit = self.text(
+                                        ui,
+                                        spec.key,
+                                        tr(spec.label),
+                                        &spec.kind,
+                                        &value,
+                                        false,
+                                    );
                                     if matches!(
                                         spec.kind,
                                         ParamKind::Field { .. } | ParamKind::Fields { .. }
                                     ) {
-                                        ui.weak(FIELD_HINT);
+                                        ui.weak(tr(
+                                            "Run the stream to list the fields reaching this node.",
+                                        ));
                                         if matches!(spec.kind, ParamKind::Fields { .. }) {
-                                            ui.weak("Enter one field name per line.");
+                                            ui.weak(tr("Enter one field name per line."));
                                         }
                                     }
                                 }
                             })
                             .response
-                            .on_hover_text(spec.help);
+                            .on_hover_text(tr(spec.help));
                             if let Some(reason) = read_only {
                                 ui.weak(reason);
                             }
@@ -151,7 +169,7 @@ impl Properties {
                     ui.separator();
                 }
                 if specs.is_empty() {
-                    ui.weak("This node has no editable execution options.");
+                    ui.weak(tr("This node has no editable execution options."));
                 }
                 unknown_elements(ui, session, uid, specs);
             });
@@ -310,9 +328,9 @@ impl Properties {
             .max_height(260.0)
             .show(ui, |ui| {
                 egui::Grid::new("cells").striped(true).show(ui, |ui| {
-                    ui.strong("Field");
+                    ui.strong(tr("Field"));
                     for col in columns {
-                        ui.strong(col.label);
+                        ui.strong(tr(col.label));
                     }
                     ui.end_row();
                     for (key, values) in rows.iter_mut().take(MAX_ROWS) {
@@ -322,7 +340,7 @@ impl Properties {
                                 continue;
                             };
                             ui.push_id((key.as_str(), col.child), |ui| {
-                                let label = format!("{}: {}", key, col.label);
+                                let label = format!("{}: {}", key, tr(col.label));
                                 if let ParamKind::Choice(choices) = col.kind {
                                     let mut text = cell.clone().unwrap_or_default();
                                     if choice(ui, &label, &mut text, choices, true) {
@@ -349,15 +367,15 @@ impl Properties {
         if rows.len() < MAX_ROWS {
             let id = format!("{}/new-row", spec.key);
             let draft = self.drafts.entry(id).or_default();
-            let label = format!("New field for {}", spec.label);
+            let label = tr_fmt("New field for {label}", &[("label", tr(spec.label))]);
             let response = ui.add(
                 TextEdit::singleline(&mut draft.text)
-                    .hint_text("Field name")
+                    .hint_text(tr("Field name"))
                     .char_limit(MAX_TEXT),
             );
             response.accessible_name(label);
             if let Some(fields) = fields {
-                egui::ComboBox::from_label("Incoming fields").show_ui(ui, |ui| {
+                egui::ComboBox::from_label(tr("Incoming fields")).show_ui(ui, |ui| {
                     for field in fields.iter().take(MAX_ROWS) {
                         ui.selectable_value(&mut draft.text, field.name.clone(), &field.name);
                     }
@@ -367,7 +385,7 @@ impl Properties {
             if ui
                 .add_enabled(
                     !key.is_empty() && !rows.iter().any(|(k, _)| k == key),
-                    egui::Button::new("Add field"),
+                    egui::Button::new(tr("Add field")),
                 )
                 .clicked()
             {
@@ -380,7 +398,7 @@ impl Properties {
     }
 
     fn show_xml(&self, ui: &mut Ui, session: &Session, uid: &str) {
-        egui::CollapsingHeader::new("Settings XML").show(ui, |ui| {
+        egui::CollapsingHeader::new(tr("Settings XML")).show(ui, |ui| {
             if let Some(settings) = session.node_settings(uid) {
                 // Debug formats string contents incrementally without allocating a copy.
                 // Use it only to count an upper bound before calling the XML writer (which
@@ -407,7 +425,7 @@ impl Properties {
                     if !fits { break; }
                 }
                 if !fits {
-                    ui.weak("Settings XML exceeds the preview size limit. The complete settings are preserved.");
+                    ui.weak(tr("Settings XML exceeds the preview size limit. The complete settings are preserved."));
                     return;
                 }
                 let xml = settings.to_xml();
@@ -433,10 +451,10 @@ impl Properties {
                     );
                 });
                 if xml.lines().count() > 2000 || xml.len() > MAX_TEXT {
-                    ui.weak("XML preview truncated; the complete settings are preserved.");
+                    ui.weak(tr("XML preview truncated; the complete settings are preserved."));
                 }
             } else {
-                ui.weak("No saved settings.");
+                ui.weak(tr("No saved settings."));
             }
         });
     }
@@ -456,16 +474,19 @@ fn value_text(value: &ParamValue) -> String {
 
 fn parse_value(kind: &ParamKind, text: &str) -> Result<ParamValue, String> {
     if text.len() > MAX_TEXT {
-        return Err("Parameter text exceeds 1 MiB.".into());
+        return Err(tr("Parameter text exceeds 1 MiB.").into());
     }
     match kind {
         ParamKind::Int { min, max } => {
             let n = text
                 .trim()
                 .parse::<i64>()
-                .map_err(|_| "Enter a whole number.".to_string())?;
+                .map_err(|_| tr("Enter a whole number.").to_string())?;
             if n < *min || n > *max {
-                return Err(format!("Enter a value from {min} to {max}."));
+                return Err(tr_fmt(
+                    "Enter a value from {min} to {max}.",
+                    &[("min", &min.to_string()), ("max", &max.to_string())],
+                ));
             }
             Ok(ParamValue::Int(n))
         }
@@ -473,9 +494,12 @@ fn parse_value(kind: &ParamKind, text: &str) -> Result<ParamValue, String> {
             let n = text
                 .trim()
                 .parse::<f64>()
-                .map_err(|_| "Enter a finite number.".to_string())?;
+                .map_err(|_| tr("Enter a finite number.").to_string())?;
             if !n.is_finite() || n < *min || n > *max {
-                return Err(format!("Enter a finite value from {min} to {max}."));
+                return Err(tr_fmt(
+                    "Enter a finite value from {min} to {max}.",
+                    &[("min", &min.to_string()), ("max", &max.to_string())],
+                ));
             }
             Ok(ParamValue::Real(n))
         }
@@ -491,7 +515,7 @@ fn parse_value(kind: &ParamKind, text: &str) -> Result<ParamValue, String> {
                 .map(str::to_string)
                 .collect();
             if fields.len() > MAX_ROWS {
-                return Err("A field list can contain at most 10000 names.".into());
+                return Err(tr("A field list can contain at most 10000 names.").into());
             }
             Ok(ParamValue::Fields(fields))
         }
@@ -503,25 +527,25 @@ fn choice(
     ui: &mut Ui,
     label: &str,
     text: &mut String,
-    choices: &[(&str, &str)],
+    choices: &[(&'static str, &'static str)],
     optional: bool,
 ) -> bool {
     let old = text.clone();
     let selected = choices
         .iter()
         .find(|(v, _)| *v == text)
-        .map(|(_, l)| *l)
-        .unwrap_or(if text.is_empty() { "Not set" } else { text });
+        .map(|(_, l)| tr(l))
+        .unwrap_or(if text.is_empty() { tr("Not set") } else { text });
     let label_response = (!optional).then(|| ui.label(label));
     let response = egui::ComboBox::from_id_salt("choice")
         .selected_text(selected)
         .width(ui.available_width().clamp(100.0, 420.0))
         .show_ui(ui, |ui| {
             if optional {
-                ui.selectable_value(text, String::new(), "Not set");
+                ui.selectable_value(text, String::new(), tr("Not set"));
             }
             for (value, label) in choices {
-                ui.selectable_value(text, (*value).into(), *label);
+                ui.selectable_value(text, (*value).into(), tr(label));
             }
         })
         .response;
@@ -548,7 +572,7 @@ fn field_picker(
     fields: &[FieldInfo],
     measures: &[&str],
 ) -> Option<ParamValue> {
-    let label = ui.label(spec.label).on_hover_text(spec.help);
+    let label = ui.label(tr(spec.label)).on_hover_text(tr(spec.help));
     let allowed =
         |field: &&FieldInfo| measures.is_empty() || measures.contains(&field.measure.as_str());
     match &spec.kind {
@@ -558,12 +582,12 @@ fn field_picker(
             egui::ComboBox::from_id_salt("field")
                 .width(ui.available_width().min(420.0))
                 .selected_text(if selected.is_empty() {
-                    "Not set"
+                    tr("Not set")
                 } else {
                     &selected
                 })
                 .show_ui(ui, |ui| {
-                    ui.selectable_value(&mut selected, String::new(), "Not set");
+                    ui.selectable_value(&mut selected, String::new(), tr("Not set"));
                     for field in fields.iter().filter(allowed) {
                         ui.selectable_value(&mut selected, field.name.clone(), &field.name);
                     }
@@ -683,8 +707,10 @@ fn unknown_elements(ui: &mut Ui, session: &Session, uid: &str, specs: &[ParamSpe
     }
     if !names.is_empty() {
         ui.separator();
-        ui.strong("Other saved settings");
-        ui.weak("These settings are read-only and will be saved unchanged.");
+        ui.strong(tr("Other saved settings"));
+        ui.weak(tr(
+            "These settings are read-only and will be saved unchanged.",
+        ));
         for name in names {
             ui.label(RichText::new(name).monospace());
         }

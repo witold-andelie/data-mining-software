@@ -172,8 +172,6 @@ pub struct CommandSpec {
     pub requires: Requires,
 }
 
-const PHASE_B: &str = "Arrives with stream editing (phase B)";
-
 macro_rules! command {
     ($id:literal, $label:literal, $menu:ident, $group:literal, $shortcuts:expr, $requires:expr) => {
         CommandSpec {
@@ -206,7 +204,7 @@ pub const COMMANDS: &[CommandSpec] = &[
             mac: Some(Shortcut::command(Key::Comma)),
             other: None
         },
-        Requires::Planned(PHASE_B)
+        Requires::Nothing
     ),
     command!(
         "app.quit",
