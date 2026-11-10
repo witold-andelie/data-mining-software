@@ -112,6 +112,16 @@ fn tabs(report: &RunReport, selected: Option<&str>) -> Vec<String> {
             tabs.push(uid.clone());
         }
     }
+    if report.cancelled {
+        let mut completed: Vec<_> = report
+            .results
+            .iter()
+            .filter(|(uid, result)| result.is_ok() && !tabs.contains(uid))
+            .map(|(uid, _)| uid.clone())
+            .collect();
+        completed.sort();
+        tabs.extend(completed);
+    }
     if let Some(selected) = selected
         && report.results.contains_key(selected)
         && !tabs.iter().any(|t| t == selected)
@@ -235,7 +245,7 @@ pub fn show_results_with_settings<'a>(
             if preview {
                 label = tr_fmt("Preview: {label}", &[("label", &label)]);
             }
-            let failed = matches!(report.results.get(uid), Some(Err(_)));
+            let failed = matches!(report.results.get(uid), Some(Err(e)) if !matches!(e.kind, ErrorKind::Cancelled));
             let text = if failed {
                 RichText::new(label).color(ui.visuals().error_fg_color)
             } else {

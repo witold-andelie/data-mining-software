@@ -166,6 +166,8 @@ pub struct CommandSpec {
     pub id: &'static str,
     pub label: &'static str,
     pub menu: Menu,
+    /// Hidden from desktop menus; still available to the command palette and dispatch by id.
+    pub menu_visible: bool,
     /// Items of a menu with different groups are separated; groups are shown in ascending order.
     pub group: u8,
     pub shortcuts: Shortcuts,
@@ -178,10 +180,17 @@ macro_rules! command {
             id: $id,
             label: $label,
             menu: Menu::$menu,
+            menu_visible: true,
             group: $group,
             shortcuts: $shortcuts,
             requires: $requires,
         }
+    };
+}
+
+macro_rules! hidden_command {
+    ($($args:tt)*) => {
+        CommandSpec { menu_visible: false, ..command!($($args)*) }
     };
 }
 
@@ -343,7 +352,7 @@ pub const COMMANDS: &[CommandSpec] = &[
         },
         Requires::Document
     ),
-    command!(
+    hidden_command!(
         "edit.select",
         "Select",
         Edit,
@@ -362,7 +371,7 @@ pub const COMMANDS: &[CommandSpec] = &[
         },
         Requires::Document
     ),
-    command!(
+    hidden_command!(
         "node.set_param",
         "Change Parameter",
         Edit,
@@ -370,7 +379,7 @@ pub const COMMANDS: &[CommandSpec] = &[
         Shortcuts::NONE,
         Requires::Document
     ),
-    command!(
+    hidden_command!(
         "node.add",
         "Add Node",
         Edit,
@@ -378,7 +387,7 @@ pub const COMMANDS: &[CommandSpec] = &[
         Shortcuts::NONE,
         Requires::Document
     ),
-    command!(
+    hidden_command!(
         "node.move",
         "Move",
         Edit,
@@ -386,7 +395,7 @@ pub const COMMANDS: &[CommandSpec] = &[
         Shortcuts::NONE,
         Requires::Document
     ),
-    command!(
+    hidden_command!(
         "node.connect",
         "Connect",
         Edit,
@@ -394,7 +403,7 @@ pub const COMMANDS: &[CommandSpec] = &[
         Shortcuts::NONE,
         Requires::Document
     ),
-    command!(
+    hidden_command!(
         "node.disconnect",
         "Disconnect",
         Edit,
@@ -402,7 +411,7 @@ pub const COMMANDS: &[CommandSpec] = &[
         Shortcuts::NONE,
         Requires::Document
     ),
-    command!(
+    hidden_command!(
         "file.recover",
         "Recover",
         File,

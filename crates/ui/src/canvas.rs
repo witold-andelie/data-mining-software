@@ -287,41 +287,43 @@ pub(crate) fn draw_grid(painter: &egui::Painter, rect: Rect, view: &CanvasView, 
     }
 }
 
+/// Shared by painting and link hit testing. Choose the closest pair of tile-edge centres;
+/// ties prefer right, left, bottom, then top. Gesture output ports remain on the right.
+pub fn link_curve(a: Pos2, b: Pos2, zoom: f32) -> Option<[Pos2; 4]> {
+    if !a.is_finite() || !b.is_finite() || a == b || !zoom.is_finite() || zoom <= 0.0 {
+        return None;
+    }
+    let directions = [Vec2::RIGHT, Vec2::LEFT, Vec2::DOWN, Vec2::UP];
+    let half = TILE * zoom / 2.0;
+    let mut best = None;
+    let mut distance = f32::INFINITY;
+    for from in directions {
+        for to in directions {
+            let start = a + from * half;
+            let end = b + to * half;
+            let candidate = start.distance_sq(end);
+            if candidate < distance {
+                distance = candidate;
+                best = Some((start, end, from, to));
+            }
+        }
+    }
+    let (start, end, from, to) = best?;
+    let pull = (distance.sqrt() * 0.4).max(10.0 * zoom);
+    Some([start, start + from * pull, end + to * pull, end])
+}
+
 pub(crate) fn draw_link(painter: &egui::Painter, a: Pos2, b: Pos2, zoom: f32, stroke: Stroke) {
-    let half = TILE.x * zoom / 2.0;
-    let direction = (b - a).normalized();
-    if !direction.is_finite() || direction == Vec2::ZERO {
+    let Some(points @ [_, _, control, tip]) = link_curve(a, b, zoom) else {
         return;
-    }
-    // Leave and enter the tiles at their edges, with horizontal tangents when the target is to
-    // the right (the usual left-to-right flow), straight otherwise.
-    let start = a + direction * half;
-    let end = b - direction * (half + 2.0);
-    let horizontal = (b.x - a.x).abs() > (b.y - a.y).abs() * 0.5;
-    if horizontal {
-        let pull = ((end.x - start.x).abs() * 0.4).max(10.0);
-        let sign = if end.x >= start.x { 1.0 } else { -1.0 };
-        let bezier = CubicBezierShape::from_points_stroke(
-            [
-                start,
-                start + vec2(pull * sign, 0.0),
-                end - vec2(pull * sign, 0.0),
-                end,
-            ],
-            false,
-            Color32::TRANSPARENT,
-            stroke,
-        );
-        painter.add(bezier);
-    } else {
-        painter.line_segment([start, end], stroke);
-    }
-    let tip = end;
-    let back = if horizontal {
-        vec2(if end.x >= start.x { 1.0 } else { -1.0 }, 0.0)
-    } else {
-        direction
     };
+    painter.add(CubicBezierShape::from_points_stroke(
+        points,
+        false,
+        Color32::TRANSPARENT,
+        stroke,
+    ));
+    let back = (tip - control).normalized();
     let size = (7.0 * zoom).clamp(3.0, 12.0);
     let side = back.rot90() * size * 0.5;
     painter.add(Shape::convex_polygon(
@@ -422,13 +424,21 @@ pub(crate) fn draw_node(
     );
     if zoom >= LABEL_MIN_ZOOM {
         let text_color = visuals.text_color();
-        painter.text(
-            pos2(tile.center().x, tile.max.y + 4.0 * zoom),
-            Align2::CENTER_TOP,
+        let galley = painter.layout_no_wrap(
             elide(&node.title, 22),
             FontId::proportional(LABEL_SIZE * zoom),
             text_color,
         );
+        let label = Align2::CENTER_TOP.anchor_size(
+            pos2(tile.center().x, tile.max.y + 4.0 * zoom),
+            galley.size(),
+        );
+        painter.rect_filled(
+            label.expand2(vec2(3.0, 1.0) * zoom),
+            3.0 * zoom,
+            canvas_background(dark).gamma_multiply(0.94),
+        );
+        painter.galley(label.min, galley, text_color);
     }
 }
 

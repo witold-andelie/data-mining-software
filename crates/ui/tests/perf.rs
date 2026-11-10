@@ -1,4 +1,4 @@
-//! CPU cost of one frame of the main window with a 200-node stream: egui layout plus
+//! CPU cost of one frame of the main window with 200/1000-node streams: egui layout plus
 //! tessellation, at Retina scale, while the canvas pans and zooms. GPU time is measured in the
 //! app (`dms --bench`). Run with
 //! `cargo test --release -p dms-ui --test perf -- --ignored --nocapture`.
@@ -15,14 +15,16 @@ const FRAMES: usize = 600;
 #[test]
 #[ignore = "timing; run explicitly in release mode"]
 fn two_hundred_nodes_frame_cost() {
-    for (columns, label) in [
-        (20, "200 nodes, labels visible"),
-        (6, "200 nodes, zoomed out"),
+    for (count, columns, label) in [
+        (200, 20, "200 nodes, labels visible"),
+        (200, 6, "200 nodes, zoomed out"),
+        (1000, 40, "1000 nodes, fitted"),
+        (1000, 12, "1000 nodes, zoomed out"),
     ] {
         let mut workbench = Workbench::with_document(
             Document::from_stream(
                 PathBuf::from("synthetic.str"),
-                synthetic::grid(200, columns),
+                synthetic::grid(count, columns),
             ),
             ShellState::default(),
         );
@@ -77,7 +79,13 @@ fn two_hundred_nodes_frame_cost() {
             "{label}: zoom {:.2}, mean {mean:.2} ms, p95 {p95:.2} ms, max {max:.2} ms per frame (CPU)",
             workbench.state.canvas.zoom
         );
-        assert!(workbench.graph().unwrap().nodes.len() == 200);
+        assert_eq!(workbench.graph().unwrap().nodes.len(), count);
+        if count == 200 {
+            assert!(
+                p95 <= 4.0,
+                "200-node CPU p95 {p95:.2} ms exceeds the 4.00 ms budget"
+            );
+        }
     }
 }
 

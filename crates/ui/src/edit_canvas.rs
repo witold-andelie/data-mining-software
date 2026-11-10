@@ -108,19 +108,9 @@ fn distance_to_segment(p: Pos2, a: Pos2, b: Pos2) -> f32 {
 
 /// Hit test the same curve that canvas::draw_link paints, with a fixed subdivision budget.
 fn on_link(p: Pos2, a: Pos2, b: Pos2, zoom: f32) -> bool {
-    let direction = (b - a).normalized();
-    if !direction.is_finite() || direction == Vec2::ZERO {
+    let Some([start, c1, c2, end]) = canvas::link_curve(a, b, zoom) else {
         return false;
-    }
-    let start = a + direction * (TILE.x * zoom / 2.0);
-    let end = b - direction * (TILE.x * zoom / 2.0 + 2.0);
-    if (b.x - a.x).abs() <= (b.y - a.y).abs() * 0.5 {
-        return distance_to_segment(p, start, end) < 6.0;
-    }
-    let pull =
-        ((end.x - start.x).abs() * 0.4).max(10.0) * if end.x >= start.x { 1.0 } else { -1.0 };
-    let c1 = start + vec2(pull, 0.0);
-    let c2 = end - vec2(pull, 0.0);
+    };
     let mut last = start;
     for step in 1..=24 {
         let t = step as f32 / 24.0;
