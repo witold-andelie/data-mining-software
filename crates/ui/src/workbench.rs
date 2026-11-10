@@ -563,6 +563,13 @@ impl Workbench {
         }
     }
 
+    /// Quits without asking to save: for unattended runs (`dms --run`), where nobody can
+    /// answer the save prompt. An imported `.str` counts as unsaved, so a plain close would
+    /// wait on that prompt forever.
+    pub fn quit_without_saving(&mut self, ctx: &Context) {
+        self.execute_args(ctx, "app.quit", vec![Arg::Force]);
+    }
+
     fn execute_args(&mut self, ctx: &Context, id: &'static str, args: Vec<Arg>) {
         if matches!(id, "edit.copy" | "edit.cut" | "edit.paste") {
             self.dispatch_args(ctx, id, args, &mut |_| None);
