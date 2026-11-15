@@ -6,7 +6,15 @@
 //!   (`codesign -s -`; not notarized: on first launch, right-click the app and choose Open);
 //! - `DataMining-<version>.dmg`: the app, a link to /Applications and a short read-me.
 //!
-//! Uses the system tools `sips`, `iconutil`, `codesign` and `hdiutil` (macOS only).
+//! Homebrew libraries the app links (unixODBC's `libodbc` and libtool's `libltdl`, both LGPL) are
+//! copied into `Contents/Frameworks` as separate dynamic libraries, so the app starts on a Mac
+//! without Homebrew and the libraries stay replaceable; their licence texts go to
+//! `Contents/Resources/Licenses`. This is a recorded exception to the permissive-licence rule
+//! (docs/gui/DESIGN.md §9.3). Only the formulas in [`BUNDLED_FORMULAS`] may be bundled: any other
+//! Homebrew library fails the build.
+//!
+//! Uses the system tools `sips`, `iconutil`, `otool`, `install_name_tool`, `codesign` and
+//! `hdiutil` (macOS only).
 
 use crate::{Result, cargo, workspace_root};
 use std::fs;
@@ -23,6 +31,21 @@ const DMS_TYPE_ID: &str = "io.github.witold-andelie.dms.stream";
 /// It is an interoperability identifier, like the extension, not IBM content.
 const STR_TYPE_ID: &str = "com.ibm.spssmac.str";
 const ICON_SIZES: &[u32] = &[16, 32, 128, 256, 512];
+
+/// Homebrew formulas whose libraries may ship inside the app, with the licence file to include
+/// (relative to the formula's prefix) and its licence. Approved by the owner 2026-11-15.
+const BUNDLED_FORMULAS: &[(&str, &str, &str)] = &[
+    ("unixodbc", "COPYING", "LGPL-2.1-or-later"),
+    (
+        "libtool",
+        "share/libtool/COPYING.LIB",
+        "LGPL-2.0-or-later (libltdl)",
+    ),
+];
+/// Where linked libraries are rewritten to point.
+const FRAMEWORKS_REF: &str = "@executable_path/../Frameworks";
+/// Bound on the library graph walked from the executable.
+const MAX_LIBRARIES: usize = 32;
 
 pub fn run(_args: &[String]) -> Result<()> {
     if !cfg!(target_os = "macos") {
@@ -47,6 +70,7 @@ pub fn run(_args: &[String]) -> Result<()> {
         fs::create_dir_all(dir).map_err(|e| format!("cannot create {}: {e}", dir.display()))?;
     }
     copy(&target.join("release").join("dms"), &macos.join("dms"))?;
+    bundle_libraries(&macos.join("dms"), &contents)?;
     write(&contents.join("Info.plist"), &info_plist(version))?;
     write(&contents.join("PkgInfo"), "APPL????")?;
     make_icon(&root.join("apps/dms/assets/icon.png"), &dist, &resources)?;
@@ -101,7 +125,10 @@ Drag \"Data Mining\" to Applications.\n\
 \n\
 The app is signed for this team only (ad-hoc), not notarized by Apple. The first time, open it\n\
 with a right-click (or Control-click) on the app and choose Open, then Open again in the\n\
-dialog. After that it opens normally, and double-clicking a .str stream opens it in the app.\n";
+dialog. After that it opens normally, and double-clicking a .str stream opens it in the app.\n\
+\n\
+The app includes the unixODBC and libltdl libraries (LGPL); their licences and sources are\n\
+listed in Data Mining.app/Contents/Resources/Licenses.\n";
 
 fn info_plist(version: &str) -> String {
     format!(
@@ -280,6 +307,165 @@ fn path_text(path: &Path) -> Result<String> {
     path.to_str()
         .map(str::to_string)
         .ok_or_else(|| format!("{} is not valid UTF-8", path.display()))
+}
+
+/// Libraries `binary` links that live outside the system (Homebrew), as written in its load
+/// commands.
+fn foreign_libraries(binary: &Path) -> Result<Vec<String>> {
+    let output = Command::new("otool")
+        .arg("-L")
+        .arg(binary)
+        .output()
+        .map_err(|e| format!("cannot run otool: {e}"))?;
+    if !output.status.success() {
+        return Err(format!("otool -L {} failed", binary.display()));
+    }
+    let text = String::from_utf8_lossy(&output.stdout);
+    Ok(text
+        .lines()
+        .skip(1)
+        .filter_map(|line| line.trim().split(" (compatibility").next())
+        .map(str::to_string)
+        .filter(|path| path.starts_with("/opt/homebrew/") || path.starts_with("/usr/local/"))
+        .collect())
+}
+
+/// The Homebrew formula a library path belongs to (`/opt/homebrew/opt/<formula>/lib/...`).
+fn formula_of(path: &str) -> Option<&str> {
+    let rest = path
+        .strip_prefix("/opt/homebrew/opt/")
+        .or_else(|| path.strip_prefix("/usr/local/opt/"))?;
+    rest.split('/').next()
+}
+
+/// Copies the Homebrew libraries the executable needs (transitively) into Frameworks, points
+/// every reference at the copies, and adds the licence texts and a notice.
+fn bundle_libraries(executable: &Path, contents: &Path) -> Result<()> {
+    let frameworks = contents.join("Frameworks");
+    let licenses = contents.join("Resources").join("Licenses");
+    // (original path, bundled file name)
+    let mut found: Vec<(String, String)> = Vec::new();
+    let mut queue = foreign_libraries(executable)?;
+    while let Some(library) = queue.pop() {
+        if found.iter().any(|(path, _)| *path == library) {
+            continue;
+        }
+        if found.len() >= MAX_LIBRARIES {
+            return Err("too many linked libraries".into());
+        }
+        let formula = formula_of(&library)
+            .ok_or_else(|| format!("{library} is not inside a Homebrew formula"))?;
+        if !BUNDLED_FORMULAS.iter().any(|(name, _, _)| *name == formula) {
+            return Err(format!(
+                "the app links {library} (Homebrew formula {formula}), which is not approved \
+                 for bundling; see BUNDLED_FORMULAS and docs/gui/DESIGN.md §9.3"
+            ));
+        }
+        let name = Path::new(&library)
+            .file_name()
+            .and_then(|n| n.to_str())
+            .ok_or_else(|| format!("bad library path {library}"))?
+            .to_string();
+        queue.extend(foreign_libraries(Path::new(&library))?);
+        found.push((library, name));
+    }
+    if found.is_empty() {
+        return Ok(());
+    }
+    fs::create_dir_all(&frameworks)
+        .map_err(|e| format!("cannot create {}: {e}", frameworks.display()))?;
+    fs::create_dir_all(&licenses)
+        .map_err(|e| format!("cannot create {}: {e}", licenses.display()))?;
+    let mut binaries = vec![executable.to_path_buf()];
+    for (library, name) in &found {
+        let copied = frameworks.join(name);
+        copy(Path::new(library), &copied)?;
+        // Homebrew installs libraries read-only; install_name_tool must rewrite the copy.
+        let mut permissions = fs::metadata(&copied)
+            .map_err(|e| format!("cannot read {}: {e}", copied.display()))?
+            .permissions();
+        std::os::unix::fs::PermissionsExt::set_mode(&mut permissions, 0o644);
+        fs::set_permissions(&copied, permissions)
+            .map_err(|e| format!("cannot make {} writable: {e}", copied.display()))?;
+        tool(
+            "install_name_tool",
+            &[
+                "-id",
+                &format!("{FRAMEWORKS_REF}/{name}"),
+                &path_text(&copied)?,
+            ],
+        )?;
+        binaries.push(copied);
+    }
+    for binary in &binaries {
+        for (library, name) in &found {
+            tool(
+                "install_name_tool",
+                &[
+                    "-change",
+                    library,
+                    &format!("{FRAMEWORKS_REF}/{name}"),
+                    &path_text(binary)?,
+                ],
+            )?;
+        }
+    }
+    // Every reference now points inside the app.
+    for binary in &binaries {
+        if let Some(left) = foreign_libraries(binary)?.first() {
+            return Err(format!("{} still links {left}", binary.display()));
+        }
+    }
+    let mut notice = String::from(
+        "Third-party libraries bundled with Data Mining\n\n\
+         These libraries are dynamically linked and kept as separate files in\n\
+         Contents/Frameworks, so they can be replaced with other builds of the same\n\
+         libraries. Their source code is available from the projects below.\n\n",
+    );
+    let mut formulas: Vec<&str> = found
+        .iter()
+        .filter_map(|(path, _)| formula_of(path))
+        .collect();
+    formulas.sort_unstable();
+    formulas.dedup();
+    for formula in formulas {
+        let Some((_, license_file, license)) = BUNDLED_FORMULAS
+            .iter()
+            .find(|(name, _, _)| *name == formula)
+        else {
+            continue;
+        };
+        let prefix = Path::new("/opt/homebrew/opt").join(formula);
+        let version = homebrew_version(&prefix).unwrap_or_else(|| "unknown".into());
+        copy(
+            &prefix.join(license_file),
+            &licenses.join(format!(
+                "{formula}-{}.txt",
+                license.split(' ').next().unwrap_or("license")
+            )),
+        )?;
+        let files: Vec<&str> = found
+            .iter()
+            .filter(|(path, _)| formula_of(path) == Some(formula))
+            .map(|(_, name)| name.as_str())
+            .collect();
+        notice.push_str(&format!(
+            "{formula} {version}: {} ({license})\n  source: {}\n\n",
+            files.join(", "),
+            match formula {
+                "unixodbc" => "https://www.unixodbc.org/",
+                "libtool" => "https://www.gnu.org/software/libtool/",
+                _ => "https://formulae.brew.sh/",
+            }
+        ));
+    }
+    write(&licenses.join("THIRD-PARTY-NOTICES.txt"), &notice)
+}
+
+/// The installed version of a Homebrew formula (the Cellar directory its `opt` link names).
+fn homebrew_version(prefix: &Path) -> Option<String> {
+    let target = fs::read_link(prefix).ok()?;
+    Some(target.file_name()?.to_str()?.to_string())
 }
 
 #[cfg(test)]
