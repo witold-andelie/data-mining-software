@@ -79,6 +79,7 @@ pub fn evaluate_stream_output_to(
         attachments: Arc::new(attachments),
         decimal_places: Some(15),
         export_dir,
+        python: None,
     };
 
     let plan = Plan::new(&stream);

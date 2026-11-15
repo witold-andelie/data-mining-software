@@ -53,6 +53,8 @@ pub struct ShellState {
     /// Extra folders searched for the data streams reference (File > Add Data Folder…).
     pub data_folders: Vec<PathBuf>,
     pub language: crate::i18n::Language,
+    /// The Python executable for Python nodes; empty finds one (Settings).
+    pub python: String,
 }
 
 impl Default for ShellState {
@@ -64,6 +66,7 @@ impl Default for ShellState {
             canvas: CanvasView::default(),
             data_folders: Vec::new(),
             language: crate::i18n::Language::System,
+            python: String::new(),
         }
     }
 }
@@ -179,6 +182,7 @@ pub struct Workbench {
     node_window: Option<NodeWindow>,
     window_properties: crate::properties::Properties,
     windows_opened: u64,
+    python_check: crate::settings_window::PythonCheck,
 }
 
 /// A node's settings in a floating window, placed where it was asked for.
@@ -193,6 +197,7 @@ impl Workbench {
     pub fn new(mut state: ShellState) -> Self {
         let mut session = Session::new();
         session.set_data_folders(state.data_folders.clone());
+        session.set_python(Some(PathBuf::from(state.python.trim())));
         state.data_folders = session.data_folders().to_vec();
         Workbench {
             session,
@@ -221,6 +226,7 @@ impl Workbench {
             node_window: None,
             window_properties: crate::properties::Properties::default(),
             windows_opened: 0,
+            python_check: Default::default(),
         }
     }
 
@@ -237,6 +243,8 @@ impl Workbench {
         let folders = workbench.session.data_folders().to_vec();
         workbench.session = Session::with_document(document);
         workbench.session.set_data_folders(folders);
+        let python = workbench.state.python.trim().into();
+        workbench.session.set_python(Some(python));
         workbench.document_changed(true);
         workbench
     }
@@ -941,10 +949,17 @@ impl Workbench {
                     ui.label(tr("Opens and runs SPSS Modeler streams (.str)."));
                 });
         }
-        if let Some(action) =
-            crate::settings_window::show(ui.ctx(), &mut self.settings_open, &mut self.state)
-        {
+        if let Some(action) = crate::settings_window::show(
+            ui.ctx(),
+            &mut self.settings_open,
+            &mut self.state,
+            &mut self.python_check,
+        ) {
             match action {
+                crate::settings_window::Action::PythonChanged => {
+                    let python = self.state.python.trim().into();
+                    self.session.set_python(Some(python));
+                }
                 crate::settings_window::Action::AddFolder => requested.push("file.add_data_folder"),
                 crate::settings_window::Action::RemoveFolder(index) => {
                     if index < self.state.data_folders.len() {

@@ -20,6 +20,8 @@ pub struct RunRequest {
     pub data_dirs: Vec<PathBuf>,
     pub export_dir: PathBuf,
     pub targets: RunTargets,
+    /// The Python for Python nodes; `None` finds one.
+    pub python: Option<PathBuf>,
 }
 
 #[derive(Debug)]
@@ -104,6 +106,7 @@ pub fn run_stream(request: RunRequest, ctx: &JobContext) -> RunReport {
         attachments: request.attachments,
         decimal_places: None,
         export_dir: Some(request.export_dir),
+        python: request.python,
     };
     let batches = if sequential {
         targets.iter().map(|uid| vec![uid.as_str()]).collect()
@@ -266,6 +269,7 @@ pub(crate) mod tests {
             data_dirs: Vec::new(),
             export_dir: std::env::temp_dir().join("dms-engine-run-tests"),
             targets,
+            python: None,
         }
     }
 

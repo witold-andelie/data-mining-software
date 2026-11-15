@@ -119,6 +119,7 @@ fn tree_build_nodes_train_modelers_trees() {
             attachments: Arc::new(attachments),
             decimal_places: Some(15),
             export_dir: None,
+            python: None,
         };
         let results = dms_exec::Plan::new(&stream).evaluate(&[builder.as_str()], &context);
         let model = match results.get(builder.as_str()).unwrap() {

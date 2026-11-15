@@ -170,6 +170,8 @@ pub struct Session {
     /// Folders searched by file name for data a stream references, after the stream's own
     /// folder (streams often name files on the machine that saved them).
     data_folders: Vec<PathBuf>,
+    /// The Python executable for Python nodes (Settings); `None` finds one.
+    python: Option<PathBuf>,
     jobs: JobManager<RunReport>,
     pub(crate) results: Option<RunResults>,
     run_state: RunState,
@@ -292,6 +294,21 @@ impl Session {
         }
     }
 
+    /// The Python executable chosen for Python nodes.
+    pub fn python(&self) -> Option<&Path> {
+        self.python.as_deref()
+    }
+
+    /// Chooses the Python for Python nodes (`None` or an empty path: find one). Later runs use
+    /// it; the next run checks it again.
+    pub fn set_python(&mut self, python: Option<PathBuf>) {
+        let python = python.filter(|p| !p.as_os_str().is_empty());
+        if python != self.python {
+            dms_python::forget_resolved();
+        }
+        self.python = python;
+    }
+
     /// The extra data folders, in search order.
     pub fn data_folders(&self) -> &[PathBuf] {
         &self.data_folders
@@ -346,6 +363,7 @@ impl Session {
                     .unwrap_or_else(|| Path::new("Untitled.dms")),
             ),
             targets,
+            python: self.python.clone(),
         };
         // Capture connectivity with the immutable run snapshot, without building operators on
         // the interface thread. Results keep this graph even after subsequent canvas edits.

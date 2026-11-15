@@ -24,6 +24,7 @@ pub mod eplot;
 pub mod evaluation;
 pub mod excel_export;
 pub mod excel_import;
+pub mod extension;
 mod extension_params;
 mod feature_selection;
 pub mod field_reorder;

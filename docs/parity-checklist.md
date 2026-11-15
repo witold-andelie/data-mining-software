@@ -9,7 +9,7 @@ Status `done (output unverified)`: settings and the records reaching the node ma
 | Scope | Implemented | Total |
 |---|---|---|
 | MVP | 85 | 85 |
-| later | 5 | 24 |
+| later | 9 | 24 |
 | license blocked | 0 | 6 |
 | out of scope | 0 | 34 |
 
@@ -26,7 +26,7 @@ Status `done (output unverified)`: settings and the records reaching the node ma
 | XML | `xml_import` | MVP | done | `xml_import!spss.xml_data` |
 | JSON | `json_import` | MVP | done | `json_import!pasw.json` |
 | SAS File | `sas_import` | MVP | done | `SASInputNode` |
-| Extension Import | `extension_import` | later | missing | `ExtensionImportNode`, `script_importer!spss.scripts` |
+| Extension Import | `extension_import` | later | done | `ExtensionImportNode`, `script_importer!spss.scripts` |
 | R Import | `r_import` | out of scope | missing | `rimporter!spss.rstats` |
 | Data Collection | `data_collection_import` | out of scope | missing | `DimensionsImportNode` |
 | IBM Cognos | `cognos_import` | out of scope | missing | `cognos_import!spss.cognos` |
@@ -55,7 +55,7 @@ Status `done (output unverified)`: settings and the records reaching the node ma
 | Distinct | `distinct` | MVP | done | `DistinctNode` |
 | SMOTE (Python) | `smote` | later | missing | `smote!spss.smote` |
 | Streaming TS | `streaming_ts` | later | missing | `spss.ts!ts_streaming` |
-| Extension Transform | `extension_transform` | later | missing | `ExtensionDataTransformNode` |
+| Extension Transform | `extension_transform` | later | done | `ExtensionDataTransformNode` |
 | Space-Time-Boxes | `space_time_boxes` | out of scope | missing | `stb!spss.stb` |
 | CPLEX Optimization | `cplex_optimization` | out of scope | missing | `cplexopt!spss.cplexopt` |
 | Entity Analytics | `entity_analytics_process` | out of scope | missing | `entityanalytics_process!spss.entityanalytics` |
@@ -173,7 +173,7 @@ Status `done (output unverified)`: settings and the records reaching the node ma
 | Report | `report` | MVP | done | `ReportNode` |
 | Set Globals | `set_globals` | MVP | done | `SetGlobalsNode` |
 | KDE Simulation (Python) | `kde_simulation` | later | missing | `kde_export!pasw.kde` |
-| Extension Output | `extension_output` | later | missing | (unmapped) |
+| Extension Output | `extension_output` | later | done | `ExtensionOutputNode` |
 | Statistics Output | `statistics_output` | out of scope | missing | `SPSSProcedureNode`, `SPSSSyntaxNode`, `SPSSCustomTableNode` |
 | Simulation Fit | `simulation_fit` | out of scope | missing | `simulation_fit!spss.simulation` |
 | Simulation Evaluation | `simulation_evaluation` | out of scope | missing | `simulation_evaluation!spss.simulation` |
@@ -189,7 +189,7 @@ Status `done (output unverified)`: settings and the records reaching the node ma
 | XML | `xml_export` | MVP | done | `xml_export!spss.xml_data` |
 | JSON | `json_export` | MVP | done | `json_export!pasw.json` |
 | SAS | `sas_export` | MVP | done | `SASExportNode` |
-| Extension Export | `extension_export` | later | missing | `ExtensionExportNode` |
+| Extension Export | `extension_export` | later | done | `ExtensionExportNode` |
 | Data Collection | `data_collection_export` | out of scope | missing | `DimensionsExportNode` |
 | IBM Cognos | `cognos_export` | out of scope | missing | `CFExportCognosNode`, `cognos_export!spss.cognos` |
 | IBM Cognos TM1 | `tm1_export` | out of scope | missing | `tm1ODataExport!spss.tm1OData` |

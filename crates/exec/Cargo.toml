@@ -16,6 +16,7 @@ dms-catalog.workspace = true
 dms-io.workspace = true
 dms-pmml.workspace = true
 dms-algo.workspace = true
+dms-python.workspace = true
 roxmltree = "0.20"
 jiff = "0.2"
 

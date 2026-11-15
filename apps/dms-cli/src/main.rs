@@ -400,6 +400,8 @@ fn run(path: &Path, args: &[String]) -> Result<(), String> {
         decimal_places: None,
         // Export nodes write under the output directory, never over the stream's own paths.
         export_dir: Some(out.join("exports")),
+        // Python nodes find one (DMS_PYTHON first).
+        python: None,
     };
     let mut execution = plan
         .execution()

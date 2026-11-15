@@ -246,7 +246,9 @@ pub const NODES: &[NodeSpec] = &[
     n("report", "Report", Output, Mvp, &["ReportNode"]),
     n("set_globals", "Set Globals", Output, Mvp, &["SetGlobalsNode"]),
     n("kde_simulation", "KDE Simulation (Python)", Output, Later, &["kde_export!pasw.kde"]),
-    n("extension_output", "Extension Output", Output, Later, &[]),
+    // Inferred from the scripting name `extensionoutputnode` (like `ExtensionExportNode`); not yet
+    // seen in a .str file.
+    n("extension_output", "Extension Output", Output, Later, &["ExtensionOutputNode"]),
     n("statistics_output", "Statistics Output", Output, OutOfScope, &["SPSSProcedureNode", "SPSSSyntaxNode", "SPSSCustomTableNode"]),
     n("simulation_fit", "Simulation Fit", Output, OutOfScope, &["simulation_fit!spss.simulation"]),
     n("simulation_evaluation", "Simulation Evaluation", Output, OutOfScope, &["simulation_evaluation!spss.simulation"]),

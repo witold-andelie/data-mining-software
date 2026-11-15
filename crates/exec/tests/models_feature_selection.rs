@@ -74,6 +74,7 @@ fn all_fifteen_nuggets_preserve_oracle_fields_rows_and_metadata() {
             stream_properties: stream.properties.clone().map(Arc::new),
             decimal_places: Some(15),
             export_dir: None,
+            python: None,
         };
         let results = Plan::new(&stream).evaluate(
             &[

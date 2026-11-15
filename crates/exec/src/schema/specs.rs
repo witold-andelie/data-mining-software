@@ -2208,6 +2208,19 @@ static DATA_AUDIT: &[ParamSpec] = &[
         visible_if: Some(("output_mode", &["file"])),
     },
 ];
+/// The Python script of an Extension node (docs/python-bridge.md).
+const PYTHON_SCRIPT: ParamSpec = ParamSpec {
+    key: "python_syntax",
+    source: ParamSource::Properties,
+    path: "pythonSyntax",
+    label: "Python script",
+    help: "Python code run in your own Python. The input is the pandas DataFrame modelerData; modelerDataModel lists its fields.",
+    group: "Script",
+    kind: ParamKind::Script,
+    default: Some(""),
+    visible_if: None,
+};
+static EXTENSION: &[ParamSpec] = &[PYTHON_SCRIPT];
 pub fn schema(catalog_id: &str) -> Option<&'static [ParamSpec]> {
     match catalog_id {
         "var_file" => Some(VAR_FILE),
@@ -2225,6 +2238,9 @@ pub fn schema(catalog_id: &str) -> Option<&'static [ParamSpec]> {
         "analysis" => Some(ANALYSIS),
         "histogram" => Some(HISTOGRAM),
         "data_audit" => Some(DATA_AUDIT),
+        "extension_import" | "extension_transform" | "extension_output" | "extension_export" => {
+            Some(EXTENSION)
+        }
         _ => None,
     }
 }

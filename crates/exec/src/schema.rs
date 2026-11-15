@@ -45,6 +45,8 @@ pub enum ParamKind {
     },
     Text,
     Expr,
+    /// Program text (several lines, kept verbatim): an Extension node's Python script.
+    Script,
     Choice(&'static [(&'static str, &'static str)]),
     Field {
         measures: &'static [&'static str],
@@ -138,6 +140,7 @@ fn scalar(kind: &ParamKind, text: &str) -> Result<ParamValue, String> {
         }
         ParamKind::Text
         | ParamKind::Expr
+        | ParamKind::Script
         | ParamKind::Field { .. }
         | ParamKind::FilePath { .. } => Ok(ParamValue::Text(text.into())),
         _ => Err("Expected a scalar parameter".into()),
@@ -168,6 +171,7 @@ fn validate_kind(kind: &ParamKind, value: &ParamValue) -> Result<(), String> {
         (
             ParamKind::Text
             | ParamKind::Expr
+            | ParamKind::Script
             | ParamKind::Field { .. }
             | ParamKind::FilePath { .. },
             ParamValue::Text(s),

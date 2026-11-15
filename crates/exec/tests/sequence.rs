@@ -126,6 +126,7 @@ fn context(
         attachments: Arc::new(attachments.clone()),
         decimal_places: Some(15),
         export_dir: None,
+        python: None,
     }
 }
 

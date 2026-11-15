@@ -13,5 +13,6 @@ workspace = true
 [dependencies]
 dms-catalog.workspace = true
 dms-exec.workspace = true
+dms-python.workspace = true
 dms-strfmt.workspace = true
 dms-stream.workspace = true

@@ -87,6 +87,7 @@ fn scored(label: &str, stream_path: &Path, uid: &str) -> Arc<Table> {
         ),
         decimal_places: Some(15),
         export_dir: None,
+        python: None,
     };
     let results = Plan::new(&stream).evaluate(&[uid], &context);
     match results.get(uid).unwrap() {

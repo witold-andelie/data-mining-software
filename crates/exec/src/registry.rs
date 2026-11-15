@@ -8,6 +8,10 @@ use dms_stream::StreamNode;
 
 const BUILT_IN: &[(&str, Factory)] = &[
     ("table", nodes::table::build),
+    ("extension_import", nodes::extension::build_import),
+    ("extension_transform", nodes::extension::build_transform),
+    ("extension_output", nodes::extension::build_output),
+    ("extension_export", nodes::extension::build_export),
     ("database_import", nodes::database::build_import),
     ("database_export", nodes::database::build_export),
     ("set_globals", nodes::set_globals::build),

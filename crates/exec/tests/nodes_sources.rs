@@ -126,6 +126,7 @@ fn ctx_with_dir(dir: PathBuf) -> ExecContext {
         attachments: Default::default(),
         decimal_places: None,
         export_dir: None,
+        python: None,
     }
 }
 

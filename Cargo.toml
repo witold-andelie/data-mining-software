@@ -21,6 +21,7 @@ dms-io = { path = "crates/io" }
 dms-stream = { path = "crates/stream" }
 dms-catalog = { path = "crates/catalog" }
 dms-exec = { path = "crates/exec" }
+dms-python = { path = "crates/python" }
 dms-ui = { path = "crates/ui" }
 dms-macos-open = { path = "crates/macos-open" }
 # GUI (L6 and apps only; `cargo xtask layers` enforces it). Licences: docs/gui/DESIGN.md §9.
@@ -42,6 +43,11 @@ serde = { version = "1", features = ["derive"] }
 # Native stream format (.dms), docs/gui/V02_HANDOFF.md.
 toml = "=1.2.1"
 serde_json = "1"
+# Python bridge data exchange (dms-python): Arrow IPC files only, no compression features.
+arrow-array = { version = "=60.1.0", default-features = false }
+arrow-buffer = { version = "=60.1.0", default-features = false }
+arrow-ipc = { version = "=60.1.0", default-features = false }
+arrow-schema = { version = "=60.1.0", default-features = false }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

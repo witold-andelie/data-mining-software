@@ -244,7 +244,8 @@ impl Properties {
             text: value_text(value),
             ..Draft::default()
         });
-        let expression = matches!(kind, ParamKind::Expr);
+        let script = matches!(kind, ParamKind::Script);
+        let expression = script || matches!(kind, ParamKind::Expr);
         let multiple = expression || matches!(kind, ParamKind::Fields { .. });
         let numeric = matches!(kind, ParamKind::Int { .. } | ParamKind::Real { .. });
         if numeric {
@@ -258,14 +259,23 @@ impl Properties {
                 egui::Stroke::NONE
             })
             .show(ui, |ui| {
-                let edit = if multiple {
+                let edit = if script {
+                    // Tab indents instead of moving focus; commits on leaving the field or ⌘↩.
+                    TextEdit::multiline(&mut draft.text)
+                        .code_editor()
+                        .desired_rows(14)
+                } else if multiple {
                     TextEdit::multiline(&mut draft.text).desired_rows(3)
                 } else {
                     TextEdit::singleline(&mut draft.text)
                 };
                 let edit = edit
                     .id_salt(id)
-                    .desired_width(ui.available_width().min(420.0))
+                    .desired_width(if script {
+                        ui.available_width()
+                    } else {
+                        ui.available_width().min(420.0)
+                    })
                     .char_limit(MAX_TEXT);
                 let edit = if expression {
                     edit.font(egui::TextStyle::Monospace)

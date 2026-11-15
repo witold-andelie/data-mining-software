@@ -111,6 +111,7 @@ fn check_case(root: &Path, case_dir: &Path) -> Result<String, String> {
         attachments: Arc::new(attachments),
         decimal_places: Some(15),
         export_dir: Some(export_dir.clone()),
+        python: None,
     };
 
     let plan = Plan::new(&stream);
