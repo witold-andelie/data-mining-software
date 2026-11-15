@@ -1162,10 +1162,16 @@ impl Workbench {
                 Some(!g.links.iter().any(|l| l.from == index))
             })
             .unwrap_or(true);
+        // Script nodes get room for code.
+        let script = node.type_id.starts_with("extension_");
         egui::Window::new(RichText::new(&node.title).strong())
             .id(egui::Id::unique(("node-window", generation)))
             .default_pos(at)
-            .default_size(egui::vec2(360.0, 440.0))
+            .default_size(if script {
+                egui::vec2(560.0, 480.0)
+            } else {
+                egui::vec2(360.0, 440.0)
+            })
             .collapsible(false)
             .resizable(true)
             .open(&mut open)

@@ -282,7 +282,25 @@ impl Properties {
                 } else {
                     edit
                 };
-                ui.add(edit)
+                if script {
+                    // Code keeps its lines: no wrapping, scroll sideways instead.
+                    let color = ui.visuals().text_color();
+                    let mut layouter = |ui: &Ui, text: &dyn egui::TextBuffer, _wrap: f32| {
+                        let job = egui::text::LayoutJob::simple(
+                            text.as_str().to_owned(),
+                            egui::TextStyle::Monospace.resolve(ui.style()),
+                            color,
+                            f32::INFINITY,
+                        );
+                        ui.fonts_mut(|fonts| fonts.layout_job(job))
+                    };
+                    egui::ScrollArea::horizontal()
+                        .id_salt((id, "script-scroll"))
+                        .show(ui, |ui| ui.add(edit.layouter(&mut layouter)))
+                        .inner
+                } else {
+                    ui.add(edit)
+                }
             })
             .inner;
         let response = if let Some(label) = label_response {

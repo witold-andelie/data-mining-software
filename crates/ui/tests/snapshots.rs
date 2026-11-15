@@ -217,3 +217,50 @@ fn node_window_light() {
     harness.get_by_label("Close");
     harness.snapshot_options("node_window_light", &options());
 }
+
+/// An Extension node's Python script in the settings form's code editor (no wrapping).
+#[test]
+fn python_script_form_light() {
+    use dms_engine::session::Arg;
+    use dms_exec::schema::ParamValue;
+    let _gpu = gpu();
+    let platform = Platform {
+        mac: true,
+        native_menu: true,
+        frame_cpu_ms: None,
+    };
+    let mut workbench = workbench(14);
+    workbench.state.show_palette = false;
+    // The synthetic stream's Extension Import node (a fixed uid, so the image is stable).
+    let uid = dms_ui::graph::StreamGraph::from_diagram(
+        &workbench.session.document().unwrap().stream.diagram,
+    )
+    .nodes
+    .iter()
+    .find(|n| n.type_id == "extension_import")
+    .unwrap()
+    .uid
+    .clone();
+    workbench
+        .session
+        .execute("edit.select", &[Arg::Nodes(vec![uid.clone()])])
+        .unwrap();
+    workbench
+        .session
+        .execute(
+            "node.set_param",
+            &[
+                Arg::Node(uid),
+                Arg::Param(
+                    "python_syntax".into(),
+                    ParamValue::Text(
+                        "# modelerData is a pandas DataFrame\nimport pandas as pd\nmodelerData = pd.read_csv('customers.csv')\nmodelerData['ratio'] = (modelerData['income'] / modelerData['age']).round(2)\n".into(),
+                    ),
+                ),
+            ],
+        )
+        .unwrap();
+    let mut harness = harness(workbench, Theme::Light, platform);
+    harness.get_by_label("Python script");
+    harness.snapshot_options("python_script_form_light", &options());
+}
