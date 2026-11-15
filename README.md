@@ -125,7 +125,7 @@ conventions but are inferred (see [Python nodes](#python-nodes)).
 | Windows | x64 (the Windows build is maintained but tested last) |
 | Rust (to build) | 1.95.0, selected automatically by `rust-toolchain.toml` |
 | Python (optional) | 3.9 or later with `pyarrow` and `pandas`, only for Python nodes |
-| ODBC | The macOS app bundles the unixODBC driver manager (see [Licence note](#licence-note-bundled-odbc-libraries)). Building from source, or running `dms-cli`, needs it installed: `brew install unixodbc`. Database nodes also need an ODBC driver for your database |
+| ODBC | The macOS app (including its `dms-cli`) bundles the unixODBC driver manager (see [Licence note](#licence-note-bundled-odbc-libraries)). Building from source needs it installed: `brew install unixodbc`. Database nodes also need an ODBC driver for your database |
 
 ### Install the macOS app
 
@@ -134,6 +134,12 @@ conventions but are inferred (see [Python nodes](#python-nodes)).
 3. The app is signed ad hoc for internal use and not notarized. The first time, right-click
    the app in Finder and choose **Open**, then confirm.
 4. Double-clicking a `.str` or `.dms` file in Finder (or using Open With) opens it in the app.
+5. Optional: the command-line tool `dms-cli` is inside the app. To run it from Terminal, link
+   it once:
+
+   ```sh
+   sudo ln -sf "/Applications/Data Mining.app/Contents/MacOS/dms-cli" /usr/local/bin/dms-cli
+   ```
 
 ### Build from source
 
@@ -147,8 +153,8 @@ cargo run -p dms-cli -- --help      # the command-line tool (prints usage)
 cargo xtask bundle-mac              # macOS: target/dist/Data Mining.app and DataMining-<version>.dmg
 ```
 
-`bundle-mac` builds the release binary, copies the Homebrew ODBC libraries it links into the
-app (only approved ones; anything else fails the build), rewrites their references to point
+`bundle-mac` builds the release binaries (`dms` and `dms-cli`), copies the Homebrew ODBC
+libraries they link into the app (only approved ones; anything else fails the build), rewrites their references to point
 inside the app, adds the icon and licence files, signs ad hoc and creates the disk image.
 
 Useful app options (mainly for testing):
@@ -348,7 +354,9 @@ undo step.
 
 ## Command-line tool
 
-`dms-cli` works without the desktop app:
+`dms-cli` works without the desktop window. On macOS it ships inside the app
+(`Data Mining.app/Contents/MacOS/dms-cli`, see [Install the macOS app](#install-the-macos-app));
+from source, `cargo run -p dms-cli -- <command>`.
 
 ```text
 dms-cli xml <file.str>                 print the decoded stream document as XML
@@ -532,8 +540,6 @@ Some of these documents are written in Chinese.
 
 ## Known limitations
 
-- **`dms-cli` on macOS** links unixODBC from Homebrew and needs `brew install unixodbc`; the
-  `.app` bundles it.
 - **Windows** builds and compiles in CI on macOS, but the app has not yet had a full manual
   pass on Windows.
 - **Supernodes** are shown and run, but cannot be edited.

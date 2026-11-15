@@ -1,6 +1,6 @@
 //! `cargo xtask bundle-mac`: the macOS application bundle and disk image.
 //!
-//! Builds `dms` in release mode and writes, under `target/dist/`:
+//! Builds `dms` and `dms-cli` in release mode and writes, under `target/dist/`:
 //! - `Data Mining.app`: Info.plist (document types `.str`), the icon made from
 //!   `apps/dms/assets/icon.png` (our own drawing, see `crates/ui/tests/icon.rs`), ad-hoc signed
 //!   (`codesign -s -`; not notarized: on first launch, right-click the app and choose Open);
@@ -53,7 +53,7 @@ pub fn run(_args: &[String]) -> Result<()> {
     }
     let root = workspace_root()?;
     let version = env!("CARGO_PKG_VERSION");
-    cargo(&["build", "--release", "-p", "dms"])?;
+    cargo(&["build", "--release", "-p", "dms", "-p", "dms-cli"])?;
 
     let target = std::env::var_os("CARGO_TARGET_DIR")
         .map(PathBuf::from)
@@ -69,8 +69,12 @@ pub fn run(_args: &[String]) -> Result<()> {
     for dir in [&macos, &resources] {
         fs::create_dir_all(dir).map_err(|e| format!("cannot create {}: {e}", dir.display()))?;
     }
-    copy(&target.join("release").join("dms"), &macos.join("dms"))?;
-    bundle_libraries(&macos.join("dms"), &contents)?;
+    // The command-line tool ships inside the app and shares its libraries (see the read-me for
+    // putting it on the PATH).
+    let executables = [macos.join("dms"), macos.join("dms-cli")];
+    copy(&target.join("release").join("dms"), &executables[0])?;
+    copy(&target.join("release").join("dms-cli"), &executables[1])?;
+    bundle_libraries(&executables, &contents)?;
     write(&contents.join("Info.plist"), &info_plist(version))?;
     write(&contents.join("PkgInfo"), "APPL????")?;
     make_icon(&root.join("apps/dms/assets/icon.png"), &dist, &resources)?;
@@ -126,6 +130,9 @@ Drag \"Data Mining\" to Applications.\n\
 The app is signed for this team only (ad-hoc), not notarized by Apple. The first time, open it\n\
 with a right-click (or Control-click) on the app and choose Open, then Open again in the\n\
 dialog. After that it opens normally, and double-clicking a .str stream opens it in the app.\n\
+\n\
+The command-line tool dms-cli is inside the app. To use it from Terminal, link it once:\n\
+  sudo ln -sf \"/Applications/Data Mining.app/Contents/MacOS/dms-cli\" /usr/local/bin/dms-cli\n\
 \n\
 The app includes the unixODBC and libltdl libraries (LGPL); their licences and sources are\n\
 listed in Data Mining.app/Contents/Resources/Licenses.\n";
@@ -338,14 +345,17 @@ fn formula_of(path: &str) -> Option<&str> {
     rest.split('/').next()
 }
 
-/// Copies the Homebrew libraries the executable needs (transitively) into Frameworks, points
+/// Copies the Homebrew libraries the executables need (transitively) into Frameworks, points
 /// every reference at the copies, and adds the licence texts and a notice.
-fn bundle_libraries(executable: &Path, contents: &Path) -> Result<()> {
+fn bundle_libraries(executables: &[PathBuf], contents: &Path) -> Result<()> {
     let frameworks = contents.join("Frameworks");
     let licenses = contents.join("Resources").join("Licenses");
     // (original path, bundled file name)
     let mut found: Vec<(String, String)> = Vec::new();
-    let mut queue = foreign_libraries(executable)?;
+    let mut queue = Vec::new();
+    for executable in executables {
+        queue.extend(foreign_libraries(executable)?);
+    }
     while let Some(library) = queue.pop() {
         if found.iter().any(|(path, _)| *path == library) {
             continue;
@@ -376,7 +386,7 @@ fn bundle_libraries(executable: &Path, contents: &Path) -> Result<()> {
         .map_err(|e| format!("cannot create {}: {e}", frameworks.display()))?;
     fs::create_dir_all(&licenses)
         .map_err(|e| format!("cannot create {}: {e}", licenses.display()))?;
-    let mut binaries = vec![executable.to_path_buf()];
+    let mut binaries = executables.to_vec();
     for (library, name) in &found {
         let copied = frameworks.join(name);
         copy(Path::new(library), &copied)?;
