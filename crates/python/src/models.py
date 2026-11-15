@@ -1,6 +1,6 @@
 # Data Mining Python model nodes: training and scoring with scikit-learn. Run by the bridge
 # runner with `modelerData` (a pandas DataFrame) and `dmsParameters`:
-#   kind         random_forest | gaussian_mixture | one_class_svm
+#   kind         random_forest | xgboost_tree | xgboost_linear | gaussian_mixture | one_class_svm
 #   target       target field (supervised kinds)
 #   target_kind  "categorical" or "continuous"
 #   inputs       input fields
@@ -73,6 +73,25 @@ def _free(frame, prefix, base):
     return str(index)
 
 
+SUPERVISED = ("random_forest", "xgboost_tree", "xgboost_linear")
+# Score field prefixes: prediction, probability.
+PREFIX = {"random_forest": ("$R", "$RP"), "xgboost_tree": ("$XT", "$XTP"), "xgboost_linear": ("$XL", "$XLP")}
+
+
+def _xgboost():
+    try:
+        import xgboost
+    except ModuleNotFoundError:
+        raise
+    except Exception as exc:  # the library is installed but its native part does not load
+        text = str(exc)
+        hint = ""
+        if "libomp" in text:
+            hint = " On macOS install the OpenMP runtime with: brew install libomp"
+        raise RuntimeError("xgboost is installed but cannot load." + hint) from None
+    return xgboost
+
+
 def train():
     p = dmsParameters  # noqa: F821 (set by the runner)
     o = p.get("options", {})
@@ -82,7 +101,7 @@ def train():
         raise ValueError("no input fields: set them in the node or with a Type node")
     kind = p["kind"]
     target = p.get("target")
-    if kind == "random_forest":
+    if kind in SUPERVISED:
         frame = frame[frame[target].notna()]
     if len(frame) == 0:
         raise ValueError("no records to train on")
@@ -122,6 +141,51 @@ def train():
         else:
             summary["training_r2"] = float(model.score(x, y))
         state = {"classify": classify}
+    elif kind in ("xgboost_tree", "xgboost_linear"):
+        xgboost = _xgboost()
+        classify = p["target_kind"] == "categorical"
+        settings = dict(
+            n_estimators=int(o.get("num_boost_round", 10)),
+            learning_rate=float(o.get("eta", 0.3)),
+            reg_lambda=float(o.get("lambda", 1.0 if kind == "xgboost_tree" else 0.0)),
+            reg_alpha=float(o.get("alpha", 0.0)),
+            random_state=seed,
+            n_jobs=1,
+        )
+        if kind == "xgboost_tree":
+            settings.update(
+                booster="gbtree",
+                max_depth=int(o.get("max_depth", 6)),
+                min_child_weight=float(o.get("min_child_weight", 1.0)),
+                subsample=float(o.get("subsample", 1.0)),
+                colsample_bytree=float(o.get("colsample_bytree", 1.0)),
+                gamma=float(o.get("gamma", 0.0)),
+            )
+        else:
+            settings.update(booster="gblinear")
+        state = {"classify": classify}
+        if classify:
+            labels = frame[target].astype(str)
+            classes = sorted(labels.unique().tolist())
+            if len(classes) < 2:
+                raise ValueError(f"the target {target!r} has only one value")
+            y = labels.map({c: i for i, c in enumerate(classes)}).to_numpy()
+            model = xgboost.XGBClassifier(**settings)
+            model.fit(x, y)
+            summary["classes"] = classes
+            summary["training_accuracy"] = float((model.predict(x) == y).mean())
+            state["classes"] = classes
+        else:
+            y = pd.to_numeric(frame[target], errors="coerce").astype("float64").to_numpy()
+            model = xgboost.XGBRegressor(**settings)
+            model.fit(x, y)
+            summary["training_r2"] = float(model.score(x, y))
+        try:
+            weights = np.abs(np.asarray(model.feature_importances_, dtype="float64")).ravel()
+            importance = sorted(zip(_columns(spec), weights.tolist()), key=lambda t: -t[1])
+            summary["importance"] = importance[:50]
+        except Exception:
+            pass
     elif kind == "gaussian_mixture":
         from sklearn.mixture import GaussianMixture
 
@@ -179,7 +243,26 @@ def score():
     model = saved["model"]
     kind = saved["kind"]
     out = {}
-    if kind == "random_forest":
+    if kind in ("xgboost_tree", "xgboost_linear"):
+        _xgboost()
+        target = saved["target"]
+        prediction, probability = PREFIX[kind]
+        index = _free(frame, prediction, target)
+        if saved["classify"]:
+            classes = saved["classes"]
+            if len(frame):
+                probabilities = model.predict_proba(x)
+                best = probabilities.argmax(axis=1)
+                labels = [classes[i] for i in best]
+                confidence = probabilities.max(axis=1)
+            else:
+                labels, confidence = [], []
+            out[f"{prediction}{index}-{target}"] = pd.array(labels, dtype="string")
+            out[f"{probability}{index}-{target}"] = pd.array(confidence, dtype="Float64")
+        else:
+            predicted = model.predict(x) if len(frame) else []
+            out[f"{prediction}{index}-{target}"] = pd.array(predicted, dtype="Float64")
+    elif kind == "random_forest":
         target = saved["target"]
         index = _free(frame, "$R", target)
         if len(frame) == 0:

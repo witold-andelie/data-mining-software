@@ -338,3 +338,62 @@ fn clustering_and_anomaly_models_score_every_record() {
         }
     }
 }
+
+/// Whether xgboost imports in this Python (its native library needs OpenMP on macOS).
+fn xgboost_loads() -> bool {
+    let loads = dms_python::detect(None, &CancelToken::new())
+        .is_ok_and(|info| matches!(info.packages.get("xgboost"), Some(Some(_))));
+    if !loads {
+        eprintln!("skipped: xgboost does not import in this Python");
+    }
+    loads
+}
+
+#[test]
+fn xgboost_tree_and_linear_classify_and_regress() {
+    let Some(python) = python() else { return };
+    if !xgboost_loads() {
+        return;
+    }
+    let data = churn();
+    for (kind, prefix) in [("xgboost_tree", "XT"), ("xgboost_linear", "XL")] {
+        let parameters = serde_json::json!({
+            "kind": kind, "target": "churn", "target_kind": "categorical",
+            "inputs": ["age", "plan"], "name": "churn",
+            "options": {"num_boost_round": 30},
+        });
+        let trained =
+            dms_python::models::train(&python, &data, &parameters, &CancelToken::new()).unwrap();
+        let scored =
+            dms_python::models::score(&python, &data, &trained.model, &CancelToken::new()).unwrap();
+        let names: Vec<_> = scored
+            .model()
+            .fields()
+            .iter()
+            .map(|f| f.name.clone())
+            .collect();
+        assert_eq!(
+            names,
+            [format!("${prefix}-churn"), format!("${prefix}P-churn")]
+        );
+        if kind == "xgboost_tree" {
+            let correct = data
+                .rows()
+                .iter()
+                .zip(scored.rows())
+                .filter(|(row, score)| row[2] == score[0])
+                .count();
+            assert!(correct > 180, "{kind}: {correct}");
+        }
+        // Regression on the age.
+        let parameters = serde_json::json!({
+            "kind": kind, "target": "age", "target_kind": "continuous",
+            "inputs": ["plan", "churn"], "name": "age", "options": {},
+        });
+        let trained =
+            dms_python::models::train(&python, &data, &parameters, &CancelToken::new()).unwrap();
+        let scored =
+            dms_python::models::score(&python, &data, &trained.model, &CancelToken::new()).unwrap();
+        assert_eq!(scored.model().fields()[0].storage, Storage::Real);
+    }
+}

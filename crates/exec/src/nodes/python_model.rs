@@ -1,5 +1,5 @@
-//! Python model nodes (Modeling palette): Random Forest, Gaussian Mixture and One-Class SVM,
-//! trained with scikit-learn in the user's own Python (`dms_python::models`,
+//! Python model nodes (Modeling palette): Random Forest, XGBoost Tree, XGBoost Linear, Gaussian
+//! Mixture and One-Class SVM, trained with scikit-learn and xgboost in the user's own Python (`dms_python::models`,
 //! docs/python-bridge.md).
 //!
 //! The build node trains and outputs [`NodeOutput::PythonModel`]; the engine then saves the
@@ -13,7 +13,8 @@
 //! `use_partitioned_data` (default true) only the first partition (training) trains.
 //!
 //! Score fields (inferred, no oracle): Random Forest `$R-<target>` (prediction) and, for a
-//! categorical target, `$RP-<target>` (its probability); Gaussian Mixture `$GMM-<model>` (cluster)
+//! categorical target, `$RP-<target>` (its probability); XGBoost Tree `$XT-`/`$XTP-` and XGBoost
+//! Linear `$XL-`/`$XLP-` likewise; Gaussian Mixture `$GMM-<model>` (cluster)
 //! and `$GMMP-<model>` (its probability); One-Class SVM `$O-<model>` (`T` for an outlier) and
 //! `$OP-<model>` (the decision score, negative for outliers). An existing field takes the next
 //! free index (`$R1-`), as other nuggets do.
@@ -35,6 +36,8 @@ pub const MODEL_SETTING: &str = "pythonModel";
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Kind {
     RandomForest,
+    XgboostTree,
+    XgboostLinear,
     GaussianMixture,
     OneClassSvm,
 }
@@ -43,6 +46,8 @@ impl Kind {
     fn of(catalog_id: &str) -> Option<Kind> {
         match catalog_id {
             "random_forest" => Some(Kind::RandomForest),
+            "xgboost_tree" => Some(Kind::XgboostTree),
+            "xgboost_linear" => Some(Kind::XgboostLinear),
             "gmm" => Some(Kind::GaussianMixture),
             "one_class_svm" => Some(Kind::OneClassSvm),
             _ => None,
@@ -53,6 +58,8 @@ impl Kind {
     fn script_name(self) -> &'static str {
         match self {
             Kind::RandomForest => "random_forest",
+            Kind::XgboostTree => "xgboost_tree",
+            Kind::XgboostLinear => "xgboost_linear",
             Kind::GaussianMixture => "gaussian_mixture",
             Kind::OneClassSvm => "one_class_svm",
         }
@@ -61,6 +68,8 @@ impl Kind {
     fn label(self) -> &'static str {
         match self {
             Kind::RandomForest => "Random Forest",
+            Kind::XgboostTree => "XGBoost Tree",
+            Kind::XgboostLinear => "XGBoost Linear",
             Kind::GaussianMixture => "Gaussian Mixture",
             Kind::OneClassSvm => "One-Class SVM",
         }
@@ -69,13 +78,18 @@ impl Kind {
     fn catalog_id(self) -> &'static str {
         match self {
             Kind::RandomForest => "random_forest",
+            Kind::XgboostTree => "xgboost_tree",
+            Kind::XgboostLinear => "xgboost_linear",
             Kind::GaussianMixture => "gmm",
             Kind::OneClassSvm => "one_class_svm",
         }
     }
 
     fn supervised(self) -> bool {
-        self == Kind::RandomForest
+        matches!(
+            self,
+            Kind::RandomForest | Kind::XgboostTree | Kind::XgboostLinear
+        )
     }
 }
 

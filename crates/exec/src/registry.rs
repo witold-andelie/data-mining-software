@@ -13,6 +13,8 @@ const BUILT_IN: &[(&str, Factory)] = &[
     ("extension_output", nodes::extension::build_output),
     ("extension_export", nodes::extension::build_export),
     ("random_forest", nodes::python_model::build),
+    ("xgboost_tree", nodes::python_model::build),
+    ("xgboost_linear", nodes::python_model::build),
     ("gmm", nodes::python_model::build),
     ("one_class_svm", nodes::python_model::build),
     ("database_import", nodes::database::build_import),
