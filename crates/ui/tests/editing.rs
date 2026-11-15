@@ -360,9 +360,11 @@ fn failed_clipboard_write_does_not_cut_nodes() {
 }
 
 #[test]
-fn rename_double_click_type_enter_and_native_copy_stays_in_text() {
+fn rename_type_enter_and_native_copy_stays_in_text() {
     let mut h = harness(false);
-    double_click(&mut h, "Alpha");
+    h.get_by_label("Alpha").click();
+    h.run();
+    dispatch(&mut h, "node.rename");
     assert!(h.ctx.egui_wants_keyboard_input());
     dispatch(&mut h, "edit.select_all");
     h.event(egui::Event::Text("Renamed".into()));

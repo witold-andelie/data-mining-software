@@ -428,10 +428,15 @@ impl Session {
                 Ok(Outcome::Done)
             }
             "run.node" => {
-                let Some(Arg::Node(uid)) = args.first() else {
-                    return Ok(Outcome::NeedsArgument("node"));
+                // One node (run to here) or several (the terminals downstream of a node).
+                let targets = match args.first() {
+                    Some(Arg::Node(uid)) => vec![uid.clone()],
+                    Some(Arg::Nodes(uids)) if !uids.is_empty() && uids.len() <= 100_000 => {
+                        uids.clone()
+                    }
+                    _ => return Ok(Outcome::NeedsArgument("node")),
                 };
-                self.start_run(RunTargets::Nodes(vec![uid.clone()]));
+                self.start_run(RunTargets::Nodes(targets));
                 Ok(Outcome::Done)
             }
             "file.add_data_folder" => {
@@ -571,6 +576,16 @@ mod tests {
         assert_ne!(results.job, first);
         assert_eq!(results.report.targets, ["mystery"]);
         assert_eq!(results.report.results.len(), 1);
+        // Several targets at once (the terminals downstream of a node).
+        session
+            .execute("run.node", &[Arg::Nodes(vec!["mystery".into()])])
+            .unwrap();
+        wait_for_notice(&mut session);
+        assert_eq!(session.results().unwrap().report.targets, ["mystery"]);
+        assert_eq!(
+            session.execute("run.node", &[Arg::Nodes(Vec::new())]),
+            Ok(Outcome::NeedsArgument("node"))
+        );
         session.execute("file.close", &[]).unwrap();
         assert!(session.results().is_none());
         assert!(session.document().is_none());

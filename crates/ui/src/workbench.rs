@@ -175,6 +175,18 @@ pub struct Workbench {
     palette_drag: Option<String>,
     autosave_error: Option<String>,
     properties: crate::properties::Properties,
+    /// The settings window opened by double-clicking a node (its own form state).
+    node_window: Option<NodeWindow>,
+    window_properties: crate::properties::Properties,
+    windows_opened: u64,
+}
+
+/// A node's settings in a floating window, placed where it was asked for.
+struct NodeWindow {
+    uid: String,
+    at: egui::Pos2,
+    /// Distinguishes each opening, so a new one is placed at its own position.
+    generation: u64,
 }
 
 impl Workbench {
@@ -206,6 +218,9 @@ impl Workbench {
             palette_drag: None,
             autosave_error: None,
             properties: crate::properties::Properties::default(),
+            node_window: None,
+            window_properties: crate::properties::Properties::default(),
+            windows_opened: 0,
         }
     }
 
@@ -407,13 +422,19 @@ impl Workbench {
             return;
         }
         if id == "node.set_param" {
-            if let Some(request) = self.properties.take_file_request()
+            let (form, request) = match self.window_properties.take_file_request() {
+                Some(request) => (&mut self.window_properties, Some(request)),
+                None => {
+                    let request = self.properties.take_file_request();
+                    (&mut self.properties, request)
+                }
+            };
+            if let Some(request) = request
                 && let Some(path) = pick(Pick::DataFile {
                     extensions: request.extensions,
                 })
             {
-                self.properties
-                    .picked_file(&mut self.session, request, path);
+                form.picked_file(&mut self.session, request, path);
                 ctx.request_repaint();
             }
             return;
@@ -890,9 +911,21 @@ impl Workbench {
                     }
                 });
         }
+        // Escape closes the node window first (before the canvas reads it), unless text is being
+        // edited.
+        if self.node_window.is_some()
+            && self.editor.rename.is_none()
+            && !ui.ctx().egui_wants_keyboard_input()
+            && ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape))
+        {
+            self.node_window = None;
+        }
         egui::CentralPanel::default()
             .frame(egui::Frame::NONE)
             .show(ui, |ui| self.canvas_area(ui, &mut requested));
+        if self.node_window_ui(ui.ctx(), &mut requested) {
+            requested.push("node.set_param");
+        }
 
         if self.about_open {
             egui::Window::new(tr("About"))
@@ -1031,6 +1064,7 @@ impl Workbench {
             .document_state()
             .map(|s| s.selection.clone())
             .unwrap_or_default();
+        self.editor.busy = !matches!(self.session.run_state(), RunState::Idle);
         let actions = edit_canvas::show(
             ui,
             graph,
@@ -1042,6 +1076,14 @@ impl Workbench {
         for action in actions {
             match action {
                 Action::Command(id, args) => self.execute_args(ui.ctx(), id, args),
+                Action::Edit(uid, at) => {
+                    self.windows_opened = self.windows_opened.wrapping_add(1);
+                    self.node_window = Some(NodeWindow {
+                        uid,
+                        at,
+                        generation: self.windows_opened,
+                    });
+                }
                 Action::Rename(uid) => {
                     self.execute_args(ui.ctx(), "edit.select", vec![Arg::Nodes(vec![uid.clone()])]);
                     if let Some(graph) = &self.graph {
@@ -1073,6 +1115,77 @@ impl Workbench {
             return false;
         };
         ui.label(RichText::new(&node.title).strong());
+        self.node_details(ui, &node, false)
+    }
+
+    /// The settings window of a double-clicked node. Returns true when its form asks for a
+    /// data-file picker.
+    fn node_window_ui(&mut self, ctx: &Context, requested: &mut Vec<&'static str>) -> bool {
+        let Some(window) = &self.node_window else {
+            return false;
+        };
+        let node = self
+            .graph
+            .as_ref()
+            .and_then(|g| g.nodes.iter().find(|n| n.uid == window.uid))
+            .cloned();
+        let Some(node) = node else {
+            // Deleted, undone or the stream was closed.
+            self.node_window = None;
+            return false;
+        };
+        let (at, generation) = (window.at, window.generation);
+        let mut open = true;
+        let mut close = false;
+        let mut choose = false;
+        let busy = !matches!(self.session.run_state(), RunState::Idle);
+        let terminal = self
+            .graph
+            .as_ref()
+            .and_then(|g| {
+                let index = g.nodes.iter().position(|n| n.uid == node.uid)?;
+                Some(!g.links.iter().any(|l| l.from == index))
+            })
+            .unwrap_or(true);
+        egui::Window::new(RichText::new(&node.title).strong())
+            .id(egui::Id::unique(("node-window", generation)))
+            .default_pos(at)
+            .default_size(egui::vec2(360.0, 440.0))
+            .collapsible(false)
+            .resizable(true)
+            .open(&mut open)
+            .show(ctx, |ui| {
+                egui::Panel::bottom("node-window-buttons")
+                    .frame(egui::Frame::NONE.inner_margin(egui::Margin::symmetric(0, 6)))
+                    .show(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            let label = if terminal {
+                                tr("Run")
+                            } else {
+                                tr("Run to Here")
+                            };
+                            if ui.add_enabled(!busy, egui::Button::new(label)).clicked() {
+                                requested.push("node-window.run");
+                            }
+                            if ui.button(tr("Close")).clicked() {
+                                close = true;
+                            }
+                        });
+                    });
+                choose = self.node_details(ui, &node, true);
+            });
+        if requested.last() == Some(&"node-window.run") {
+            requested.pop();
+            self.execute_args(ctx, "run.node", vec![Arg::Node(node.uid.clone())]);
+        }
+        if !open || close {
+            self.node_window = None;
+        }
+        choose
+    }
+
+    /// The node's facts, last error and settings form, in the side panel or its own window.
+    fn node_details(&mut self, ui: &mut Ui, node: &crate::graph::GraphNode, window: bool) -> bool {
         if let Some((name, source)) = self
             .session
             .document()
@@ -1111,7 +1224,12 @@ impl Workbench {
             ui.label(results::error_text(error));
         }
         ui.separator();
-        self.properties.show(ui, &mut self.session, &node.uid)
+        if window {
+            self.window_properties
+                .show(ui, &mut self.session, &node.uid)
+        } else {
+            self.properties.show(ui, &mut self.session, &node.uid)
+        }
     }
 
     /// The status line. Returns a command when its Stop button is pressed.

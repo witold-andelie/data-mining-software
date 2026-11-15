@@ -152,3 +152,68 @@ fn properties_form_light() {
     harness.get_by_label_contains("Select");
     harness.snapshot_options("properties_form_light", &options());
 }
+
+/// The canvas tile of a node, by uid (not a heading or window title with the same text).
+fn tile_center(harness: &Harness<'_, Workbench>, uid: &str) -> egui::Pos2 {
+    let graph = dms_ui::graph::StreamGraph::from_diagram(
+        &harness.state().session.document().unwrap().stream.diagram,
+    );
+    let title = &graph.nodes.iter().find(|n| n.uid == uid).unwrap().title;
+    let area = harness
+        .get_all_by_label(title)
+        .map(|node| node.rect())
+        .find(|rect| rect.height() >= rect.width())
+        .unwrap();
+    area.min + vec2(area.width() / 2.0, area.width() / 2.0)
+}
+
+fn right_click(harness: &mut Harness<'_, Workbench>, at: egui::Pos2) {
+    harness.event(egui::Event::PointerMoved(at));
+    harness.step();
+    for pressed in [true, false] {
+        harness.event(egui::Event::PointerButton {
+            pos: at,
+            button: egui::PointerButton::Secondary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        });
+        harness.step();
+    }
+    harness.run();
+}
+
+/// The node's right-click menu.
+#[test]
+fn node_menu_light() {
+    let _gpu = gpu();
+    let platform = Platform {
+        mac: true,
+        native_menu: true,
+        frame_cpu_ms: None,
+    };
+    let mut harness = harness(workbench(14), Theme::Light, platform);
+    let at = tile_center(&harness, "synthetic00002");
+    right_click(&mut harness, at);
+    harness.get_by_label("Edit…");
+    harness.snapshot_options("node_menu_light", &options());
+}
+
+/// A node's settings in its own window, opened from the node menu at the pointer.
+#[test]
+fn node_window_light() {
+    let _gpu = gpu();
+    let platform = Platform {
+        mac: true,
+        native_menu: true,
+        frame_cpu_ms: None,
+    };
+    let mut workbench = workbench(14);
+    workbench.state.show_properties = false;
+    let mut harness = harness(workbench, Theme::Light, platform);
+    let at = tile_center(&harness, "synthetic00002");
+    right_click(&mut harness, at);
+    harness.get_by_label("Edit…").click();
+    harness.run();
+    harness.get_by_label("Close");
+    harness.snapshot_options("node_window_light", &options());
+}

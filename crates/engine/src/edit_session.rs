@@ -603,6 +603,31 @@ impl Session {
                     None,
                 )
             }
+            "node.disconnect"
+                if !args.iter().any(|a| matches!(a, Arg::Link(..)))
+                    && args.iter().any(|a| matches!(a, Arg::Node(_))) =>
+            {
+                // Every top-level link to or from one node, as a single undo step.
+                let Some(uid) = args
+                    .iter()
+                    .find_map(|a| if let Arg::Node(s) = a { Some(s) } else { None })
+                else {
+                    return Ok(Outcome::NeedsArgument("node"));
+                };
+                let edits = state
+                    .doc
+                    .stream
+                    .diagram
+                    .links
+                    .iter()
+                    .filter(|link| {
+                        matches!(&link.from, NodeRef::Uid(u) if u == uid)
+                            || matches!(&link.to, NodeRef::Uid(u) if u == uid)
+                    })
+                    .map(|link| Edit::Disconnect { link: link.clone() })
+                    .collect();
+                state.commit("Disconnect", edits, state.selection.clone(), None)
+            }
             "node.connect" | "node.disconnect" => {
                 let Some((a, b)) = args.iter().find_map(|a| {
                     if let Arg::Link(a, b) = a {
@@ -742,6 +767,7 @@ pub(crate) mod tests {
                 vec![Arg::Node("a".into()), Arg::Text("New label".into())],
             ),
             ("node.disconnect", vec![Arg::Link("a".into(), "b".into())]),
+            ("node.disconnect", vec![Arg::Node("b".into())]),
             ("node.connect", vec![Arg::Link("a".into(), "b".into())]),
             ("edit.delete", vec![]),
             ("edit.cut", vec![]),

@@ -11,6 +11,8 @@ use std::collections::{HashMap, HashSet};
 pub enum Action {
     Command(&'static str, Vec<Arg>),
     Rename(String),
+    /// Open the node's settings in a window at this screen position.
+    Edit(String, Pos2),
 }
 
 enum Gesture {
@@ -37,6 +39,8 @@ pub struct Editor {
     context_link: Option<(String, String)>,
     /// tr("Connect From Here"): the next node clicked becomes the target (Esc cancels).
     pub connect_from: Option<String>,
+    /// A run is in progress: the node menu's run items are disabled.
+    pub busy: bool,
 }
 
 impl Editor {
@@ -47,6 +51,110 @@ impl Editor {
                 text: node.title.clone(),
                 first_frame: true,
             });
+        }
+    }
+}
+
+/// The terminal nodes reached from `start` along links (itself excluded); empty when it has no
+/// outgoing links. Bounded by the displayed graph.
+fn downstream_terminals(graph: &StreamGraph, start: usize) -> Vec<usize> {
+    let mut seen = vec![false; graph.nodes.len()];
+    let mut stack = vec![start];
+    let mut terminals = Vec::new();
+    while let Some(at) = stack.pop() {
+        let mut leaf = true;
+        for link in graph.links.iter().filter(|l| l.from == at) {
+            leaf = false;
+            if let Some(slot) = seen.get_mut(link.to)
+                && !*slot
+            {
+                *slot = true;
+                stack.push(link.to);
+            }
+        }
+        if leaf && at != start {
+            terminals.push(at);
+        }
+    }
+    terminals.sort_unstable();
+    terminals
+}
+
+/// The node's right-click menu: open, run, connect, rename, clipboard.
+fn node_menu(
+    ui: &mut Ui,
+    graph: &StreamGraph,
+    index: usize,
+    busy: bool,
+    connect_from: &mut Option<String>,
+    selected_link: &mut Option<(String, String)>,
+    actions: &mut Vec<Action>,
+) {
+    let Some(node) = graph.nodes.get(index) else {
+        return;
+    };
+    let uid = node.uid.clone();
+    let select = || Action::Command("edit.select", vec![Arg::Nodes(vec![uid.clone()])]);
+    let at = ui.min_rect().left_top();
+    if ui.button(tr("Edit…")).clicked() {
+        actions.push(select());
+        actions.push(Action::Edit(uid.clone(), at));
+        ui.close();
+    }
+    ui.separator();
+    let downstream = downstream_terminals(graph, index);
+    let mut run = |ui: &mut Ui, label: &str, args: Vec<Arg>| {
+        if ui.add_enabled(!busy, egui::Button::new(label)).clicked() {
+            actions.push(select());
+            actions.push(Action::Command("run.node", args));
+            ui.close();
+        }
+    };
+    if downstream.is_empty() {
+        run(ui, tr("Run"), vec![Arg::Node(uid.clone())]);
+    } else {
+        let targets = downstream
+            .iter()
+            .filter_map(|&i| graph.nodes.get(i).map(|n| n.uid.clone()))
+            .collect();
+        run(ui, tr("Run From Here"), vec![Arg::Nodes(targets)]);
+        run(ui, tr("Run to Here"), vec![Arg::Node(uid.clone())]);
+    }
+    ui.separator();
+    if ui.button(tr("Connect From Here")).clicked() {
+        *connect_from = Some(uid.clone());
+        ui.close();
+    }
+    let linked = graph.links.iter().any(|l| l.from == index || l.to == index);
+    if ui
+        .add_enabled(linked, egui::Button::new(tr("Disconnect")))
+        .clicked()
+    {
+        actions.push(Action::Command(
+            "node.disconnect",
+            vec![Arg::Node(uid.clone())],
+        ));
+        *selected_link = None;
+        ui.close();
+    }
+    if ui.button(tr("Rename…")).clicked() {
+        actions.push(Action::Rename(uid.clone()));
+        ui.close();
+    }
+    ui.separator();
+    for (label, id) in [
+        (tr("Cut"), "edit.cut"),
+        (tr("Copy"), "edit.copy"),
+        (tr("Paste"), "edit.paste"),
+        (tr("Duplicate"), "edit.duplicate"),
+        (tr("Delete"), "edit.delete"),
+    ] {
+        if ui.button(label).clicked() {
+            if id != "edit.paste" {
+                actions.push(select());
+            }
+            actions.push(Action::Command(id, vec![]));
+            ui.close();
         }
     }
 }
@@ -326,39 +434,25 @@ pub fn show(
             );
         }
         if response.double_clicked() {
-            actions.push(Action::Rename(node.uid.clone()));
+            let at = ui
+                .input(|i| i.pointer.interact_pos())
+                .unwrap_or(tile.right_top());
+            actions.push(Action::Command(
+                "edit.select",
+                vec![Arg::Nodes(vec![node.uid.clone()])],
+            ));
+            actions.push(Action::Edit(node.uid.clone(), at));
         }
         response.context_menu(|ui| {
-            if ui.button(tr("Connect From Here")).clicked() {
-                editor.connect_from = Some(node.uid.clone());
-                ui.close();
-            }
-            for (label, id) in [
-                (tr("Run to Here"), "run.node"),
-                (tr("Rename"), "node.rename"),
-                (tr("Copy"), "edit.copy"),
-                (tr("Delete"), "edit.delete"),
-            ] {
-                if ui.button(label).clicked() {
-                    actions.push(Action::Command(
-                        "edit.select",
-                        vec![Arg::Nodes(vec![node.uid.clone()])],
-                    ));
-                    if id == "node.rename" {
-                        actions.push(Action::Rename(node.uid.clone()));
-                    } else {
-                        actions.push(Action::Command(
-                            id,
-                            if id == "run.node" {
-                                vec![Arg::Node(node.uid.clone())]
-                            } else {
-                                vec![]
-                            },
-                        ));
-                    }
-                    ui.close();
-                }
-            }
+            node_menu(
+                ui,
+                graph,
+                i,
+                editor.busy,
+                &mut editor.connect_from,
+                &mut editor.selected_link,
+                &mut actions,
+            );
         });
     }
     // End the immutable view borrows before changing pan or the gesture.
