@@ -168,6 +168,7 @@ pub fn chart_for(node_type: &str, s: Settings<'_>, document: &Document) -> Optio
             | "time_plot"
             | "evaluation"
             | "collection"
+            | "tsne"
     ) {
         return None;
     }
@@ -198,6 +199,7 @@ pub fn chart_for(node_type: &str, s: Settings<'_>, document: &Document) -> Optio
         "distribution" => distribution(s, document, table),
         "collection" => collection(s, document, table),
         "plot" | "multiplot" | "time_plot" => lines(node_type, s, document, table),
+        "tsne" => tsne(s, document, table),
         "evaluation" => evaluation(s, document, table),
         _ => None,
     }?;
@@ -637,6 +639,51 @@ fn lines(node_type: &str, s: Settings<'_>, doc: &Document, table: &DocumentTable
             Label::Text(table.header.get(x)?.clone())
         },
         y_label,
+        out,
+    )
+}
+
+/// t-SNE: a scatter of the two embedding columns; a third column (the node's colour field or the
+/// target) splits the points into one series per value.
+fn tsne(s: Settings<'_>, doc: &Document, table: &DocumentTable) -> Option<Chart> {
+    let out = match table.header.len() {
+        2 => vec![series(
+            table,
+            0,
+            1,
+            Label::Text(table.header.get(1)?.clone()),
+        )],
+        3 => {
+            let mut names: Vec<&String> = Vec::new();
+            for row in &table.rows {
+                let name = row.get(2)?;
+                if !names.contains(&name) {
+                    if names.len() >= MAX_SERIES {
+                        return None;
+                    }
+                    names.push(name);
+                }
+            }
+            names
+                .into_iter()
+                .map(|name| {
+                    sample(
+                        table.rows.iter().filter_map(|r| {
+                            (r.get(2)? == name).then_some([cell(r, 0)?, cell(r, 1)?])
+                        }),
+                        Label::Text(name.clone()),
+                    )
+                })
+                .collect()
+        }
+        _ => return None,
+    };
+    chart(
+        ChartKind::Scatter,
+        doc,
+        s,
+        Label::Text(table.header.first()?.clone()),
+        Label::Text(table.header.get(1)?.clone()),
         out,
     )
 }

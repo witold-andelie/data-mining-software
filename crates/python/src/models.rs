@@ -11,6 +11,8 @@ const MODELS: &str = include_str!("models.py");
 pub struct Trained {
     pub model: Vec<u8>,
     pub summary: serde_json::Value,
+    /// What training printed (an Extension Model's build script).
+    pub text: String,
 }
 
 /// Trains on `input`. `parameters` holds `kind`, `target`, `target_kind`, `inputs`, `name`
@@ -42,7 +44,11 @@ pub fn train(
         .unwrap_or_default();
     let summary = serde_json::from_slice(&summary)
         .map_err(|e| BridgeError::Output(format!("unreadable training summary: {e}")))?;
-    Ok(Trained { model, summary })
+    Ok(Trained {
+        model,
+        summary,
+        text: result.text,
+    })
 }
 
 /// Scores `input` with a model `train` returned: a table of the score fields only, one row per
@@ -64,4 +70,32 @@ pub fn score(
     result
         .table
         .ok_or_else(|| BridgeError::Output("scoring returned no data".into()))
+}
+
+/// Runs one of the data functions of `models.py` (`smote`, `tsne`, `kde_simulation`) on `input`
+/// and returns
+/// the data it leaves in `modelerData`.
+pub fn transform(
+    python: &PythonCommand,
+    input: &Table,
+    parameters: &serde_json::Value,
+    function: &str,
+    cancel: &CancelToken,
+) -> Result<Table, BridgeError> {
+    if !matches!(function, "smote" | "tsne" | "kde_simulation") {
+        return Err(BridgeError::Input(format!(
+            "unknown data function {function:?}"
+        )));
+    }
+    let script = format!("{MODELS}\n{function}()\n");
+    let result = run_script(
+        &ScriptRequest {
+            parameters: Some(parameters),
+            ..ScriptRequest::new(python, &script, Some(input), Mode::Transform)
+        },
+        cancel,
+    )?;
+    result
+        .table
+        .ok_or_else(|| BridgeError::Output(format!("{function} returned no data")))
 }

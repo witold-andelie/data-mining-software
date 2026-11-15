@@ -321,6 +321,8 @@ fn clustering_and_anomaly_models_score_every_record() {
     for (kind, fields) in [
         ("gaussian_mixture", ["$GMM-m", "$GMMP-m"]),
         ("one_class_svm", ["$O-m", "$OP-m"]),
+        ("hdbscan", ["$HB-m", "$HBP-m"]),
+        ("kde", ["$KDE-m", "$KDE-m"]),
     ] {
         let parameters = serde_json::json!({
             "kind": kind, "inputs": ["age", "plan"], "name": "m", "options": {},
@@ -396,4 +398,130 @@ fn xgboost_tree_and_linear_classify_and_regress() {
             dms_python::models::score(&python, &data, &trained.model, &CancelToken::new()).unwrap();
         assert_eq!(scored.model().fields()[0].storage, Storage::Real);
     }
+}
+
+#[test]
+fn smote_balances_the_target_and_tsne_embeds_in_two_dimensions() {
+    let Some(python) = python() else { return };
+    let data = churn();
+    let before = data
+        .rows()
+        .iter()
+        .filter(|r| r[2] == Value::string("T"))
+        .count();
+    let parameters = serde_json::json!({
+        "target": "churn", "inputs": ["age", "plan"], "options": {"random_seed": 2},
+    });
+    let balanced =
+        dms_python::models::transform(&python, &data, &parameters, "smote", &CancelToken::new())
+            .unwrap();
+    // The minority class grew to the size of the majority.
+    assert!(before < 100);
+    assert!(balanced.row_count() > data.row_count());
+    let churn = balanced.model().position("churn").unwrap();
+    let age = balanced.model().position("age").unwrap();
+    // Balanced among the records SMOTE can use (record 7 has no age and is kept as is).
+    let count = |value: &str| {
+        balanced
+            .rows()
+            .iter()
+            .filter(|r| r[churn] == Value::string(value) && !r[age].is_null())
+            .count()
+    };
+    assert_eq!(count("T"), count("F"));
+    assert_eq!(balanced.rows()[7][age], Value::Null);
+    // The original records come first, unchanged.
+    assert_eq!(balanced.rows()[0][1], data.rows()[0][1]);
+    assert_eq!(balanced.rows()[0][2], data.rows()[0][2]);
+
+    let parameters = serde_json::json!({
+        "inputs": ["age", "plan"], "color": "churn", "options": {"max_records": 120},
+    });
+    let embedding =
+        dms_python::models::transform(&python, &data, &parameters, "tsne", &CancelToken::new())
+            .unwrap();
+    let names: Vec<_> = embedding
+        .model()
+        .fields()
+        .iter()
+        .map(|f| f.name.clone())
+        .collect();
+    assert_eq!(names, ["tSNE-1", "tSNE-2", "churn"]);
+    assert_eq!(embedding.row_count(), 120);
+    // Only the two data functions run.
+    assert!(matches!(
+        dms_python::models::transform(&python, &data, &parameters, "train", &CancelToken::new()),
+        Err(BridgeError::Input(_))
+    ));
+}
+
+#[test]
+fn an_extension_model_runs_the_users_build_and_score_scripts() {
+    let Some(python) = python() else { return };
+    let data = churn();
+    let build = "from sklearn.tree import DecisionTreeClassifier\nX = modelerData[['age']].fillna(0).astype(float)\nmodelerModel = DecisionTreeClassifier(random_state=0).fit(X, modelerData['churn'].astype(str))\nprint('depth', modelerModel.get_depth())\n";
+    let score = "X = modelerData[['age']].fillna(0).astype(float)\nmodelerData['$E-churn'] = modelerModel.predict(X)\n";
+    let parameters = serde_json::json!({
+        "kind": "extension_model", "name": "mine", "inputs": [],
+        "options": {"python_build_syntax": build, "python_score_syntax": score},
+    });
+    let trained =
+        dms_python::models::train(&python, &data, &parameters, &CancelToken::new()).unwrap();
+    assert!(trained.text.starts_with("depth "), "{}", trained.text);
+    let scored =
+        dms_python::models::score(&python, &data, &trained.model, &CancelToken::new()).unwrap();
+    let names: Vec<_> = scored
+        .model()
+        .fields()
+        .iter()
+        .map(|f| f.name.clone())
+        .collect();
+    assert_eq!(names, ["$E-churn"]);
+    assert_eq!(scored.row_count(), data.row_count());
+    // A build script that leaves no model, or an error in the user's code, says so.
+    let parameters = serde_json::json!({
+        "kind": "extension_model", "inputs": [],
+        "options": {"python_build_syntax": "x = 1\n", "python_score_syntax": score},
+    });
+    let error =
+        dms_python::models::train(&python, &data, &parameters, &CancelToken::new()).unwrap_err();
+    assert!(error.to_string().contains("modelerModel"), "{error}");
+    let parameters = serde_json::json!({
+        "kind": "extension_model", "inputs": [],
+        "options": {"python_build_syntax": "x = 1\ny = undefined_name\n", "python_score_syntax": score},
+    });
+    match dms_python::models::train(&python, &data, &parameters, &CancelToken::new()) {
+        Err(BridgeError::Script { line, .. }) => assert_eq!(line, Some(2)),
+        other => panic!("{other:?}"),
+    }
+}
+
+#[test]
+fn kde_simulation_draws_the_requested_records() {
+    let Some(python) = python() else { return };
+    let data = churn();
+    let parameters = serde_json::json!({
+        "inputs": ["age"], "options": {"records": 25, "bandwidth": 2.0},
+    });
+    let drawn = dms_python::models::transform(
+        &python,
+        &data,
+        &parameters,
+        "kde_simulation",
+        &CancelToken::new(),
+    )
+    .unwrap();
+    assert_eq!(drawn.row_count(), 25);
+    assert_eq!(drawn.model().fields()[0].storage, Storage::Real);
+    let parameters = serde_json::json!({"inputs": ["plan"], "options": {}});
+    assert!(
+        dms_python::models::transform(
+            &python,
+            &data,
+            &parameters,
+            "kde_simulation",
+            &CancelToken::new()
+        )
+        .is_err()
+    );
 }

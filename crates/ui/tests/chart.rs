@@ -774,3 +774,20 @@ fn corpus_chart_coverage() {
         println!("{kind}: chart {charted} / data {fallback} / execution failed {failed}");
     }
 }
+
+#[test]
+fn tsne_is_a_scatter_coloured_by_its_colour_field() {
+    let doc = document(
+        &["tSNE-1", "tSNE-2", "churn"],
+        &[&["0.5", "1.5", "T"], &["-2", "3", "F"], &["1", "-1", "T"]],
+    );
+    // Coloured by the third column whether or not the settings name it (the target role).
+    let chart = chart_for("tsne", None, &doc).unwrap();
+    assert_eq!(chart.kind, ChartKind::Scatter);
+    let names: Vec<_> = chart.series.iter().map(|s| s.name.clone()).collect();
+    assert_eq!(names, [Label::Text("T".into()), Label::Text("F".into())]);
+    assert_eq!(chart.series[0].points, [[0.5, 1.5], [1.0, -1.0]]);
+    // Without a colour field the embedding is one series.
+    let plain = document(&["tSNE-1", "tSNE-2"], &[&["0", "1"], &["2", "3"]]);
+    assert_eq!(chart_for("tsne", None, &plain).unwrap().series.len(), 1);
+}

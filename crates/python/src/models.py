@@ -1,6 +1,8 @@
 # Data Mining Python model nodes: training and scoring with scikit-learn. Run by the bridge
 # runner with `modelerData` (a pandas DataFrame) and `dmsParameters`:
 #   kind         random_forest | xgboost_tree | xgboost_linear | gaussian_mixture | one_class_svm
+#                | hdbscan | kde | extension_model
+# smote(), tsne() and kde_simulation() transform data instead (SMOTE, t-SNE, KDE Simulation).
 #   target       target field (supervised kinds)
 #   target_kind  "categorical" or "continuous"
 #   inputs       input fields
@@ -92,8 +94,46 @@ def _xgboost():
     return xgboost
 
 
+def _cluster_name(label):
+    return "noise" if label < 0 else f"cluster-{label + 1}"
+
+
+def _user_model():
+    """Extension Model: runs the user's build script, which leaves its model in `modelerModel`;
+    the score script is saved with it."""
+    p = dmsParameters  # noqa: F821
+    o = p.get("options", {})
+    build, score = o.get("python_build_syntax", ""), o.get("python_score_syntax", "")
+    if not build.strip():
+        raise ValueError("the build script is empty")
+    if not score.strip():
+        raise ValueError("the score script is empty")
+    space = {
+        "__name__": "__main__",
+        "modelerData": modelerData,  # noqa: F821
+        "modelerDataModel": modelerDataModel,  # noqa: F821
+        "modelerModel": None,
+    }
+    exec(compile(build, "<script>", "exec"), space)
+    if space.get("modelerModel") is None:
+        raise ValueError("the build script must leave its model in modelerModel")
+    saved = {
+        "format": FORMAT,
+        "kind": "extension_model",
+        "name": p.get("name") or "model",
+        "model": space["modelerModel"],
+        "score": score,
+    }
+    with open("model.pkl", "wb") as handle:
+        pickle.dump(saved, handle, protocol=4)
+    with open("summary.json", "w", encoding="utf-8") as handle:
+        json.dump({"records": int(len(modelerData))}, handle)  # noqa: F821
+
+
 def train():
     p = dmsParameters  # noqa: F821 (set by the runner)
+    if p["kind"] == "extension_model":
+        return _user_model()
     o = p.get("options", {})
     frame = modelerData  # noqa: F821
     inputs = list(p["inputs"])
@@ -186,6 +226,30 @@ def train():
             summary["importance"] = importance[:50]
         except Exception:
             pass
+    elif kind == "hdbscan":
+        import hdbscan
+
+        model = hdbscan.HDBSCAN(
+            min_cluster_size=int(o.get("min_cluster_size", 5)),
+            min_samples=int(o["min_samples"]) if int(o.get("min_samples", 0)) > 0 else None,
+            cluster_selection_method=o.get("cluster_selection_method", "eom"),
+            prediction_data=True,
+        )
+        model.fit(x)
+        labels = model.labels_
+        summary["clusters"] = [
+            [_cluster_name(k), int((labels == k).sum())] for k in sorted(set(labels.tolist()))
+        ]
+        state = {}
+    elif kind == "kde":
+        from sklearn.neighbors import KernelDensity
+
+        model = KernelDensity(
+            bandwidth=float(o.get("bandwidth", 1.0)), kernel=o.get("kernel", "gaussian")
+        )
+        model.fit(x)
+        summary["mean_log_density"] = float(model.score_samples(x).mean())
+        state = {}
     elif kind == "gaussian_mixture":
         from sklearn.mixture import GaussianMixture
 
@@ -239,9 +303,29 @@ def score():
     if saved.get("format") != FORMAT:
         raise ValueError("the saved model was written by another version; run its build node again")
     frame = modelerData  # noqa: F821
+    kind = saved["kind"]
+    if kind == "extension_model":
+        space = {
+            "__name__": "__main__",
+            "modelerData": frame.copy(),
+            "modelerDataModel": modelerDataModel,  # noqa: F821
+            "modelerModel": saved["model"],
+        }
+        exec(compile(saved["score"], "<script>", "exec"), space)
+        result = space.get("modelerData")
+        if not isinstance(result, pd.DataFrame):
+            raise TypeError("the score script must leave a pandas DataFrame in modelerData")
+        added = [c for c in result.columns if c not in frame.columns]
+        if not added:
+            raise ValueError("the score script added no fields to modelerData")
+        if len(result) != len(frame):
+            raise ValueError(
+                f"the score script returned {len(result)} records for {len(frame)}"
+            )
+        modelerData = result[added].reset_index(drop=True)
+        return
     x = _design(frame, saved["spec"])
     model = saved["model"]
-    kind = saved["kind"]
     out = {}
     if kind in ("xgboost_tree", "xgboost_linear"):
         _xgboost()
@@ -275,6 +359,22 @@ def score():
             out[f"$RP{index}-{target}"] = pd.array(confidence, dtype="Float64")
         else:
             out[f"$R{index}-{target}"] = pd.array(predicted, dtype="Float64")
+    elif kind == "hdbscan":
+        import hdbscan
+
+        name = saved["name"]
+        index = _free(frame, "$HB", name)
+        if len(frame):
+            labels, strengths = hdbscan.approximate_predict(model, x)
+        else:
+            labels, strengths = [], []
+        out[f"$HB{index}-{name}"] = pd.array([_cluster_name(int(k)) for k in labels], dtype="string")
+        out[f"$HBP{index}-{name}"] = pd.array(strengths, dtype="Float64")
+    elif kind == "kde":
+        name = saved["name"]
+        index = _free(frame, "$KDE", name)
+        density = model.score_samples(x) if len(frame) else []
+        out[f"$KDE{index}-{name}"] = pd.array(density, dtype="Float64")
     elif kind == "gaussian_mixture":
         name = saved["name"]
         index = _free(frame, "$GMM", name)
@@ -299,3 +399,109 @@ def score():
         raise ValueError(f"unknown model kind {kind!r}")
     # Only the score fields go back; the caller appends them to its own records.
     modelerData = pd.DataFrame(out)
+
+
+def smote():
+    """Appends synthetic records of the smaller target classes (imbalanced-learn SMOTE, or
+    SMOTENC when some inputs are categorical). Original records stay first and unchanged;
+    synthetic ones have only the inputs and the target."""
+    global modelerData
+    from imblearn.over_sampling import SMOTE, SMOTENC
+
+    p = dmsParameters  # noqa: F821
+    o = p.get("options", {})
+    frame = modelerData  # noqa: F821
+    target, inputs = p["target"], list(p["inputs"])
+    if not inputs:
+        raise ValueError("no input fields: set them in the node or with a Type node")
+    complete = frame.dropna(subset=inputs + [target])
+    if len(complete) == 0:
+        raise ValueError("no records with every input and the target present")
+    x = pd.DataFrame(index=range(len(complete)))
+    categorical = []
+    for i, name in enumerate(inputs):
+        column = complete[name].reset_index(drop=True)
+        if pd.api.types.is_numeric_dtype(column) and not pd.api.types.is_bool_dtype(column):
+            x[name] = column.astype("float64").to_numpy()
+        else:
+            x[name] = column.astype(str).to_numpy()
+            categorical.append(i)
+    y = complete[target].astype(str).to_numpy()
+    seed = int(o.get("random_seed", 1))
+    k = int(o.get("k_neighbors", 5))
+    strategy = o.get("sampling_strategy", "auto")
+    if categorical and len(categorical) == len(inputs):
+        raise ValueError("SMOTE needs at least one numeric input")
+    if categorical:
+        sampler = SMOTENC(categorical_features=categorical, k_neighbors=k, sampling_strategy=strategy, random_state=seed)
+    else:
+        sampler = SMOTE(k_neighbors=k, sampling_strategy=strategy, random_state=seed)
+    xr, yr = sampler.fit_resample(x, y)
+    new = pd.DataFrame(xr).iloc[len(x):].reset_index(drop=True)
+    labels = pd.Series(yr[len(x):])
+    if pd.api.types.is_numeric_dtype(frame[target]) and not pd.api.types.is_bool_dtype(frame[target]):
+        labels = pd.to_numeric(labels)
+    new[target] = labels.to_numpy()
+    for name in inputs:
+        if pd.api.types.is_numeric_dtype(frame[name]):
+            new[name] = pd.to_numeric(new[name]).astype("Float64")
+    modelerData = pd.concat([frame.reset_index(drop=True), new], ignore_index=True)
+
+
+def tsne():
+    """A 2-D t-SNE embedding of the inputs, with an optional field to colour by. Records beyond
+    `max_records` are sampled (with the seed) first."""
+    global modelerData
+    from sklearn.manifold import TSNE
+
+    p = dmsParameters  # noqa: F821
+    o = p.get("options", {})
+    frame = modelerData  # noqa: F821
+    inputs = list(p["inputs"])
+    if not inputs:
+        raise ValueError("no input fields: set them in the node or with a Type node")
+    seed = int(o.get("random_seed", 1))
+    limit = int(o.get("max_records", 5000))
+    if len(frame) > limit:
+        frame = frame.sample(n=limit, random_state=seed)
+    if len(frame) < 4:
+        raise ValueError("t-SNE needs at least 4 records")
+    x = _design(frame, _spec(frame, inputs))
+    spread = x.std(axis=0)
+    spread[spread == 0] = 1.0
+    x = (x - x.mean(axis=0)) / spread
+    perplexity = min(float(o.get("perplexity", 30.0)), (len(frame) - 1) / 3.0)
+    embedding = TSNE(
+        n_components=2, perplexity=perplexity, init="pca", random_state=seed
+    ).fit_transform(x)
+    out = pd.DataFrame({"tSNE-1": embedding[:, 0], "tSNE-2": embedding[:, 1]})
+    color = p.get("color")
+    if color:
+        out[color] = frame[color].astype("string").fillna("$null$").to_numpy()
+    modelerData = out
+
+
+def kde_simulation():
+    """Simulated records: fits a kernel density to the numeric inputs and draws `records` new
+    records from it (scikit-learn KernelDensity.sample; Gaussian or top-hat kernel)."""
+    global modelerData
+    from sklearn.neighbors import KernelDensity
+
+    p = dmsParameters  # noqa: F821
+    o = p.get("options", {})
+    frame = modelerData  # noqa: F821
+    inputs = list(p["inputs"])
+    if not inputs:
+        raise ValueError("no input fields: set them in the node or with a Type node")
+    for name in inputs:
+        column = frame[name]
+        if not pd.api.types.is_numeric_dtype(column) or pd.api.types.is_bool_dtype(column):
+            raise ValueError(f"input field {name!r} is not numeric; KDE simulation needs numbers")
+    data = frame[inputs].dropna().astype("float64").to_numpy()
+    if len(data) == 0:
+        raise ValueError("no records with every input present")
+    model = KernelDensity(
+        bandwidth=float(o.get("bandwidth", 1.0)), kernel=o.get("kernel", "gaussian")
+    ).fit(data)
+    drawn = model.sample(int(o.get("records", 1000)), random_state=int(o.get("random_seed", 1)))
+    modelerData = pd.DataFrame(drawn, columns=inputs).astype("Float64")

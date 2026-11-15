@@ -1,5 +1,11 @@
-//! Python model nodes (Modeling palette): Random Forest, XGBoost Tree, XGBoost Linear, Gaussian
-//! Mixture and One-Class SVM, trained with scikit-learn and xgboost in the user's own Python (`dms_python::models`,
+//! Python nodes: the model nodes Random Forest, XGBoost Tree, XGBoost Linear, Gaussian Mixture,
+//! One-Class SVM, HDBSCAN and KDE (Modeling), trained with scikit-learn, xgboost and hdbscan, plus
+//! SMOTE (Record Ops: appends synthetic records of the smaller target classes, imbalanced-learn)
+//! t-SNE (Graphs: a 2-D embedding drawn as a scatter), KDE Simulation (Output: records drawn from a
+//! kernel density of the inputs) and Extension Model (the user's own build and score scripts:
+//! the build script leaves `modelerModel`, which is pickled with the score script; the score
+//! script adds fields to `modelerData`, and the nugget appends the added ones), all in the user's
+//! own Python (`dms_python::models`,
 //! docs/python-bridge.md).
 //!
 //! The build node trains and outputs [`NodeOutput::PythonModel`]; the engine then saves the
@@ -16,7 +22,8 @@
 //! categorical target, `$RP-<target>` (its probability); XGBoost Tree `$XT-`/`$XTP-` and XGBoost
 //! Linear `$XL-`/`$XLP-` likewise; Gaussian Mixture `$GMM-<model>` (cluster)
 //! and `$GMMP-<model>` (its probability); One-Class SVM `$O-<model>` (`T` for an outlier) and
-//! `$OP-<model>` (the decision score, negative for outliers). An existing field takes the next
+//! `$OP-<model>` (the decision score, negative for outliers); HDBSCAN `$HB-<model>` (cluster, or
+//! `noise`) and `$HBP-<model>` (membership strength); KDE `$KDE-<model>` (log density). An existing field takes the next
 //! free index (`$R1-`), as other nuggets do.
 
 use crate::context::ExecContext;
@@ -40,6 +47,16 @@ enum Kind {
     XgboostLinear,
     GaussianMixture,
     OneClassSvm,
+    Hdbscan,
+    Kde,
+    /// Record Ops: oversamples the smaller target classes (not a model).
+    Smote,
+    /// Graphs: a 2-D embedding drawn as a scatter (not a model).
+    Tsne,
+    /// Output: records drawn from a kernel density of the inputs (not a model).
+    KdeSimulation,
+    /// The user's own build and score scripts.
+    ExtensionModel,
 }
 
 impl Kind {
@@ -50,6 +67,12 @@ impl Kind {
             "xgboost_linear" => Some(Kind::XgboostLinear),
             "gmm" => Some(Kind::GaussianMixture),
             "one_class_svm" => Some(Kind::OneClassSvm),
+            "hdbscan" => Some(Kind::Hdbscan),
+            "kde" => Some(Kind::Kde),
+            "smote" => Some(Kind::Smote),
+            "tsne" => Some(Kind::Tsne),
+            "kde_simulation" => Some(Kind::KdeSimulation),
+            "extension_model" => Some(Kind::ExtensionModel),
             _ => None,
         }
     }
@@ -62,6 +85,12 @@ impl Kind {
             Kind::XgboostLinear => "xgboost_linear",
             Kind::GaussianMixture => "gaussian_mixture",
             Kind::OneClassSvm => "one_class_svm",
+            Kind::Hdbscan => "hdbscan",
+            Kind::Kde => "kde",
+            Kind::Smote => "smote",
+            Kind::Tsne => "tsne",
+            Kind::KdeSimulation => "kde_simulation",
+            Kind::ExtensionModel => "extension_model",
         }
     }
 
@@ -72,6 +101,12 @@ impl Kind {
             Kind::XgboostLinear => "XGBoost Linear",
             Kind::GaussianMixture => "Gaussian Mixture",
             Kind::OneClassSvm => "One-Class SVM",
+            Kind::Hdbscan => "HDBSCAN",
+            Kind::Kde => "KDE",
+            Kind::Smote => "SMOTE",
+            Kind::Tsne => "t-SNE",
+            Kind::KdeSimulation => "KDE Simulation",
+            Kind::ExtensionModel => "Extension Model",
         }
     }
 
@@ -82,14 +117,25 @@ impl Kind {
             Kind::XgboostLinear => "xgboost_linear",
             Kind::GaussianMixture => "gmm",
             Kind::OneClassSvm => "one_class_svm",
+            Kind::Hdbscan => "hdbscan",
+            Kind::Kde => "kde",
+            Kind::Smote => "smote",
+            Kind::Tsne => "tsne",
+            Kind::KdeSimulation => "kde_simulation",
+            Kind::ExtensionModel => "extension_model",
         }
     }
 
     fn supervised(self) -> bool {
         matches!(
             self,
-            Kind::RandomForest | Kind::XgboostTree | Kind::XgboostLinear
+            Kind::RandomForest | Kind::XgboostTree | Kind::XgboostLinear | Kind::Smote
         )
+    }
+
+    /// SMOTE and t-SNE transform data; the others train a model.
+    fn trains(self) -> bool {
+        !matches!(self, Kind::Smote | Kind::Tsne | Kind::KdeSimulation)
     }
 }
 
@@ -105,7 +151,7 @@ pub fn build(node: &StreamNode) -> Result<Box<dyn Operator>, OperatorError> {
     let kind = catalog_id(node)
         .and_then(Kind::of)
         .ok_or_else(|| OperatorError::Settings("not a Python model node".into()))?;
-    if node.model_builder.is_some() {
+    if node.model_builder.is_some() && kind.trains() {
         let attachment = settings::text(node.settings.as_ref(), MODEL_SETTING)
             .filter(|name| !name.trim().is_empty())
             .ok_or_else(|| {
@@ -120,8 +166,10 @@ pub fn build(node: &StreamNode) -> Result<Box<dyn Operator>, OperatorError> {
     let mut options = serde_json::Map::new();
     let mut target = None;
     let mut inputs = Vec::new();
-    let mut partitioned = true;
+    // Only model nodes train on the training partition.
+    let mut partitioned = kind.trains();
     let mut custom = false;
+    let mut color = None;
     for spec in specs {
         let value = schema::read(node.settings.as_ref(), spec)
             .map_err(|e| OperatorError::Settings(format!("{}: {e}", spec.key)))?;
@@ -132,6 +180,9 @@ pub fn build(node: &StreamNode) -> Result<Box<dyn Operator>, OperatorError> {
             ("inputs", ParamValue::Fields(fields)) => inputs = fields,
             ("use_partitioned_data", ParamValue::Bool(on)) => partitioned = on,
             ("custom_fields", ParamValue::Bool(on)) => custom = on,
+            ("color_field", ParamValue::Text(text)) => {
+                color = Some(text.trim().to_string()).filter(|t| !t.is_empty());
+            }
             (key, ParamValue::Bool(b)) => {
                 options.insert(key.into(), b.into());
             }
@@ -151,6 +202,7 @@ pub fn build(node: &StreamNode) -> Result<Box<dyn Operator>, OperatorError> {
         // Roles from the incoming Type settings decide.
         target = None;
         inputs.clear();
+        color = None;
     }
     let name = node
         .label
@@ -164,6 +216,7 @@ pub fn build(node: &StreamNode) -> Result<Box<dyn Operator>, OperatorError> {
         partitioned,
         options,
         name,
+        color,
     }))
 }
 
@@ -187,6 +240,8 @@ struct Builder {
     partitioned: bool,
     options: serde_json::Map<String, serde_json::Value>,
     name: String,
+    /// t-SNE: the field the points are coloured by (default: the Target role field).
+    color: Option<String>,
 }
 
 /// Records of the training partition (the partition field's first value; `1_Training` when its
@@ -286,6 +341,12 @@ impl Builder {
                 self.kind.label()
             )));
         }
+        if self.kind == Kind::Smote && target_kind == "continuous" {
+            return Err(OperatorError::Settings(
+                "SMOTE: the target must be categorical (set its measurement with a Type node)"
+                    .into(),
+            ));
+        }
         if let Some(field) = inputs
             .iter()
             .filter_map(|name| model.field(name))
@@ -301,7 +362,7 @@ impl Builder {
     }
 }
 
-fn summary_document(kind: Kind, summary: &serde_json::Value) -> Document {
+fn summary_document(kind: Kind, summary: &serde_json::Value, printed: &str) -> Document {
     let number = |key: &str| summary.get(key).and_then(serde_json::Value::as_f64);
     let mut facts = vec![vec![
         "Records".to_string(),
@@ -312,6 +373,7 @@ fn summary_document(kind: Kind, summary: &serde_json::Value) -> Document {
             .to_string(),
     ]];
     for (key, label) in [
+        ("mean_log_density", "Mean log density"),
         ("training_accuracy", "Training accuracy"),
         ("training_r2", "Training R²"),
         ("bic", "BIC"),
@@ -374,9 +436,129 @@ fn summary_document(kind: Kind, summary: &serde_json::Value) -> Document {
             rows: clusters,
         });
     }
+    // What a build script printed.
+    let lines: Vec<Vec<String>> = printed
+        .lines()
+        .take(10_000)
+        .map(|line| vec![line.to_string()])
+        .collect();
+    if !lines.is_empty() {
+        tables.push(DocumentTable {
+            title: Some("Output".into()),
+            header: Vec::new(),
+            rows: lines,
+        });
+    }
     Document {
         title: kind.label().to_string(),
         tables,
+    }
+}
+
+impl Builder {
+    fn python(&self, context: &ExecContext) -> Result<dms_python::PythonCommand, OperatorError> {
+        dms_python::resolve(context.python.as_deref(), &context.cancel)
+            .map_err(|e| bridge(self.kind, e))
+    }
+
+    /// KDE Simulation: records drawn from a kernel density of the numeric inputs.
+    fn kde_simulation(&self, input: &Table, context: &ExecContext) -> Result<Table, OperatorError> {
+        let (_, _, fields) = self.fields(input)?;
+        let names: Vec<&str> = fields.iter().map(String::as_str).collect();
+        let data = project(input, &names)?;
+        let parameters = serde_json::json!({"inputs": fields, "options": self.options});
+        let python = self.python(context)?;
+        dms_python::models::transform(
+            &python,
+            &data,
+            &parameters,
+            "kde_simulation",
+            &context.cancel,
+        )
+        .map_err(|e| bridge(self.kind, e))
+    }
+
+    /// SMOTE: the input records followed by synthetic ones.
+    fn smote(&self, input: &Table, context: &ExecContext) -> Result<Table, OperatorError> {
+        let (target, _, fields) = self.fields(input)?;
+        let sendable: Vec<&str> = input
+            .model()
+            .fields()
+            .iter()
+            .filter(|f| f.storage != Storage::List)
+            .map(|f| f.name.as_str())
+            .collect();
+        let data = project(input, &sendable)?;
+        let parameters = serde_json::json!({
+            "target": target,
+            "inputs": fields,
+            "options": self.options,
+        });
+        let python = self.python(context)?;
+        dms_python::models::transform(&python, &data, &parameters, "smote", &context.cancel)
+            .map_err(|e| bridge(self.kind, e))
+    }
+
+    /// t-SNE: the embedding as a document whose table the results panel draws as a scatter.
+    fn tsne(&self, input: &Table, context: &ExecContext) -> Result<Document, OperatorError> {
+        let (_, _, fields) = self.fields(input)?;
+        let color = match &self.color {
+            Some(name) => {
+                input.model().field(name).ok_or_else(|| {
+                    OperatorError::Data(format!("t-SNE: field {name:?} is not in the data"))
+                })?;
+                Some(name.clone())
+            }
+            None => input
+                .model()
+                .fields()
+                .iter()
+                .find(|f| f.role == Role::Target)
+                .map(|f| f.name.clone()),
+        };
+        let mut keep: Vec<&str> = fields.iter().map(String::as_str).collect();
+        if let Some(color) = color.as_deref().filter(|c| !keep.contains(c)) {
+            keep.push(color);
+        }
+        let data = project(input, &keep)?;
+        let parameters = serde_json::json!({
+            "inputs": fields,
+            "color": color,
+            "options": self.options,
+        });
+        let python = self.python(context)?;
+        let embedding =
+            dms_python::models::transform(&python, &data, &parameters, "tsne", &context.cancel)
+                .map_err(|e| bridge(self.kind, e))?;
+        let header = embedding
+            .model()
+            .fields()
+            .iter()
+            .map(|f| f.name.clone())
+            .collect();
+        let rows = embedding
+            .rows()
+            .iter()
+            .map(|row| {
+                row.iter()
+                    .map(|value| match value {
+                        Value::Null => "$null$".to_string(),
+                        Value::Real(x) => x.to_string(),
+                        Value::Integer(n) => n.to_string(),
+                        Value::String(s) => s.to_string(),
+                        other => format!("{other:?}"),
+                    })
+                    .collect()
+            })
+            .collect();
+        Ok(Document {
+            title: "t-SNE".into(),
+            tables: vec![DocumentTable {
+                title: None,
+                header,
+                rows,
+            }],
+        })
     }
 }
 
@@ -385,10 +567,23 @@ impl Operator for Builder {
         Arity::Exactly(1)
     }
 
-    fn run(&self, _inputs: &[Arc<Table>], _context: &ExecContext) -> Result<Table, OperatorError> {
+    fn run(&self, inputs: &[Arc<Table>], context: &ExecContext) -> Result<Table, OperatorError> {
+        let input = inputs.first().ok_or_else(|| {
+            OperatorError::Inputs(format!("{} needs one input", self.kind.label()))
+        })?;
+        match self.kind {
+            Kind::Smote => return self.smote(input, context),
+            Kind::KdeSimulation => return self.kde_simulation(input, context),
+            _ => {}
+        }
         Err(OperatorError::Inputs(format!(
-            "{} is a build node and produces a model, not data",
-            self.kind.label()
+            "{} produces a {}, not data",
+            self.kind.label(),
+            if self.kind == Kind::Tsne {
+                "graph"
+            } else {
+                "model"
+            }
         )))
     }
 
@@ -401,20 +596,41 @@ impl Operator for Builder {
         let input = inputs.first().ok_or_else(|| {
             OperatorError::Inputs(format!("{} needs one input", self.kind.label()))
         })?;
-        let (target, target_kind, fields) = self.fields(input)?;
+        match self.kind {
+            Kind::Smote | Kind::KdeSimulation => {
+                return Ok(NodeOutput::Data(Arc::new(self.run(inputs, context)?)));
+            }
+            Kind::Tsne => return Ok(NodeOutput::Document(Arc::new(self.tsne(input, context)?))),
+            _ => {}
+        }
+        // An Extension Model's scripts choose their own fields: every field but lists travels.
+        let (target, target_kind, fields) = if self.kind == Kind::ExtensionModel {
+            (None, "categorical", Vec::new())
+        } else {
+            self.fields(input)?
+        };
         let data = if self.partitioned {
             training(input)?
         } else {
             input.as_ref().clone()
         };
-        // Only the fields the model uses travel to Python.
-        let mut keep: Vec<&str> = fields.iter().map(String::as_str).collect();
-        if let Some(target) = &target {
-            keep.push(target);
-        }
+        let keep: Vec<&str> = if self.kind == Kind::ExtensionModel {
+            data.model()
+                .fields()
+                .iter()
+                .filter(|f| f.storage != Storage::List)
+                .map(|f| f.name.as_str())
+                .collect()
+        } else {
+            // Only the fields the model uses travel to Python.
+            let mut keep: Vec<&str> = fields.iter().map(String::as_str).collect();
+            if let Some(target) = &target {
+                keep.push(target);
+            }
+            keep
+        };
         let data = project(&data, &keep)?;
-        let python = dms_python::resolve(context.python.as_deref(), &context.cancel)
-            .map_err(|e| bridge(self.kind, e))?;
+        let python = self.python(context)?;
         let parameters = serde_json::json!({
             "kind": self.kind.script_name(),
             "target": target,
@@ -428,7 +644,7 @@ impl Operator for Builder {
         Ok(NodeOutput::PythonModel(Arc::new(PythonModel {
             kind: self.kind.catalog_id().to_string(),
             bytes: trained.model.into(),
-            summary: summary_document(self.kind, &trained.summary),
+            summary: summary_document(self.kind, &trained.summary, &trained.text),
         })))
     }
 }

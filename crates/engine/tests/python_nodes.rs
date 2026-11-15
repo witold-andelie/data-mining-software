@@ -260,3 +260,118 @@ fn a_random_forest_generates_a_nugget_that_scores_and_survives_saving() {
     run(&mut session, &forest);
     assert_eq!(nuggets(&session, &forest), [nugget]);
 }
+
+fn output(session: &Session, uid: &str) -> NodeOutput {
+    session
+        .results()
+        .unwrap()
+        .report
+        .results
+        .get(uid)
+        .unwrap()
+        .clone()
+        .unwrap()
+}
+
+#[test]
+fn extension_model_tsne_smote_and_kde_simulation_run_as_nodes() {
+    if let Err(error) = dms_python::resolve(None, &Default::default()) {
+        eprintln!("skipped: {error}");
+        return;
+    }
+    let mut session = Session::new();
+    session.execute("file.new", &[]).unwrap();
+    let source = add(&mut session, "extension_import", 0);
+    script(
+        &mut session,
+        &source,
+        "import pandas as pd\nrows = [(20 + i % 50, 'basic' if i % 3 == 0 else 'premium') for i in range(120)]\nmodelerData = pd.DataFrame(rows, columns=['age', 'plan'])\nmodelerData['churn'] = ['T' if a > 60 else 'F' for a, p in rows]\n",
+    );
+    let model = add(&mut session, "extension_model", 100);
+    param(
+        &mut session,
+        &model,
+        "python_build_syntax",
+        ParamValue::Text("modelerModel = float(modelerData['age'].mean())\n".into()),
+    );
+    param(
+        &mut session,
+        &model,
+        "python_score_syntax",
+        ParamValue::Text("modelerData['$E-old'] = modelerData['age'] > modelerModel\n".into()),
+    );
+    let mut nodes = vec![model.clone()];
+    for (kind, x) in [("tsne", 200), ("smote", 300), ("kde_simulation", 400)] {
+        nodes.push(add(&mut session, kind, x));
+    }
+    for uid in &nodes {
+        session
+            .execute("node.connect", &[Arg::Link(source.clone(), uid.clone())])
+            .unwrap();
+    }
+    // Explicit fields (no Type node in this stream).
+    let tsne = &nodes[1];
+    let smote = &nodes[2];
+    let simulation = &nodes[3];
+    for uid in [tsne, smote, simulation] {
+        param(&mut session, uid, "custom_fields", ParamValue::Bool(true));
+    }
+    param(
+        &mut session,
+        tsne,
+        "inputs",
+        ParamValue::Fields(vec!["age".into(), "plan".into()]),
+    );
+    param(
+        &mut session,
+        tsne,
+        "color_field",
+        ParamValue::Text("churn".into()),
+    );
+    param(
+        &mut session,
+        smote,
+        "target",
+        ParamValue::Text("churn".into()),
+    );
+    param(
+        &mut session,
+        smote,
+        "inputs",
+        ParamValue::Fields(vec!["age".into(), "plan".into()]),
+    );
+    param(
+        &mut session,
+        simulation,
+        "inputs",
+        ParamValue::Fields(vec!["age".into()]),
+    );
+    param(&mut session, simulation, "records", ParamValue::Int(50));
+
+    run(&mut session, &model);
+    let nugget = nuggets(&session, &model);
+    assert_eq!(nugget.len(), 1);
+    run(&mut session, &nugget[0]);
+    match output(&session, &nugget[0]) {
+        NodeOutput::Data(table) => assert!(table.model().field("$E-old").is_some()),
+        other => panic!("{other:?}"),
+    }
+    run(&mut session, tsne);
+    match output(&session, tsne) {
+        NodeOutput::Document(document) => {
+            assert_eq!(document.tables[0].header, ["tSNE-1", "tSNE-2", "churn"]);
+            assert_eq!(document.tables[0].rows.len(), 120);
+        }
+        other => panic!("{other:?}"),
+    }
+    run(&mut session, smote);
+    match output(&session, smote) {
+        NodeOutput::Data(table) => assert!(table.row_count() > 120),
+        other => panic!("{other:?}"),
+    }
+    run(&mut session, simulation);
+    match output(&session, simulation) {
+        NodeOutput::Data(table) => assert_eq!(table.row_count(), 50),
+        other => panic!("{other:?}"),
+    }
+}

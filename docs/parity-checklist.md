@@ -9,7 +9,7 @@ Status `done (output unverified)`: settings and the records reaching the node ma
 | Scope | Implemented | Total |
 |---|---|---|
 | MVP | 85 | 85 |
-| later | 14 | 24 |
+| later | 20 | 24 |
 | license blocked | 0 | 6 |
 | out of scope | 0 | 34 |
 
@@ -53,7 +53,7 @@ Status `done (output unverified)`: settings and the records reaching the node ma
 | Merge | `merge` | MVP | done | `MergeNode` |
 | Append | `append` | MVP | done | `AppendNode` |
 | Distinct | `distinct` | MVP | done | `DistinctNode` |
-| SMOTE (Python) | `smote` | later | missing | `smote!spss.smote` |
+| SMOTE (Python) | `smote` | later | done | `smote!spss.smote` |
 | Streaming TS | `streaming_ts` | later | missing | `spss.ts!ts_streaming` |
 | Extension Transform | `extension_transform` | later | done | `ExtensionDataTransformNode` |
 | Space-Time-Boxes | `space_time_boxes` | out of scope | missing | `stb!spss.stb` |
@@ -98,7 +98,7 @@ Status `done (output unverified)`: settings and the records reaching the node ma
 | Web | `web` | MVP | done | `WebNode` |
 | Evaluation | `evaluation` | MVP | done | `EvaluationNode` |
 | E-Plot | `eplot` | later | done (output unverified) | `EPlotNode` |
-| t-SNE (Python) | `tsne` | later | missing | `tsne!spss.tsne` |
+| t-SNE (Python) | `tsne` | later | done | `tsne!spss.tsne` |
 | Map Visualization | `map_visualization` | out of scope | missing | `MapVisualizationNode` |
 
 ## Modeling
@@ -140,10 +140,10 @@ Status `done (output unverified)`: settings and the records reaching the node ma
 | XGBoost Tree (Python) | `xgboost_tree` | later | done | `xgboosttree!spss.xgboost` |
 | XGBoost Linear (Python) | `xgboost_linear` | later | done | `xgboostlinear!spss.xgboost` |
 | One-Class SVM (Python) | `one_class_svm` | later | done | `ocsvm!spss.ocsvm-extension` |
-| HDBSCAN (Python) | `hdbscan` | later | missing | `hdbscan!spss.hdbscan` |
+| HDBSCAN (Python) | `hdbscan` | later | done | `hdbscan!spss.hdbscan` |
 | Gaussian Mixture (Python) | `gmm` | later | done | `gmm!spss.gmm` |
-| KDE (Python) | `kde` | later | missing | `kde!pasw.kde` |
-| Extension Model | `extension_model` | later | missing | `ExtensionBuildModelNode`, `ExtensionApplyModelNode` |
+| KDE (Python) | `kde` | later | done | `kde!pasw.kde` |
+| Extension Model | `extension_model` | later | done | `ExtensionBuildModelNode`, `ExtensionApplyModelNode` |
 | Statistics Model | `statistics_model` | out of scope | missing | `BuildSPSSModelNode`, `ApplySPSSModelNode` |
 | R Build | `r_model` | out of scope | missing | `r!spss.rstats` |
 | Spatio-Temporal Prediction | `stp` | out of scope | missing | `stp!spss.stp` |
@@ -172,7 +172,7 @@ Status `done (output unverified)`: settings and the records reaching the node ma
 | Means | `means` | MVP | done | `MeansNode` |
 | Report | `report` | MVP | done | `ReportNode` |
 | Set Globals | `set_globals` | MVP | done | `SetGlobalsNode` |
-| KDE Simulation (Python) | `kde_simulation` | later | missing | `kde_export!pasw.kde` |
+| KDE Simulation (Python) | `kde_simulation` | later | done | `kde_export!pasw.kde` |
 | Extension Output | `extension_output` | later | done | `ExtensionOutputNode` |
 | Statistics Output | `statistics_output` | out of scope | missing | `SPSSProcedureNode`, `SPSSSyntaxNode`, `SPSSCustomTableNode` |
 | Simulation Fit | `simulation_fit` | out of scope | missing | `simulation_fit!spss.simulation` |
