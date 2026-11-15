@@ -131,12 +131,7 @@ impl Extension {
             Kind::Output | Kind::Export => Mode::Consume,
         };
         dms_python::run_script(
-            &ScriptRequest {
-                python: &python,
-                script: &self.script,
-                input: input.map(Arc::as_ref),
-                mode,
-            },
+            &ScriptRequest::new(&python, &self.script, input.map(Arc::as_ref), mode),
             &context.cancel,
         )
         .map_err(|e| error(self.kind, e))

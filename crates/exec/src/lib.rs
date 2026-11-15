@@ -18,5 +18,5 @@ pub use context::{ExecContext, FileResolver, Resolved};
 pub use dms_types::CancelToken;
 pub use error::{ErrorKind, NodeError, OperatorError};
 pub use operator::{Arity, Factory, Operator};
-pub use output::{Document, DocumentTable, NodeOutput, format_real};
+pub use output::{Document, DocumentTable, NodeOutput, PythonModel, format_real};
 pub use plan::{EvalEvent, Execution, NodeResult, Plan};

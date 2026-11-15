@@ -11,6 +11,19 @@ pub enum NodeOutput {
     /// A trained model; the model nuggets linked to the build node score with it.
     Model(Arc<Pmml>),
     Document(Arc<Document>),
+    /// A model trained in Python (docs/python-bridge.md): the engine saves it in the stream and
+    /// its nugget scores with it.
+    PythonModel(Arc<PythonModel>),
+}
+
+/// A fitted Python model and its training summary.
+#[derive(Debug, Clone)]
+pub struct PythonModel {
+    /// The catalog id of the build node (`random_forest`, ...).
+    pub kind: String,
+    /// The pickled model (`dms_python::models`).
+    pub bytes: Arc<[u8]>,
+    pub summary: Document,
 }
 
 impl NodeOutput {
@@ -24,6 +37,13 @@ impl NodeOutput {
     pub fn model(&self) -> Option<&Arc<Pmml>> {
         match self {
             NodeOutput::Model(model) => Some(model),
+            _ => None,
+        }
+    }
+
+    pub fn python_model(&self) -> Option<&Arc<PythonModel>> {
+        match self {
+            NodeOutput::PythonModel(model) => Some(model),
             _ => None,
         }
     }

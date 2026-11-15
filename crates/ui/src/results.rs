@@ -276,6 +276,12 @@ pub fn show_results_with_settings<'a>(
             }
         }
         Some(Ok(NodeOutput::Model(model))) => show_model(ui, model),
+        Some(Ok(NodeOutput::PythonModel(model))) => {
+            ui.label(tr(
+                "The trained model is saved in the stream; its model nugget scores with it.",
+            ));
+            show_document(ui, &model.summary);
+        }
         Some(Err(error)) => {
             ui.label(
                 RichText::new(tr_fmt(
@@ -327,7 +333,7 @@ pub fn result_kind(result: &dms_exec::NodeResult) -> &'static str {
     match result {
         Ok(NodeOutput::Data(_)) => "data",
         Ok(NodeOutput::Document(_)) => "document",
-        Ok(NodeOutput::Model(_)) => "model",
+        Ok(NodeOutput::Model(_) | NodeOutput::PythonModel(_)) => "model",
         Err(_) => "error",
     }
 }

@@ -130,3 +130,133 @@ fn a_failing_script_names_its_node_and_line() {
         other => panic!("{other:?}"),
     }
 }
+
+fn param(session: &mut Session, uid: &str, key: &str, value: ParamValue) {
+    session
+        .execute(
+            "node.set_param",
+            &[Arg::Node(uid.into()), Arg::Param(key.into(), value)],
+        )
+        .unwrap();
+}
+
+fn nuggets(session: &Session, builder: &str) -> Vec<String> {
+    session
+        .document()
+        .unwrap()
+        .stream
+        .diagram
+        .nodes
+        .iter()
+        .filter(|n| n.model_builder.as_deref() == Some(builder))
+        .map(|n| n.uid.clone())
+        .collect()
+}
+
+#[test]
+fn a_random_forest_generates_a_nugget_that_scores_and_survives_saving() {
+    if let Err(error) = dms_python::resolve(None, &Default::default()) {
+        eprintln!("skipped: {error}");
+        return;
+    }
+    let mut session = Session::new();
+    session.execute("file.new", &[]).unwrap();
+    let source = add(&mut session, "extension_import", 0);
+    script(
+        &mut session,
+        &source,
+        "import pandas as pd\nrows = [(20 + i % 50, 'basic' if i % 3 == 0 else 'premium') for i in range(300)]\nmodelerData = pd.DataFrame(rows, columns=['age', 'plan'])\nmodelerData['churn'] = ['T' if a > 45 and p == 'basic' else 'F' for a, p in rows]\n",
+    );
+    let forest = add(&mut session, "random_forest", 100);
+    param(
+        &mut session,
+        &forest,
+        "custom_fields",
+        ParamValue::Bool(true),
+    );
+    param(
+        &mut session,
+        &forest,
+        "target",
+        ParamValue::Text("churn".into()),
+    );
+    param(
+        &mut session,
+        &forest,
+        "inputs",
+        ParamValue::Fields(vec!["age".into(), "plan".into()]),
+    );
+    param(&mut session, &forest, "n_estimators", ParamValue::Int(25));
+    session
+        .execute("node.connect", &[Arg::Link(source.clone(), forest.clone())])
+        .unwrap();
+    session
+        .execute("edit.select", &[Arg::Nodes(vec![forest.clone()])])
+        .unwrap();
+    let mut notices = Vec::new();
+    session
+        .execute("run.node", &[Arg::Node(forest.clone())])
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(120);
+    while notices.is_empty() {
+        notices = session.poll_jobs();
+        assert!(Instant::now() < deadline);
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    match &notices[0] {
+        RunNotice::Finished { models, .. } => assert_eq!(models, &Ok(1)),
+        other => panic!("{other:?}"),
+    }
+    let nugget = nuggets(&session, &forest);
+    assert_eq!(nugget.len(), 1);
+    let nugget = nugget[0].clone();
+    // Fed from the build node's input, and one undo step removes it again.
+    let links = &session.document().unwrap().stream.diagram.links;
+    assert!(
+        links.iter().any(|l| format!("{:?}", l.to).contains(&nugget)
+            && format!("{:?}", l.from).contains(&source))
+    );
+    assert_eq!(session.undo_label(), Some("Generate Model"));
+    run(&mut session, &nugget);
+    let check = |session: &Session| {
+        let table = match session
+            .results()
+            .unwrap()
+            .report
+            .results
+            .get(&nugget)
+            .unwrap()
+        {
+            Ok(NodeOutput::Data(table)) => table.clone(),
+            other => panic!("{other:?}"),
+        };
+        let model = table.model();
+        let (truth, predicted) = (
+            model.position("churn").unwrap(),
+            model.position("$R-churn").unwrap(),
+        );
+        assert!(model.field("$RP-churn").is_some());
+        let correct = table
+            .rows()
+            .iter()
+            .filter(|r| r[truth] == r[predicted])
+            .count();
+        assert!(correct * 10 > table.row_count() * 9, "{correct}");
+    };
+    check(&session);
+    // Saved with the stream and scored again after reopening.
+    let dir = std::env::temp_dir().join(format!("dms-python-models-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("forest.dms");
+    session
+        .execute("file.save_as", &[Arg::Path(path.clone())])
+        .unwrap();
+    let mut session = Session::new();
+    session.execute("file.open", &[Arg::Path(path)]).unwrap();
+    let _ = std::fs::remove_dir_all(&dir);
+    run(&mut session, &nugget);
+    check(&session);
+    // Training again updates the same nugget.
+    run(&mut session, &forest);
+    assert_eq!(nuggets(&session, &forest), [nugget]);
+}

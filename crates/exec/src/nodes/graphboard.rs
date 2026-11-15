@@ -1088,7 +1088,7 @@ mod tests {
         let operator = super::build(&properties(settings_nodes))?;
         match operator.produce(&[Arc::new(input)], None, &ExecContext::default())? {
             NodeOutput::Document(document) => Ok(document),
-            NodeOutput::Data(_) | NodeOutput::Model(_) => {
+            NodeOutput::Data(_) | NodeOutput::Model(_) | NodeOutput::PythonModel(_) => {
                 panic!("graphboard produced a non-document")
             }
         }

@@ -11,6 +11,7 @@ pub mod session;
 pub mod autosave;
 pub mod clipboard;
 pub mod edit_session;
+mod python_models;
 pub mod undo;
 pub use autosave::Recovery;
 pub use edit_session::DocumentState;

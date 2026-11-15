@@ -110,11 +110,23 @@ struct StatusMessage {
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum StatusText {
     Raw(String),
-    Finished { seconds: String, failures: usize },
+    Finished {
+        seconds: String,
+        failures: usize,
+    },
     Failed(String),
-    Stopped { seconds: String },
+    Stopped {
+        seconds: String,
+    },
     FolderAdded(PathBuf),
     FoldersCleared,
+    /// A Python model trained but could not be saved into the stream.
+    ModelNotSaved(String),
+    /// Python models trained and saved, with their nuggets.
+    ModelsSaved {
+        seconds: String,
+        count: usize,
+    },
 }
 
 impl StatusText {
@@ -135,6 +147,14 @@ impl StatusText {
             Self::Finished { seconds, failures } => tr_fmt(
                 "Finished in {seconds} s · {count} nodes failed",
                 &[("seconds", seconds), ("count", &failures.to_string())],
+            ),
+            Self::ModelNotSaved(message) => tr_fmt(
+                "The trained model could not be saved in the stream: {message}",
+                &[("message", message)],
+            ),
+            Self::ModelsSaved { seconds, count } => tr_fmt(
+                "Finished in {seconds} s · models saved: {count} (nuggets on the canvas)",
+                &[("seconds", seconds), ("count", &count.to_string())],
             ),
             Self::Failed(message) => tr_fmt(
                 "The run stopped unexpectedly: {message}",
@@ -316,6 +336,25 @@ impl Workbench {
         }
         for notice in self.session.poll_jobs() {
             self.status = Some(match notice {
+                RunNotice::Finished {
+                    models: Err(message),
+                    ..
+                } => StatusMessage {
+                    text: StatusText::ModelNotSaved(message),
+                    error: true,
+                },
+                RunNotice::Finished {
+                    root_causes: 0,
+                    elapsed,
+                    models: Ok(count),
+                    ..
+                } if count > 0 => StatusMessage {
+                    text: StatusText::ModelsSaved {
+                        seconds: format!("{:.1}", elapsed.as_secs_f64()),
+                        count,
+                    },
+                    error: false,
+                },
                 RunNotice::Finished {
                     root_causes,
                     elapsed,

@@ -9,6 +9,10 @@ import sys
 import traceback
 
 
+# Import names whose pip package is called differently.
+PIP_NAMES = {"sklearn": "scikit-learn", "imblearn": "imbalanced-learn"}
+
+
 def write_result(path, result):
     with open(path, "w", encoding="utf-8") as handle:
         json.dump(result, handle)
@@ -124,7 +128,12 @@ def main():
     except ImportError as exc:
         write_result(result_path, {"error": "missing_package", "package": exc.name or str(exc)})
         return
-    namespace = {"__name__": "__main__", "modelerData": None, "modelerDataModel": []}
+    namespace = {
+        "__name__": "__main__",
+        "modelerData": None,
+        "modelerDataModel": [],
+        "dmsParameters": request.get("parameters") or {},
+    }
     inputs = request.get("inputs", [])
     if inputs:
         frame, model = read_input(pa, inputs[0])
@@ -133,6 +142,14 @@ def main():
     try:
         code = compile(request["script"], "<script>", "exec")
         exec(code, namespace)
+    except ModuleNotFoundError as exc:
+        sys.stdout.flush()
+        package = PIP_NAMES.get(exc.name, exc.name) if exc.name else None
+        if package:
+            write_result(result_path, {"error": "missing_package", "package": package})
+        else:
+            write_result(result_path, script_error(exc))
+        return
     except BaseException as exc:  # the user's script: report everything, including SystemExit
         sys.stdout.flush()
         write_result(result_path, script_error(exc))

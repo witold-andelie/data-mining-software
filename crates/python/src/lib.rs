@@ -11,6 +11,7 @@
 pub mod env;
 mod error;
 pub mod exchange;
+pub mod models;
 pub mod process;
 
 pub use env::{PythonInfo, detect};
@@ -45,11 +46,53 @@ pub enum Mode {
     Consume,
 }
 
+/// Largest file a script may hand back (a trained model), bytes.
+pub const MAX_FILE: u64 = 1 << 30;
+
 pub struct ScriptRequest<'a> {
     pub python: &'a PythonCommand,
     pub script: &'a str,
     pub input: Option<&'a Table>,
     pub mode: Mode,
+    /// Given to the script as the dict `dmsParameters`.
+    pub parameters: Option<&'a serde_json::Value>,
+    /// Files written into the script's working folder first (a saved model), by plain name.
+    pub files_in: &'a [(&'a str, &'a [u8])],
+    /// Files the script must leave in its working folder, read back by plain name.
+    pub files_out: &'a [&'a str],
+}
+
+impl<'a> ScriptRequest<'a> {
+    /// A plain script: no parameters or files.
+    pub fn new(
+        python: &'a PythonCommand,
+        script: &'a str,
+        input: Option<&'a Table>,
+        mode: Mode,
+    ) -> Self {
+        Self {
+            python,
+            script,
+            input,
+            mode,
+            parameters: None,
+            files_in: &[],
+            files_out: &[],
+        }
+    }
+}
+
+/// A file name without folders, so scripts cannot be pointed outside their working folder.
+fn plain_name(name: &str) -> Result<&str, BridgeError> {
+    let ok = !name.is_empty()
+        && name.len() <= 64
+        && name != "."
+        && name != ".."
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'));
+    ok.then_some(name)
+        .ok_or_else(|| BridgeError::Input(format!("bad bridge file name {name:?}")))
 }
 
 #[derive(Debug)]
@@ -61,6 +104,8 @@ pub struct ScriptResult {
     /// Warnings and other messages the script wrote to stderr.
     pub messages: String,
     pub truncated: bool,
+    /// The requested `files_out`, in order.
+    pub files: Vec<(String, Vec<u8>)>,
 }
 
 #[derive(Deserialize)]
@@ -127,6 +172,12 @@ pub fn run_script(
         exchange::write_table(table, &path("input0.arrow"))?;
         inputs.push(path("input0.arrow"));
     }
+    for (name, bytes) in request.files_in {
+        std::fs::write(path(plain_name(name)?), bytes)?;
+    }
+    for name in request.files_out {
+        plain_name(name)?;
+    }
     let output =
         matches!(request.mode, Mode::Import | Mode::Transform).then(|| path("output.arrow"));
     let json = serde_json::json!({
@@ -134,6 +185,7 @@ pub fn run_script(
         "inputs": inputs,
         "output": output,
         "result": path("result.json"),
+        "parameters": request.parameters,
     });
     std::fs::write(path("request.json"), json.to_string())?;
     cancel.check().map_err(|_| BridgeError::Cancelled)?;
@@ -180,11 +232,26 @@ pub fn run_script(
         Some(file) => Some(exchange::read_table(file, request.input.map(Table::model))?),
         None => None,
     };
+    let mut files = Vec::with_capacity(request.files_out.len());
+    for name in request.files_out {
+        let file = path(name);
+        let size = std::fs::metadata(&file)
+            .map_err(|_| BridgeError::Output(format!("the script did not write {name}")))?
+            .len();
+        if size > MAX_FILE {
+            return Err(BridgeError::Output(format!(
+                "{name} is larger than {} MB",
+                MAX_FILE >> 20
+            )));
+        }
+        files.push((name.to_string(), std::fs::read(&file)?));
+    }
     Ok(ScriptResult {
         table,
         text,
         messages,
         truncated: finished.truncated,
+        files,
     })
 }
 

@@ -9,7 +9,7 @@ Status `done (output unverified)`: settings and the records reaching the node ma
 | Scope | Implemented | Total |
 |---|---|---|
 | MVP | 85 | 85 |
-| later | 9 | 24 |
+| later | 12 | 24 |
 | license blocked | 0 | 6 |
 | out of scope | 0 | 34 |
 
@@ -136,12 +136,12 @@ Status `done (output unverified)`: settings and the records reaching the node ma
 | LSVM | `lsvm` | later | done (statistical) | `spss.linearSVM!linearSVM`, `spss.linearSVM!applyLinearSVM` |
 | Self-Learning Response Model | `slrm` | license blocked | missing | `spss.selflearning!selflearning` |
 | Temporal Causal Model | `tcm` | later | missing | `tcm!pasw.timeseries-extension` |
-| Random Forest (Python) | `random_forest` | later | missing | `rf!spss.rf` |
+| Random Forest (Python) | `random_forest` | later | done | `rf!spss.rf` |
 | XGBoost Tree (Python) | `xgboost_tree` | later | missing | `xgboosttree!spss.xgboost` |
 | XGBoost Linear (Python) | `xgboost_linear` | later | missing | `xgboostlinear!spss.xgboost` |
-| One-Class SVM (Python) | `one_class_svm` | later | missing | `ocsvm!spss.ocsvm-extension` |
+| One-Class SVM (Python) | `one_class_svm` | later | done | `ocsvm!spss.ocsvm-extension` |
 | HDBSCAN (Python) | `hdbscan` | later | missing | `hdbscan!spss.hdbscan` |
-| Gaussian Mixture (Python) | `gmm` | later | missing | `gmm!spss.gmm` |
+| Gaussian Mixture (Python) | `gmm` | later | done | `gmm!spss.gmm` |
 | KDE (Python) | `kde` | later | missing | `kde!pasw.kde` |
 | Extension Model | `extension_model` | later | missing | `ExtensionBuildModelNode`, `ExtensionApplyModelNode` |
 | Statistics Model | `statistics_model` | out of scope | missing | `BuildSPSSModelNode`, `ApplySPSSModelNode` |

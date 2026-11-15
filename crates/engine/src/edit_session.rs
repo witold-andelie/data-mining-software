@@ -85,7 +85,7 @@ impl DocumentState {
         self.undo.redo_label()
     }
 
-    fn commit(
+    pub(crate) fn commit(
         &mut self,
         label: &'static str,
         edits: Vec<Edit>,

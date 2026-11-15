@@ -45,6 +45,7 @@ pub mod means;
 pub mod merge;
 pub mod partition;
 pub mod plot;
+pub mod python_model;
 pub mod reclassify;
 pub mod report;
 pub mod restructure;

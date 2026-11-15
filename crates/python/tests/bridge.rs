@@ -60,12 +60,7 @@ fn transform(
 ) -> Result<dms_python::ScriptResult, BridgeError> {
     let table = input();
     run_script(
-        &ScriptRequest {
-            python,
-            script,
-            input: Some(&table),
-            mode: Mode::Transform,
-        },
+        &ScriptRequest::new(python, script, Some(&table), Mode::Transform),
         &CancelToken::new(),
     )
 }
@@ -111,12 +106,7 @@ modelerData = pd.DataFrame({
 })
 "#;
     let result = run_script(
-        &ScriptRequest {
-            python: &python,
-            script,
-            input: None,
-            mode: Mode::Import,
-        },
+        &ScriptRequest::new(&python, script, None, Mode::Import),
         &CancelToken::new(),
     )
     .unwrap();
@@ -170,12 +160,12 @@ fn cancelling_kills_a_running_script() {
         trigger.cancel();
     });
     let result = run_script(
-        &ScriptRequest {
-            python: &python,
-            script: "import time\ntime.sleep(60)\n",
-            input: None,
-            mode: Mode::Consume,
-        },
+        &ScriptRequest::new(
+            &python,
+            "import time\ntime.sleep(60)\n",
+            None,
+            Mode::Consume,
+        ),
         &cancel,
     );
     canceller.join().unwrap();
@@ -192,4 +182,159 @@ fn a_configured_python_that_does_not_exist_is_not_found() {
     .unwrap_err();
     assert!(matches!(error, BridgeError::NotFound { .. }), "{error:?}");
     assert!(error.to_string().contains("Settings"));
+}
+
+#[test]
+fn parameters_and_files_go_in_and_come_back() {
+    let Some(python) = python() else { return };
+    let parameters = serde_json::json!({"scale": 3});
+    let model: &[u8] = b"saved";
+    let result = run_script(
+        &ScriptRequest {
+            parameters: Some(&parameters),
+            files_in: &[("model.bin", model)],
+            files_out: &["out.bin"],
+            ..ScriptRequest::new(&python, "data = open('model.bin', 'rb').read()\nopen('out.bin', 'wb').write(data * dmsParameters['scale'])\n", None, Mode::Consume)
+        },
+        &CancelToken::new(),
+    )
+    .unwrap();
+    assert_eq!(
+        result.files,
+        [("out.bin".to_string(), b"savedsavedsaved".to_vec())]
+    );
+    // A file outside the working folder is refused before Python starts.
+    let refused = run_script(
+        &ScriptRequest {
+            files_out: &["../escape"],
+            ..ScriptRequest::new(&python, "pass\n", None, Mode::Consume)
+        },
+        &CancelToken::new(),
+    );
+    assert!(matches!(refused, Err(BridgeError::Input(_))), "{refused:?}");
+}
+
+#[test]
+fn a_missing_module_is_reported_as_a_package_to_install() {
+    let Some(python) = python() else { return };
+    let result = run_script(
+        &ScriptRequest::new(
+            &python,
+            "import dms_no_such_module_xyz\n",
+            None,
+            Mode::Consume,
+        ),
+        &CancelToken::new(),
+    );
+    match result {
+        Err(BridgeError::MissingPackages { packages, .. }) => {
+            assert_eq!(packages, ["dms_no_such_module_xyz"]);
+        }
+        other => panic!("{other:?}"),
+    }
+}
+
+fn churn() -> Table {
+    let mut target = Field::new("churn", Storage::String);
+    target.measurement = Measurement::Flag;
+    let model = DataModel::new(vec![
+        Field::new("age", Storage::Integer),
+        Field::new("plan", Storage::String),
+        target,
+    ])
+    .unwrap();
+    let rows = (0..200)
+        .map(|i| {
+            let age = 20 + (i % 50);
+            let plan = if i % 3 == 0 { "basic" } else { "premium" };
+            let churn = if age > 45 && plan == "basic" {
+                "T"
+            } else {
+                "F"
+            };
+            vec![
+                if i == 7 {
+                    Value::Null
+                } else {
+                    Value::Integer(age)
+                },
+                Value::string(plan),
+                Value::string(churn),
+            ]
+        })
+        .collect();
+    Table::new(model, rows).unwrap()
+}
+
+#[test]
+fn a_random_forest_trains_saves_and_scores() {
+    let Some(python) = python() else { return };
+    let data = churn();
+    let parameters = serde_json::json!({
+        "kind": "random_forest",
+        "target": "churn",
+        "target_kind": "categorical",
+        "inputs": ["age", "plan"],
+        "name": "churn",
+        "options": {"n_estimators": 20, "random_seed": 3},
+    });
+    let trained =
+        dms_python::models::train(&python, &data, &parameters, &CancelToken::new()).unwrap();
+    assert!(trained.model.len() > 100);
+    assert!(trained.summary["training_accuracy"].as_f64().unwrap() > 0.9);
+    let scored =
+        dms_python::models::score(&python, &data, &trained.model, &CancelToken::new()).unwrap();
+    let names: Vec<_> = scored
+        .model()
+        .fields()
+        .iter()
+        .map(|f| f.name.clone())
+        .collect();
+    // Only the score fields come back.
+    assert_eq!(names, ["$R-churn", "$RP-churn"]);
+    let correct = data
+        .rows()
+        .iter()
+        .zip(scored.rows())
+        .filter(|(row, score)| row[2] == score[0])
+        .count();
+    assert!(correct > 180, "{correct}");
+    // Data that already has the fields gets the next free index.
+    let mut fields = data.model().fields().to_vec();
+    fields.push(Field::new("$R-churn", Storage::String));
+    let rows = data
+        .rows()
+        .iter()
+        .map(|r| r.iter().cloned().chain([Value::Null]).collect())
+        .collect();
+    let scored_once = Table::new(DataModel::new(fields).unwrap(), rows).unwrap();
+    let again =
+        dms_python::models::score(&python, &scored_once, &trained.model, &CancelToken::new())
+            .unwrap();
+    assert!(again.model().field("$R1-churn").is_some());
+}
+
+#[test]
+fn clustering_and_anomaly_models_score_every_record() {
+    let Some(python) = python() else { return };
+    let data = churn();
+    for (kind, fields) in [
+        ("gaussian_mixture", ["$GMM-m", "$GMMP-m"]),
+        ("one_class_svm", ["$O-m", "$OP-m"]),
+    ] {
+        let parameters = serde_json::json!({
+            "kind": kind, "inputs": ["age", "plan"], "name": "m", "options": {},
+        });
+        let trained =
+            dms_python::models::train(&python, &data, &parameters, &CancelToken::new()).unwrap();
+        let scored =
+            dms_python::models::score(&python, &data, &trained.model, &CancelToken::new()).unwrap();
+        for field in fields {
+            let position = scored.model().position(field).unwrap();
+            assert!(
+                scored.rows().iter().all(|row| !row[position].is_null()),
+                "{kind} {field}"
+            );
+        }
+    }
 }

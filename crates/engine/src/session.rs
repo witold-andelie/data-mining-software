@@ -149,6 +149,8 @@ pub enum RunNotice {
         job: JobId,
         root_causes: usize,
         elapsed: std::time::Duration,
+        /// Python models saved into the stream (with their nuggets), or why saving failed.
+        models: Result<usize, String>,
     },
     Failed {
         job: JobId,
@@ -238,10 +240,19 @@ impl Session {
                 JobEvent::Finished { job, output } => {
                     if matches!(self.run_state, RunState::Running { job: current, .. } | RunState::Stopping { job: current } if current == job)
                     {
+                        let trained = crate::python_models::trained(&output);
+                        let before = self.revision();
+                        let models = self.save_python_models(&trained);
+                        // Saving the models is part of the run: its results are not stale
+                        // because of it (only if nothing else changed while it ran).
+                        if matches!(models, Ok(n) if n > 0) && before == self.run_revision {
+                            self.run_revision = self.revision();
+                        }
                         notices.push(RunNotice::Finished {
                             job,
                             root_causes: output.root_causes.len(),
                             elapsed: output.elapsed,
+                            models,
                         });
                         self.result_inputs = std::mem::take(&mut self.run_inputs);
                         self.results = Some(RunResults {
