@@ -6,3 +6,25 @@
 /oracle/
 # macOS Finder metadata
 .DS_Store
+
+# Chinese-language working notes and agent instructions: local only, never committed
+/AGENTS.md
+/CLAUDE.md
+/ROADMAP.md
+/docs/architecture.md
+/docs/formats/str.md
+/docs/gaps.md
+/docs/gui/DESIGN.md
+/docs/gui/GUI_BRIEF.md
+/docs/gui/MAC_APP_PLAN.md
+/docs/gui/V02_HANDOFF.md
+/docs/gui/V03_HANDOFF.md
+/docs/gui/V04_HANDOFF.md
+/docs/mac/MAC_EVIDENCE.md
+/docs/mac/MAC_REPORT.md
+/docs/mac/MAC_VALIDATION.md
+/docs/mac/SUBAGENT_BRIEF.md
+/docs/models.md
+/docs/oracle.md
+/docs/python-bridge.md
+/docs/scorecard.md

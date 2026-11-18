@@ -7,7 +7,7 @@ IBM SPSS Modeler `.str` stream files: the ZIP container and a Fast Infoset decod
   alphabets), clause 10 (built-in encoding algorithms). External vocabularies and user-defined
   encoding algorithms are reported as unsupported.
 - `.str` container facts come from differential observation of files saved by Modeler 19.0.0.0.26
-  (`cargo xtask probe str_basics`); see `docs/formats/str.md`.
+  (`cargo xtask probe str_basics`).
 - No Modeler code was read, decompiled or copied.
 
 Never-crash properties: all errors are `Result`s; element nesting is decoded and dropped without
