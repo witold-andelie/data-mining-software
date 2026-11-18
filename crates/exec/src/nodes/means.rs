@@ -1,6 +1,6 @@
 //! Means (Output palette): compares means across groups of a categorical field (one-way ANOVA
 //! F-test), or between paired fields (paired-samples t-test), returning a [`Document`] with one
-//! table matching Modeler's exported CSV (`docs/oracle.md`).
+//! table matching Modeler's exported CSV.
 //!
 //! Implemented settings (`ModelerScriptingAutomation-19.0.txt` "means properties"):
 //! - `method`: `betweenGroups` (default) or `betweenFields` (`oracle/outputs_next/means_fields*`):

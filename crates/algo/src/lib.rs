@@ -1,7 +1,6 @@
 //! Training algorithms (L2): each trains on a [`Dataset`] and returns a PMML document
 //! ([`dms_pmml::Pmml`]), the same representation models read from streams use, so a trained
-//! model scores through `dms-pmml` and compares element by element with the PMML Modeler exports
-//! (`docs/models.md`).
+//! model scores through `dms-pmml` and compares element by element with the PMML Modeler exports.
 //!
 //! Formulas follow IBM SPSS Modeler 19 Algorithms Guide (public;
 //! `D:\spss-modeler\rea-work\ibm-docs\AlgorithmsGuide.txt` locally). Where the guide leaves a

@@ -6,7 +6,7 @@
 //! Protocol: the folder holds `runner.py` (this crate's `src/runner.py`), `request.json`
 //! (script text, input and output file names), `input0.arrow`; the runner writes
 //! `result.json` and, when data is expected, `output.arrow`. The script's printed output is
-//! its text output. See docs/python-bridge.md.
+//! its text output.
 
 pub mod env;
 mod error;

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Steps 1, 3 and 4 of docs/mac/MAC_VALIDATION.md as fixed commands, so that the opencode
+# Platform validation (CI, corpus tests, regression, baseline comparison) as fixed commands, so that the opencode
 # subagent only needs permission to run this script. Each step keeps its full log in
 # target/mac/<step>.log and ends with one summary line. Bash 3.2 compatible (macOS).
 set -uo pipefail

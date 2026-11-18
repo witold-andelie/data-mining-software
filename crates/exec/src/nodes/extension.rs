@@ -1,6 +1,6 @@
 //! Extension nodes with Python syntax: Extension Import (Sources), Extension Transform (Record
 //! Ops), Extension Output (Output) and Extension Export (Export). Each runs the node's script in
-//! the user's own Python through `dms-python` (docs/python-bridge.md).
+//! the user's own Python through `dms-python`.
 //!
 //! Settings (this application's native names; Modeler's own `.str` names for these nodes have not
 //! been observed, so streams imported from Modeler keep their extension nodes as saved):

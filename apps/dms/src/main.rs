@@ -1,4 +1,4 @@
-//! `dms`: the desktop application (phase A spike, docs/gui/DESIGN.md). Wires eframe (wgpu,
+//! `dms`: the desktop application. Wires eframe (wgpu,
 //! Metal on macOS), the native macOS menu bar, file dialogs and state persistence to the
 //! `dms-ui` workbench, which does everything else.
 //!

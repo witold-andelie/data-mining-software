@@ -6,8 +6,7 @@
 //! decoded XML as a stream (nodes, links, properties) belongs to the stream model layer.
 //!
 //! The format facts were established by differential observation of files saved by Modeler
-//! (`cargo xtask probe str_basics`) and by the public X.891 specification; see
-//! `docs/formats/str.md`.
+//! (`cargo xtask probe str_basics`) and by the public X.891 specification.
 
 pub mod container;
 pub mod fastinfoset;

@@ -1,6 +1,6 @@
 //! Statistics (Output palette): computes univariate summary statistics for each `examineFields`
 //! field and a pairwise Pearson correlation matrix for `correlationFields`, returning a
-//! [`Document`] whose tables match Modeler's JSON output (`docs/oracle.md`).
+//! [`Document`] whose tables match Modeler's JSON output.
 //!
 //! Implemented settings (`docs/formats/nodes/statistics.md`):
 //! - `examineFields/field`: univariate fields (in listed order; one table per field, titled with

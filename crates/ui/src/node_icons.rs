@@ -1,7 +1,7 @@
 //! Node pictograms: our own vector drawings, one per frequently used node type (by use in the
 //! team's streams and the corpus), and the palette glyph of `theme` for the rest. Drawn in a unit
 //! square (x and y from -1 to 1, y down) scaled to the tile, so they stay sharp at any zoom and on
-//! Retina screens. No IBM artwork is used or imitated (AGENTS.md, clean room).
+//! Retina screens. No IBM artwork is used or imitated (clean room).
 
 use crate::graph::NodeKind;
 use crate::theme;

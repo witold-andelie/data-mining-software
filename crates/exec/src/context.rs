@@ -24,8 +24,7 @@ pub struct ExecContext {
     /// Where export nodes write: their file name in this directory instead of the path they
     /// were saved with (the oracle redirects exports the same way, into `exports/`).
     pub export_dir: Option<PathBuf>,
-    /// The Python executable chosen in Settings for Python nodes; `None` finds one
-    /// (docs/python-bridge.md).
+    /// The Python executable chosen in Settings for Python nodes; `None` finds one.
     pub python: Option<PathBuf>,
 }
 

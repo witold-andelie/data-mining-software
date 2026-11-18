@@ -3,7 +3,7 @@
 //!
 //! The representation follows the PMML elements one to one, so a model read from a file and a
 //! model trained by `dms-algo` share it, and a trained model can be compared element by element
-//! with the PMML Modeler exports (`docs/models.md`). Elements we do not use are skipped when
+//! with the PMML Modeler exports. Elements we do not use are skipped when
 //! reading; a model element we cannot score is kept as [`Model::Unsupported`] so callers can say
 //! which one it is.
 //!

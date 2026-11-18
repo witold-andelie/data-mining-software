@@ -1,4 +1,4 @@
-//! The app ships no fonts (docs/gui/DESIGN.md §11.4): every glyph comes from the system through
+//! The app ships no fonts: every glyph comes from the system through
 //! eframe's system font provider. This renders English, Czech, Chinese and the menu symbols with
 //! no bundled fonts at all; kittest panics on any glyph nothing can draw. Needs a desktop OS with
 //! its standard fonts (macOS, Windows).

@@ -2208,7 +2208,7 @@ static DATA_AUDIT: &[ParamSpec] = &[
         visible_if: Some(("output_mode", &["file"])),
     },
 ];
-/// The Python script of an Extension node (docs/python-bridge.md).
+/// The Python script of an Extension node.
 const PYTHON_SCRIPT: ParamSpec = ParamSpec {
     key: "python_syntax",
     source: ParamSource::Properties,

@@ -8,7 +8,7 @@
 //! person would pick in a dialog (a file path) return `NeedsArgument` when called without it,
 //! so a program calling the engine never gets a dialog.
 //!
-//! Phase A spike (docs/gui/DESIGN.md §5): the table covers the commands the spike shows. Labels
+//! Phase A spike: the table covers the commands the spike shows. Labels
 //! are English source strings that will become translation keys.
 
 /// Menu a command appears in. `App` is the application menu on macOS; elsewhere its commands

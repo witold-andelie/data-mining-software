@@ -11,7 +11,7 @@ pub enum NodeOutput {
     /// A trained model; the model nuggets linked to the build node score with it.
     Model(Arc<Pmml>),
     Document(Arc<Document>),
-    /// A model trained in Python (docs/python-bridge.md): the engine saves it in the stream and
+    /// A model trained in Python: the engine saves it in the stream and
     /// its nugget scores with it.
     PythonModel(Arc<PythonModel>),
 }
@@ -113,7 +113,7 @@ pub fn format_real(value: f64, decimals: usize) -> String {
 }
 
 /// An output node's result, as text the way Modeler shows and exports it, so it compares with
-/// the oracle's `outputs/` files (`docs/oracle.md`).
+/// the oracle's `outputs/` files.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Document {
     pub title: String,

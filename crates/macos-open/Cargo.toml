@@ -14,8 +14,8 @@ objc2-foundation = { version = "=0.3.2", default-features = false, features = ["
 objc2-app-kit = { version = "=0.3.2", default-features = false, features = ["std", "NSApplication", "NSResponder"] }
 
 # Not `workspace = true`: the workspace forbids unsafe code, which cannot be relaxed per module.
-# Here it is denied for the crate and allowed only in `mod macos` (owner decision 2026-11-09,
-# docs/gui/MAC_APP_PLAN.md and AGENTS.md). The clippy lints are the workspace's.
+# Here it is denied for the crate and allowed only in `mod macos` (owner decision 2026-11-09).
+# The clippy lints are the workspace's.
 [lints.rust]
 unsafe_code = "deny"
 

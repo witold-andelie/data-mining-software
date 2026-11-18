@@ -1,6 +1,6 @@
 //! Matrix (Output palette): builds a two-dimensional cross-tabulation or function summary matrix
 //! across `rowField` and `columnField`, returning a [`Document`] with one table matching Modeler's
-//! exported CSV (`docs/oracle.md`, `docs/formats/nodes/matrix.md`).
+//! exported CSV (`docs/formats/nodes/matrix.md`).
 //!
 //! Implemented settings (saved names, from the `outputs` probes and `team/cluster_analysis`):
 //! - `matrixType`: `specified` (the selected row and column fields), `flags` or `numbers`

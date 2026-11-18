@@ -341,7 +341,7 @@ fn score_team_oracle_exports() {
 
     assert_eq!(total_exports, 10);
     // The other exports were scored by nuggets whose saved model differs from the one the
-    // oracle run retrained (random upstream nodes, unlinked or split models); see docs/models.md.
+    // oracle run retrained (random upstream nodes, unlinked or split models).
     assert!(
         fully_matched >= FULLY_MATCHED_AT_LEAST,
         "{fully_matched} exports fully matched, expected at least {FULLY_MATCHED_AT_LEAST}"

@@ -2,7 +2,7 @@
 //! `ApplyKMeansNode`, `ApplyTwoStepNode`, `ApplyRegressionNode`,
 //! `LinearRegressionModel!spss.alm-extension`,
 //! `neuralnetmodel!spss.neuralnet-extension`): score every record with the model and append
-//! Modeler's score fields (`docs/models.md`).
+//! Modeler's score fields.
 //!
 //! The model is the one the linked build node trained in this evaluation, else the PMML the
 //! nugget saved. Classic nuggets keep PMML at `properties/model@pmml`. Clementine 11 C&R Tree

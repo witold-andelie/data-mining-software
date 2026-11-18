@@ -1,5 +1,5 @@
 //! Data Audit (Output palette, `DataAuditNode`): produces a [`Document`] with two tables matching
-//! Modeler's exported CSV (`docs/oracle.md`, `docs/formats/nodes/dataaudit.md`):
+//! Modeler's exported CSV (`docs/formats/nodes/dataaudit.md`):
 //!
 //! 1. **Audit**: one row per audited field with `Field`, `Measurement`, the chosen statistics in
 //!    Modeler's display order, `Unique` and `Valid`.
@@ -201,7 +201,7 @@ pub fn build(node: &StreamNode) -> Result<Box<dyn Operator>, OperatorError> {
     };
 
     // The statistics columns: the basic set, plus the advanced set and median/mode
-    // (docs/oracle.md, outputs/dataaudit_full_stats).
+    // (oracle output `dataaudit_full_stats`).
     if !settings::flag(s, "dataAuditBasicStatistics")?.unwrap_or(true) {
         return Err(OperatorError::Settings(
             "Data Audit without basic statistics is not supported yet".into(),

@@ -1,5 +1,5 @@
 //! Analysis (Output palette, `AnalysisNode`): compares model predictions with the actual
-//! target and produces a [`Document`] that matches Modeler's JSON export (`docs/oracle.md`).
+//! target and produces a [`Document`] that matches Modeler's JSON export.
 //!
 //! Settings are the elements saved on the oracle streams (`analysis_coincidence.str`,
 //! `analysis_default.str`, `decision_trees_heart.str`). A child of `properties` that is not in
@@ -271,7 +271,7 @@ impl Operator for AnalysisOp {
         _model: Option<Arc<Pmml>>,
         context: &ExecContext,
     ) -> Result<NodeOutput, OperatorError> {
-        // Fixed precisions (`docs/oracle.md`); the stream decimal setting is not applied.
+        // Fixed precisions; the stream decimal setting is not applied.
         let _decimals = context.decimal_places();
         let input = inputs
             .first()

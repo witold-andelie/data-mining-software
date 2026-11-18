@@ -1,4 +1,4 @@
-//! Model build nodes (`docs/models.md`): train on the records that reach the node and hand the
+//! Model build nodes: train on the records that reach the node and hand the
 //! model to the linked nugget (`Operator::produce` returns `NodeOutput::Model`).
 //!
 //! Supported: C&R Tree (`Cart!spss.tree-extension`), QUEST (`Quest!spss.tree-extension`) and

@@ -1,6 +1,6 @@
 //! The main window: node palette, stream canvas, properties, status bar, and the dispatch of
 //! commands by id. Lives in the UI library (not the app) so the whole window can be rendered
-//! off-screen in tests. Layout: docs/gui/DESIGN.md §2.
+//! off-screen in tests.
 
 use crate::i18n::{tr, tr_fmt};
 #[path = "dialogs.rs"]

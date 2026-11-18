@@ -5,8 +5,7 @@
 //! kernel density of the inputs) and Extension Model (the user's own build and score scripts:
 //! the build script leaves `modelerModel`, which is pickled with the score script; the score
 //! script adds fields to `modelerData`, and the nugget appends the added ones), all in the user's
-//! own Python (`dms_python::models`,
-//! docs/python-bridge.md).
+//! own Python (`dms_python::models`).
 //!
 //! The build node trains and outputs [`NodeOutput::PythonModel`]; the engine then saves the
 //! pickled model as a stream attachment and adds or updates the model nugget (the same node type

@@ -24,15 +24,15 @@ dms-exec = { path = "crates/exec" }
 dms-python = { path = "crates/python" }
 dms-ui = { path = "crates/ui" }
 dms-macos-open = { path = "crates/macos-open" }
-# GUI (L6 and apps only; `cargo xtask layers` enforces it). Licences: docs/gui/DESIGN.md §9.
+# GUI (L6 and apps only; `cargo xtask layers` enforces it). Licence policy: see Development in the README.
 egui = "=0.37.0"
 # No default features: the app uses system fonts only (egui's bundled fonts are OFL/UFL; they
-# stay in tests, docs/gui/DESIGN.md §11.4). `winit` is direct so the app can install the macOS
+# stay in tests). `winit` is direct so the app can install the macOS
 # open-documents delegate between creating and running the event loop.
 eframe = { version = "=0.37.0", default-features = false, features = ["accesskit", "clipboard", "links", "persistence", "system_fonts", "wgpu"] }
 winit = { version = "=0.30.13", default-features = false, features = ["rwh_06"] }
 egui_extras = { version = "=0.37.0", default-features = false }
-# Charts of graph-node results (v0.4, docs/gui/V04_HANDOFF.md).
+# Charts of graph-node results.
 egui_plot = { version = "=0.38.0", default-features = false }
 egui_system_font_provider = "=0.37.0"
 egui_kittest = { version = "=0.37.0", features = ["wgpu", "snapshot"] }
@@ -40,7 +40,7 @@ muda = { version = "=0.21.2", default-features = false }
 rfd = "=0.18.0"
 arboard = "=3.7.0"
 serde = { version = "1", features = ["derive"] }
-# Native stream format (.dms), docs/gui/V02_HANDOFF.md.
+# Native stream format (.dms).
 toml = "=1.2.1"
 serde_json = "1"
 # Python bridge data exchange (dms-python): Arrow IPC files only, no compression features.

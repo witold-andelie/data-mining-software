@@ -9,8 +9,8 @@
 //! Homebrew libraries the app links (unixODBC's `libodbc` and libtool's `libltdl`, both LGPL) are
 //! copied into `Contents/Frameworks` as separate dynamic libraries, so the app starts on a Mac
 //! without Homebrew and the libraries stay replaceable; their licence texts go to
-//! `Contents/Resources/Licenses`. This is a recorded exception to the permissive-licence rule
-//! (docs/gui/DESIGN.md §9.3). Only the formulas in [`BUNDLED_FORMULAS`] may be bundled: any other
+//! `Contents/Resources/Licenses`. This is a recorded exception to the permissive-licence rule.
+//! Only the formulas in [`BUNDLED_FORMULAS`] may be bundled: any other
 //! Homebrew library fails the build.
 //!
 //! Uses the system tools `sips`, `iconutil`, `otool`, `install_name_tool`, `codesign` and
@@ -396,7 +396,7 @@ fn bundle_libraries(executables: &[PathBuf], contents: &Path) -> Result<()> {
         if !BUNDLED_FORMULAS.iter().any(|(name, _, _)| *name == formula) {
             return Err(format!(
                 "the app links {library} (Homebrew formula {formula}), which is not approved \
-                 for bundling; see BUNDLED_FORMULAS and docs/gui/DESIGN.md §9.3"
+                 for bundling; see BUNDLED_FORMULAS"
             ));
         }
         let name = Path::new(&library)

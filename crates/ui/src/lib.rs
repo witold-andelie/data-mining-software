@@ -1,6 +1,6 @@
 //! Desktop interface (L6): the stream canvas, panels and menus, drawn with egui. Thin and
 //! data-driven: every action is an engine command run by id; interface state is plain
-//! serializable data. See docs/gui/DESIGN.md.
+//! serializable data.
 
 pub mod canvas;
 pub mod chart;

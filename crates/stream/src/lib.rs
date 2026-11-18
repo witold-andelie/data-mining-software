@@ -1,6 +1,6 @@
 //! Stream model (L1): the nodes, links and properties of a Modeler stream.
 //!
-//! [`Stream::from_document`] interprets the decoded `.str` XML (see `docs/formats/str.md`):
+//! [`Stream::from_document`] interprets the decoded `.str` XML:
 //!
 //! ```text
 //! clementineStream[@version] / stream[@saveVersion]
