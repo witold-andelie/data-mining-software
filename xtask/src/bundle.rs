@@ -47,6 +47,35 @@ const FRAMEWORKS_REF: &str = "@executable_path/../Frameworks";
 /// Bound on the library graph walked from the executable.
 const MAX_LIBRARIES: usize = 32;
 
+/// The disk image's shortcut to /Applications. Symbolic links are created on Unix only; the
+/// bundle is built on macOS, and `run` refuses every other system before it gets here.
+#[cfg(unix)]
+fn link_applications(link: &Path) -> Result<()> {
+    std::os::unix::fs::symlink("/Applications", link)
+        .map_err(|e| format!("cannot link /Applications: {e}"))
+}
+
+#[cfg(not(unix))]
+fn link_applications(_link: &Path) -> Result<()> {
+    Err("bundle-mac runs on macOS only".into())
+}
+
+/// Homebrew installs libraries read-only; `install_name_tool` must rewrite the copy.
+#[cfg(unix)]
+fn make_writable(path: &Path) -> Result<()> {
+    let mut permissions = fs::metadata(path)
+        .map_err(|e| format!("cannot read {}: {e}", path.display()))?
+        .permissions();
+    std::os::unix::fs::PermissionsExt::set_mode(&mut permissions, 0o644);
+    fs::set_permissions(path, permissions)
+        .map_err(|e| format!("cannot make {} writable: {e}", path.display()))
+}
+
+#[cfg(not(unix))]
+fn make_writable(_path: &Path) -> Result<()> {
+    Err("bundle-mac runs on macOS only".into())
+}
+
 pub fn run(_args: &[String]) -> Result<()> {
     if !cfg!(target_os = "macos") {
         return Err("bundle-mac runs on macOS only".into());
@@ -98,8 +127,7 @@ pub fn run(_args: &[String]) -> Result<()> {
             &path_text(&staging.join(format!("{APP_NAME}.app")))?,
         ],
     )?;
-    std::os::unix::fs::symlink("/Applications", staging.join("Applications"))
-        .map_err(|e| format!("cannot link /Applications: {e}"))?;
+    link_applications(&staging.join("Applications"))?;
     write(&staging.join("Read Me.txt"), READ_ME)?;
     let dmg = dist.join(format!("DataMining-{version}.dmg"));
     tool(
@@ -391,12 +419,7 @@ fn bundle_libraries(executables: &[PathBuf], contents: &Path) -> Result<()> {
         let copied = frameworks.join(name);
         copy(Path::new(library), &copied)?;
         // Homebrew installs libraries read-only; install_name_tool must rewrite the copy.
-        let mut permissions = fs::metadata(&copied)
-            .map_err(|e| format!("cannot read {}: {e}", copied.display()))?
-            .permissions();
-        std::os::unix::fs::PermissionsExt::set_mode(&mut permissions, 0o644);
-        fs::set_permissions(&copied, permissions)
-            .map_err(|e| format!("cannot make {} writable: {e}", copied.display()))?;
+        make_writable(&copied)?;
         tool(
             "install_name_tool",
             &[
