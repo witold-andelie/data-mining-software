@@ -445,5 +445,8 @@ in `Contents/Frameworks`, so they can be replaced. Their licence texts and sourc
 
 ## Acknowledgements
 
-The work rests on public material: IBM's published *Algorithms Guide* and manuals, the Data Mining Group's PMML
+The author thanks the [REA](https://github.com/morluto/rea) project (*Reverse Engineer Anything*, by morluto, MIT
+licence).
+
+The work also rests on public material: IBM's published *Algorithms Guide* and manuals, the Data Mining Group's PMML
 standard, ITU-T X.891 (Fast Infoset), the Rust ecosystem, and the egui project and its libraries.
