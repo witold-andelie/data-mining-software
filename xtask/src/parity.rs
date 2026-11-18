@@ -37,6 +37,10 @@ fn render() -> String {
     );
     let _ = writeln!(
         out,
+        "Status `done (no oracle)`: implemented from the public algorithm, but Modeler could not run the node (licence blocked or not installed), so the result is NOT checked against Modeler.\n"
+    );
+    let _ = writeln!(
+        out,
         "Status `done (output unverified)`: settings and the records reaching the node match Modeler, but Modeler cannot export the node's own output in batch.\n"
     );
     let _ = writeln!(out, "| Scope | Implemented | Total |\n|---|---|---|");
@@ -62,7 +66,9 @@ fn render() -> String {
             palette.label()
         );
         for spec in NODES.iter().filter(|spec| spec.palette == palette) {
-            let status = if nodes::is_statistical(spec.id) {
+            let status = if nodes::is_no_oracle(spec.id) {
+                "done (no oracle)"
+            } else if nodes::is_statistical(spec.id) {
                 "done (statistical)"
             } else if nodes::is_output_unverified(spec.id) {
                 "done (output unverified)"

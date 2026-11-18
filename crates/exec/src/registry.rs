@@ -189,6 +189,16 @@ pub fn is_output_unverified(catalog_id: &str) -> bool {
     OUTPUT_UNVERIFIED.contains(&catalog_id)
 }
 
+/// Implemented from the public algorithm, but Modeler could not run the node (its licence is blocked,
+/// or the oracle's install lacks it), so there is no expected answer to compare with. These nodes are
+/// *unverified*: they never count as matching Modeler, and `cargo xtask parity` lists them apart.
+const NO_ORACLE: &[&str] = &[];
+
+/// Whether an implemented node has no Modeler oracle at all (implemented, unverified).
+pub fn is_no_oracle(catalog_id: &str) -> bool {
+    NO_ORACLE.contains(&catalog_id)
+}
+
 /// Nodes the planner implements itself, without an operator (supernodes are expanded).
 const PLANNED: &[&str] = &["supernode"];
 

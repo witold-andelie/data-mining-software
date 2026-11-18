@@ -4,6 +4,8 @@
 
 Status `done (statistical)`: trained to statistical, not exact, parity with Modeler (`docs/statistical-parity.md`).
 
+Status `done (no oracle)`: implemented from the public algorithm, but Modeler could not run the node (licence blocked or not installed), so the result is NOT checked against Modeler.
+
 Status `done (output unverified)`: settings and the records reaching the node match Modeler, but Modeler cannot export the node's own output in batch.
 
 | Scope | Implemented | Total |

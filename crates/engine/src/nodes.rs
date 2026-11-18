@@ -12,6 +12,11 @@ pub fn is_statistical(catalog_id: &str) -> bool {
     dms_exec::registry::is_statistical(catalog_id)
 }
 
+/// Implemented from the public algorithm with no Modeler oracle to compare with (unverified).
+pub fn is_no_oracle(catalog_id: &str) -> bool {
+    dms_exec::registry::is_no_oracle(catalog_id)
+}
+
 /// Implemented, but Modeler cannot export the node's own output in batch to compare it.
 pub fn is_output_unverified(catalog_id: &str) -> bool {
     dms_exec::registry::is_output_unverified(catalog_id)
