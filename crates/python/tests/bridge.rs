@@ -269,6 +269,9 @@ fn churn() -> Table {
 #[test]
 fn a_random_forest_trains_saves_and_scores() {
     let Some(python) = python() else { return };
+    if !modules_load(&["sklearn"]) {
+        return;
+    }
     let data = churn();
     let parameters = serde_json::json!({
         "kind": "random_forest",
@@ -317,6 +320,9 @@ fn a_random_forest_trains_saves_and_scores() {
 #[test]
 fn clustering_and_anomaly_models_score_every_record() {
     let Some(python) = python() else { return };
+    if !modules_load(&["sklearn", "hdbscan"]) {
+        return;
+    }
     let data = churn();
     for (kind, fields) in [
         ("gaussian_mixture", ["$GMM-m", "$GMMP-m"]),
@@ -341,20 +347,33 @@ fn clustering_and_anomaly_models_score_every_record() {
     }
 }
 
-/// Whether xgboost imports in this Python (its native library needs OpenMP on macOS).
-fn xgboost_loads() -> bool {
-    let loads = dms_python::detect(None, &CancelToken::new())
-        .is_ok_and(|info| matches!(info.packages.get("xgboost"), Some(Some(_))));
-    if !loads {
-        eprintln!("skipped: xgboost does not import in this Python");
+/// Whether these optional libraries import in this Python (`sklearn`, `xgboost`, `hdbscan`,
+/// `imblearn`; xgboost's native library also needs OpenMP on macOS). Says which ones do not,
+/// so a skipped test is visible in `--nocapture` runs.
+fn modules_load(modules: &[&str]) -> bool {
+    let Ok(info) = dms_python::detect(None, &CancelToken::new()) else {
+        eprintln!("skipped: no usable Python");
+        return false;
+    };
+    let missing: Vec<&str> = modules
+        .iter()
+        .copied()
+        .filter(|name| !matches!(info.packages.get(*name), Some(Some(_))))
+        .collect();
+    if !missing.is_empty() {
+        eprintln!(
+            "skipped: {} does not import {}",
+            info.command.display(),
+            missing.join(", ")
+        );
     }
-    loads
+    missing.is_empty()
 }
 
 #[test]
 fn xgboost_tree_and_linear_classify_and_regress() {
     let Some(python) = python() else { return };
-    if !xgboost_loads() {
+    if !modules_load(&["xgboost"]) {
         return;
     }
     let data = churn();
@@ -403,6 +422,9 @@ fn xgboost_tree_and_linear_classify_and_regress() {
 #[test]
 fn smote_balances_the_target_and_tsne_embeds_in_two_dimensions() {
     let Some(python) = python() else { return };
+    if !modules_load(&["sklearn", "imblearn"]) {
+        return;
+    }
     let data = churn();
     let before = data
         .rows()
@@ -458,6 +480,9 @@ fn smote_balances_the_target_and_tsne_embeds_in_two_dimensions() {
 #[test]
 fn an_extension_model_runs_the_users_build_and_score_scripts() {
     let Some(python) = python() else { return };
+    if !modules_load(&["sklearn"]) {
+        return;
+    }
     let data = churn();
     let build = "from sklearn.tree import DecisionTreeClassifier\nX = modelerData[['age']].fillna(0).astype(float)\nmodelerModel = DecisionTreeClassifier(random_state=0).fit(X, modelerData['churn'].astype(str))\nprint('depth', modelerModel.get_depth())\n";
     let score = "X = modelerData[['age']].fillna(0).astype(float)\nmodelerData['$E-churn'] = modelerModel.predict(X)\n";
@@ -499,6 +524,9 @@ fn an_extension_model_runs_the_users_build_and_score_scripts() {
 #[test]
 fn kde_simulation_draws_the_requested_records() {
     let Some(python) = python() else { return };
+    if !modules_load(&["sklearn"]) {
+        return;
+    }
     let data = churn();
     let parameters = serde_json::json!({
         "inputs": ["age"], "options": {"records": 25, "bandwidth": 2.0},

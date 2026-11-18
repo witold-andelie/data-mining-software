@@ -1,6 +1,7 @@
 //! Python Extension nodes end to end through engine commands: add, set the script, connect,
-//! save as .dms, reopen, run. Skipped (with a message) when no Python with pyarrow and pandas
-//! is found.
+//! save as .dms, reopen, run. Each test is skipped (with a message) when no Python with pyarrow
+//! and pandas is found, or when a library the test's nodes use (scikit-learn, imbalanced-learn)
+//! is not installed.
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,
@@ -12,6 +13,36 @@ use dms_engine::session::{Arg, RunNotice, Session};
 use dms_exec::schema::ParamValue;
 use dms_exec::{ErrorKind, NodeOutput};
 use std::time::{Duration, Instant};
+
+/// Whether Python is usable and has these importable modules (`sklearn`, `imblearn`, ...).
+/// Says why on standard error when not, so a skipped test is visible in `--nocapture` runs.
+fn python_has(modules: &[&str]) -> bool {
+    let info = match dms_python::detect(None, &Default::default()) {
+        Ok(info) => info,
+        Err(error) => {
+            eprintln!("skipped: {error}");
+            return false;
+        }
+    };
+    if let Err(error) = info.check() {
+        eprintln!("skipped: {error}");
+        return false;
+    }
+    let missing: Vec<&str> = modules
+        .iter()
+        .copied()
+        .filter(|name| !matches!(info.packages.get(*name), Some(Some(_))))
+        .collect();
+    if !missing.is_empty() {
+        eprintln!(
+            "skipped: {} is missing the Python modules {}",
+            info.command.display(),
+            missing.join(", ")
+        );
+        return false;
+    }
+    true
+}
 
 fn add(session: &mut Session, kind: &str, x: i64) -> String {
     session
@@ -155,8 +186,7 @@ fn nuggets(session: &Session, builder: &str) -> Vec<String> {
 
 #[test]
 fn a_random_forest_generates_a_nugget_that_scores_and_survives_saving() {
-    if let Err(error) = dms_python::resolve(None, &Default::default()) {
-        eprintln!("skipped: {error}");
+    if !python_has(&["sklearn"]) {
         return;
     }
     let mut session = Session::new();
@@ -275,8 +305,7 @@ fn output(session: &Session, uid: &str) -> NodeOutput {
 
 #[test]
 fn extension_model_tsne_smote_and_kde_simulation_run_as_nodes() {
-    if let Err(error) = dms_python::resolve(None, &Default::default()) {
-        eprintln!("skipped: {error}");
+    if !python_has(&["sklearn", "imblearn"]) {
         return;
     }
     let mut session = Session::new();
