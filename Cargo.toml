@@ -6,7 +6,7 @@ members = ["crates/*", "apps/*", "xtask"]
 version = "0.5.0"
 edition = "2024"
 rust-version = "1.95"
-license = "LicenseRef-Proprietary"
+license = "PolyForm-Noncommercial-1.0.0"
 publish = false
 
 [workspace.dependencies]
