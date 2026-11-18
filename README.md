@@ -1,107 +1,77 @@
-# Data Mining (data-mining-software)
+# Data Mining
 
-A lightweight data-mining workbench written in Rust that targets the single-machine
-feature set of IBM SPSS Modeler 19: visual stream building, data preparation, modelling,
-evaluation and export. It opens existing Modeler `.str` stream files, runs them with results
-checked against Modeler itself, and saves streams in its own reviewable text format (`.dms`).
+[![License: proprietary](https://img.shields.io/badge/license-proprietary%20(internal)-lightgrey.svg)](#license)
+![Rust 1.95](https://img.shields.io/badge/rust-1.95.0-orange.svg)
+![Platforms](https://img.shields.io/badge/platforms-macOS%20(Apple%20silicon)%20%7C%20Windows%20x64-blue.svg)
+![Version](https://img.shields.io/badge/version-0.5.0-informational.svg)
+![Status](https://img.shields.io/badge/status-internal%20use-lightgrey.svg)
 
-The target platforms are Windows (x64) and Apple-silicon macOS. The user interface is native
-Rust (egui): no Electron, Tauri, WebView or WebAssembly.
+Source code, regression suite and verification records of **Data Mining**, a data-mining workbench written in Rust
+that targets the single-machine feature set of IBM SPSS Modeler 19. It opens existing Modeler `.str` streams, runs
+them, and saves streams in its own reviewable text format (`.dms`). Every number in this README is produced by a
+command in this repository (`cargo xtask regress`, `parity`, `perf`, `ci`) and carries the date it was measured.
 
-> **Internal project.** This repository is for team use and is not published. It is not
-> affiliated with, endorsed by or derived from IBM. "IBM", "SPSS" and "Modeler" are trademarks
-> of their owners and are used here only to describe compatibility.
+> **Internal project.** This repository is for team use and is not published. It is not affiliated with, endorsed
+> by or derived from IBM. "IBM", "SPSS" and "Modeler" are trademarks of their owners and are used here only to
+> describe compatibility.
 
----
+## Overview
 
-## Contents
+Modeler is the tool the team's analysis streams were built in. We needed those streams to open, run and be edited
+without it, on Windows and on Apple-silicon Macs, where Modeler's own support is poor. The project is therefore a
+**clean-room reimplementation checked as a black box**: Modeler is never inspected, only used to produce the expected
+answer for each stream, and our result must agree with it record by record.
 
-1. [Highlights](#highlights)
-2. [Clean-room implementation](#clean-room-implementation)
-3. [How close is it to Modeler?](#how-close-is-it-to-modeler)
-4. [Installing and running](#installing-and-running)
-5. [Using the desktop app](#using-the-desktop-app)
-6. [Python nodes](#python-nodes)
-7. [Command-line tool](#command-line-tool)
-8. [File formats](#file-formats)
-9. [Architecture](#architecture)
-10. [Development](#development)
-11. [Testing and verification](#testing-and-verification)
-12. [Repository layout](#repository-layout)
-13. [Documentation index](#documentation-index)
-14. [Known limitations](#known-limitations)
-15. [License](#license)
+- **Opens Modeler streams.** Decodes `.str` files (a ZIP container holding Fast Infoset XML) without Modeler
+  installed. Nodes and settings the application does not understand are kept exactly as saved and drawn with a dashed
+  outline, so nothing is lost.
+- **Runs them with verified results.** Each stream in a regression suite is run and every terminal node's input is
+  compared with Modeler's own batch export (see [Key results](#key-results)).
+- **All 85 MVP nodes**, across the standard palettes (Sources, Record Ops, Field Ops, Graphs, Modeling, Output,
+  Export), plus 20 of 24 "later" nodes, including the complete Python palette.
+- **Our own training algorithms.** C5.0, CHAID, C&R Tree, QUEST, linear and logistic regression, neural networks,
+  K-Means, TwoStep, Apriori, time series and more, implemented from published documentation.
+- **A visual editor and results viewer** (egui, no WebView): palette, canvas, generated settings forms, undo/redo,
+  autosave and crash recovery; virtual-scrolling tables, statistics documents, model summaries and charts.
+- **A Python bridge** for Extension nodes and Python modelling nodes, run in the user's own Python.
+- **English and Simplified Chinese** interface, following the system language.
 
----
+<p align="center"><img src="crates/ui/tests/snapshots/workbench_light_in_window_menu.png" width="760" alt="The main window on a synthetic stream: node palette, canvas, properties panel and results area"></p>
+<p align="center"><em>The main window on a generated stream (the screenshot test's reference image: no IBM or team data). On macOS the menu is the native menu bar.</em></p>
 
-## Highlights
+## Main contributions
 
-- **Opens Modeler streams.** Decodes `.str` files (a ZIP container holding Fast Infoset XML)
-  without Modeler installed. Nodes and settings the application does not understand are kept
-  exactly as saved and shown with a dashed outline, so nothing is lost.
-- **Runs them with verified results.** A regression suite of **1,596 corpus streams** is
-  compared record by record with Modeler's own batch output: 1,464 match exactly, 91 match to
-  statistical parity, 41 are documented known gaps, and **0 regress** (macOS, November 2026).
-- **All 85 MVP nodes implemented** across the standard palettes (Sources, Record Ops, Field
-  Ops, Graphs, Modeling, Output, Export), plus 20 of 24 "later" nodes, including the complete
-  Python palette.
-- **Our own training algorithms.** C5.0, CHAID, C&R Tree, QUEST, linear and logistic
-  regression, neural networks, K-Means, TwoStep, Apriori, time series and more are implemented
-  from the published algorithm documentation and verified against Modeler as a black box.
-- **Visual editor.** Add nodes from the palette, connect them (three gestures), edit settings
-  in generated forms or in a floating window, undo/redo, copy/paste, autosave and crash
-  recovery.
-- **Results viewer.** Large tables with virtual scrolling, statistics documents, model
-  summaries (trees, coefficients, rules), and charts for graph nodes.
-- **Python bridge.** Extension nodes and Python modelling nodes (Random Forest, XGBoost,
-  Gaussian Mixture, One-Class SVM, HDBSCAN, KDE, SMOTE, t-SNE, and user-written models) run in
-  the user's own Python, exchanging data as Apache Arrow.
-- **English and Simplified Chinese** user interface, following the system language by
-  default.
-- **Never crash.** Corrupt files, bad arguments and full disks produce errors you can act on,
-  never a crash or lost work (enforced by lints, see [Development](#development)).
+1. **A black-box verified clean room.** Every algorithm follows IBM's published *Algorithms Guide*, the user
+   manuals, the scripting guide, the CLEM reference, the PMML standard and the open literature; Modeler's programs
+   are never decompiled or opened, and no GPL code is read. Where the documentation is silent, behaviour is pinned
+   down by differential probes (change one input, observe the output) and recorded in `docs/`. See
+   [Clean room](#clean-room).
+2. **A regression suite against Modeler itself.** Streams, models and Modeler's expected outputs are pinned by
+   SHA-256 and compared cell by cell on every platform.
+3. **Two explicit parity levels.** Models whose training Modeler makes unreproducible (undocumented random number
+   generator or optimizer stopping rule) are accepted at *statistical* parity under a stated method; everything else
+   must match *exactly*. Nothing statistical is presented as exact.
+4. **An editable, diff-friendly stream model.** Reversible edits drive undo/redo; the `.dms` format is TOML text that
+   can be reviewed in git; imported settings are kept byte for byte unless the user changes them.
+5. **One engine, many front ends.** Every user-visible action is a command with an id, so menus, shortcuts, the
+   canvas, the command line and automation call the same code.
+6. **Never crash.** Corrupt files, bad arguments and full disks produce errors you can act on, not crashes or lost
+   work, enforced by lints and tests rather than by convention.
 
----
+## Key results
 
-## Clean-room implementation
-
-Every modelling algorithm in this project is implemented and trained by us. None of it is
-reverse-engineered from IBM SPSS Modeler, and no Modeler code is reused.
-
-- **We never look inside Modeler.** Its jars, DLLs and executables are never decompiled,
-  disassembled or opened. C5.0 is RuleQuest's proprietary algorithm; we have not read or
-  consulted the C5.0/See5 source code either.
-- **Only public sources.** The implementation follows IBM's published *Algorithms Guide*
-  (formulas), the user manuals, the *Python Scripting and Automation Guide* (node
-  properties), the CLEM reference, the PMML standard (DMG) and the open literature. Each
-  algorithm module's documentation cites the chapter and page it implements.
-- **Modeler is only a black-box oracle.** We prepare input data, let Modeler train and score
-  in batch mode, and use its output as the expected answer, compared cell by cell with ours.
-  Where the documentation is silent, the behaviour is pinned down only by differential
-  probes ("change one input, observe the output"), never by reading program internals.
-- **The `.str` format** is learned the same way: save a stream twice in Modeler with one
-  setting changed, compare the bytes, and record the finding in
-  [`docs/formats/str.md`](docs/formats/str.md). The decoder implements only that document.
-- **No GPL code.** GPL/LGPL/AGPL code (for example PSPP) is never read or copied. Permissively
-  licensed third-party tools are used only to generate test files.
-- **No IBM assets.** No IBM icons, wording or colours are used. IBM sample streams, team data
-  and Modeler outputs live only in the git-ignored `corpus/` and `oracle/` folders and are
-  never committed or distributed.
-
----
-
-## How close is it to Modeler?
-
-Trained models meet one of two levels of parity (details in
-[`docs/statistical-parity.md`](docs/statistical-parity.md)):
-
-| Level | Meaning | Models |
+| Question | Finding | Where |
 |---|---|---|
-| **Exact** | The trained model and its scores match Modeler bit for bit (to printed precision) | C5.0, CHAID, C&R Tree and QUEST (without an overfit-prevention set), Tree-AS, Linear, Linear-AS, Regression, Logistic, Decision List, K-Means, TwoStep, Apriori, CARMA, PCA/Factor, Anomaly, Feature Selection, RBF neural network |
-| **Statistical** | Modeler uses an undocumented random number generator or optimizer stopping rule that cannot be reproduced bit for bit. We implement the documented algorithm with our own seedable generator or a converged optimizer, and check that Modeler's result lies within the spread of our repeated runs | MLP neural network, Kohonen, LSVM, Random Trees, Time Series, Sequence, Auto Cluster, Auto Classifier, Auto Numeric, and C&R Tree / QUEST with an overfit-prevention set |
+| Does it read Modeler's streams? | Every `.str` in the corpus decodes; unknown nodes and settings are preserved and shown dashed. | `crates/strfmt`, `docs/formats/str.md` |
+| Do results match Modeler? | A regression suite of **1,597 streams** is compared with Modeler's own batch output: **1,465 match exactly, 91 match to statistical parity, 41 are documented known gaps and 0 regress** (Windows, 2026-11-18, version 0.5.0). | `xtask/corpus.tsv`, `xtask/known-gaps.tsv`, `docs/mac/` |
+| Which models are exact? | C5.0, CHAID, C&R Tree and QUEST (without an overfit-prevention set), Tree-AS, Linear, Linear-AS, Regression, Logistic, Decision List, K-Means, TwoStep, Apriori, CARMA, PCA/Factor, Anomaly, Feature Selection, RBF. | `docs/statistical-parity.md` |
+| Which are statistical? | MLP neural network, Kohonen, LSVM, Random Trees, Time Series, Sequence, Auto Cluster, Auto Classifier, Auto Numeric, and C&R Tree / QUEST with an overfit-prevention set: our result is compared with the spread of repeated runs of our own seedable implementation. | `docs/statistical-parity.md` |
+| Same answers on Windows and macOS? | Yes. On 2026-11-09 the full regression on an Apple M1 classified all 1,596 streams that both machines had exactly as on Windows, with no floating-point differences beyond the comparison tolerance (printed precision, or relative 1e-9); the merged version 0.5.0 classifies all 1,597 streams on Windows exactly as the 2026-11-09 baseline did. | `docs/mac/MAC_REPORT.md` |
+| Time-series Expert Modeler? | 92 of 93 recorded ARIMA Expert selections and 26 of 26 univariate selections are reproduced; estimation follows the Guide's Marquardt procedure and matches Modeler to 11–14 digits for single-term ARMA and airline models. Mixed ARMA starting values are open (3–4 digits). | `docs/gaps.md` |
+| Is the editor fast enough? | On an Apple M1 (release build) a canvas with 200 labelled nodes pans at 60 fps with vertical sync and 176 fps without; 1,000 nodes 177 fps; first frame about 155 ms after launch. `cargo xtask perf` enforces a p95 frame budget of 4 ms. | `docs/gui/DESIGN.md` §1, `xtask/src/perf.rs` |
+| What is not covered? | 41 documented known gaps: nodes Modeler 19 cannot run or that are out of scope (Bayes Net, SVM, Cox, Discriminant, ...), Excel fixture artifacts, unseeded Balance nodes, chaotic GLE paths and a few edge cases. | `xtask/known-gaps.tsv`, `docs/gaps.md` |
 
-Node coverage, generated from the node catalog by `cargo xtask parity`
-([`docs/parity-checklist.md`](docs/parity-checklist.md)):
+Node coverage, generated from the node catalog by `cargo xtask parity` (`docs/parity-checklist.md`):
 
 | Scope | Implemented | Total | Notes |
 |---|---|---|---|
@@ -110,52 +80,49 @@ Node coverage, generated from the node catalog by `cargo xtask parity`
 | Licence-blocked | 0 | 6 | Standard nodes the oracle's Modeler licence greys out (SVM, KNN, Bayes Net, Discriminant, GenLin, SLRM), so they cannot be verified |
 | Out of scope | 0 | 34 | IBM ecosystem, big data, in-database mining, Statistics integration |
 
-The Python nodes have no Modeler oracle: their score field names follow Modeler's naming
-conventions but are inferred (see [Python nodes](#python-nodes)).
+## Not covered, on purpose
 
----
+- **The Python nodes have no Modeler oracle.** Their score field names follow Modeler's naming but are inferred; see
+  [Python nodes](#python-nodes).
+- **Licence-blocked and out-of-scope nodes** (table above) are listed in the catalog, not hidden: the palette shows
+  them greyed out with the reason.
+- **Writing `.str` files.** Streams are imported from `.str` and saved as `.dms`; Modeler's format is never written.
 
-## Installing and running
-
-### Requirements
+## Installation
 
 | | |
 |---|---|
 | macOS | Apple silicon (`aarch64-apple-darwin`), macOS 11 or later |
-| Windows | x64 (the Windows build is maintained but tested last) |
+| Windows | x64 |
 | Rust (to build) | 1.95.0, selected automatically by `rust-toolchain.toml` |
 | Python (optional) | 3.9 or later with `pyarrow` and `pandas`, only for Python nodes |
-| ODBC | The macOS app (including its `dms-cli`) bundles the unixODBC driver manager (see [Licence note](#licence-note-bundled-odbc-libraries)). Building from source needs it installed: `brew install unixodbc`. Database nodes also need an ODBC driver for your database |
+| ODBC | The macOS app bundles the unixODBC driver manager (see [License](#license)). Building from source needs it installed (`brew install unixodbc`). Database nodes also need an ODBC driver for your database |
 
-### Install the macOS app
+### The macOS app
 
-1. Build the disk image (see below) or take `DataMining-<version>.dmg` from a teammate.
+1. Build the disk image (below) or take `DataMining-<version>.dmg` from a teammate.
 2. Open the `.dmg` and drag **Data Mining** to Applications.
-3. The app is signed ad hoc for internal use and not notarized. The first time, right-click
-   the app in Finder and choose **Open**, then confirm.
-4. Double-clicking a `.str` or `.dms` file in Finder (or using Open With) opens it in the app.
-5. Optional: the command-line tool `dms-cli` is inside the app. To run it from Terminal, link
-   it once:
-
-   ```sh
-   sudo ln -sf "/Applications/Data Mining.app/Contents/MacOS/dms-cli" /usr/local/bin/dms-cli
-   ```
+3. The app is signed ad hoc for internal use and not notarized: the first time, right-click it in Finder, choose
+   **Open**, and confirm.
+4. Double-clicking a `.str` or `.dms` file in Finder (or Open With) opens it in the app.
+5. Optional: the command-line tool is inside the app; link it once with
+   `sudo ln -sf "/Applications/Data Mining.app/Contents/MacOS/dms-cli" /usr/local/bin/dms-cli`.
 
 ### Build from source
 
 ```sh
-git clone <this repository> data-mining-software
+git clone https://github.com/witold-andelie/data-mining-software.git
 cd data-mining-software
 
 cargo run -p dms --release          # the desktop app
-cargo run -p dms-cli -- --help      # the command-line tool (prints usage)
+cargo run -p dms-cli -- --help      # the command-line tool
 
-cargo xtask bundle-mac              # macOS: target/dist/Data Mining.app and DataMining-<version>.dmg
+cargo xtask bundle-mac              # macOS only: target/dist/Data Mining.app and DataMining-<version>.dmg
 ```
 
-`bundle-mac` builds the release binaries (`dms` and `dms-cli`), copies the Homebrew ODBC
-libraries they link into the app (only approved ones; anything else fails the build), rewrites their references to point
-inside the app, adds the icon and licence files, signs ad hoc and creates the disk image.
+`bundle-mac` builds the release binaries, copies the approved Homebrew ODBC libraries into the app (anything else
+fails the build) and rewrites their references, adds the icon and licence files, signs ad hoc and creates the disk
+image.
 
 Useful app options (mainly for testing):
 
@@ -168,85 +135,54 @@ Useful app options (mainly for testing):
 | `--synthetic <n>` | Open a generated stream with `n` nodes (no data needed) |
 | `--frame-time` | Show the CPU time of each frame in the status bar |
 
----
+## Data
+
+The raw data are not in the repository. `xtask/corpus.tsv` pins every corpus file by label, relative path and SHA-256
+(**1,717 files in 83 labels**); the files themselves live in the git-ignored `corpus/` and
+`oracle/` folders.
+
+| Data | What it is | Handling | Used by |
+|---|---|---|---|
+| IBM sample streams and demo data | Streams and data shipped with Modeler 19 | Never committed; found through `DMS_MODELER_HOME` (`Demos/`) | `ibm-demos` label |
+| Team streams | Seven analysis streams and their data | Never committed | `team` label |
+| Probe streams | Streams and data our probe scripts generate from fixed seeds (`xtask/oracle/probes/`) | Recorded under `corpus/`, pinned by SHA-256 | all other labels |
+| Oracle | Modeler's exported models (PMML) and each terminal node's input (CSV), recorded in batch mode with Modeler 19.0.0.0.26 on Windows | Under `oracle/`; only `cargo xtask oracle` writes it | `regress`, `compare` |
+
+The oracle is large (about 14 GB), almost all of it in `oracle/probes/` (9.3 GB) and `oracle/sources/excel_named_range`
+(4.6 GB). A regression run needs only the remaining 175 MB. [`docs/mac/MAC_VALIDATION.md`](docs/mac/MAC_VALIDATION.md)
+describes moving that subset to another machine. Modeler is used only to produce expected answers; it is never linked,
+bundled or distributed. Recording oracles is Windows-only and needs `DMS_MODELER_HOME`
+([`docs/oracle.md`](docs/oracle.md)).
 
 ## Using the desktop app
 
-The window has a node **palette** on the left, the stream **canvas** in the middle, the
-**properties** panel on the right and the **results** panel at the bottom. Each panel can be
-hidden from the toolbar or the View menu.
+The window has a node **palette** on the left, the stream **canvas** in the middle, the **properties** panel on the
+right and the **results** panel at the bottom; each can be hidden from the toolbar or the View menu.
 
-### Building a stream
+**Building a stream.** Drag a node from the palette onto the canvas, or double-click it there (nodes not implemented
+yet are greyed out, with the reason as a tooltip). Connect two nodes by dragging from the small circle on a node's right
+edge, by holding Option (Alt on Windows) and dragging from the node, or by right-clicking and choosing **Connect From
+Here**. Drag on empty canvas to box-select, hold Space and drag to pan, delete a connection by clicking it and pressing
+Delete, and rename a node with Return (F2 on Windows).
 
-- **Add a node:** drag it from the palette onto the canvas, or double-click it in the
-  palette. Nodes that are not implemented yet are greyed out, with the reason as a tooltip.
-- **Connect two nodes**, in any of three ways:
-  - drag from the small circle on the right edge of a node to the target node;
-  - hold **Option** (Alt on Windows) and drag from the node itself;
-  - right-click the node, choose **Connect From Here**, then click the target.
-- **Move** nodes by dragging; drag on empty canvas to box-select; Shift adds to the
-  selection; hold Space and drag to pan; zoom with the toolbar, the View menu or the
-  shortcuts below.
-- **Delete a connection:** click it and press Delete, or right-click it and choose
-  **Delete Connection**.
-- **Rename a node:** select it and press Return (F2 on Windows), or use the node menu.
+**Editing settings.** Double-click a node to open its settings in a floating window with **Run** and **Close**; the
+properties panel shows the same form. Forms are generated from each node's settings schema (checkboxes, ranges,
+choices, field pickers filled from the last run, file pickers, CLEM expressions with syntax checking, tables, code
+editors). Every change is one undo step. Nodes whose settings cannot be edited yet show them read-only.
 
-### Editing settings
+**Running and results.** **Run** (⌘R) runs the whole stream, **Run Selected** (⇧⌘R) the selected node and what it
+needs, in the background with a progress bar; **Stop** (⌘.) cancels, including long model training. The results panel
+has one tab per terminal node: data tables, output documents (Statistics, Data Audit, Matrix, Means, Analysis, ...),
+model summaries, and charts for graph nodes (Histogram, Distribution, Plot, Multiplot, Time Plot, Evaluation,
+Collection, t-SNE). A failed node shows why, and nodes that did not run say which upstream node to look at. Streams
+often name data files on the machine that saved them: the app looks in the stream's folder first, then in the folders
+added with **File > Add Data Folder…**, by file name.
 
-- **Double-click a node** to open its settings in a floating window at the pointer. The window
-  has a **Run** button (Run to Here for nodes in the middle of a stream) and **Close**;
-  Escape closes it.
-- The **properties panel** shows the same form for the selected node.
-- Forms are generated from each node's settings schema: checkboxes, numbers with ranges,
-  choices, field pickers (filled from the fields that reached the node in the last run), file
-  pickers, CLEM expressions with syntax checking, tables and code editors. Every change is one
-  undo step.
-- Nodes whose settings cannot be edited yet show their settings XML read-only.
+**Saving.** Streams are saved as `.dms` (⌘S, ⇧⌘S); imported `.str` files are never overwritten. Edits are autosaved
+and unsaved streams are offered for recovery after a crash.
 
-### The node menu (right-click a node)
-
-| Item | Action |
-|---|---|
-| Edit… | Open the settings window |
-| Run | Run this terminal node |
-| Run From Here | Run every terminal node downstream of this node |
-| Run to Here | Run the stream up to this node and show its data |
-| Connect From Here | Start a connection; click the target node |
-| Disconnect | Remove all of this node's connections (one undo step) |
-| Rename… | Edit the node's name in place |
-| Cut, Copy, Paste, Duplicate, Delete | Clipboard and editing |
-
-### Running and results
-
-- **Run** (⌘R) runs the whole stream; **Run Selected** (⇧⌘R) runs the selected node and what
-  it needs. Runs happen in the background with a progress bar; **Stop** (⌘.) cancels,
-  including long model training.
-- After a run, nodes are marked as succeeded or failed. The results panel has one tab per
-  terminal node: data tables (virtual scrolling for millions of rows), output documents
-  (Statistics, Data Audit, Matrix, Means, Analysis, ...), model summaries, and charts for
-  graph nodes (Histogram, Distribution, Plot, Multiplot, Time Plot, Evaluation, Collection,
-  t-SNE), with a Chart/Data toggle.
-- A failed node shows why, and nodes that did not run because something upstream failed say
-  which node to look at.
-- **Data folders.** Streams often name data files on the machine that saved them. The app
-  looks in the stream's own folder first, then in the folders added with **File > Add Data
-  Folder…** (also in Settings), searching by file name.
-
-### Saving, autosave and recovery
-
-- Streams are saved in the native `.dms` format (⌘S, ⇧⌘S). Imported `.str` files are never
-  overwritten; saving asks for a `.dms` name.
-- Edits are autosaved in the background. After a crash or forced quit, the app offers to
-  recover unsaved streams on the next start.
-
-### Settings (⌘,)
-
-- **Language:** System, English or 简体中文.
-- **Data folders:** add or remove the extra search folders.
-- **Python:** the Python executable for Python nodes (empty: find one automatically) and a
-  **Check Python** button that shows the version and which packages are installed.
-
-### Keyboard shortcuts
+**Settings** (⌘,): language (System, English, 简体中文), data folders, and the Python executable with a **Check Python**
+button.
 
 | Action | macOS | Windows |
 |---|---|---|
@@ -254,32 +190,22 @@ hidden from the toolbar or the View menu.
 | Save / Save As | ⌘S / ⇧⌘S | Ctrl+S / Ctrl+Shift+S |
 | Undo / Redo | ⌘Z / ⇧⌘Z | Ctrl+Z / Ctrl+Shift+Z |
 | Cut / Copy / Paste / Duplicate | ⌘X / ⌘C / ⌘V / ⌘D | Ctrl+X / Ctrl+C / Ctrl+V / Ctrl+D |
-| Select all | ⌘A | Ctrl+A |
-| Delete | ⌫ | Delete |
-| Rename | ↩ | F2 |
-| Run stream / Run selected | ⌘R / ⇧⌘R | Ctrl+R / Ctrl+Shift+R |
-| Stop | ⌘. | Escape |
+| Run stream / Run selected / Stop | ⌘R / ⇧⌘R / ⌘. | Ctrl+R / Ctrl+Shift+R / Escape |
 | Zoom in / out / to fit | ⌘= / ⌘- / ⌘0 | Ctrl+= / Ctrl+- / Ctrl+0 |
+| Rename / Delete | ↩ / ⌫ | F2 / Delete |
 | Full screen | ⌃⌘F | F11 |
-| Settings | ⌘, | — |
 
-On macOS the menu bar is the native one; on Windows the same menus are drawn in the window.
-Both are generated from one command table, so every menu item has a command id that the UI,
-the command line and automation all use.
-
----
+On macOS the menu bar is the native one; on Windows the same menus are drawn in the window. Both are generated from
+one command table.
 
 ## Python nodes
 
-Python nodes run in **your own Python**, as a separate process. No Python is bundled and
-libpython is not linked. Data goes to Python and back as Apache Arrow files in a private
-temporary folder; scripts see a pandas DataFrame. Full design:
+Python nodes run in **your own Python**, as a separate process: no Python is bundled and libpython is not linked. Data
+goes to Python and back as Apache Arrow files in a private temporary folder; scripts see a pandas DataFrame. Design:
 [`docs/python-bridge.md`](docs/python-bridge.md).
 
-### Setup
-
 ```sh
-python3 -m pip install pyarrow pandas            # required by every Python node
+python3 -m pip install pyarrow pandas            # every Python node
 python3 -m pip install scikit-learn              # Random Forest, GMM, One-Class SVM, KDE, t-SNE
 python3 -m pip install xgboost                   # XGBoost Tree / Linear
 python3 -m pip install hdbscan                   # HDBSCAN
@@ -287,76 +213,36 @@ python3 -m pip install imbalanced-learn          # SMOTE
 brew install libomp                              # macOS only: OpenMP runtime xgboost needs
 ```
 
-The app looks for Python in this order: the path chosen in Settings; `DMS_PYTHON`; on macOS
-`/opt/homebrew/bin/python3` and `/usr/local/bin/python3` (apps opened from Finder get a short
-`PATH`); then `python3` and `python` (`py -3`, `python`, `python3` on Windows). A configured
-path that does not work is reported, never silently replaced. Missing Python or packages
-produce a message with the exact install command, for example
-`/usr/local/bin/python3 -m pip install xgboost`.
+The app looks for Python in this order: the path in Settings; `DMS_PYTHON`; on macOS `/opt/homebrew/bin/python3` and
+`/usr/local/bin/python3` (apps opened from Finder get a short `PATH`); then `python3` and `python` (`py -3` first on
+Windows). A configured path that does not work is reported, never silently replaced, and missing packages produce the
+exact install command.
 
-### Script API (Extension nodes)
+**Extension scripts** see `modelerData` (the input as a pandas DataFrame, `None` in Extension Import),
+`modelerDataModel` (a list of `{name, storage, measurement, role}`) and `print(...)` (the Extension Output result).
+Import and Transform scripts leave their result in `modelerData`; errors report the line of your script.
 
-| Name | Meaning |
-|---|---|
-| `modelerData` | The input as a pandas DataFrame (`None` in Extension Import). Integers use nullable `Int64`, reals `Float64`, text `string`; dates are `datetime.date`, times `datetime.time`, timestamps `datetime64[us]` |
-| `modelerDataModel` | The input fields: a list of `{name, storage, measurement, role}` |
-| `print(...)` | The script's text output (the Extension Output node's result) |
+| Palette | Node | Library |
+|---|---|---|
+| Sources / Record Ops | Extension Import, Extension Transform | your script |
+| Record Ops | SMOTE | imbalanced-learn |
+| Graphs | t-SNE | scikit-learn |
+| Modeling | Random Forest, Gaussian Mixture, One-Class SVM, KDE | scikit-learn |
+| Modeling | XGBoost Tree, XGBoost Linear | xgboost |
+| Modeling | HDBSCAN | hdbscan |
+| Modeling | Extension Model | your build and score scripts |
+| Output / Export | Extension Output, KDE Simulation, Extension Export | your script / scikit-learn |
 
-Import and Transform scripts leave their result in `modelerData`. Measurement levels, roles
-and labels of fields that pass through unchanged are kept. Errors report the line of your
-script. Example Extension Transform script:
+As in Modeler, running a Python build node trains the model and places a **model nugget** next to it. The model is
+stored inside the stream as a pickle attachment, so it survives saving and reopening. A continuous target is regressed,
+any other is classified; with a partition field only the training partition is used.
 
-```python
-modelerData["ratio"] = (modelerData["income"] / modelerData["age"]).round(2)
-```
-
-### Node list
-
-| Palette | Node | Library | Output |
-|---|---|---|---|
-| Sources | Extension Import | your script | data |
-| Record Ops | Extension Transform | your script | data |
-| Record Ops | SMOTE | imbalanced-learn (SMOTE / SMOTENC) | the original records, then synthetic records of the smaller target classes |
-| Graphs | t-SNE | scikit-learn `TSNE` | a 2-D scatter, coloured by a chosen field or the target |
-| Modeling | Random Forest | scikit-learn | nugget: `$R-<target>`, `$RP-<target>` |
-| Modeling | XGBoost Tree | xgboost (`gbtree`) | nugget: `$XT-<target>`, `$XTP-<target>` |
-| Modeling | XGBoost Linear | xgboost (`gblinear`) | nugget: `$XL-<target>`, `$XLP-<target>` |
-| Modeling | Gaussian Mixture | scikit-learn | nugget: `$GMM-<model>` (cluster), `$GMMP-<model>` |
-| Modeling | One-Class SVM | scikit-learn | nugget: `$O-<model>` (`T` = outlier), `$OP-<model>` |
-| Modeling | HDBSCAN | hdbscan | nugget: `$HB-<model>` (cluster or `noise`), `$HBP-<model>` |
-| Modeling | KDE | scikit-learn `KernelDensity` | nugget: `$KDE-<model>` (log density) |
-| Modeling | Extension Model | your build and score scripts | nugget: the fields your score script adds |
-| Output | Extension Output | your script | the printed text |
-| Output | KDE Simulation | scikit-learn `KernelDensity` | records drawn from the density of the inputs |
-| Export | Extension Export | your script | writes files itself; passes its input on |
-
-### Python models and nuggets
-
-Like in Modeler, running a Python build node trains the model and then places a **model
-nugget** next to it, connected to the same input. The nugget scores every record with the
-saved model. The model is stored inside the stream (a pickle attachment), so it survives
-saving and reopening; training again updates the same nugget. Generating the nugget is one
-undo step.
-
-- Fields come from the Type node's roles by default (Target; Input and Both); tick
-  **Explicit model fields** to choose them in the node.
-- With a partition field, only the training partition is used for training (switchable).
-- A continuous target is regressed; any other target is classified.
-- **Extension Model:** the build script leaves its model in `modelerModel`; the score script
-  receives `modelerModel` and adds fields to `modelerData`. The score script is saved with the
-  model, so changing it requires running the build node again.
-
-> **Security.** Running a stream runs the Python code in it, and loading a saved Python model
-> unpickles it (which can also run code), with your permissions. This is the same trust
-> model as Modeler: only run streams you trust.
-
----
+> **Security.** Running a stream runs the Python code in it, and loading a saved Python model unpickles it, which can
+> also run code, with your permissions. This is the same trust model as Modeler: only run streams you trust.
 
 ## Command-line tool
 
-`dms-cli` works without the desktop window. On macOS it ships inside the app
-(`Data Mining.app/Contents/MacOS/dms-cli`, see [Install the macOS app](#install-the-macos-app));
-from source, `cargo run -p dms-cli -- <command>`.
+`dms-cli` works without the window (on macOS it ships inside the app; from source use `cargo run -p dms-cli -- <command>`):
 
 ```text
 dms-cli xml <file.str>                 print the decoded stream document as XML
@@ -368,205 +254,196 @@ dms-cli run <file.str|file.dms> --out <dir> [--data-dir <dir>]... [--terminal-or
                                        node to <dir>/<uid>.csv and a report to <dir>/run.json
 ```
 
-Export nodes write under `<dir>/exports/`, never over the paths saved in the stream. Python
-nodes use `DMS_PYTHON` or find a Python as described above.
-
----
+Export nodes write under `<dir>/exports/`, never over the paths saved in the stream.
 
 ## File formats
 
 | Format | Read | Write | Notes |
 |---|---|---|---|
-| Modeler stream `.str` | ✓ | — | ZIP + Fast Infoset (ITU-T X.891); unknown nodes and settings are preserved; see [`docs/formats/str.md`](docs/formats/str.md) |
-| Native stream `.dms` | ✓ | ✓ | TOML text, diff-friendly; attachments (models, extension settings) as base64; saved atomically |
+| Modeler stream `.str` | ✓ | — | ZIP + Fast Infoset (ITU-T X.891); unknown nodes and settings preserved; `docs/formats/str.md` |
+| Native stream `.dms` | ✓ | ✓ | TOML text; attachments (models, extension settings) as base64; saved atomically |
 | Delimited text, fixed-width | ✓ | ✓ | Var. File, Fixed File, Flat File export |
 | SPSS Statistics `.sav` / `.zsav` | ✓ | ✓ | Our own reader and writer |
-| Excel `.xlsx` | ✓ | ✓ | |
-| SAS | ✓ | ✓ | |
-| JSON, XML | ✓ | ✓ | |
+| Excel `.xlsx`, SAS, JSON, XML | ✓ | ✓ | |
 | Databases (ODBC) | ✓ | ✓ | Needs an ODBC driver manager |
 | PMML 4.3 | ✓ | — | Model nuggets in `.str` files score from their saved PMML |
 
----
+## Reproducing the verification
 
-## Architecture
+Run these from the repository root. The regression and corpus checks need `corpus/` and `oracle/` in place (see
+[Data](#data)); the others need nothing.
 
-The workspace is split into layers. A crate may depend only on crates in lower layers, and
-nothing below the UI layer may use a GUI library; `cargo xtask layers` enforces both.
-
-| Layer | Crate | Responsibility |
-|---|---|---|
-| L0 | `dms-types` | Storage types, measurement levels, roles, missing values, values, fields, tables, cancellation |
-| L0 | `dms-strfmt` | `.str` container and Fast Infoset decoder |
-| L0 | `dms-sav` | SPSS Statistics `.sav` / `.zsav` |
-| L0 | `dms-pmml` | PMML 4.3: reading models and scoring them |
-| L1 | `dms-stream` | Stream model (nodes, links, settings kept verbatim), reversible edits, the `.dms` format |
-| L1 | `dms-clem` | CLEM expressions: parser, binding to a data model, evaluation |
-| L2 | `dms-catalog` | Every Modeler 19 node and how stream nodes map to it |
-| L2 | `dms-io` | Data files and databases |
-| L2 | `dms-algo` | Training algorithms (trees, regression, clustering, neural networks, time series, ...) |
-| L2 | `dms-python` | Python bridge: environment detection, subprocess, Arrow exchange, model training and scoring |
-| L3 | `dms-exec` | Executor: plans a stream and runs its nodes; settings schemas; cancellation |
-| L4 | `dms-engine` | Session, command registry, undo/redo, background jobs, autosave, saving Python models |
-| L6 | `dms-ui` | egui canvas, panels, settings forms, results, charts, translations |
-| L6 | `dms-macos-open` | Files macOS asks the app to open (the only crate allowed `unsafe`) |
-| apps | `dms` | Desktop application (eframe, native menus on macOS) |
-| apps | `dms-cli` | Command-line tool |
-| tools | `xtask` | CI gates, parity checklist, corpus, oracle, regression, perf, bundling |
-
-Design principles:
-
-- **Everything is a command.** Every user-visible action is an engine command with an id
-  (`file.save`, `node.connect`, `run.node`, ...). Menus, shortcuts, the canvas, the command
-  line and automation all call commands by id; commands never open dialogs themselves.
-- **Data types are runtime data.** Storage, measurement level, role, missing values and date
-  baselines are never hard-coded.
-- **Settings are kept verbatim.** Imported settings are preserved byte for byte unless the
-  user changes them; forms read and write them through per-node schemas.
-- **Long work is cancellable.** Execution and training check a shared cancel token; Python
-  processes are killed on Stop.
-
-More: [`docs/architecture.md`](docs/architecture.md) and [`docs/gui/DESIGN.md`](docs/gui/DESIGN.md).
-
----
-
-## Development
-
-### Toolchain and dependencies
-
-- Rust 1.95.0 (`rust-toolchain.toml`), edition 2024.
-- New dependencies must be permissively licensed (MIT, Apache-2.0, BSD, ISC, Zlib, BSL-1.0,
-  Unicode-3.0, CC0; MPL-2.0 only for test-only dependencies), pinned, and registered in
-  [`docs/gui/DESIGN.md`](docs/gui/DESIGN.md) §9.1 and the workspace `Cargo.toml`.
-
-### Common commands
+| Check | Command | Needs | Measured time |
+|---|---|---|---|
+| All build gates | `cargo xtask ci` | nothing | about 2.5 min on an M1 (warm build) |
+| Corpus integrity | `cargo xtask corpus verify` | `corpus/` | seconds |
+| Corpus-backed tests | `cargo xtask test-corpus` | `corpus/`, `oracle/probes/` | about 2 min (M1) |
+| Full regression | the command below | `corpus/`, `oracle/` (without `probes/`, `excel_named_range`) | about 7 min (M1, `--jobs 4`) |
+| One stream against its oracle | `cargo xtask compare <label> <file>.str` (file name only) | `corpus/`, `oracle/` | seconds |
+| Compare two platforms | `python3 docs/mac/compare_baseline.py docs/mac/windows-baseline.tsv <mac.tsv>` | two regress `--out` files | seconds |
+| Canvas frame budget | `cargo xtask perf` | nothing | seconds |
 
 ```sh
-cargo xtask ci                 # fmt, clippy -D warnings, all tests, layers, parity: run before every commit
-cargo xtask layers             # check the dependency layers
-cargo xtask parity [--check]   # regenerate docs/parity-checklist.md from the catalog
-cargo xtask perf               # canvas frame-time budget (200 nodes, p95 <= 4 ms)
-cargo xtask bundle-mac         # build the .app and .dmg (macOS)
-
-cargo xtask corpus verify      # check the local corpus against xtask/corpus.tsv (SHA-256)
-cargo xtask corpus sync <label> <dir>
-cargo xtask test-corpus        # corpus-backed tests (behind each crate's `corpus` feature)
-cargo xtask regress [--label <label>]... [--jobs <n>] [--via-dms] [--out <file>]
-cargo xtask compare ...        # compare one stream's output with its oracle
-cargo xtask oracle <label> <path>   # Windows + Modeler only: record expected answers
-cargo xtask probe <name>            # Windows + Modeler only: differential format probe
+labels=$(awk -F'\t' 'NR>1 && $1!~/^#/ {print $1}' xtask/corpus.tsv | sort -u \
+  | grep -vx -e database -e probes | sed 's/^/--label /' | tr '\n' ' ')
+cargo xtask regress $labels --jobs 4 --out target/regress.tsv
 ```
 
-### Rules
+Do not run `regress` without labels, or with the `database` label, on a machine with the Access ODBC driver: it opens
+a modal dialog and hangs. Do not edit source files while a regression runs; later streams fail to build and show up as
+false regressions.
 
-- **Never crash.** Non-test code may not use `unwrap`, `expect`, `panic!`, `unreachable!`,
-  `todo!` or `unimplemented!` (workspace lints), and `unsafe` is forbidden outside
-  `dms-macos-open`. Numbers from files and arguments are treated as hostile: checked
-  indexing, character-boundary slicing, checked or saturating arithmetic, and size limits
-  before allocating. Recursion and loops are bounded. Every crash fix comes with a test that
-  panicked before the fix; parsers have mutation fuzz tests.
-- **Errors are actionable.** Errors carry context and say what the user can do.
-- **Commits** follow Conventional Commits (`feat(exec): ...`, `fix(ui): ...`).
-- Full contributor rules: [`AGENTS.md`](AGENTS.md).
+## Verification
 
----
+- **Oracle comparison.** For every stream with an oracle, each terminal node's input is compared with Modeler's export
+  cell by cell: numbers within printed precision or relative 1e-9, text and missing values exactly. A stream is
+  `match`, `statistical` (held to the statistical-parity method), `known-gap` (listed with a reason in
+  `xtask/known-gaps.tsv`) or `regression`. The command fails on a regression and on a known-gap entry that now matches,
+  so fixed gaps are deleted instead of lingering.
+- **A change is adopted only if more oracle streams match and none regress.** Hypotheses that fit some cases and break
+  others are measured, reported and not shipped.
+- **Statistical parity** is tested by training with at least 10 seeds of our own generator: Modeler's value must lie
+  inside our seeds' range widened by 10 % of its width, and must also rank near the middle of our distribution across
+  the oracle family, so a wide band cannot hide a systematic bias. Documented outliers are asserted to stay outliers
+  (`docs/statistical-parity.md`).
+- **Platform parity.** The same regression runs on Windows and on Apple silicon and is compared stream by stream
+  (`docs/mac/`).
+- **Interface tests.** Off-screen screenshot tests (egui_kittest on wgpu) render synthetic streams only, and
+  interaction tests send real pointer and keyboard events (connecting, menus, editing, undo, settings, translations).
+  Reference images are updated only after review.
+- **Never crash.** Non-test code may not use `unwrap`, `expect`, `panic!`, `unreachable!`, `todo!` or
+  `unimplemented!` (workspace lints), and `unsafe` is forbidden outside `dms-macos-open`. Numbers from files and
+  arguments are treated as hostile; every crash fix comes with a test that panicked before the fix, and parsers have
+  mutation fuzz tests.
+- **Agent-assisted work is checked, not trusted.** Parts of the code were written with AI coding agents. Each result is
+  merged only after the coordinator reruns `cargo xtask ci` and the regression itself; the briefs and handoffs are kept
+  in `docs/gui/` and `docs/mac/`.
 
-## Testing and verification
+## Limitations
 
-| Kind | Where | What |
-|---|---|---|
-| Unit and integration tests | each crate's `src/` and `tests/` | Run by `cargo xtask ci` |
-| Corpus tests | `--features corpus`, `cargo xtask test-corpus` | Real streams and data from the local corpus |
-| Regression | `cargo xtask regress` | Runs every corpus stream with an oracle and compares each terminal node's input with Modeler's export; `--via-dms` first converts to `.dms` and back. The macOS baseline is [`docs/mac/mac-regress.tsv`](docs/mac/mac-regress.tsv) |
-| Screenshot tests | `crates/ui/tests/snapshots.rs` | Off-screen rendering (egui_kittest + wgpu) of synthetic streams; reference images are updated only after review |
-| Interaction tests | `crates/ui/tests/*.rs` | Real pointer and keyboard events: connecting, menus, editing, undo, settings forms, translations |
-| Python tests | `crates/python/tests`, `crates/engine/tests/python_nodes.rs` | Run against the local Python; skipped with a message when Python or a package is missing |
+- **Windows** builds, passes `cargo xtask ci` and the full regression, but the desktop app has not yet had a full manual
+  pass there.
+- **Supernodes** are shown and run, but cannot be edited.
+- **Settings forms** cover the most-used nodes; other nodes keep their imported settings and show them read-only.
+- **Native models are not yet turned into nuggets** after training in the app (C5.0, CHAID, ...): that needs a PMML
+  writer. Nuggets imported in `.str` files score normally; Python models do generate nuggets.
+- **Python Extension nodes from Modeler `.str` files** are kept but usually do not run: how Modeler stores their
+  settings has not been observed, and its Python extension API is Spark-based, which this application does not provide.
+- **Not implemented:** Streaming TS, GLMM, Cox, Temporal Causal Model; graphics output from Extension Output; R syntax in
+  Extension nodes.
+- **Results against Modeler:** the specific gaps are listed in [`docs/gaps.md`](docs/gaps.md).
 
-### Corpus and oracle
+## Repository structure
 
-`xtask/corpus.tsv` pins every corpus file by label, relative path and SHA-256. The files
-themselves (IBM sample streams, team streams and data) and the oracle (Modeler's exported
-models and terminal-node inputs) stay in the git-ignored `corpus/` and `oracle/` folders.
-Oracles are recorded on Windows with Modeler in batch mode (`cargo xtask oracle`, needs
-`DMS_MODELER_HOME`); see [`docs/oracle.md`](docs/oracle.md). Modeler is used only to
-produce expected answers; it is never linked, bundled or distributed.
-
----
-
-## Repository layout
-
-```text
+```
 apps/
-  dms/            desktop application (icon, macOS bundle metadata)
-  dms-cli/        command-line tool
+  dms/              desktop application (eframe; native menus and bundle metadata on macOS)
+  dms-cli/          command-line tool
 crates/
-  types/ strfmt/ sav/ pmml/          L0
-  stream/ clem/                      L1
-  catalog/ io/ algo/ python/         L2
-  exec/                              L3
-  engine/                            L4
-  ui/ macos-open/                    L6
+  types/ strfmt/ sav/ pmml/      L0  values and tables; .str container; .sav; PMML 4.3
+  stream/ clem/                  L1  stream model, reversible edits, .dms; CLEM expressions
+  catalog/ io/ algo/ python/     L2  node catalog; data files and databases; training algorithms; Python bridge
+  exec/                          L3  executor, settings schemas, cancellation
+  engine/                        L4  session, command registry, undo/redo, background jobs, autosave
+  ui/ macos-open/                L6  egui canvas, panels, forms, results, charts; Finder file opening
 docs/
-  architecture.md, gaps.md, models.md, oracle.md, python-bridge.md, statistical-parity.md, ...
-  formats/        .str format and node settings findings
-  gui/            UI design and version handoffs
-  mac/            macOS regression baseline and reports
-xtask/            developer tasks; corpus.tsv; oracle scripts and probes
-corpus/, oracle/  local only, git-ignored
+  architecture.md, gaps.md, models.md, oracle.md, python-bridge.md, statistical-parity.md, parity-checklist.md ...
+  formats/          the .str format and node-settings findings, as observed
+  gui/              interface design, dependency licences and version handoffs
+  mac/              macOS validation report, regression baselines, comparison scripts
+xtask/              developer tasks (ci, layers, parity, corpus, oracle, regress, compare, perf, bundle-mac)
+                    corpus.tsv, known-gaps.tsv, oracle scripts and probes, scorecard
+corpus/, oracle/    local only, git-ignored
 ```
 
----
+A crate may depend only on crates in lower layers, and nothing below the UI layer may use a GUI library;
+`cargo xtask layers` enforces both. Design principles:
 
-## Documentation index
+- **Everything is a command.** Menus, shortcuts, the canvas, the command line and automation call engine commands by id
+  (`file.save`, `node.connect`, `run.node`, ...); commands never open dialogs themselves.
+- **Data types are runtime data.** Storage, measurement level, role, missing values and date baselines are never
+  hard-coded.
+- **Settings are kept verbatim** unless the user changes them; forms read and write them through per-node schemas.
+- **Long work is cancellable.** Execution and training check a shared cancel token; Python processes are killed on Stop.
+
+More: [`docs/architecture.md`](docs/architecture.md), [`docs/gui/DESIGN.md`](docs/gui/DESIGN.md).
 
 | Document | Contents |
 |---|---|
 | [`AGENTS.md`](AGENTS.md) | Rules for contributors and coding agents |
 | [`ROADMAP.md`](ROADMAP.md) | Phases, key numbers, progress log |
 | [`docs/gaps.md`](docs/gaps.md) | Ordered list of open gaps |
-| [`docs/architecture.md`](docs/architecture.md) | Layers and key design decisions |
 | [`docs/parity-checklist.md`](docs/parity-checklist.md) | Every Modeler node and its status (generated) |
 | [`docs/statistical-parity.md`](docs/statistical-parity.md) | How statistical parity is tested |
 | [`docs/models.md`](docs/models.md) | Model and nugget behaviour, score fields |
-| [`docs/python-bridge.md`](docs/python-bridge.md) | Python bridge and Python nodes |
+| [`docs/python-bridge.md`](docs/python-bridge.md) | The Python bridge and Python nodes |
 | [`docs/oracle.md`](docs/oracle.md) | Recording Modeler's expected answers |
 | [`docs/formats/str.md`](docs/formats/str.md) | The `.str` file format, as observed |
-| [`docs/gui/DESIGN.md`](docs/gui/DESIGN.md) | UI design, dependencies and licences |
-| [`docs/gui/MAC_APP_PLAN.md`](docs/gui/MAC_APP_PLAN.md) | macOS app plan and versions |
+| [`docs/gui/DESIGN.md`](docs/gui/DESIGN.md) | Interface design, dependencies and licences |
 
 Some of these documents are written in Chinese.
 
----
+## Development
 
-## Known limitations
+Rust 1.95.0 (`rust-toolchain.toml`), edition 2024. New dependencies must be permissively licensed (MIT, Apache-2.0,
+BSD, ISC, Zlib, BSL-1.0, Unicode-3.0, CC0; MPL-2.0 only for test-only dependencies), pinned in the workspace
+`Cargo.toml`, and registered in [`docs/gui/DESIGN.md`](docs/gui/DESIGN.md) §9.1.
 
-- **Windows** builds and compiles in CI on macOS, but the app has not yet had a full manual
-  pass on Windows.
-- **Supernodes** are shown and run, but cannot be edited.
-- **Settings forms** cover the most-used nodes; other nodes keep their imported settings and
-  show them read-only.
-- **Native models are not yet turned into nuggets** after training in the app (C5.0, CHAID,
-  ...): that needs a PMML writer. Nuggets imported in `.str` files score normally. Python
-  models do generate nuggets.
-- **Python Extension nodes from Modeler `.str` files** are kept but usually do not run: the
-  way Modeler stores their settings has not been observed, and Modeler's Python extension API
-  is Spark-based, which this application does not provide.
-- **Not yet implemented:** Streaming TS, GLMM, Cox, Temporal Causal Model; graphics output
-  from Extension Output; R syntax in Extension nodes.
-- The specific gaps against Modeler's results are listed in [`docs/gaps.md`](docs/gaps.md).
+```sh
+cargo xtask ci                 # fmt, clippy -D warnings, all tests, layers, parity: run before every commit
+cargo xtask layers             # check the dependency layers
+cargo xtask parity [--check]   # regenerate docs/parity-checklist.md from the catalog
+cargo xtask corpus sync <label> <dir>
+cargo xtask regress [--label <label>]... [--jobs <n>] [--via-dms] [--out <file>]
+cargo xtask oracle <label> <path>   # Windows + Modeler only: record expected answers
+cargo xtask probe <name>            # Windows + Modeler only: differential format probe
+```
 
----
+Commits follow Conventional Commits (`feat(exec): ...`, `fix(ui): ...`). Errors carry context and say what the user can
+do. Full contributor rules: [`AGENTS.md`](AGENTS.md).
+
+## Clean room
+
+Every modelling algorithm in this project is implemented and trained by us. None of it is reverse-engineered from IBM
+SPSS Modeler, and no Modeler code is reused.
+
+- **We never look inside Modeler.** Its jars, DLLs and executables are never decompiled, disassembled or opened. C5.0 is
+  RuleQuest's proprietary algorithm; the C5.0/See5 source has not been consulted either.
+- **Only public sources:** IBM's published *Algorithms Guide* (formulas), the user manuals, the *Python Scripting and
+  Automation Guide* (node properties), the CLEM reference, the PMML standard (DMG) and the open literature. Each
+  algorithm module cites the chapter and page it implements.
+- **Modeler is only a black-box oracle.** We prepare input data, let Modeler train and score in batch mode, and compare
+  its output with ours cell by cell. The `.str` format is learned the same way: save a stream twice with one setting
+  changed, compare the bytes, and record the finding in [`docs/formats/str.md`](docs/formats/str.md).
+- **No GPL code.** GPL/LGPL/AGPL code (for example PSPP) is never read or copied.
+- **No IBM assets.** No IBM icons, wording or colours are used; IBM sample streams, team data and Modeler outputs stay
+  in the git-ignored `corpus/` and `oracle/` folders and are never committed or distributed.
+
+## Citation
+
+The project is internal and unpublished. If you need to refer to it:
+
+```bibtex
+@misc{ma2026datamining,
+  author = {Ma, Wentao},
+  title  = {Data Mining: a {Rust} workbench for {SPSS} {Modeler} 19 streams},
+  note   = {Internal software, version 0.5.0; code at https://github.com/witold-andelie/data-mining-software},
+  year   = {2026}
+}
+```
 
 ## License
 
-Proprietary (`LicenseRef-Proprietary`), for internal team use only. Third-party dependencies
-keep their own permissive licences, listed in [`docs/gui/DESIGN.md`](docs/gui/DESIGN.md) §9.
+Proprietary (`LicenseRef-Proprietary`), for internal team use only. Third-party dependencies keep their own permissive
+licences, listed in [`docs/gui/DESIGN.md`](docs/gui/DESIGN.md) §9.
 
-### Licence note: bundled ODBC libraries
-
-The macOS app ships two LGPL libraries as an approved exception to the permissive-only rule
-([`docs/gui/DESIGN.md`](docs/gui/DESIGN.md) §9.3): `libodbc` from unixODBC (LGPL-2.1-or-later)
-and `libltdl` from GNU libtool (LGPL-2.0-or-later), which `libodbc` needs. They are
-unmodified, dynamically linked and kept as separate files in `Contents/Frameworks`, so they
-can be replaced. Their licence texts and source locations are in
+**Bundled ODBC libraries.** The macOS app ships two LGPL libraries as an approved exception to the permissive-only rule
+([`docs/gui/DESIGN.md`](docs/gui/DESIGN.md) §9.3): `libodbc` from unixODBC (LGPL-2.1-or-later) and `libltdl` from GNU
+libtool (LGPL-2.0-or-later), which `libodbc` needs. They are unmodified, dynamically linked and kept as separate files
+in `Contents/Frameworks`, so they can be replaced. Their licence texts and source locations are in
 `Contents/Resources/Licenses/` inside the app.
+
+## Acknowledgements
+
+The work rests on public material: IBM's published *Algorithms Guide* and manuals, the Data Mining Group's PMML
+standard, ITU-T X.891 (Fast Infoset), the Rust ecosystem, and the egui project and its libraries.
