@@ -4,3 +4,5 @@
 /log/
 /corpus/
 /oracle/
+# macOS Finder metadata
+.DS_Store
