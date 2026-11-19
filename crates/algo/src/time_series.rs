@@ -59,6 +59,9 @@
 //! (errVariance to 1e-16), but no reading of the section-6 mixed start (A6.2 AR, MA from
 //! the AR(p+q) cross covariance; truncation, centering, unbiased ACF, CLS pre-fit,
 //! Hannan-Rissanen, ARMA(1,1) moments) reproduces the stopping point (best 2-4 digits).
+//! The difference is Modeler's earlier stop, not a worse optimum on our side: the exact
+//! likelihood objective at our estimates is below its value at Modeler's saved estimates in all
+//! 12 recorded probes (`exec/tests/time_series_mixed_arma.rs` guards this).
 //! Expert selection and smoothing also retain `lm`. The earlier optimum for
 //! `ts_tf_static` was closer to the likelihood maximum, but the Guide's early
 //! stop matches Modeler.
