@@ -2,25 +2,52 @@
 //! "Bayesian Networks Algorithms", pp. 41-52): Tree Augmented Naive Bayes (TAN) and Markov Blanket
 //! structure/parameter learning, BFS Markov-blanket feature selection, and posterior scoring.
 //!
-//! This implementation follows the Algorithms Guide and is **unverified** against Modeler (the
-//! Bayes Net node is licence-blocked in the oracle install).
+//! The Bayes Net node is licence-blocked in the oracle install, so there is no oracle run. The
+//! stream `ibm-demos/bayes_bankloan` and `ibm-demos/bayes_churn_retrain` do embed models Modeler
+//! trained earlier, and those are the evidence: rebuilding their training tables with the
+//! discretisation each model records and training here gives the same structure and the same
+//! tables (to 1e-12) for the TAN models of both streams and for the Markov blanket models of
+//! `bayes_bankloan`, with and without feature selection (`tests/bayes_net_oracle.rs`, local
+//! corpus). Evidence covers two data sets for TAN and one for Markov blanket; the decisions below
+//! say which choices that evidence fixed and which are still open.
 //!
-//! # Decisions the Guide does not settle
+//! # Decisions
 //!
-//! 1. **Defaults (`Settings::default`)**: The Algorithms Guide and scripting guide do not state
-//!    numeric or enum defaults for most properties. Chosen defaults: `structure_type = Tan`,
-//!    `use_feature_selection = false`, `parameter_learning_method = Bayes` (small-cell adjustment
-//!    with uninformative Dirichlet priors), `independence = Likelihood` (`G^2`),
-//!    `significance_level = 0.05`, `maximal_conditioning_set = 5`,
-//!    `missing_values = CompleteRecordsOnly` (Guide p. 51 explicitly notes complete records as the
-//!    default).
+//! Fixed by the saved Modeler models (where the Guide's text alone gives a different result):
+//!
+//! A. **TAN edge weight.** The Guide weighs an edge by the conditional mutual information. On
+//!    `bayes_bankloan` that picks `ageBins - ed` where Modeler's tree has `incomeBins - ed`. The
+//!    significance of the test of `X_i _|_ X_j | Y` (smaller p-value is the stronger edge; equal
+//!    p-values by the excess of the statistic over its degrees of freedom) reproduces the trees of
+//!    both streams, as does the excess `statistic - df` alone; the two cannot be told apart by
+//!    the evidence and this implementation uses the p-value. Pure mutual information stays wrong
+//!    on that one edge.
+//! B. **Degrees of freedom.** The Guide's `nu = (|X| - 1)(|Y| - 1)|S|` is read with the categories
+//!    that occur in each observed stratum of `S`: `nu = sum over observed strata of
+//!    (rows - 1)(columns - 1)`. With the full cardinality product the literal `RecognizeMB` drops
+//!    `employBins` from the blanket of `default` on `bayes_bankloan` (p = 0.75 against 4e-7);
+//!    Modeler keeps it.
+//! C. **Small-cell adjustment.** `N^0_ijk = 2 / (r_i q_i)` with `q_i` the number of parent
+//!    configurations that occur in the data (all 11 tables of the churn model fit with residual
+//!    1e-23; the full product `r_pi |Y|` does not).
+//! D. **v-structure order.** Rule 1 visits the non-adjacent pairs `(X_i, X_k)` in index order and,
+//!    for each pair, the common neighbours `X_j`; an arc that an earlier v-structure already
+//!    oriented is not reversed. Visiting by middle node instead orients `default -> debtincBins`
+//!    on `bayes_bankloan`; Modeler has `debtincBins -> default`.
+//!
+//! Defaults and everything else (not fixed by the evidence):
+//!
+//! 1. **Defaults (`Settings::default`)**: the declared defaults of the node as the saved streams
+//!    record them: `structure_type = Tan`, `use_feature_selection = false`,
+//!    `parameter_learning_method = Likelihood`, `independence = Likelihood` (`G^2`),
+//!    `significance_level = 0.01`, `maximal_conditioning_set = 5`, `maximum_number_inputs = 10`.
+//!    The node's `missing_values` default is pairwise; here it equals complete records unless a
+//!    value is missing, in which case it is a `GAP:`.
 //! 2. **Prim's starting node and tie-breaking (TAN, Guide p. 46)**: The Guide says "marks a
 //!    variable at random" and then roots the directed tree at `X_1`. We deterministically start
 //!    Prim's algorithm at the first selected predictor (`X_1`) and break equal-weight ties by
 //!    lowest `(marked_var_index, unmarked_var_index)` so training is deterministic.
-//! 3. **Mutual information logarithm base (TAN, Guide p. 46)**: The Guide writes `log` without
-//!    specifying the base. We use the natural logarithm `ln` (matching `G^2` on p. 49); any positive
-//!    base produces the same MWST.
+//! 3. **Superseded**: the mutual information is no longer the TAN weight (decision A).
 //! 4. **Zero-parent-count fallback during posterior scoring (Guide pp. 47, 50-51)**: The Guide
 //!    sets `theta_ijk = 0` when `N_ij = 0` under MLE. If every target category gets unnormalized
 //!    score `0` during `posterior()`, we fall back to the target marginal `theta_Y` (or uniform
@@ -43,15 +70,13 @@
 //! 8. **Markov Blanket CI test zero-expected cells & degrees of freedom (Guide p. 48)**: When
 //!    `N(s_k) = 0`, `N(x_i, s_k) = 0`, or `N(y_j, s_k) = 0`, the expected cell count is `0` and
 //!    observed count is `0`; that term contributes `0` to `chi^2` and `G^2` (avoiding `0/0`).
-//!    Degrees of freedom follow `nu = (|X| - 1)(|Y| - 1) * |S|` using variable cardinalities;
-//!    when `nu == 0`, `p = 1.0` (independent).
+//!    Degrees of freedom: decision B; when `nu == 0`, `p = 1.0` (independent).
 //! 9. **Markov Blanket skeleton search symmetry (Guide p. 49)**: For each edge `X_i - X_j` at
 //!    conditioning set size `k = 1..=maximal_conditioning_set`, we search subsets of
 //!    `ADJ_{X_i} \ {X_j}` and, if still adjacent, `ADJ_{X_j} \ {X_i}` in deterministic index
 //!    order, deleting the edge on the smallest separating set found.
 //! 10. **Markov Blanket arc orientation rules (Guide pp. 49-50)**:
-//!     - Rule 1 (v-structures) checks non-adjacent `X_i, X_k` with `X_j not in S_{X_i, X_k}` and
-//!       never creates a cycle or reverses an already-oriented edge.
+//!     - Rule 1 (v-structures): decision D.
 //!     - Rule 2 (`X_i -> X_j - X_k` -> `X_j -> X_k`) requires `X_i` and `X_k` to be non-adjacent
 //!       (Meek R1) to prevent spurious orientations in triangles.
 //!     - Rules 2 and 4 (plus cycle-avoidance `X_i -> ... -> X_j` with `X_i - X_j` -> `X_i -> X_j`)
@@ -65,9 +90,9 @@
 //!     selection is enabled, any indices in `inputs_always_selected` are guaranteed to remain in
 //!     the selected predictor set after `RecognizeMB`.
 //! 13. **Explicit `GAP:` errors**:
-//!     - `MissingValueHandling::Pairwise`: Guide p. 51 only describes "two fields in question" and
-//!       does not define 3+ variable CMI/CI tests, multi-parent CPT counts, or normalization across
-//!       varying valid record counts.
+//!     - `MissingValueHandling::Pairwise` with a missing value: Guide p. 51 only describes "two
+//!       fields in question" and does not define 3+ variable CI tests, multi-parent CPT counts, or
+//!       normalization across varying valid record counts.
 //!     - `maximum_number_inputs` when fewer than the candidate/selected predictors are allowed: the
 //!       Guide does not specify how inputs are ranked or pruned to `maximum_number_inputs`.
 
@@ -143,7 +168,8 @@ pub enum IndependenceTest {
 pub enum MissingValueHandling {
     /// Exclude records with any missing value across active fields (Guide default).
     CompleteRecordsOnly,
-    /// Pairwise exclusion ("Use only complete records" deselected): returns `GAP:`.
+    /// Pairwise exclusion ("Use only complete records" deselected). Identical to complete
+    /// records when no value is missing; with missing values it returns `GAP:`.
     Pairwise,
 }
 
@@ -175,9 +201,9 @@ impl Default for Settings {
         Self {
             structure_type: StructureType::Tan,
             use_feature_selection: false,
-            parameter_learning_method: ParameterLearningMethod::Bayes,
+            parameter_learning_method: ParameterLearningMethod::Likelihood,
             independence: IndependenceTest::Likelihood,
-            significance_level: 0.05,
+            significance_level: 0.01,
             maximal_conditioning_set: 5,
             inputs_always_selected: Vec::new(),
             maximum_number_inputs: None,
@@ -858,7 +884,9 @@ fn validate_inputs(data: &CategoricalData, settings: &Settings) -> Result<(), Ba
             )));
         }
     }
-    if settings.missing_values == MissingValueHandling::Pairwise {
+    if settings.missing_values == MissingValueHandling::Pairwise
+        && data.rows.iter().any(|row| row.iter().any(Option::is_none))
+    {
         return Err(gap(
             "pairwise missing-value handling ('Use only complete records' deselected) is not \
              defined in the Algorithms Guide for 3+ variable tests or CPT estimation",
@@ -919,87 +947,36 @@ fn extract_complete_records(data: &CategoricalData) -> Result<CleanData, BayesNe
     })
 }
 
-/// Conditional mutual information `I(X_a, X_b | Y)` (Guide p. 46).
-fn conditional_mutual_information(
-    clean: &CleanData,
-    a: usize,
-    b: usize,
-    y: usize,
-) -> Result<f64, BayesNetError> {
-    let ra = clean.cardinalities.get(a).copied().unwrap_or(0);
-    let rb = clean.cardinalities.get(b).copied().unwrap_or(0);
-    let ry = clean.cardinalities.get(y).copied().unwrap_or(0);
-    let n_f = clean.n_rows as f64;
-    if ra == 0 || rb == 0 || ry == 0 || clean.n_rows == 0 {
-        return Ok(0.0);
-    }
+/// Weight of a candidate tree edge: the significance of the test of `X_i _|_ X_j | Y`.
+///
+/// The stronger edge is the one with the smaller p-value; edges whose p-values are equal (all
+/// underflow to 0 for large samples) are ordered by the excess of the statistic over its degrees
+/// of freedom.
+#[derive(Debug, Clone, Copy, Default)]
+struct TanWeight {
+    p_value: f64,
+    excess: f64,
+}
 
-    let joint_len = ra
-        .checked_mul(rb)
-        .and_then(|v| v.checked_mul(ry))
-        .ok_or_else(|| BayesNetError::Data("CMI table size overflow".into()))?;
-    if joint_len > MAX_CPT_CELLS {
-        return Err(BayesNetError::Data(format!(
-            "CMI table size {joint_len} exceeds limit {MAX_CPT_CELLS}"
-        )));
-    }
-
-    let mut counts_aby = vec![0usize; joint_len];
-    let mut counts_ay = vec![0usize; ra * ry];
-    let mut counts_by = vec![0usize; rb * ry];
-    let mut counts_y = vec![0usize; ry];
-
-    for r in 0..clean.n_rows {
-        let va = clean.get(r, a).unwrap_or(0);
-        let vb = clean.get(r, b).unwrap_or(0);
-        let vy = clean.get(r, y).unwrap_or(0);
-        if let Some(slot) = counts_aby.get_mut((vy * ra + va) * rb + vb) {
-            *slot += 1;
-        }
-        if let Some(slot) = counts_ay.get_mut(vy * ra + va) {
-            *slot += 1;
-        }
-        if let Some(slot) = counts_by.get_mut(vy * rb + vb) {
-            *slot += 1;
-        }
-        if let Some(slot) = counts_y.get_mut(vy) {
-            *slot += 1;
+impl TanWeight {
+    fn new(stat: f64, df: f64) -> Self {
+        let p_value = if df > 0.0 && df.is_finite() {
+            crate::stats::chi_square_p(stat.max(0.0), df)
+        } else {
+            1.0
+        };
+        Self {
+            p_value,
+            excess: stat - df,
         }
     }
 
-    let mut cmi = 0.0;
-    for vy in 0..ry {
-        let ny = counts_y.get(vy).copied().unwrap_or(0);
-        if ny == 0 {
-            continue;
+    fn stronger_than(&self, other: &Self) -> bool {
+        if self.p_value < other.p_value {
+            return true;
         }
-        let ny_f = ny as f64;
-        for va in 0..ra {
-            let nay = counts_ay.get(vy * ra + va).copied().unwrap_or(0);
-            if nay == 0 {
-                continue;
-            }
-            for vb in 0..rb {
-                let naby = counts_aby
-                    .get((vy * ra + va) * rb + vb)
-                    .copied()
-                    .unwrap_or(0);
-                if naby == 0 {
-                    continue;
-                }
-                let nby = counts_by.get(vy * rb + vb).copied().unwrap_or(0);
-                if nby == 0 {
-                    continue;
-                }
-                let p_xyz = (naby as f64) / n_f;
-                let ratio = ((naby as f64) * ny_f) / ((nay as f64) * (nby as f64));
-                if ratio > 0.0 {
-                    cmi += p_xyz * ratio.ln();
-                }
-            }
-        }
+        self.p_value <= other.p_value && self.excess > other.excess
     }
-    Ok(cmi)
 }
 
 fn train_tan(
@@ -1013,14 +990,23 @@ fn train_tan(
     let mut pred_parent: Vec<Option<usize>> = vec![None; m];
 
     if m >= 2 {
-        // Compute pairwise CMI matrix I(X_i, X_j | Y).
-        let mut weights = vec![0.0f64; m * m];
+        // Edge weight of every predictor pair: the conditional test of X_i, X_j given Y.
+        let mut weights = vec![TanWeight::default(); m * m];
+        let mut test_counter = 0usize;
         for i in 0..m {
             crate::check_cancelled()?;
             let vi = predictors.get(i).copied().unwrap_or(0);
             for j in (i + 1)..m {
                 let vj = predictors.get(j).copied().unwrap_or(0);
-                let w = conditional_mutual_information(clean, vi, vj, data.target)?;
+                let (stat, df) = ci_statistic(
+                    clean,
+                    vi,
+                    vj,
+                    &[data.target],
+                    settings.independence,
+                    &mut test_counter,
+                )?;
+                let w = TanWeight::new(stat, df);
                 if let Some(slot) = weights.get_mut(i * m + j) {
                     *slot = w;
                 }
@@ -1037,7 +1023,7 @@ fn train_tan(
             *first = true;
         }
         for _step in 1..m {
-            let mut best: Option<(f64, usize, usize)> = None;
+            let mut best: Option<(TanWeight, usize, usize)> = None;
             for u in 0..m {
                 if !marked.get(u).copied().unwrap_or(false) {
                     continue;
@@ -1046,10 +1032,10 @@ fn train_tan(
                     if marked.get(v).copied().unwrap_or(true) {
                         continue;
                     }
-                    let w = weights.get(u * m + v).copied().unwrap_or(0.0);
+                    let w = weights.get(u * m + v).copied().unwrap_or_default();
                     let replace = match best {
                         None => true,
-                        Some((bw, _, _)) => w > bw,
+                        Some((bw, _, _)) => w.stronger_than(&bw),
                     };
                     if replace {
                         best = Some((w, u, v));
@@ -1189,9 +1175,11 @@ fn estimate_cpt(
             }
         }
         ParameterLearningMethod::Bayes => {
-            // Guide pp. 47, 51: N^0_ijk = 2 / (r_i * q_i), so N^0_ij = 2 / q_i.
-            let prior_cell = 2.0 / ((r as f64) * (q as f64));
-            let prior_row = 2.0 / (q as f64);
+            // Guide pp. 47, 51: N^0_ijk = 2 / (r_i * q_i), so N^0_ij = 2 / q_i, where q_i counts
+            // the parent configurations that occur in the data.
+            let observed = counts_ij.iter().filter(|&&c| c > 0).count().max(1);
+            let prior_cell = 2.0 / ((r as f64) * (observed as f64));
+            let prior_row = 2.0 / (observed as f64);
             for j in 0..q {
                 let nij = counts_ij.get(j).copied().unwrap_or(0) as f64;
                 let denom = nij + prior_row;
@@ -1223,6 +1211,24 @@ fn ci_test(
     method: IndependenceTest,
     test_counter: &mut usize,
 ) -> Result<f64, BayesNetError> {
+    let (stat, df) = ci_statistic(clean, x, y, cond, method, test_counter)?;
+    if df <= 0.0 || !df.is_finite() {
+        return Ok(1.0);
+    }
+    Ok(crate::stats::chi_square_p(stat.max(0.0), df))
+}
+
+/// The test statistic (`chi^2` or `G^2`) of `X _|_ Y | cond` and its degrees of freedom, summed
+/// over the observed strata of `cond` (see the decision list: the Guide's `|S|` is the number of
+/// observed configurations).
+fn ci_statistic(
+    clean: &CleanData,
+    x: usize,
+    y: usize,
+    cond: &[usize],
+    method: IndependenceTest,
+    test_counter: &mut usize,
+) -> Result<(f64, f64), BayesNetError> {
     *test_counter += 1;
     if *test_counter > MAX_CI_TESTS {
         return Err(BayesNetError::Data(format!(
@@ -1236,7 +1242,7 @@ fn ci_test(
     let rx = clean.cardinalities.get(x).copied().unwrap_or(0);
     let ry = clean.cardinalities.get(y).copied().unwrap_or(0);
     if rx <= 1 || ry <= 1 {
-        return Ok(1.0);
+        return Ok((0.0, 0.0));
     }
 
     let mut s_card_u128 = 1u128;
@@ -1246,11 +1252,6 @@ fn ci_test(
             .checked_mul(rz)
             .ok_or_else(|| BayesNetError::Data("conditioning set cardinality overflow".into()))?;
     }
-    let df = ((rx - 1) as f64) * ((ry - 1) as f64) * (s_card_u128 as f64);
-    if df <= 0.0 || !df.is_finite() {
-        return Ok(1.0);
-    }
-
     let xy_cells = rx
         .checked_mul(ry)
         .ok_or_else(|| BayesNetError::Data("CI contingency table overflow".into()))?;
@@ -1261,6 +1262,7 @@ fn ci_test(
     }
 
     let mut stat = 0.0f64;
+    let mut df = 0.0f64;
 
     if s_card_u128 <= 4_096 && (s_card_u128 as usize).saturating_mul(xy_cells) <= 65_536 {
         let s_card = s_card_u128 as usize;
@@ -1302,7 +1304,9 @@ fn ci_test(
                 .unwrap_or(&[]);
             let xs = counts_xs.get(s_idx * rx..(s_idx + 1) * rx).unwrap_or(&[]);
             let ys = counts_ys.get(s_idx * ry..(s_idx + 1) * ry).unwrap_or(&[]);
-            stat += stratum_stat(xys, xs, ys, ns, rx, ry, method);
+            let (st, d) = stratum_stat(xys, xs, ys, ns, rx, ry, method);
+            stat += st;
+            df += d;
         }
     } else {
         // Sparse stratum grouping for large conditioning sets.
@@ -1345,12 +1349,14 @@ fn ci_test(
                     *slot += 1;
                 }
             }
-            stat += stratum_stat(&xys, &xs, &ys, ns, rx, ry, method);
+            let (st, d) = stratum_stat(&xys, &xs, &ys, ns, rx, ry, method);
+            stat += st;
+            df += d;
             idx = end;
         }
     }
 
-    Ok(crate::stats::chi_square_p(stat.max(0.0), df))
+    Ok((stat, df))
 }
 
 fn stratum_stat(
@@ -1361,7 +1367,7 @@ fn stratum_stat(
     rx: usize,
     ry: usize,
     method: IndependenceTest,
-) -> f64 {
+) -> (f64, f64) {
     let ns_f = ns as f64;
     let mut stat = 0.0f64;
     match method {
@@ -1406,7 +1412,11 @@ fn stratum_stat(
             }
         }
     }
-    stat
+    // Degrees of freedom of the observed table: categories that occur in the stratum.
+    let rows = xs.iter().filter(|&&c| c > 0).count();
+    let cols = ys.iter().filter(|&&c| c > 0).count();
+    let df = (rows.saturating_sub(1) * cols.saturating_sub(1)) as f64;
+    (stat, df)
 }
 
 /// Calls `f` for every `k`-element subset of `pool` in lexicographical order until `f` returns
@@ -1758,21 +1768,20 @@ fn train_markov_blanket(
 
     // Arc Orientation Rules (Guide pp. 49-50).
     // Rule 1: X_i - X_j - X_k or X_i -> X_j - X_k -> X_i -> X_j <- X_k if X_j not in S_{X_i, X_k}.
-    for j in 0..m {
-        for i in 0..m {
-            if i == j {
+    for i in 0..m {
+        for k in (i + 1)..m {
+            if adj[i][k] != EdgeState::None {
                 continue;
             }
-            let ij = adj[i][j];
-            if ij != EdgeState::Undirected && ij != EdgeState::Forward {
-                continue;
-            }
-            for k in (i + 1)..m {
-                if k == j || adj[i][k] != EdgeState::None {
+            for j in 0..m {
+                if i == j || k == j {
                     continue;
                 }
+                let ij = adj[i][j];
                 let kj = adj[k][j];
-                if kj != EdgeState::Undirected && kj != EdgeState::Forward {
+                if (ij != EdgeState::Undirected && ij != EdgeState::Forward)
+                    || (kj != EdgeState::Undirected && kj != EdgeState::Forward)
+                {
                     continue;
                 }
                 if let Some(Some(sep)) = sep_set.get(i).and_then(|r| r.get(k))
@@ -2002,7 +2011,10 @@ mod tests {
         assert!((post_mle[0] - 1.0).abs() < 1e-12);
         assert!(post_mle[1].abs() < 1e-12);
 
-        let bayes_settings = Settings::default();
+        let bayes_settings = Settings {
+            parameter_learning_method: ParameterLearningMethod::Bayes,
+            ..Settings::default()
+        };
         let net_bayes = train(&data, &bayes_settings)?;
         let x1_bayes = net_bayes
             .cpt(1)
@@ -2526,15 +2538,22 @@ mod tests {
         assert!(!mb_zero.active_variables.is_empty());
 
         // 8. GAP errors: Pairwise missing handling & maximum_number_inputs pruning
-        let gap_pairwise = train(
-            &one_row,
-            &Settings {
-                missing_values: MissingValueHandling::Pairwise,
-                ..Settings::default()
-            },
+        let pairwise = Settings {
+            missing_values: MissingValueHandling::Pairwise,
+            ..Settings::default()
+        };
+        // Without a missing value pairwise deletion is complete records.
+        assert_eq!(
+            train(&one_row, &pairwise)?,
+            train(&one_row, &Settings::default())?
         );
+        let with_missing = CategoricalData {
+            variables: base_vars.clone(),
+            rows: vec![vec![Some(0), Some(1)], vec![None, Some(0)]],
+            target: 1,
+        };
         assert!(matches!(
-            gap_pairwise,
+            train(&with_missing, &pairwise),
             Err(BayesNetError::Unsupported(ref msg)) if msg.contains("GAP:")
         ));
 
