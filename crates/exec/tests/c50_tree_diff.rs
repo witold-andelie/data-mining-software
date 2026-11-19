@@ -426,6 +426,7 @@ fn model_kind(model: &Model) -> &'static str {
         Model::Sequence(_) => "sequence",
         Model::TimeSeries { .. } => "time_series",
         Model::BayesNet(_) => "bayes_net",
+        Model::Cox(_) => "cox",
         Model::Unsupported(_) => "unsupported",
     }
 }

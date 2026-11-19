@@ -631,6 +631,9 @@ fn parse_model(
         "TreeModel" => Ok(Model::Tree(parse_tree_model(node)?)),
         "RuleSetModel" => Ok(Model::RuleSet(crate::rules::parse(node)?)),
         "ClusteringModel" => Ok(Model::Clustering(parse_clustering_model(node)?)),
+        "GeneralRegressionModel" if crate::cox::is_cox(node) => {
+            Ok(Model::Cox(crate::cox::parse(node)?))
+        }
         "GeneralRegressionModel" => Ok(Model::GeneralRegression(parse_general_regression_model(
             node,
         )?)),
@@ -1354,7 +1357,7 @@ fn parse_general_regression_model(
         }
     }
 
-    let model_type = match req_attr(node, "modelType")? {
+    let mut model_type = match req_attr(node, "modelType")? {
         "regression" => GeneralModelType::Regression,
         "generalLinear" => GeneralModelType::GeneralLinear,
         "multinomialLogistic" => GeneralModelType::MultinomialLogistic,
@@ -1365,8 +1368,34 @@ fn parse_general_regression_model(
     let target_reference_category = node
         .attribute("targetReferenceCategory")
         .map(str::to_string);
-    let link_function = node.attribute("linkFunction").map(str::to_string);
-    let link_parameter = opt_f64_attr(node, "linkParameter")?;
+    let mut link_function = node.attribute("linkFunction").map(str::to_string);
+    let mut link_parameter = opt_f64_attr(node, "linkParameter")?;
+    // Modeler's Generalized Linear nugget (`modelName="GZLM"`, `modelType="generalLinear"`) states
+    // its link, link parameter and offset in `Extension`s instead of attributes.
+    if model_type == GeneralModelType::GeneralLinear && node.attribute("modelName") == Some("GZLM")
+    {
+        let extension = |name: &str| {
+            node.children()
+                .find(|c| c.has_tag_name("Extension") && c.attribute("name") == Some(name))
+                .and_then(|c| c.attribute("value"))
+        };
+        if let Some(link) = extension("link") {
+            model_type = GeneralModelType::GeneralizedLinear;
+            link_function = Some(link.to_string());
+            link_parameter = extension("linkParameter")
+                .map(|v| parse_f64(v, "GZLM linkParameter"))
+                .transpose()?;
+            if extension("offsetValue")
+                .map(|v| parse_f64(v, "GZLM offsetValue"))
+                .transpose()?
+                .is_some_and(|offset| offset != 0.0)
+            {
+                return Err(PmmlError::Unsupported(
+                    "Generalized Linear model with an offset".into(),
+                ));
+            }
+        }
+    }
 
     let mut parameters = Vec::new();
     let mut factors = Vec::new();

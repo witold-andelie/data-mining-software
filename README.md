@@ -117,6 +117,7 @@ answer for each stream, and our result must agree with it record by record.
 | Same answers on Windows and macOS? | Yes. On 2026-11-09 the full regression on an Apple M1 classified all 1,596 streams that both machines had exactly as on Windows, with no floating-point differences beyond the comparison tolerance (printed precision, or relative 1e-9); the merged version 0.5.0 classifies all 1,597 streams on Windows exactly as the 2026-11-09 baseline did. | `docs/mac/windows-baseline.tsv`, `docs/mac/compare_baseline.py` |
 | Time-series Expert Modeler? | 92 of 93 recorded ARIMA Expert selections and 26 of 26 univariate selections are reproduced; estimation follows the Guide's Marquardt procedure and matches Modeler to 11–14 digits for single-term ARMA and airline models. Mixed ARMA starting values are open (estimates agree to 2–4 digits). | [Known gaps](#known-gaps-and-their-impact) |
 | Does Bayes Net work, if Modeler cannot run it? | Yes, from the public algorithm (TAN and Markov blanket). Two demo streams embed Bayes Net models Modeler trained earlier, so the learner is checked against them: it reproduces their structure and every probability table (to 1e-12) for TAN on two data sets and Markov blanket on one. That check found four places where the Guide's text alone gave a different network; they are fixed and listed in the module. Scores written by the nugget have no Modeler run to compare with. | `crates/algo/src/bayes_net.rs`, `crates/algo/tests/bayes_net_oracle.rs` |
+| Do Cox and Generalized Linear work, if Modeler cannot run them? | Yes, from the public algorithms. Demo streams embed models Modeler trained, so the trainers are checked against them: Cox reproduces 12 coefficients (to 4e-15) and the 64-point baseline hazard (to 4e-11), and its stepwise selection picks exactly the saved terms; Generalized Linear reproduces the coefficients and covariance of three saved models (binomial with a complementary log-log link, and gamma with an inverse link and case weights; to 1e-15) and the goodness-of-fit and Type III tables Modeler printed. Scores written by the nuggets have no Modeler run to compare with. Cox strata and custom terms, Tweedie and multinomial targets are not implemented. | `crates/algo/src/cox.rs`, `crates/algo/src/genlin.rs`, `crates/exec/tests/cox.rs`, `crates/exec/tests/genlin.rs` |
 | Is the editor fast enough? | On an Apple M1 (release build) a canvas with 200 labelled nodes pans at 60 fps with vertical sync and 176 fps without; 1,000 nodes 177 fps; first frame about 155 ms after launch. `cargo xtask perf` enforces a p95 frame budget of 4 ms. | `xtask/src/perf.rs` |
 | What is not covered? | 41 documented known gaps and a handful of missing nodes and features, explained below. | [Known gaps](#known-gaps-and-their-impact) |
 
@@ -125,8 +126,8 @@ Node coverage, generated from the node catalog by `cargo xtask parity` (`docs/pa
 | Scope | Implemented | Total | Notes |
 |---|---|---|---|
 | MVP | 85 | 85 | The standard single-machine palettes |
-| Later | 20 | 24 | Python palette and extension nodes done; Streaming TS, GLMM, Cox and Temporal Causal Model remain |
-| Licence-blocked | 1 | 6 | Standard nodes the oracle's Modeler licence greys out (SVM, KNN, Bayes Net, Discriminant, GenLin, SLRM), so they cannot be verified. Bayes Net is implemented from the public algorithm and checked against models Modeler saved in demo streams; the other five are not implemented |
+| Later | 21 | 24 | Python palette, extension nodes and Cox done; Streaming TS, GLMM and Temporal Causal Model remain |
+| Licence-blocked | 2 | 6 | Standard nodes the oracle's Modeler licence greys out (SVM, KNN, Bayes Net, Discriminant, GenLin, SLRM), so they cannot be verified. Bayes Net and GenLin are implemented from the public algorithms and checked against models Modeler saved in demo streams; the other four are not implemented |
 | Out of scope | 0 | 34 | IBM ecosystem, big data, in-database mining, Statistics integration |
 
 ## Known gaps and their impact
@@ -149,7 +150,8 @@ fails on a listed gap that has since been fixed, so the list cannot go stale.
 
 | Group | Streams | What differs | Impact |
 |---|---|---|---|
-| Nodes not implemented | 5 | SVM, Discriminant, Cox, CPLEX and Streaming Time Series. SVM and Discriminant are licence-blocked in Modeler 19, the install the oracle ran on lacks Cox, and CPLEX is out of scope | The node does not run. Its branch of a stream stops there; palette entries are greyed out with the reason. Cannot be verified against Modeler |
+| Nodes not implemented | 4 | SVM, Discriminant, CPLEX and Streaming Time Series. SVM and Discriminant are licence-blocked in Modeler 19, and CPLEX is out of scope | The node does not run. Its branch of a stream stops there; palette entries are greyed out with the reason. Cannot be verified against Modeler |
+| Cox demo stream | 1 | `telco_coxreg`: the oracle's Modeler install has no Cox node, so its nuggets add no fields, while ours scores them from the model saved in the stream | The scores have no Modeler output to compare with; the build node is checked against the saved model (see above) |
 | Bayes Net demo streams | 2 | `bayes_bankloan` and `bayes_churn_retrain`: Modeler 19 cannot run the Bayes Net nugget (licence), so the oracle's downstream filter carries no Bayes scores, while ours scores them from the models saved in the streams | The scores have no Modeler output to compare with; the learner itself is checked against the saved models (see above) |
 | Demo streams with unsupported settings or an incomplete oracle | 3 | `modelingintro` (a Statistics File option, and Modeler's batch run finds nothing to execute), `stp_server_demo` (STP node; Modeler's own run fails), `pm_binaryclassifier` (the oracle retrains a replacement-linked Auto model, which is out of scope) | Affects those demo streams only |
 | Time Series scoring of one demo | 1 | `broadband_create_models`: all four transfer-function targets match; for two series the first 63 rows differ because Modeler scores `Market_3` with its auxiliary Holt model instead of the saved primary ARIMA, and `Total`'s oracle model is not saved | Values in rows 1–63 of those two series differ; the other targets are exact |
@@ -190,7 +192,7 @@ the difference is 3e-4 to 0.38 (see below).
 
 | Missing | Impact |
 |---|---|
-| Streaming TS, GLMM, Cox, Temporal Causal Model; graphics output and R syntax in Extension nodes | The nodes or options are absent |
+| Streaming TS, GLMM, Temporal Causal Model; graphics output and R syntax in Extension nodes | The nodes or options are absent |
 | Licence-blocked (6) and out-of-scope (34) nodes | Listed in the catalog and greyed out in the palette, with the reason |
 | Native models are not turned into nuggets after training in the app (C5.0, CHAID, ...), which needs a PMML writer | Train, then score by running the stream; nuggets imported in `.str` files score normally, and Python models do generate nuggets |
 | Python Extension nodes from Modeler `.str` files | Kept, but usually do not run: how Modeler stores their settings has not been observed, and its Python extension API is Spark-based |

@@ -1209,7 +1209,7 @@ fn kernel(y: f64, mu: f64, distribution: Distribution) -> Option<f64> {
     if v.is_finite() { Some(v) } else { None }
 }
 
-fn sweep_solve(matrix: &[f64], rhs: &[f64], n: usize, tol: f64) -> Option<Vec<f64>> {
+pub(crate) fn sweep_solve(matrix: &[f64], rhs: &[f64], n: usize, tol: f64) -> Option<Vec<f64>> {
     let len = n.checked_mul(n)?;
     if matrix.len() < len || rhs.len() < n || n == 0 {
         return None;

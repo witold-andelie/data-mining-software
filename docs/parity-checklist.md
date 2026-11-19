@@ -11,8 +11,8 @@ Status `done (output unverified)`: settings and the records reaching the node ma
 | Scope | Implemented | Total |
 |---|---|---|
 | MVP | 85 | 85 |
-| later | 20 | 24 |
-| license blocked | 1 | 6 |
+| later | 21 | 24 |
+| license blocked | 2 | 6 |
 | out of scope | 0 | 34 |
 
 ## Sources
@@ -121,7 +121,7 @@ Status `done (output unverified)`: settings and the records reaching the node ma
 | Linear | `linear` | MVP | done | `LinearRegression!spss.alm-extension`, `ApplyLinearRegressionSplitModelNode` |
 | Regression | `regression` | MVP | done | `BuildRegressionNode`, `ApplyRegressionNode` |
 | Logistic | `logistic` | MVP | done | `BuildLogisticNode`, `ApplyLogisticNode`, `ApplyLogisticSplitModelNode` |
-| GenLin | `genlin` | license blocked | missing | `spss.generalizedlinear_id!buildgeneralizedlinear` |
+| GenLin | `genlin` | license blocked | done (no oracle) | `spss.generalizedlinear_id!buildgeneralizedlinear`, `spss.generalizedlinear_id!applygeneralizedlinear` |
 | Neural Net | `neural_net` | MVP | done (statistical) | `TrainNetNode`, `ApplyNetNode`, `ApplyNeuralNetSplitModelNode`, `neuralnet!spss.neuralnet-extension` |
 | SVM | `svm` | license blocked | missing | `spss.svm_id!buildSVM` |
 | KNN | `knn` | license blocked | missing | `spss.KNN_id!KNNbuilder` |
@@ -134,7 +134,7 @@ Status `done (output unverified)`: settings and the records reaching the node ma
 | Imported PMML model | `pmml_model` | MVP | done | `ApplyImportedNode` |
 | GLMM | `glmm` | later | missing | `GLMM!spss.glmm-extension` |
 | GLE | `gle` | later | done | `spss.gle!gle_builder`, `spss.gle!gle_applier` |
-| Cox | `cox` | later | missing | `spss.coxreg_id!buildcoxreg` |
+| Cox | `cox` | later | done (no oracle) | `spss.coxreg_id!buildcoxreg`, `spss.coxreg_id!applycoxreg` |
 | LSVM | `lsvm` | later | done (statistical) | `spss.linearSVM!linearSVM`, `spss.linearSVM!applyLinearSVM` |
 | Self-Learning Response Model | `slrm` | license blocked | missing | `spss.selflearning!selflearning` |
 | Temporal Causal Model | `tcm` | later | missing | `tcm!pasw.timeseries-extension` |

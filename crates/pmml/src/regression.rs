@@ -464,6 +464,23 @@ fn apply_link(eta: f64, link: &str, param: Option<f64>) -> Result<f64, PmmlError
         }
         "cloglog" => Ok(1.0 - (-eta.exp()).exp()),
         "loglog" => Ok((-(-eta).exp()).exp()),
+        // g(mu) = ln(1 - mu)
+        "logc" => Ok(1.0 - eta.exp()),
+        // g(mu) = ln(mu / (mu + k))
+        "negbin" => {
+            let k = param.unwrap_or(1.0);
+            Ok(k * eta.exp() / (1.0 - eta.exp()))
+        }
+        // g(mu) = ((mu / (1 - mu))^alpha - 1) / alpha, ln(mu / (1 - mu)) for alpha = 0
+        "oddspower" => {
+            let alpha = param.unwrap_or(1.0);
+            if alpha == 0.0 {
+                Ok(1.0 / (1.0 + (-eta).exp()))
+            } else {
+                let odds = (alpha * eta + 1.0).powf(1.0 / alpha);
+                Ok(odds / (1.0 + odds))
+            }
+        }
         other => Err(PmmlError::Unsupported(format!(
             "GeneralRegressionModel linkFunction {other:?}"
         ))),

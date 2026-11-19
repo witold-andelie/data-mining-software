@@ -19,6 +19,7 @@
 mod association;
 mod bayes;
 mod clustering;
+mod cox;
 mod expr;
 mod neural;
 mod parse;
@@ -28,6 +29,7 @@ mod rules;
 mod score;
 mod sequence;
 pub use bayes::{BayesNetModel, BayesNode, BayesRow};
+pub use cox::{CoxModel, CoxScore, CoxTerm};
 pub mod summary;
 mod tree;
 
@@ -271,6 +273,8 @@ pub enum Model {
     },
     /// Modeler's Bayes Net nugget (`BayesNetModel` inside the `SPSS Models` extension).
     BayesNet(BayesNetModel),
+    /// Modeler's Cox regression nugget (a `GeneralRegressionModel` named `COXREG`).
+    Cox(CoxModel),
     /// A model element we read but cannot score: its element name.
     Unsupported(String),
 }

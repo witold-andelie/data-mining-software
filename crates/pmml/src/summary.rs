@@ -127,6 +127,7 @@ fn model_kind(model: &Model) -> String {
         Model::Sequence(_) => "Sequence rules",
         Model::TimeSeries { .. } => "Time series model",
         Model::BayesNet(_) => "Bayesian network",
+        Model::Cox(_) => "Cox regression",
         Model::Unsupported(element) => {
             return format!("Unsupported model ({})", file_text(element));
         }
@@ -356,6 +357,27 @@ fn model_sections(model: &Model, depth: usize, sections: &mut Vec<SummarySection
                 sections,
                 "Network",
                 vec!["Variable".into(), "Parents".into(), "Categories".into()],
+                rows,
+            );
+        }
+        Model::Cox(m) => {
+            let rows = m
+                .terms
+                .iter()
+                .map(|t| {
+                    vec![
+                        file_text(&match &t.level {
+                            Some(level) => format!("{} = {level}", t.field),
+                            None => t.field.clone(),
+                        }),
+                        number_text(t.beta),
+                    ]
+                })
+                .collect();
+            table(
+                sections,
+                "Parameters",
+                vec!["Term".into(), "Coefficient".into()],
                 rows,
             );
         }

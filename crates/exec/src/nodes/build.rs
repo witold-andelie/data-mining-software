@@ -180,6 +180,10 @@ fn build_with(
         }
         "spss.linearSVM!linearSVM" => Algorithm::Lsvm(super::analytic_build::lsvm(node)?),
         "spss.bayesian_id!buildBN" => Algorithm::BayesNet(super::bayes_net::build_settings(node)?),
+        "spss.coxreg_id!buildcoxreg" => Algorithm::Cox(super::cox::build_settings(node)?),
+        "spss.generalizedlinear_id!buildgeneralizedlinear" => {
+            Algorithm::Genlin(super::genlin::build_settings(node)?)
+        }
         "spss.randomTrees!RT" => Algorithm::RandomTrees(random_trees_settings(node)?),
         "BuildKMeansNode" => Algorithm::KMeans(kmeans_settings(node)?),
         "TrainKohonenNode" => Algorithm::Kohonen(kohonen_settings(node)?),
@@ -227,6 +231,10 @@ enum Algorithm {
     Lsvm(LsvmSettings),
     /// Bayes Net (`spss.bayesian_id!buildBN`): TAN or Markov blanket (`dms_algo::bayes_net_model`).
     BayesNet(BayesNetSettings),
+    /// Cox regression (`spss.coxreg_id!buildcoxreg`): `dms_algo::cox_model`.
+    Cox(super::cox::BuildSettings),
+    /// Generalized Linear (`spss.generalizedlinear_id!buildgeneralizedlinear`): `dms_algo::genlin`.
+    Genlin(super::genlin::BuildSettings),
     /// Random Trees (`spss.randomTrees!RT`), statistical parity (`dms_algo::random_trees`).
     RandomTrees(RandomTreesSettings),
     /// The settings, and the custom input fields (`None`: the Type roles).
@@ -440,6 +448,99 @@ impl Operator for Build {
                     })?;
                 return Ok(NodeOutput::Model(Arc::new(pmml)));
             }
+            if let Algorithm::Genlin(genlin) = &self.algorithm {
+                if table
+                    .model()
+                    .fields()
+                    .iter()
+                    .any(|f| matches!(f.role, Role::Split | Role::Frequency | Role::Partition))
+                {
+                    return Err(OperatorError::Settings(
+                        "GAP: Generalized Linear with split/frequency/partition fields".into(),
+                    ));
+                }
+                let (target, mut fields) =
+                    supervised_fields(&table, genlin.target.as_deref(), genlin.inputs.as_deref())?;
+                // the weight, offset and trials fields are not predictors
+                let side: Vec<usize> = genlin
+                    .side_fields()
+                    .filter_map(|name| table.model().position(name))
+                    .collect();
+                fields.retain(|position| !side.contains(position));
+                let resolved = genlin.resolve(&table)?;
+                let dataset = Dataset {
+                    table: &table,
+                    target,
+                    inputs: &fields,
+                    frequency: None,
+                };
+                let pmml =
+                    dms_algo::genlin::train(&dataset, &resolved).map_err(|error| match error {
+                        dms_algo::AlgoError::Cancelled => OperatorError::Cancelled,
+                        dms_algo::AlgoError::Unsupported(_) | dms_algo::AlgoError::Settings(_) => {
+                            OperatorError::Settings(format!("GAP: {error}"))
+                        }
+                        _ => OperatorError::Data(format!("Generalized Linear: {error}")),
+                    })?;
+                return Ok(NodeOutput::Model(Arc::new(pmml)));
+            }
+            if let Algorithm::Cox(cox) = &self.algorithm {
+                if table
+                    .model()
+                    .fields()
+                    .iter()
+                    .any(|f| matches!(f.role, Role::Split | Role::Frequency | Role::Partition))
+                {
+                    return Err(OperatorError::Settings(
+                        "GAP: Cox regression with split/weight/partition fields".into(),
+                    ));
+                }
+                let time = table.model().position(&cox.time_field).ok_or_else(|| {
+                    OperatorError::Data(format!(
+                        "the survival time field {} is not in the input",
+                        cox.time_field
+                    ))
+                })?;
+                // The status is the one flag among the target fields (the demo's Type node
+                // also gives `custcat` the role Target).
+                let statuses: Vec<String> = table
+                    .model()
+                    .fields()
+                    .iter()
+                    .enumerate()
+                    .filter(|(i, f)| {
+                        f.role == Role::Target
+                            && *i != time
+                            && matches!(f.values, dms_types::ValueSpec::Flag { .. })
+                    })
+                    .map(|(_, f)| f.name.clone())
+                    .collect();
+                let [status] = statuses.as_slice() else {
+                    return Err(OperatorError::Settings(format!(
+                        "Cox regression needs exactly one flag status field among the targets, the input has {}: {statuses:?}",
+                        statuses.len()
+                    )));
+                };
+                let (target, fields) = supervised_fields(&table, Some(status), None)?;
+                let dataset = Dataset {
+                    table: &table,
+                    target,
+                    inputs: &fields,
+                    frequency: None,
+                };
+                let pmml =
+                    dms_algo::cox_model::train(&dataset, time, &cox.settings).map_err(|error| {
+                        match error {
+                            dms_algo::AlgoError::Cancelled => OperatorError::Cancelled,
+                            dms_algo::AlgoError::Unsupported(_)
+                            | dms_algo::AlgoError::Settings(_) => {
+                                OperatorError::Settings(format!("GAP: {error}"))
+                            }
+                            _ => OperatorError::Data(format!("Cox regression: {error}")),
+                        }
+                    })?;
+                return Ok(NodeOutput::Model(Arc::new(pmml)));
+            }
             if let Algorithm::RandomTrees(settings) = &self.algorithm {
                 if table.model().fields().iter().any(|field| {
                     matches!(field.role, Role::Split | Role::Frequency | Role::Partition)
@@ -620,6 +721,8 @@ impl Operator for Build {
                 | Algorithm::LinearAs(_)
                 | Algorithm::Lsvm(_)
                 | Algorithm::BayesNet(_)
+                | Algorithm::Cox(_)
+                | Algorithm::Genlin(_)
                 | Algorithm::RandomTrees(_)
                 | Algorithm::TwoStep(_)
                 | Algorithm::Logistic(_)

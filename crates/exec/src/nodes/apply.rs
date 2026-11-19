@@ -82,6 +82,8 @@ enum Kind {
     LinearSvm,
     /// Bayes Net: `$B-`, `$BP-` and, with `_all_probabilities`, `$BP-<category>`.
     BayesNet,
+    /// Generalized Linear: `$G-` (mean or class), `$GP-`, `$GP-<category>`, `$GRP-`.
+    GenLin,
     /// Logistic regression: `$L-`, `$LP-`, `$LRP-`, and `$LP-<category>` when enabled.
     Logistic,
     /// GLE: `$G-<target>` for regression and binomial identity/log; `$L-`/`$LC-` for logit.
@@ -142,6 +144,9 @@ pub fn build(node: &StreamNode) -> Result<Box<dyn Operator>, OperatorError> {
         "ApplyC5RuleNode" | "ApplyC5SplitModelNode"
     ) {
         return super::c50::apply(node);
+    }
+    if node.type_identifier() == "spss.coxreg_id!applycoxreg" {
+        return super::cox::apply(node);
     }
     if node.type_identifier() == "spss.ts!ts_applier" {
         return super::time_series::apply(node);
@@ -205,6 +210,7 @@ pub fn build(node: &StreamNode) -> Result<Box<dyn Operator>, OperatorError> {
         "spss.linearEngine!applyLinearEngine" => Kind::Linear,
         "spss.linearSVM!applyLinearSVM" => Kind::LinearSvm,
         "spss.bayesian_id!applyBN" => Kind::BayesNet,
+        "spss.generalizedlinear_id!applygeneralizedlinear" => Kind::GenLin,
         "LinearRegressionModel!spss.alm-extension" | "ApplyLinearRegressionSplitModelNode" => {
             Kind::Linear
         }
@@ -298,7 +304,8 @@ pub fn build(node: &StreamNode) -> Result<Box<dyn Operator>, OperatorError> {
                 .find(|container| {
                     matches!(container.name.as_deref(), Some("PMML" | "ANOMALY_XML"))
                         // a Bayes Net nugget keeps its model in the container `model`
-                        || (kind == Kind::BayesNet && container.name.as_deref() == Some("model"))
+                        || (matches!(kind, Kind::BayesNet | Kind::GenLin)
+                            && container.name.as_deref() == Some("model"))
                 })
                 .map(|container| container.member.clone())
         });
@@ -318,7 +325,8 @@ pub fn build(node: &StreamNode) -> Result<Box<dyn Operator>, OperatorError> {
             || (kind == Kind::RandomTrees
                 && settings::text(s, "refreshLinkState").as_deref() == Some("TurnOnReplaceLink")
                 && settings::text(s, "repalcebuilderNodeId").is_some_and(|id| !id.trim().is_empty())),
-        raw_propensities: settings::flag(s, "calculateRawPropensities")?.unwrap_or(false),
+        raw_propensities: settings::flag(s, "calculateRawPropensities")?.unwrap_or(false)
+            || (kind == Kind::GenLin && settings::flag(s, "_raw_propensity")?.unwrap_or(false)),
         // `$LP-<category>`: the flag, or always for the binomial procedure
         // (`models/logreg_binomial` leaves `appendProbabilities` false and still writes them).
         all_probabilities: (kind == Kind::Logistic
@@ -326,7 +334,10 @@ pub fn build(node: &StreamNode) -> Result<Box<dyn Operator>, OperatorError> {
                 || settings::text(s, "logisticProcedure")
                     .is_some_and(|procedure| procedure.trim() == "Binomial")))
             || (kind == Kind::BayesNet
-                && settings::flag(s, "_all_probabilities")?.unwrap_or(false)),
+                && settings::flag(s, "_all_probabilities")?.unwrap_or(false))
+            // GenLin writes `$GP-<category>` for a categorical target; there is no flag to turn
+            // it off (`ulcer_genlin` outputs list `$GP-0` and `$GP-1`).
+            || kind == Kind::GenLin,
         distance: kind == Kind::KMeans
             && build_setting(s, "generateDistanceField").as_deref() == Some("true"),
         numeric_labels: kind == Kind::TwoStep
@@ -972,6 +983,7 @@ impl Apply {
             Kind::Logistic | Kind::Linear => ("$L", "$LP", "$LRP"),
             Kind::LinearSvm => ("$L", "$LC", "$LRP"),
             Kind::BayesNet => ("$B", "$BP", "$BRP"),
+            Kind::GenLin => ("$G", "$GP", "$GRP"),
             Kind::Regression => ("$E", "$EC", "$ERP"),
             Kind::Neural | Kind::Factor | Kind::Anomaly | Kind::DecisionList => {
                 return Err(OperatorError::Data(
@@ -991,8 +1003,15 @@ impl Apply {
                 ));
             }
         };
+        let genlin_regression = self.kind == Kind::GenLin
+            && matches!(
+                &pmml.model,
+                dms_pmml::Model::GeneralRegression(model)
+                    if model.header.function == dms_pmml::MiningFunction::Regression
+            );
         let continuous_only = matches!(self.kind, Kind::Linear | Kind::Regression)
             || gle_regression
+            || genlin_regression
             || (matches!(
                 self.kind,
                 Kind::RandomTrees | Kind::TreeAs | Kind::LinearSvm
@@ -1007,7 +1026,7 @@ impl Apply {
             .unwrap_or_default();
         // A GLE regression predicts a mean, real even for an integer (count) target
         // (`gle/gle_poisson_*`: `$G-y_poisson` 1.0768...).
-        let storage = if gle_regression {
+        let storage = if gle_regression || genlin_regression {
             Storage::Real
         } else {
             target_storage(pmml, &target)
@@ -1040,10 +1059,10 @@ impl Apply {
                 columns.push(column(
                     &format!(
                         "{}{index}-{category}",
-                        if self.kind == Kind::BayesNet {
-                            "$BP"
-                        } else {
-                            "$LP"
+                        match self.kind {
+                            Kind::BayesNet => "$BP",
+                            Kind::GenLin => "$GP",
+                            _ => "$LP",
                         }
                     ),
                     Storage::Real,
@@ -1313,6 +1332,7 @@ fn target_name(pmml: &Pmml) -> Result<String, OperatorError> {
         dms_pmml::Model::Clustering(model) => &model.header,
         dms_pmml::Model::Mining(model) => &model.header,
         dms_pmml::Model::BayesNet(model) => &model.header,
+        dms_pmml::Model::Cox(model) => &model.header,
         dms_pmml::Model::Association(_) => {
             return Err(OperatorError::Data(
                 "an association model has no single target".into(),
