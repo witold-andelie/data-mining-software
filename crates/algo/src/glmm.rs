@@ -43,9 +43,10 @@
 //! G. **Inner loop: one Fisher-scoring step (`MaxFisherIterNum=1`) then Newton
 //!    on −2ℓ_R; parameter convergence 1e-6 absolute; singularity 1e-12.** Saved
 //!    BuildSettings. Covariance of θ is 2 H^{−1} (Guide p. 199) with H the
-//!    observed Hessian of −2ℓ_R. That recovers the two G-side standard errors
-//!    to 2e-5 relative; the residual SE is 1.7% high (0.2519 vs 0.2476) and is
-//!    reported honestly rather than scaled.
+//!    observed Hessian of −2ℓ_R. That reproduces all three saved standard
+//!    errors (school 6.74761786, classroom 1.54909777, residual 0.24762541) to
+//!    1e-9 relative. (An earlier version summed every entry of D⁻¹S instead of
+//!    its trace in tr(P²), which made the residual SE 1.7% high.)
 //!
 //! H. **Wald intervals for variance components use the log transform**
 //!    exp(ln σ̂² ± z_{1−α/2} · se(σ̂²)/σ̂²) (Guide p. 199). School variance
@@ -2272,7 +2273,9 @@ fn trace_p2(data: &Prepared, z_scale: &[f64], eval: &RemlEval, phi: f64) -> Resu
                         at(&eval.d_inv, mat_index(i, t, q))? * at(&eval.s_mat, mat_index(t, j, q))?;
                 }
                 *slot(&mut tmp, mat_index(i, j, q))? = s;
-                fs += s;
+                if i == j {
+                    fs += s;
+                }
             }
         }
         for i in 0..q {
@@ -3613,6 +3616,116 @@ mod tests {
         assert!(close(s.eta, 2.25, 1e-5), "BLUP prediction {}", s.eta);
         let sf = fit.score_fixed(&rec).expect("fixed");
         assert!(close(sf.eta, 4.0, 1e-6));
+    }
+
+    #[test]
+    fn glmm_nested_intercepts_match_a_reference_reml_fit() {
+        // 4 schools x 3 classrooms x 4 children, one covariate. The reference (numpy, written
+        // apart from this module) maximises the REML likelihood of V = s1 Z1 Z1' + s2 Z2 Z2' + e I
+        // and takes the covariance of the variance components as 2 H^-1 with H the analytic
+        // observed Hessian of -2 l_R: H_ij = -tr(P V_i P V_j) + 2 y' P V_i P V_j P y. The
+        // classroom blocks overlap the school blocks, so the cross terms of the Hessian count.
+        const DATA: [(&str, &str, f64, f64); 48] = [
+            ("s0", "c0", 5.0, 12.060),
+            ("s0", "c0", 7.0, 13.496),
+            ("s0", "c0", 2.0, 11.511),
+            ("s0", "c0", 8.0, 15.791),
+            ("s0", "c1", 1.0, 10.254),
+            ("s0", "c1", 4.0, 11.621),
+            ("s0", "c1", 7.0, 11.834),
+            ("s0", "c1", 2.0, 10.235),
+            ("s0", "c2", 5.0, 13.088),
+            ("s0", "c2", 9.0, 13.644),
+            ("s0", "c2", 3.0, 10.704),
+            ("s0", "c2", 9.0, 15.310),
+            ("s1", "c0", 4.0, 9.685),
+            ("s1", "c0", 0.0, 5.355),
+            ("s1", "c0", 8.0, 11.824),
+            ("s1", "c0", 9.0, 12.485),
+            ("s1", "c1", 3.0, 6.817),
+            ("s1", "c1", 2.0, 5.191),
+            ("s1", "c1", 9.0, 10.731),
+            ("s1", "c1", 6.0, 7.362),
+            ("s1", "c2", 6.0, 9.833),
+            ("s1", "c2", 8.0, 11.305),
+            ("s1", "c2", 9.0, 11.980),
+            ("s1", "c2", 8.0, 10.191),
+            ("s2", "c0", 4.0, 15.050),
+            ("s2", "c0", 0.0, 12.310),
+            ("s2", "c0", 6.0, 17.191),
+            ("s2", "c0", 8.0, 16.953),
+            ("s2", "c1", 6.0, 11.930),
+            ("s2", "c1", 3.0, 9.665),
+            ("s2", "c1", 3.0, 9.787),
+            ("s2", "c1", 8.0, 13.021),
+            ("s2", "c2", 4.0, 14.513),
+            ("s2", "c2", 6.0, 14.847),
+            ("s2", "c2", 9.0, 15.623),
+            ("s2", "c2", 1.0, 12.231),
+            ("s3", "c0", 4.0, 11.632),
+            ("s3", "c0", 9.0, 14.661),
+            ("s3", "c0", 0.0, 8.963),
+            ("s3", "c0", 3.0, 11.993),
+            ("s3", "c1", 8.0, 14.151),
+            ("s3", "c1", 8.0, 13.134),
+            ("s3", "c1", 9.0, 13.711),
+            ("s3", "c1", 5.0, 13.485),
+            ("s3", "c2", 2.0, 10.318),
+            ("s3", "c2", 5.0, 11.345),
+            ("s3", "c2", 9.0, 12.352),
+            ("s3", "c2", 6.0, 11.954),
+        ];
+        let input = GlmmInput {
+            target_name: "y".into(),
+            y: DATA.iter().map(|r| r.3).collect(),
+            fixed: vec![FixedTerm::Covariate(NumericColumn {
+                name: "x".into(),
+                values: DATA.iter().map(|r| r.2).collect(),
+            })],
+            random: vec![
+                RandomSpec {
+                    subject_names: vec!["school".into()],
+                    subject_keys: DATA.iter().map(|r| vec![r.0.to_string()]).collect(),
+                    intercept: true,
+                    slopes: Vec::new(),
+                    covariance: CovarianceType::VarianceComponents,
+                },
+                RandomSpec {
+                    subject_names: vec!["school".into(), "classroom".into()],
+                    subject_keys: DATA
+                        .iter()
+                        .map(|r| vec![r.0.to_string(), r.1.to_string()])
+                        .collect(),
+                    intercept: true,
+                    slopes: Vec::new(),
+                    covariance: CovarianceType::VarianceComponents,
+                },
+            ],
+            weight: None,
+            frequency: None,
+            offset: None,
+            trials: None,
+        };
+        let fit = fit(&input, &GlmmSettings::default()).expect("fit");
+        let theta: [f64; 3] = [3.603177791059064, 1.72538389374626, 0.6138668579696102];
+        let se: [f64; 3] = [3.468662546319316, 0.94023289240549, 0.14667510333103978];
+        assert_eq!(fit.variance_components.len(), 3);
+        for (k, component) in fit.variance_components.iter().enumerate() {
+            assert!(
+                close(component.estimate, theta[k], 1e-5),
+                "{}: {} vs {}",
+                component.name,
+                component.estimate,
+                theta[k]
+            );
+            let got = component.std_error.expect("standard error");
+            assert!(
+                close(got, se[k], 1e-4),
+                "{} se: {got} vs {}",
+                component.name,
+                se[k]
+            );
+        }
     }
 
     #[test]
