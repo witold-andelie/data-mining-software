@@ -29,6 +29,95 @@ const MAX_UNCOMPRESSED: usize = 64 * 1024 * 1024;
 
 const MAGIC: &[u8] = b"SCF\x01";
 
+/// One member of an `SCF\x01` container: a name, its metadata text and its body.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ScfMember {
+    /// The member's name (`TCMGraph.json`, `28.xml`, ...).
+    pub name: String,
+    /// The metadata text (`typeId=...` and `mimeType=...` lines).
+    pub meta: String,
+    /// The member's content.
+    pub body: Vec<u8>,
+}
+
+/// Largest total size of the members of one container.
+const MAX_CONTAINER: usize = 256 * 1024 * 1024;
+/// Most blocks one container may hold.
+const MAX_BLOCKS: usize = 100_000;
+
+/// The members of an `SCF\x01` container (an "AF container": the Temporal Causal Model nugget
+/// keeps one member per series, `corpus/ibm-demos/tcm_kpi.str` `data/0003.dat`).
+///
+/// After the 12-byte header the file is a sequence of blocks, each `[u32 compressed length]
+/// [u32 uncompressed length][zlib data]`, big-endian. A block's payload starts with `00 00 00 01`,
+/// then `03 00 <n> <name>` and `03 00 <m> <meta>`, then the body. Blocks that do not have this
+/// shape (the container's index and trailer records) are skipped.
+pub fn read_members(bytes: &[u8]) -> Result<Vec<ScfMember>, ScfError> {
+    if bytes.len() < 12 || !bytes.starts_with(MAGIC) {
+        return Err(ScfError::new("not an SCF container"));
+    }
+    let mut members = Vec::new();
+    let mut at = 12usize;
+    let mut total = 0usize;
+    let mut blocks = 0usize;
+    while at.checked_add(8).is_some_and(|end| end <= bytes.len()) {
+        blocks += 1;
+        if blocks > MAX_BLOCKS {
+            return Err(ScfError::new("SCF container has too many blocks"));
+        }
+        let compressed = usize::try_from(read_u32(bytes, at)?)
+            .map_err(|_| ScfError::new("SCF block length does not fit"))?;
+        let uncompressed = usize::try_from(read_u32(bytes, at + 4)?)
+            .map_err(|_| ScfError::new("SCF block length does not fit"))?;
+        let start = at + 8;
+        let Some(end) = start.checked_add(compressed).filter(|e| *e <= bytes.len()) else {
+            break;
+        };
+        if compressed == 0 || bytes.get(start) != Some(&0x78) {
+            break;
+        }
+        total = total.saturating_add(uncompressed);
+        if uncompressed > MAX_UNCOMPRESSED || total > MAX_CONTAINER {
+            return Err(ScfError::new("SCF container is too large"));
+        }
+        let mut out = vec![0u8; uncompressed];
+        let mut decoder = Decompress::new(true);
+        let slice = bytes.get(start..end).unwrap_or_default();
+        let status = decoder
+            .decompress(slice, &mut out, FlushDecompress::Finish)
+            .map_err(|_| ScfError::new("SCF zlib data is corrupt"))?;
+        if status == Status::Ok || decoder.total_out() != uncompressed as u64 {
+            return Err(ScfError::new("SCF block length does not match its data"));
+        }
+        if let Some(member) = member_of(&out) {
+            members.push(member);
+        }
+        at = end;
+    }
+    Ok(members)
+}
+
+fn member_of(payload: &[u8]) -> Option<ScfMember> {
+    if payload.get(..6)? != [0, 0, 0, 1, 3, 0] {
+        return None;
+    }
+    let name_len = usize::from(*payload.get(6)?);
+    let name_end = 7usize.checked_add(name_len)?;
+    let name = std::str::from_utf8(payload.get(7..name_end)?).ok()?;
+    if payload.get(name_end..name_end.checked_add(2)?)? != [3, 0] {
+        return None;
+    }
+    let meta_len = usize::from(*payload.get(name_end.checked_add(2)?)?);
+    let meta_start = name_end.checked_add(3)?;
+    let meta_end = meta_start.checked_add(meta_len)?;
+    let meta = std::str::from_utf8(payload.get(meta_start..meta_end)?).ok()?;
+    Some(ScfMember {
+        name: name.to_string(),
+        meta: meta.to_string(),
+        body: payload.get(meta_end..)?.to_vec(),
+    })
+}
+
 /// The model XML inside an `SCF\x01` attachment.
 pub fn read_model_xml(bytes: &[u8]) -> Result<String, ScfError> {
     if bytes.len() < 20 || !bytes.starts_with(MAGIC) {
@@ -227,5 +316,55 @@ mod tests {
         let pmml = pmml.expect("neural PMML member");
         assert!(pmml.contains("activationFunction=\"tanh\""));
         assert!(pmml.trim_end().ends_with("</PMML>"));
+    }
+}
+
+#[cfg(test)]
+mod member_tests {
+    use super::*;
+    use flate2::Compression;
+    use flate2::write::ZlibEncoder;
+    use std::io::Write;
+
+    fn block(name: &str, body: &str) -> Vec<u8> {
+        let meta = "typeId=t\nmimeType=text/json\n";
+        let mut payload = vec![0, 0, 0, 1, 3, 0, u8::try_from(name.len()).unwrap()];
+        payload.extend_from_slice(name.as_bytes());
+        payload.extend_from_slice(&[3, 0, u8::try_from(meta.len()).unwrap()]);
+        payload.extend_from_slice(meta.as_bytes());
+        payload.extend_from_slice(body.as_bytes());
+        let mut encoder = ZlibEncoder::new(Vec::new(), Compression::default());
+        encoder.write_all(&payload).unwrap();
+        let compressed = encoder.finish().unwrap();
+        let mut out = Vec::new();
+        out.extend_from_slice(&u32::try_from(compressed.len()).unwrap().to_be_bytes());
+        out.extend_from_slice(&u32::try_from(payload.len()).unwrap().to_be_bytes());
+        out.extend_from_slice(&compressed);
+        out
+    }
+
+    #[test]
+    fn scf_container_members_are_read_in_order() {
+        let mut bytes = b"SCF\x01\0\0\0\0\0\0\0\0".to_vec();
+        bytes.extend(block("a.json", "{\"a\":1}"));
+        bytes.extend(block("b.xml", "<x/>"));
+        let members = read_members(&bytes).unwrap();
+        assert_eq!(members.len(), 2);
+        assert_eq!(members[0].name, "a.json");
+        assert_eq!(members[0].body, b"{\"a\":1}");
+        assert_eq!(members[1].name, "b.xml");
+        assert_eq!(members[1].body, b"<x/>");
+    }
+
+    #[test]
+    fn scf_container_rejects_other_files_and_corrupt_blocks() {
+        assert!(read_members(b"PK\x03\x04 not an SCF container").is_err());
+        let mut bytes = b"SCF\x01\0\0\0\0\0\0\0\0".to_vec();
+        let mut bad = block("a.json", "{}");
+        let last = bad.len() - 6;
+        bad[last] ^= 0xff;
+        bytes.extend(bad);
+        // a block whose data does not inflate is an error, not a panic
+        let _ = read_members(&bytes);
     }
 }

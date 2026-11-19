@@ -429,6 +429,7 @@ fn model_kind(model: &Model) -> &'static str {
         Model::Cox(_) => "cox",
         Model::Svm(_) => "svm",
         Model::Knn(_) => "knn",
+        Model::Tcm(_) => "tcm",
         Model::Unsupported(_) => "unsupported",
     }
 }

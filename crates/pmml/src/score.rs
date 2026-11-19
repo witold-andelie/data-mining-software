@@ -154,6 +154,9 @@ impl<'p> Scorer<'p> {
             )),
             Model::BayesNet(model) => crate::bayes::score(self.pmml, model, &env),
             Model::Svm(model) => crate::svm::score(model, &env),
+            Model::Tcm(_) => Err(PmmlError::Unsupported(
+                "a TCM model is scored over whole series by the TCM nugget".into(),
+            )),
             Model::Knn(_) => Err(PmmlError::Unsupported(
                 "scoring a record against a KNN model's stored cases".into(),
             )),
@@ -491,6 +494,7 @@ fn score_mining(pmml: &Pmml, mining: &MiningModel, env: &Env<'_>) -> Result<Pred
             | Model::Cox(_)
             | Model::Svm(_)
             | Model::Knn(_)
+            | Model::Tcm(_)
             | Model::TimeSeries { .. } => Err(PmmlError::Unsupported(
                 "nested MiningModel segment type".into(),
             )),
@@ -599,6 +603,7 @@ pub(crate) fn model_header(model: &Model) -> Option<&ModelHeader> {
         Model::Cox(m) => Some(&m.header),
         Model::Svm(m) => Some(&m.header),
         Model::Knn(m) => Some(&m.header),
+        Model::Tcm(m) => Some(&m.header),
         Model::Unsupported(_) => None,
     }
 }
@@ -723,7 +728,7 @@ fn collect_model_fields<'a>(
                 out.insert(name);
             }
         }
-        Model::Knn(_) => {}
+        Model::Knn(_) | Model::Tcm(_) => {}
         Model::Svm(model) => {
             for name in model.input_fields() {
                 out.insert(name);

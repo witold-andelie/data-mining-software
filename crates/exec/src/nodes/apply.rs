@@ -147,6 +147,9 @@ pub fn build(node: &StreamNode) -> Result<Box<dyn Operator>, OperatorError> {
     ) {
         return super::c50::apply(node);
     }
+    if node.type_identifier() == "tcmmodel!pasw.timeseries-extension" {
+        return super::tcm::apply(node);
+    }
     if node.type_identifier() == "spss.KNN_id!KNNapplier" {
         return super::knn::apply(node);
     }
@@ -217,6 +220,8 @@ pub fn build(node: &StreamNode) -> Result<Box<dyn Operator>, OperatorError> {
         "spss.bayesian_id!applyBN" => Kind::BayesNet,
         "spss.generalizedlinear_id!applygeneralizedlinear" => Kind::GenLin,
         "spss.svm_id!applySVM" => Kind::Svm,
+        // the fixed part of the model, scored from the saved PMML like a linear model
+        "GLMMModel!spss.glmm-extension" => Kind::Linear,
         "LinearRegressionModel!spss.alm-extension" | "ApplyLinearRegressionSplitModelNode" => {
             Kind::Linear
         }
@@ -1345,6 +1350,7 @@ fn target_name(pmml: &Pmml) -> Result<String, OperatorError> {
         dms_pmml::Model::Cox(model) => &model.header,
         dms_pmml::Model::Svm(model) => &model.header,
         dms_pmml::Model::Knn(model) => &model.header,
+        dms_pmml::Model::Tcm(model) => &model.header,
         dms_pmml::Model::Association(_) => {
             return Err(OperatorError::Data(
                 "an association model has no single target".into(),

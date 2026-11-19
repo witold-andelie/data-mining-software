@@ -130,6 +130,7 @@ fn model_kind(model: &Model) -> String {
         Model::Cox(_) => "Cox regression",
         Model::Svm(_) => "Support vector machine",
         Model::Knn(_) => "Nearest neighbors",
+        Model::Tcm(_) => "Temporal causal model",
         Model::Unsupported(element) => {
             return format!("Unsupported model ({})", file_text(element));
         }
@@ -360,6 +361,17 @@ fn model_sections(model: &Model, depth: usize, sections: &mut Vec<SummarySection
                 "Network",
                 vec!["Variable".into(), "Parents".into(), "Categories".into()],
                 rows,
+            );
+        }
+        Model::Tcm(m) => {
+            facts(
+                sections,
+                "Temporal causal model",
+                vec![
+                    ("Series", m.series.len().to_string()),
+                    ("Modelled series", m.targets.len().to_string()),
+                    ("Lags", m.lag.to_string()),
+                ],
             );
         }
         Model::Knn(m) => {

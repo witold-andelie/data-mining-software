@@ -30,10 +30,12 @@ mod rules;
 mod score;
 mod sequence;
 mod svm;
+mod tcm;
 pub use bayes::{BayesNetModel, BayesNode, BayesRow};
 pub use cox::{CoxModel, CoxScore, CoxTerm};
 pub use knn::KnnModel;
 pub use svm::{Kernel, SvmModel};
+pub use tcm::{TcmModel, TcmPredictor, TcmTarget};
 pub mod summary;
 mod tree;
 
@@ -283,6 +285,8 @@ pub enum Model {
     Svm(SvmModel),
     /// Modeler's K-Nearest Neighbors nugget: its description, not its cases.
     Knn(KnnModel),
+    /// Modeler's Temporal Causal Model nugget: a model per series.
+    Tcm(TcmModel),
     /// A model element we read but cannot score: its element name.
     Unsupported(String),
 }

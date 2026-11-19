@@ -11,7 +11,7 @@ Status `done (output unverified)`: settings and the records reaching the node ma
 | Scope | Implemented | Total |
 |---|---|---|
 | MVP | 85 | 85 |
-| later | 21 | 24 |
+| later | 23 | 24 |
 | license blocked | 4 | 6 |
 | out of scope | 0 | 34 |
 
@@ -132,12 +132,12 @@ Status `done (output unverified)`: settings and the records reaching the node ma
 | Anomaly | `anomaly` | MVP | done | `BuildAnomalyNode`, `ApplyAnomalyNode` |
 | Time Series | `time_series` | MVP | done (statistical) | `BuildTimeSeriesNode`, `ApplyTimeSeriesNode`, `spss.ts!ts_builder`, `spss.ts!ts_applier` |
 | Imported PMML model | `pmml_model` | MVP | done | `ApplyImportedNode` |
-| GLMM | `glmm` | later | missing | `GLMM!spss.glmm-extension` |
+| GLMM | `glmm` | later | done (no oracle) | `GLMM!spss.glmm-extension`, `GLMMModel!spss.glmm-extension` |
 | GLE | `gle` | later | done | `spss.gle!gle_builder`, `spss.gle!gle_applier` |
 | Cox | `cox` | later | done (no oracle) | `spss.coxreg_id!buildcoxreg`, `spss.coxreg_id!applycoxreg` |
 | LSVM | `lsvm` | later | done (statistical) | `spss.linearSVM!linearSVM`, `spss.linearSVM!applyLinearSVM` |
 | Self-Learning Response Model | `slrm` | license blocked | missing | `spss.selflearning!selflearning` |
-| Temporal Causal Model | `tcm` | later | missing | `tcm!pasw.timeseries-extension` |
+| Temporal Causal Model | `tcm` | later | done (no oracle) | `tcm!pasw.timeseries-extension`, `tcmmodel!pasw.timeseries-extension` |
 | Random Forest (Python) | `random_forest` | later | done | `rf!spss.rf` |
 | XGBoost Tree (Python) | `xgboost_tree` | later | done | `xgboosttree!spss.xgboost` |
 | XGBoost Linear (Python) | `xgboost_linear` | later | done | `xgboostlinear!spss.xgboost` |

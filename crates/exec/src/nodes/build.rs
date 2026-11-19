@@ -183,6 +183,8 @@ fn build_with(
         "spss.coxreg_id!buildcoxreg" => Algorithm::Cox(super::cox::build_settings(node)?),
         "spss.svm_id!buildSVM" => Algorithm::Svm(super::svm::build_settings(node)?),
         "spss.KNN_id!KNNbuilder" => Algorithm::Knn(super::knn::build_settings(node)?),
+        "tcm!pasw.timeseries-extension" => Algorithm::Tcm,
+        "GLMM!spss.glmm-extension" => Algorithm::Glmm,
         "spss.generalizedlinear_id!buildgeneralizedlinear" => {
             Algorithm::Genlin(super::genlin::build_settings(node)?)
         }
@@ -241,6 +243,12 @@ enum Algorithm {
     Svm(super::svm::BuildSettings),
     /// KNN (`spss.KNN_id!KNNbuilder`): `dms_algo::knn_model`.
     Knn(dms_algo::knn::Settings),
+    /// Temporal Causal Model (`tcm!pasw.timeseries-extension`): `dms_algo::tcm_model`, settings
+    /// from the extension parameters.
+    Tcm,
+    /// GLMM (`GLMM!spss.glmm-extension`): `dms_algo::glmm_model`, settings from the extension
+    /// parameters.
+    Glmm,
     /// Random Trees (`spss.randomTrees!RT`), statistical parity (`dms_algo::random_trees`).
     RandomTrees(RandomTreesSettings),
     /// The settings, and the custom input fields (`None`: the Type roles).
@@ -452,6 +460,90 @@ impl Operator for Build {
                             _ => OperatorError::Data(format!("Bayes Net: {error}")),
                         }
                     })?;
+                return Ok(NodeOutput::Model(Arc::new(pmml)));
+            }
+            if matches!(self.algorithm, Algorithm::Glmm) {
+                if table
+                    .model()
+                    .fields()
+                    .iter()
+                    .any(|f| matches!(f.role, Role::Split | Role::Frequency | Role::Partition))
+                {
+                    return Err(OperatorError::Settings(
+                        "GAP: GLMM with split/frequency/partition fields".into(),
+                    ));
+                }
+                let ParameterSource::Attachment(Some(member)) = &self.parameters else {
+                    return Err(OperatorError::Settings(
+                        "the build node has no parameters attachment".into(),
+                    ));
+                };
+                let bytes = context.attachments.get(member).ok_or_else(|| {
+                    OperatorError::Io(format!("the stream file has no attachment {member}"))
+                })?;
+                let xml = std::str::from_utf8(bytes)
+                    .map_err(|_| OperatorError::Data(format!("{member} is not UTF-8 text")))?;
+                let glmm = super::glmm::build_settings(xml)?;
+                let (target, fixed, random) = glmm.positions(&table)?;
+                let pmml =
+                    dms_algo::glmm_model::train(&table, target, &fixed, &random, &glmm.settings)
+                        .map_err(|error| match error {
+                            dms_algo::AlgoError::Cancelled => OperatorError::Cancelled,
+                            dms_algo::AlgoError::Unsupported(_)
+                            | dms_algo::AlgoError::Settings(_) => {
+                                OperatorError::Settings(format!("GAP: {error}"))
+                            }
+                            _ => OperatorError::Data(format!("GLMM: {error}")),
+                        })?;
+                return Ok(NodeOutput::Model(Arc::new(pmml)));
+            }
+            if matches!(self.algorithm, Algorithm::Tcm) {
+                let p = self.parameters(context)?;
+                for (key, what) in [
+                    ("outlierRootCauseAnalysis", "root cause analysis"),
+                    ("outliersOverTime", "outliers over time"),
+                    ("tsdp.specifyEstimationPeriod", "an estimation period"),
+                ] {
+                    if p.flag(key)? {
+                        return Err(OperatorError::Settings(format!("GAP: TCM {what}")));
+                    }
+                }
+                let mut settings = dms_algo::tcm::Settings::default();
+                match p.text("tsdp.missingImputType").as_deref() {
+                    None | Some("" | "LINEAR_INTERP") => {}
+                    Some(other) => {
+                        return Err(OperatorError::Settings(format!(
+                            "GAP: TCM missing-value rule {other:?}"
+                        )));
+                    }
+                }
+                if let Some(lags) = p
+                    .text("numOfLags")
+                    .and_then(|v| v.trim().parse::<usize>().ok())
+                    && lags > 0
+                {
+                    settings.max_lag = Some(lags);
+                }
+                if let Some(k) = p
+                    .text("maxNumberOfPredictor")
+                    .and_then(|v| v.trim().parse::<usize>().ok())
+                    && k > 0
+                {
+                    settings.max_predictors = k;
+                }
+                let time = p
+                    .text("dateTimeField")
+                    .filter(|name| !name.is_empty())
+                    .and_then(|name| table.model().position(&name));
+                let pmml = dms_algo::tcm_model::train(&table, time, &settings).map_err(
+                    |error| match error {
+                        dms_algo::AlgoError::Cancelled => OperatorError::Cancelled,
+                        dms_algo::AlgoError::Unsupported(_) | dms_algo::AlgoError::Settings(_) => {
+                            OperatorError::Settings(format!("GAP: {error}"))
+                        }
+                        _ => OperatorError::Data(format!("TCM: {error}")),
+                    },
+                )?;
                 return Ok(NodeOutput::Model(Arc::new(pmml)));
             }
             if let Algorithm::Knn(settings) = &self.algorithm {
@@ -797,6 +889,8 @@ impl Operator for Build {
                 | Algorithm::Genlin(_)
                 | Algorithm::Svm(_)
                 | Algorithm::Knn(_)
+                | Algorithm::Tcm
+                | Algorithm::Glmm
                 | Algorithm::RandomTrees(_)
                 | Algorithm::TwoStep(_)
                 | Algorithm::Logistic(_)
