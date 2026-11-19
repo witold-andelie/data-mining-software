@@ -21,6 +21,7 @@ mod bayes;
 mod clustering;
 mod cox;
 mod expr;
+mod knn;
 mod neural;
 mod parse;
 mod regression;
@@ -28,8 +29,11 @@ mod rule_tree;
 mod rules;
 mod score;
 mod sequence;
+mod svm;
 pub use bayes::{BayesNetModel, BayesNode, BayesRow};
 pub use cox::{CoxModel, CoxScore, CoxTerm};
+pub use knn::KnnModel;
+pub use svm::{Kernel, SvmModel};
 pub mod summary;
 mod tree;
 
@@ -275,6 +279,10 @@ pub enum Model {
     BayesNet(BayesNetModel),
     /// Modeler's Cox regression nugget (a `GeneralRegressionModel` named `COXREG`).
     Cox(CoxModel),
+    /// A binary support vector machine (`SupportVectorMachineModel`).
+    Svm(SvmModel),
+    /// Modeler's K-Nearest Neighbors nugget: its description, not its cases.
+    Knn(KnnModel),
     /// A model element we read but cannot score: its element name.
     Unsupported(String),
 }

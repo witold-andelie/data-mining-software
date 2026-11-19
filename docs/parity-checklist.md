@@ -12,7 +12,7 @@ Status `done (output unverified)`: settings and the records reaching the node ma
 |---|---|---|
 | MVP | 85 | 85 |
 | later | 21 | 24 |
-| license blocked | 2 | 6 |
+| license blocked | 4 | 6 |
 | out of scope | 0 | 34 |
 
 ## Sources
@@ -123,8 +123,8 @@ Status `done (output unverified)`: settings and the records reaching the node ma
 | Logistic | `logistic` | MVP | done | `BuildLogisticNode`, `ApplyLogisticNode`, `ApplyLogisticSplitModelNode` |
 | GenLin | `genlin` | license blocked | done (no oracle) | `spss.generalizedlinear_id!buildgeneralizedlinear`, `spss.generalizedlinear_id!applygeneralizedlinear` |
 | Neural Net | `neural_net` | MVP | done (statistical) | `TrainNetNode`, `ApplyNetNode`, `ApplyNeuralNetSplitModelNode`, `neuralnet!spss.neuralnet-extension` |
-| SVM | `svm` | license blocked | missing | `spss.svm_id!buildSVM` |
-| KNN | `knn` | license blocked | missing | `spss.KNN_id!KNNbuilder` |
+| SVM | `svm` | license blocked | done (no oracle) | `spss.svm_id!buildSVM`, `spss.svm_id!applySVM` |
+| KNN | `knn` | license blocked | done (no oracle) | `spss.KNN_id!KNNbuilder`, `spss.KNN_id!KNNapplier` |
 | Bayes Net | `bayes_net` | license blocked | done (no oracle) | `spss.bayesian_id!buildBN`, `spss.bayesian_id!applyBN` |
 | Discriminant | `discriminant` | license blocked | missing | `spss.discriminant_id!builddiscriminant` |
 | PCA/Factor | `pca_factor` | MVP | done | `BuildPCANode`, `ApplyPCANode` |

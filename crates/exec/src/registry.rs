@@ -81,6 +81,8 @@ const BUILT_IN: &[(&str, Factory)] = &[
     ("bayes_net", model_node),
     ("cox", model_node),
     ("genlin", model_node),
+    ("svm", model_node),
+    ("knn", model_node),
     ("kmeans", model_node),
     ("kohonen", model_node),
     ("apriori", model_node),
@@ -195,7 +197,7 @@ pub fn is_output_unverified(catalog_id: &str) -> bool {
 /// Implemented from the public algorithm, but Modeler could not run the node (its licence is blocked,
 /// or the oracle's install lacks it), so there is no expected answer to compare with. These nodes are
 /// *unverified*: they never count as matching Modeler, and `cargo xtask parity` lists them apart.
-const NO_ORACLE: &[&str] = &["bayes_net", "cox", "genlin"];
+const NO_ORACLE: &[&str] = &["bayes_net", "cox", "genlin", "svm", "knn"];
 
 /// Whether an implemented node has no Modeler oracle at all (implemented, unverified).
 pub fn is_no_oracle(catalog_id: &str) -> bool {

@@ -70,7 +70,9 @@ pub(crate) fn parse(xml: &str) -> Result<Pmml, PmmlError> {
 
     for child in root.children().filter(roxmltree::Node::is_element) {
         let name = child.tag_name().name();
-        if (is_skipped_element(name) && !is_bayes_net_extension(child))
+        if (is_skipped_element(name)
+            && !is_bayes_net_extension(child)
+            && !crate::knn::is_knn_extension(child))
             || name == "Header"
             || name == "MiningBuildTask"
         {
@@ -94,6 +96,9 @@ pub(crate) fn parse(xml: &str) -> Result<Pmml, PmmlError> {
                 if let Some(bayes) = child.children().find(|n| n.has_tag_name("BayesNetModel")) {
                     models.push((Model::BayesNet(crate::bayes::parse(bayes)?), false));
                 }
+            }
+            "Extension" if crate::knn::is_knn_extension(child) => {
+                models.push((Model::Knn(crate::knn::parse(child, root)?), false));
             }
             tag if MODEL_ELEMENTS.contains(&tag) => {
                 models.push((
@@ -630,6 +635,7 @@ fn parse_model(
     match node.tag_name().name() {
         "TreeModel" => Ok(Model::Tree(parse_tree_model(node)?)),
         "RuleSetModel" => Ok(Model::RuleSet(crate::rules::parse(node)?)),
+        "SupportVectorMachineModel" => Ok(Model::Svm(crate::svm::parse(node)?)),
         "ClusteringModel" => Ok(Model::Clustering(parse_clustering_model(node)?)),
         "GeneralRegressionModel" if crate::cox::is_cox(node) => {
             Ok(Model::Cox(crate::cox::parse(node)?))
@@ -657,7 +663,17 @@ fn parse_model(
 
 pub(crate) fn parse_model_header(node: roxmltree::Node<'_, '_>) -> Result<ModelHeader, PmmlError> {
     let name = node.attribute("modelName").map(str::to_string);
-    let function = match req_attr(node, "functionName")? {
+    // Modeler's KNN model states no function: it may only identify neighbours
+    let function = match node.attribute("functionName").map_or_else(
+        || {
+            if node.has_tag_name("NearestNeighborModel") {
+                Ok("neighbors")
+            } else {
+                req_attr(node, "functionName")
+            }
+        },
+        Ok,
+    )? {
         "classification" => MiningFunction::Classification,
         "regression" => MiningFunction::Regression,
         "clustering" => MiningFunction::Clustering,

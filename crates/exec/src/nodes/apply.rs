@@ -84,6 +84,8 @@ enum Kind {
     BayesNet,
     /// Generalized Linear: `$G-` (mean or class), `$GP-`, `$GP-<category>`, `$GRP-`.
     GenLin,
+    /// SVM: `$S-`, `$SP-`, `$SP-<category>`, `$SRP-`.
+    Svm,
     /// Logistic regression: `$L-`, `$LP-`, `$LRP-`, and `$LP-<category>` when enabled.
     Logistic,
     /// GLE: `$G-<target>` for regression and binomial identity/log; `$L-`/`$LC-` for logit.
@@ -144,6 +146,9 @@ pub fn build(node: &StreamNode) -> Result<Box<dyn Operator>, OperatorError> {
         "ApplyC5RuleNode" | "ApplyC5SplitModelNode"
     ) {
         return super::c50::apply(node);
+    }
+    if node.type_identifier() == "spss.KNN_id!KNNapplier" {
+        return super::knn::apply(node);
     }
     if node.type_identifier() == "spss.coxreg_id!applycoxreg" {
         return super::cox::apply(node);
@@ -211,6 +216,7 @@ pub fn build(node: &StreamNode) -> Result<Box<dyn Operator>, OperatorError> {
         "spss.linearSVM!applyLinearSVM" => Kind::LinearSvm,
         "spss.bayesian_id!applyBN" => Kind::BayesNet,
         "spss.generalizedlinear_id!applygeneralizedlinear" => Kind::GenLin,
+        "spss.svm_id!applySVM" => Kind::Svm,
         "LinearRegressionModel!spss.alm-extension" | "ApplyLinearRegressionSplitModelNode" => {
             Kind::Linear
         }
@@ -304,7 +310,7 @@ pub fn build(node: &StreamNode) -> Result<Box<dyn Operator>, OperatorError> {
                 .find(|container| {
                     matches!(container.name.as_deref(), Some("PMML" | "ANOMALY_XML"))
                         // a Bayes Net nugget keeps its model in the container `model`
-                        || (matches!(kind, Kind::BayesNet | Kind::GenLin)
+                        || (matches!(kind, Kind::BayesNet | Kind::GenLin | Kind::Svm)
                             && container.name.as_deref() == Some("model"))
                 })
                 .map(|container| container.member.clone())
@@ -326,7 +332,8 @@ pub fn build(node: &StreamNode) -> Result<Box<dyn Operator>, OperatorError> {
                 && settings::text(s, "refreshLinkState").as_deref() == Some("TurnOnReplaceLink")
                 && settings::text(s, "repalcebuilderNodeId").is_some_and(|id| !id.trim().is_empty())),
         raw_propensities: settings::flag(s, "calculateRawPropensities")?.unwrap_or(false)
-            || (kind == Kind::GenLin && settings::flag(s, "_raw_propensity")?.unwrap_or(false)),
+            || (matches!(kind, Kind::GenLin | Kind::Svm)
+                && settings::flag(s, "_raw_propensity")?.unwrap_or(false)),
         // `$LP-<category>`: the flag, or always for the binomial procedure
         // (`models/logreg_binomial` leaves `appendProbabilities` false and still writes them).
         all_probabilities: (kind == Kind::Logistic
@@ -337,7 +344,8 @@ pub fn build(node: &StreamNode) -> Result<Box<dyn Operator>, OperatorError> {
                 && settings::flag(s, "_all_probabilities")?.unwrap_or(false))
             // GenLin writes `$GP-<category>` for a categorical target; there is no flag to turn
             // it off (`ulcer_genlin` outputs list `$GP-0` and `$GP-1`).
-            || kind == Kind::GenLin,
+            || kind == Kind::GenLin
+            || (kind == Kind::Svm && settings::flag(s, "_all_probabilities")?.unwrap_or(false)),
         distance: kind == Kind::KMeans
             && build_setting(s, "generateDistanceField").as_deref() == Some("true"),
         numeric_labels: kind == Kind::TwoStep
@@ -984,6 +992,7 @@ impl Apply {
             Kind::LinearSvm => ("$L", "$LC", "$LRP"),
             Kind::BayesNet => ("$B", "$BP", "$BRP"),
             Kind::GenLin => ("$G", "$GP", "$GRP"),
+            Kind::Svm => ("$S", "$SP", "$SRP"),
             Kind::Regression => ("$E", "$EC", "$ERP"),
             Kind::Neural | Kind::Factor | Kind::Anomaly | Kind::DecisionList => {
                 return Err(OperatorError::Data(
@@ -1062,6 +1071,7 @@ impl Apply {
                         match self.kind {
                             Kind::BayesNet => "$BP",
                             Kind::GenLin => "$GP",
+                            Kind::Svm => "$SP",
                             _ => "$LP",
                         }
                     ),
@@ -1333,6 +1343,8 @@ fn target_name(pmml: &Pmml) -> Result<String, OperatorError> {
         dms_pmml::Model::Mining(model) => &model.header,
         dms_pmml::Model::BayesNet(model) => &model.header,
         dms_pmml::Model::Cox(model) => &model.header,
+        dms_pmml::Model::Svm(model) => &model.header,
+        dms_pmml::Model::Knn(model) => &model.header,
         dms_pmml::Model::Association(_) => {
             return Err(OperatorError::Data(
                 "an association model has no single target".into(),

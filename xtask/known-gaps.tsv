@@ -7,7 +7,7 @@ ibm-demos	broadband_create_models	Time Series: all four transfer targets match (
 ibm-demos	catalog_streaming_timeseries	Streaming Time Series is not implemented (its terminal is not produced), so the downstream Time Series nugget scores $null$
 ibm-demos	cplex_goodslearn	CPLEX Optimization is out of scope and not implemented, so its terminal is not produced
 ibm-demos	pm_binaryclassifier	Auto Classifier nugget: legacy Auto model scoring is unverified; the oracle retrains a replacement-linked model, which is out of scope
-ibm-demos	svm_cancer	SVM is license-blocked in Modeler 19 and not implemented
+ibm-demos	svm_cancer	SVM is license-blocked in Modeler 19: the oracle's nuggets add no fields, so the scores we write from the saved models have nothing to compare with; the build nodes are checked against the two models saved in the stream
 ibm-demos	telco_coxreg	Cox regression: this Modeler 19 install does not have the Cox node (the demo opens it as unknownterminal, extension spss.coxreg_id missing), so the oracle's nuggets add no fields and the scores we write from the saved model have nothing to compare with; the build node is checked against the model saved in the stream
 ibm-demos	telco_custcat_discriminant	Discriminant is license-blocked in Modeler 19 and not implemented
 random	balance_boost	Balance has no seed: Modeler's own runs keep different records; row count 1155 vs 1156

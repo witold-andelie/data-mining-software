@@ -153,6 +153,10 @@ impl<'p> Scorer<'p> {
                 "SequenceModel is scored by the Sequence nugget, not one prediction".into(),
             )),
             Model::BayesNet(model) => crate::bayes::score(self.pmml, model, &env),
+            Model::Svm(model) => crate::svm::score(model, &env),
+            Model::Knn(_) => Err(PmmlError::Unsupported(
+                "scoring a record against a KNN model's stored cases".into(),
+            )),
             Model::Cox(_) => Err(PmmlError::Unsupported(
                 "a Cox model is scored at several times by the Cox nugget, not as one prediction"
                     .into(),
@@ -485,6 +489,8 @@ fn score_mining(pmml: &Pmml, mining: &MiningModel, env: &Env<'_>) -> Result<Pred
             | Model::Sequence(_)
             | Model::BayesNet(_)
             | Model::Cox(_)
+            | Model::Svm(_)
+            | Model::Knn(_)
             | Model::TimeSeries { .. } => Err(PmmlError::Unsupported(
                 "nested MiningModel segment type".into(),
             )),
@@ -591,6 +597,8 @@ pub(crate) fn model_header(model: &Model) -> Option<&ModelHeader> {
         Model::TimeSeries { header, .. } => Some(header),
         Model::BayesNet(m) => Some(&m.header),
         Model::Cox(m) => Some(&m.header),
+        Model::Svm(m) => Some(&m.header),
+        Model::Knn(m) => Some(&m.header),
         Model::Unsupported(_) => None,
     }
 }
@@ -712,6 +720,12 @@ fn collect_model_fields<'a>(
         }
         Model::BayesNet(model) => {
             for name in model.evidence_fields() {
+                out.insert(name);
+            }
+        }
+        Model::Knn(_) => {}
+        Model::Svm(model) => {
+            for name in model.input_fields() {
                 out.insert(name);
             }
         }

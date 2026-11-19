@@ -181,6 +181,8 @@ fn build_with(
         "spss.linearSVM!linearSVM" => Algorithm::Lsvm(super::analytic_build::lsvm(node)?),
         "spss.bayesian_id!buildBN" => Algorithm::BayesNet(super::bayes_net::build_settings(node)?),
         "spss.coxreg_id!buildcoxreg" => Algorithm::Cox(super::cox::build_settings(node)?),
+        "spss.svm_id!buildSVM" => Algorithm::Svm(super::svm::build_settings(node)?),
+        "spss.KNN_id!KNNbuilder" => Algorithm::Knn(super::knn::build_settings(node)?),
         "spss.generalizedlinear_id!buildgeneralizedlinear" => {
             Algorithm::Genlin(super::genlin::build_settings(node)?)
         }
@@ -235,6 +237,10 @@ enum Algorithm {
     Cox(super::cox::BuildSettings),
     /// Generalized Linear (`spss.generalizedlinear_id!buildgeneralizedlinear`): `dms_algo::genlin`.
     Genlin(super::genlin::BuildSettings),
+    /// SVM (`spss.svm_id!buildSVM`): `dms_algo::svm_model`.
+    Svm(super::svm::BuildSettings),
+    /// KNN (`spss.KNN_id!KNNbuilder`): `dms_algo::knn_model`.
+    Knn(dms_algo::knn::Settings),
     /// Random Trees (`spss.randomTrees!RT`), statistical parity (`dms_algo::random_trees`).
     RandomTrees(RandomTreesSettings),
     /// The settings, and the custom input fields (`None`: the Type roles).
@@ -446,6 +452,72 @@ impl Operator for Build {
                             _ => OperatorError::Data(format!("Bayes Net: {error}")),
                         }
                     })?;
+                return Ok(NodeOutput::Model(Arc::new(pmml)));
+            }
+            if let Algorithm::Knn(settings) = &self.algorithm {
+                if table
+                    .model()
+                    .fields()
+                    .iter()
+                    .any(|f| matches!(f.role, Role::Split | Role::Frequency | Role::Partition))
+                {
+                    return Err(OperatorError::Settings(
+                        "GAP: KNN with split/frequency/partition fields".into(),
+                    ));
+                }
+                let fields = table.model().fields();
+                let targets: Vec<usize> = (0..fields.len())
+                    .filter(|&i| fields[i].role == Role::Target)
+                    .collect();
+                let inputs: Vec<usize> = (0..fields.len())
+                    .filter(|&i| matches!(fields[i].role, Role::Input | Role::Both))
+                    .collect();
+                if targets.len() > 1 {
+                    return Err(OperatorError::Settings(format!(
+                        "KNN needs at most one target field, the input has {}",
+                        targets.len()
+                    )));
+                }
+                let pmml =
+                    dms_algo::knn_model::train(&table, targets.first().copied(), &inputs, settings)
+                        .map_err(|error| match error {
+                            dms_algo::AlgoError::Cancelled => OperatorError::Cancelled,
+                            dms_algo::AlgoError::Unsupported(_)
+                            | dms_algo::AlgoError::Settings(_) => {
+                                OperatorError::Settings(format!("GAP: {error}"))
+                            }
+                            _ => OperatorError::Data(format!("KNN: {error}")),
+                        })?;
+                return Ok(NodeOutput::Model(Arc::new(pmml)));
+            }
+            if let Algorithm::Svm(svm) = &self.algorithm {
+                if table
+                    .model()
+                    .fields()
+                    .iter()
+                    .any(|f| matches!(f.role, Role::Split | Role::Frequency | Role::Partition))
+                {
+                    return Err(OperatorError::Settings(
+                        "GAP: SVM with split/frequency/partition fields".into(),
+                    ));
+                }
+                let (target, fields) =
+                    supervised_fields(&table, svm.target.as_deref(), svm.inputs.as_deref())?;
+                let dataset = Dataset {
+                    table: &table,
+                    target,
+                    inputs: &fields,
+                    frequency: None,
+                };
+                let pmml = dms_algo::svm_model::train(&dataset, &svm.settings).map_err(
+                    |error| match error {
+                        dms_algo::AlgoError::Cancelled => OperatorError::Cancelled,
+                        dms_algo::AlgoError::Unsupported(_) | dms_algo::AlgoError::Settings(_) => {
+                            OperatorError::Settings(format!("GAP: {error}"))
+                        }
+                        _ => OperatorError::Data(format!("SVM: {error}")),
+                    },
+                )?;
                 return Ok(NodeOutput::Model(Arc::new(pmml)));
             }
             if let Algorithm::Genlin(genlin) = &self.algorithm {
@@ -723,6 +795,8 @@ impl Operator for Build {
                 | Algorithm::BayesNet(_)
                 | Algorithm::Cox(_)
                 | Algorithm::Genlin(_)
+                | Algorithm::Svm(_)
+                | Algorithm::Knn(_)
                 | Algorithm::RandomTrees(_)
                 | Algorithm::TwoStep(_)
                 | Algorithm::Logistic(_)

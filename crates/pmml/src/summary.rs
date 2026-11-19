@@ -128,6 +128,8 @@ fn model_kind(model: &Model) -> String {
         Model::TimeSeries { .. } => "Time series model",
         Model::BayesNet(_) => "Bayesian network",
         Model::Cox(_) => "Cox regression",
+        Model::Svm(_) => "Support vector machine",
+        Model::Knn(_) => "Nearest neighbors",
         Model::Unsupported(element) => {
             return format!("Unsupported model ({})", file_text(element));
         }
@@ -358,6 +360,28 @@ fn model_sections(model: &Model, depth: usize, sections: &mut Vec<SummarySection
                 "Network",
                 vec!["Variable".into(), "Parents".into(), "Categories".into()],
                 rows,
+            );
+        }
+        Model::Knn(m) => {
+            facts(
+                sections,
+                "Nearest neighbors",
+                vec![
+                    ("Neighbors", m.k.to_string()),
+                    ("Distance", file_text(&m.metric)),
+                    ("Training cases", m.training_cases.to_string()),
+                ],
+            );
+        }
+        Model::Svm(m) => {
+            facts(
+                sections,
+                "Support vector machine",
+                vec![
+                    ("Support vectors", m.vectors.len().to_string()),
+                    ("Fields", m.fields.len().to_string()),
+                    ("Constant", number_text(m.constant)),
+                ],
             );
         }
         Model::Cox(m) => {
@@ -1256,18 +1280,12 @@ mod tests {
 
     #[test]
     fn summary_unsupported_element_and_empty_metadata() {
-        let summary = summarize(&parse("<SupportVectorMachineModel/>"));
-        assert_eq!(
-            summary.kind,
-            "Unsupported model (SupportVectorMachineModel)"
-        );
+        let summary = summarize(&parse("<BaselineModel/>"));
+        assert_eq!(summary.kind, "Unsupported model (BaselineModel)");
         assert_eq!(summary.name, None);
         assert_eq!(summary.function, None);
         assert!(summary.inputs.is_empty() && summary.targets.is_empty());
-        assert_eq!(
-            fact(&summary, "Model", "Element"),
-            "SupportVectorMachineModel"
-        );
+        assert_eq!(fact(&summary, "Model", "Element"), "BaselineModel");
     }
 
     fn parsed_predicate(xml: &str) -> Predicate {
