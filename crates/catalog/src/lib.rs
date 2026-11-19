@@ -199,7 +199,7 @@ pub const NODES: &[NodeSpec] = &[
     n("neural_net", "Neural Net", Modeling, Mvp, &["TrainNetNode", "ApplyNetNode", "ApplyNeuralNetSplitModelNode", "neuralnet!spss.neuralnet-extension"]),
     n("svm", "SVM", Modeling, LicenseBlocked, &["spss.svm_id!buildSVM"]),
     n("knn", "KNN", Modeling, LicenseBlocked, &["spss.KNN_id!KNNbuilder"]),
-    n("bayes_net", "Bayes Net", Modeling, LicenseBlocked, &["spss.bayesian_id!buildBN"]),
+    n("bayes_net", "Bayes Net", Modeling, LicenseBlocked, &["spss.bayesian_id!buildBN", "spss.bayesian_id!applyBN"]),
     n("discriminant", "Discriminant", Modeling, LicenseBlocked, &["spss.discriminant_id!builddiscriminant"]),
     n("pca_factor", "PCA/Factor", Modeling, Mvp, &["BuildPCANode", "ApplyPCANode"]),
     n("feature_selection", "Feature Selection", Modeling, Mvp, &["BuildFeatureSelectionNode", "ApplyFeatureSelectionNode", "FeatureSelectionModelNode"]),

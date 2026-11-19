@@ -126,6 +126,7 @@ fn model_kind(model: &Model) -> String {
         Model::Association(_) => "Association rules",
         Model::Sequence(_) => "Sequence rules",
         Model::TimeSeries { .. } => "Time series model",
+        Model::BayesNet(_) => "Bayesian network",
         Model::Unsupported(element) => {
             return format!("Unsupported model ({})", file_text(element));
         }
@@ -338,6 +339,25 @@ fn model_sections(model: &Model, depth: usize, sections: &mut Vec<SummarySection
                 values.push(("Algorithm", file_text(algorithm)));
             }
             facts(sections, "Time series", values);
+        }
+        Model::BayesNet(m) => {
+            let rows = m
+                .nodes
+                .iter()
+                .map(|n| {
+                    vec![
+                        file_text(&n.name),
+                        file_text(&n.parents.join(", ")),
+                        n.categories.len().to_string(),
+                    ]
+                })
+                .collect();
+            table(
+                sections,
+                "Network",
+                vec!["Variable".into(), "Parents".into(), "Categories".into()],
+                rows,
+            );
         }
         Model::Unsupported(element) => {
             facts(sections, "Model", vec![("Element", file_text(element))])

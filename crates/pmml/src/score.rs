@@ -152,6 +152,7 @@ impl<'p> Scorer<'p> {
             Model::Sequence(_) => Err(PmmlError::Unsupported(
                 "SequenceModel is scored by the Sequence nugget, not one prediction".into(),
             )),
+            Model::BayesNet(model) => crate::bayes::score(self.pmml, model, &env),
             Model::Unsupported(name) => Err(PmmlError::Unsupported(name.clone())),
         }
     }
@@ -478,6 +479,7 @@ fn score_mining(pmml: &Pmml, mining: &MiningModel, env: &Env<'_>) -> Result<Pred
             | Model::Clustering(_)
             | Model::Association(_)
             | Model::Sequence(_)
+            | Model::BayesNet(_)
             | Model::TimeSeries { .. } => Err(PmmlError::Unsupported(
                 "nested MiningModel segment type".into(),
             )),
@@ -582,6 +584,7 @@ pub(crate) fn model_header(model: &Model) -> Option<&ModelHeader> {
         Model::Association(m) => Some(&m.header),
         Model::Sequence(m) => Some(&m.header),
         Model::TimeSeries { header, .. } => Some(header),
+        Model::BayesNet(m) => Some(&m.header),
         Model::Unsupported(_) => None,
     }
 }
@@ -699,6 +702,11 @@ fn collect_model_fields<'a>(
                 ) {
                     out.insert(field.name.as_str());
                 }
+            }
+        }
+        Model::BayesNet(model) => {
+            for name in model.evidence_fields() {
+                out.insert(name);
             }
         }
         Model::Unsupported(_) | Model::TimeSeries { .. } => {}

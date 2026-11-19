@@ -84,6 +84,7 @@ use crate::settings;
 use dms_algo::Dataset;
 use dms_algo::anomaly::{self, AnomalyCutoff, AnomalySettings};
 use dms_algo::apriori::{self, AprioriSettings};
+use dms_algo::bayes_net::Settings as BayesNetSettings;
 use dms_algo::carma::{self, CarmaSettings};
 use dms_algo::cart::{self, CartSettings, Impurity, MinSize};
 use dms_algo::chaid::{self, ChaidSettings, ChiSquare, Method};
@@ -178,6 +179,7 @@ fn build_with(
             Algorithm::LinearAs(super::analytic_build::linear(node)?)
         }
         "spss.linearSVM!linearSVM" => Algorithm::Lsvm(super::analytic_build::lsvm(node)?),
+        "spss.bayesian_id!buildBN" => Algorithm::BayesNet(super::bayes_net::build_settings(node)?),
         "spss.randomTrees!RT" => Algorithm::RandomTrees(random_trees_settings(node)?),
         "BuildKMeansNode" => Algorithm::KMeans(kmeans_settings(node)?),
         "TrainKohonenNode" => Algorithm::Kohonen(kohonen_settings(node)?),
@@ -223,6 +225,8 @@ enum Algorithm {
     LinearAs(super::analytic_build::LinearFields),
     /// Linear SVM (`spss.linearSVM!linearSVM`), statistical parity (`dms_algo::lsvm`).
     Lsvm(LsvmSettings),
+    /// Bayes Net (`spss.bayesian_id!buildBN`): TAN or Markov blanket (`dms_algo::bayes_net_model`).
+    BayesNet(BayesNetSettings),
     /// Random Trees (`spss.randomTrees!RT`), statistical parity (`dms_algo::random_trees`).
     RandomTrees(RandomTreesSettings),
     /// The settings, and the custom input fields (`None`: the Type roles).
@@ -405,6 +409,37 @@ impl Operator for Build {
                 })?;
                 return Ok(NodeOutput::Model(Arc::new(pmml)));
             }
+            if let Algorithm::BayesNet(settings) = &self.algorithm {
+                if table
+                    .model()
+                    .fields()
+                    .iter()
+                    .any(|f| matches!(f.role, Role::Split | Role::Frequency | Role::Partition))
+                {
+                    return Err(OperatorError::Settings(
+                        "GAP: Bayes Net with split/weight/partition fields".into(),
+                    ));
+                }
+                let (target, fields) = supervised_fields(&table, None, None)?;
+                let dataset = Dataset {
+                    table: &table,
+                    target,
+                    inputs: &fields,
+                    frequency: None,
+                };
+                let pmml =
+                    dms_algo::bayes_net_model::train(&dataset, settings).map_err(|error| {
+                        match error {
+                            dms_algo::AlgoError::Cancelled => OperatorError::Cancelled,
+                            dms_algo::AlgoError::Unsupported(_)
+                            | dms_algo::AlgoError::Settings(_) => {
+                                OperatorError::Settings(format!("GAP: {error}"))
+                            }
+                            _ => OperatorError::Data(format!("Bayes Net: {error}")),
+                        }
+                    })?;
+                return Ok(NodeOutput::Model(Arc::new(pmml)));
+            }
             if let Algorithm::RandomTrees(settings) = &self.algorithm {
                 if table.model().fields().iter().any(|field| {
                     matches!(field.role, Role::Split | Role::Frequency | Role::Partition)
@@ -584,6 +619,7 @@ impl Operator for Build {
                 | Algorithm::TreeAs(_)
                 | Algorithm::LinearAs(_)
                 | Algorithm::Lsvm(_)
+                | Algorithm::BayesNet(_)
                 | Algorithm::RandomTrees(_)
                 | Algorithm::TwoStep(_)
                 | Algorithm::Logistic(_)

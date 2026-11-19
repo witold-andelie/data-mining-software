@@ -10,6 +10,7 @@ pub mod auto_cluster;
 pub mod auto_data_prep;
 pub mod auto_models;
 pub mod balance;
+mod bayes_net;
 pub mod binning;
 pub mod build;
 pub mod c50;

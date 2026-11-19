@@ -107,7 +107,6 @@ const MAX_CPT_CELLS: usize = 1_000_000;
 const MAX_CI_CELLS: usize = 1_000_000;
 const MAX_CI_TESTS: usize = 2_000_000;
 const MAX_ORIENTATION_STEPS: usize = 100_000;
-const MAX_MB_EXACT_MARGINAL_STATES: usize = 4_096;
 
 /// Error returned by Bayesian network training and scoring.
 pub type BayesNetError = AlgoError;
@@ -223,6 +222,8 @@ pub struct ConditionalProbabilityTable {
     pub cardinality: usize,
     /// Number of parent configurations (`q_i = product of parent cardinalities`, `1` if no parents).
     pub parent_cardinality: usize,
+    /// Number of training records of each parent configuration (`N_ij`), in the order of the rows.
+    pub row_counts: Vec<usize>,
     /// Row-major table of length `parent_cardinality * cardinality`:
     /// entry `j * cardinality + k` is `P(X_i = k | parents = j)`.
     /// Parent index `j` uses mixed-radix encoding with `parents[0]` most significant.
@@ -252,354 +253,67 @@ impl Network {
         self.cpts.iter().find(|c| c.variable == var)
     }
 
-    /// Computes `P(target = each category | evidence)`, where `evidence` has one `Option<u32>`
-    /// per variable in `self.variables`.
-    pub fn posterior(&self, evidence: &[Option<u32>]) -> Result<Vec<f64>, BayesNetError> {
-        if evidence.len() != self.variables.len() {
-            return Err(BayesNetError::Data(format!(
-                "evidence length {} does not match variable count {}",
-                evidence.len(),
-                self.variables.len()
-            )));
-        }
-        let target_cpt = self
-            .cpt(self.target)
-            .ok_or_else(|| BayesNetError::Data("network missing target CPT".into()))?;
-        let r_y = target_cpt.cardinality;
-        if r_y == 0 {
-            return Err(BayesNetError::Data("target has zero categories".into()));
-        }
-
-        let raw_scores = match self.structure_type {
-            StructureType::Tan => self.tan_log_scores(target_cpt, evidence)?,
-            StructureType::MarkovBlanket => self.mb_log_scores(target_cpt, evidence)?,
+    /// The network as the Bayes Net model Modeler's nugget holds: one table per node, with the
+    /// parent configurations that occur in the training data (`N_ij > 0`). The first predictor
+    /// of the header is not known here, so the caller supplies the header.
+    pub fn to_model(
+        &self,
+        header: dms_pmml::ModelHeader,
+    ) -> Result<dms_pmml::BayesNetModel, BayesNetError> {
+        let name = |i: usize| -> Result<&Variable, BayesNetError> {
+            self.variables
+                .get(i)
+                .ok_or_else(|| BayesNetError::Data("a table refers to a missing variable".into()))
         };
-
-        normalize_log_scores(&raw_scores, &target_cpt.probabilities)
-    }
-
-    fn mb_log_scores(
-        &self,
-        target_cpt: &ConditionalProbabilityTable,
-        evidence: &[Option<u32>],
-    ) -> Result<Vec<f64>, BayesNetError> {
-        let r_y = target_cpt.cardinality;
-        // Identify children of Y (CPTs in MB_Y whose parents contain `self.target`).
-        let child_cpts: Vec<&ConditionalProbabilityTable> = self
-            .cpts
-            .iter()
-            .filter(|c| c.variable != self.target && c.parents.contains(&self.target))
-            .collect();
-
-        // Check if any variable in MB_Y \ {Y} that affects Y or its children is unobserved.
-        let mut relevant_unobs: Vec<usize> = Vec::new();
-        let mut is_observed = vec![false; self.variables.len()];
-        for (idx, var) in self.variables.iter().enumerate() {
-            if let Some(Some(code)) = evidence.get(idx).copied()
-                && (code as usize) < var.categories.len()
-                && let Some(slot) = is_observed.get_mut(idx)
-            {
-                *slot = true;
-            }
-        }
+        let mut nodes = Vec::with_capacity(self.cpts.len());
         for cpt in &self.cpts {
-            if cpt.variable != self.target
-                && !is_observed.get(cpt.variable).copied().unwrap_or(false)
-            {
-                relevant_unobs.push(cpt.variable);
-            }
-        }
-
-        if relevant_unobs.is_empty() {
-            // Complete evidence: Guide p. 51 scoring equation directly.
-            let mut log_scores = Vec::with_capacity(r_y);
-            for yl in 0..r_y {
-                let py = cpt_prob(target_cpt, &self.variables, self.target, yl, yl, evidence);
-                if py <= 0.0 {
-                    log_scores.push(f64::NEG_INFINITY);
-                    continue;
-                }
-                let mut log_p = py.ln();
-                let mut possible = true;
-                for &child_cpt in &child_cpts {
-                    let xv = evidence
-                        .get(child_cpt.variable)
-                        .copied()
-                        .flatten()
-                        .unwrap_or(0) as usize;
-                    let pc = cpt_prob(child_cpt, &self.variables, self.target, yl, xv, evidence);
-                    if pc <= 0.0 {
-                        possible = false;
-                        break;
-                    }
-                    log_p += pc.ln();
-                }
-                log_scores.push(if possible { log_p } else { f64::NEG_INFINITY });
-            }
-            return Ok(log_scores);
-        }
-
-        // Compute unobserved state space size over MB_Y \ {Y}.
-        let mut total_states = 1usize;
-        let mut exact_possible = true;
-        for &u in &relevant_unobs {
-            let ru = self
-                .variables
-                .get(u)
-                .map_or(1, |v| v.categories.len().max(1));
-            match total_states.checked_mul(ru) {
-                Some(prod) if prod <= MAX_MB_EXACT_MARGINAL_STATES => total_states = prod,
-                _ => {
-                    exact_possible = false;
-                    break;
-                }
-            }
-        }
-
-        if exact_possible {
-            // Exact marginalization over unobserved nodes in MB_Y using full MB_Y DAG joint.
-            let mut full_evidence = evidence.to_vec();
-            let mut log_scores = Vec::with_capacity(r_y);
-            let mut assignments = vec![0usize; relevant_unobs.len()];
-
-            for yl in 0..r_y {
-                if let Some(slot) = full_evidence.get_mut(self.target) {
-                    *slot = Some(yl as u32);
-                }
-                let mut max_log = f64::NEG_INFINITY;
-                let mut term_logs = Vec::with_capacity(total_states);
-
-                assignments.fill(0);
-                for _state in 0..total_states {
-                    for (pos, &u) in relevant_unobs.iter().enumerate() {
-                        if let Some(slot) = full_evidence.get_mut(u) {
-                            *slot = Some(assignments.get(pos).copied().unwrap_or(0) as u32);
-                        }
-                    }
-                    let mut log_joint = 0.0f64;
-                    let mut nonzero = true;
-                    for cpt in &self.cpts {
-                        let val = full_evidence
-                            .get(cpt.variable)
-                            .copied()
-                            .flatten()
-                            .unwrap_or(0) as usize;
-                        let p =
-                            cpt_prob(cpt, &self.variables, self.target, yl, val, &full_evidence);
-                        if p <= 0.0 {
-                            nonzero = false;
-                            break;
-                        }
-                        log_joint += p.ln();
-                    }
-                    if nonzero {
-                        if log_joint > max_log {
-                            max_log = log_joint;
-                        }
-                        term_logs.push(log_joint);
-                    }
-                    // Advance mixed-radix odometer.
-                    for pos in (0..relevant_unobs.len()).rev() {
-                        let u = relevant_unobs.get(pos).copied().unwrap_or(0);
-                        let ru = self.variables.get(u).map_or(1, |v| v.categories.len());
-                        if let Some(slot) = assignments.get_mut(pos) {
-                            *slot += 1;
-                            if *slot < ru {
-                                break;
-                            }
-                            *slot = 0;
-                        }
-                    }
-                }
-                if max_log.is_finite() {
-                    let sum_exp: f64 = term_logs.iter().map(|&l| (l - max_log).exp()).sum();
-                    log_scores.push(max_log + sum_exp.ln());
-                } else {
-                    log_scores.push(f64::NEG_INFINITY);
-                }
-            }
-            return Ok(log_scores);
-        }
-
-        // Large missing-evidence fallback: average uniformly over missing parent configs of Y
-        // and include only fully-observed child factors (marginalizing missing children to 1).
-        let mut log_scores = Vec::with_capacity(r_y);
-        for yl in 0..r_y {
-            let py =
-                cpt_prob_avg_missing(target_cpt, &self.variables, self.target, yl, yl, evidence);
-            if py <= 0.0 {
-                log_scores.push(f64::NEG_INFINITY);
-                continue;
-            }
-            let mut log_p = py.ln();
-            let mut possible = true;
-            for &child_cpt in &child_cpts {
-                if let Some(Some(xv)) = evidence.get(child_cpt.variable).copied()
-                    && (xv as usize) < child_cpt.cardinality
-                {
-                    let pc = cpt_prob_avg_missing(
-                        child_cpt,
-                        &self.variables,
-                        self.target,
-                        yl,
-                        xv as usize,
-                        evidence,
-                    );
-                    if pc <= 0.0 {
-                        possible = false;
-                        break;
-                    }
-                    log_p += pc.ln();
-                }
-            }
-            log_scores.push(if possible { log_p } else { f64::NEG_INFINITY });
-        }
-        Ok(log_scores)
-    }
-
-    fn tan_log_scores(
-        &self,
-        target_cpt: &ConditionalProbabilityTable,
-        evidence: &[Option<u32>],
-    ) -> Result<Vec<f64>, BayesNetError> {
-        let r_y = target_cpt.cardinality;
-        let pred_cpts: Vec<&ConditionalProbabilityTable> = self
-            .cpts
-            .iter()
-            .filter(|c| c.variable != self.target)
-            .collect();
-        let m = pred_cpts.len();
-
-        // Map variable index -> position in `pred_cpts`.
-        let mut var_to_pos = vec![None; self.variables.len()];
-        for (pos, cpt) in pred_cpts.iter().enumerate() {
-            if let Some(slot) = var_to_pos.get_mut(cpt.variable) {
-                *slot = Some(pos);
-            }
-        }
-
-        let mut parent_pos: Vec<Option<usize>> = vec![None; m];
-        let mut children: Vec<Vec<usize>> = vec![Vec::new(); m];
-        for (pos, cpt) in pred_cpts.iter().enumerate() {
-            if cpt.parents.len() == 2 {
-                let p_var = cpt.parents.first().copied().unwrap_or(0);
-                if let Some(Some(p)) = var_to_pos.get(p_var).copied() {
-                    if let Some(slot) = parent_pos.get_mut(pos) {
-                        *slot = Some(p);
-                    }
-                    if let Some(ch) = children.get_mut(p) {
-                        ch.push(pos);
-                    }
-                }
-            }
-        }
-
-        // BFS topological order from roots.
-        let mut order = Vec::with_capacity(m);
-        let mut queue = std::collections::VecDeque::new();
-        for (pos, p) in parent_pos.iter().enumerate() {
-            if p.is_none() {
-                queue.push_back(pos);
-            }
-        }
-        while let Some(u) = queue.pop_front() {
-            order.push(u);
-            if let Some(ch) = children.get(u) {
-                for &v in ch {
-                    queue.push_back(v);
-                }
-            }
-        }
-
-        let mut log_scores = Vec::with_capacity(r_y);
-        for yl in 0..r_y {
-            let p_y = target_cpt.probabilities.get(yl).copied().unwrap_or(0.0);
-            if p_y <= 0.0 {
-                log_scores.push(f64::NEG_INFINITY);
-                continue;
-            }
-            let mut log_joint = p_y.ln();
-            let mut lambdas: Vec<Vec<f64>> = pred_cpts
+            let var = name(cpt.variable)?;
+            let parents: Vec<&Variable> = cpt
+                .parents
                 .iter()
-                .map(|cpt| {
-                    let r = cpt.cardinality;
-                    match evidence.get(cpt.variable).copied().flatten() {
-                        Some(code) if (code as usize) < r => {
-                            let mut v = vec![0.0; r];
-                            if let Some(slot) = v.get_mut(code as usize) {
-                                *slot = 1.0;
-                            }
-                            v
-                        }
-                        _ => vec![1.0; r],
-                    }
-                })
-                .collect();
-
-            // Bottom-up sum-product over the predictor tree.
-            for &pos in order.iter().rev() {
-                let Some(cpt) = pred_cpts.get(pos) else {
+                .map(|&p| name(p))
+                .collect::<Result<_, _>>()?;
+            let mut rows = Vec::new();
+            for (j, &count) in cpt.row_counts.iter().enumerate() {
+                if count == 0 {
                     continue;
-                };
-                let r = cpt.cardinality;
-                let mut cur_lambda = lambdas.get(pos).cloned().unwrap_or_default();
-
-                // Rescale to prevent underflow.
-                let max_val = cur_lambda.iter().copied().fold(0.0f64, f64::max);
-                if max_val <= 0.0 {
-                    log_joint = f64::NEG_INFINITY;
-                    break;
                 }
-                if max_val != 1.0 {
-                    for x in &mut cur_lambda {
-                        *x /= max_val;
-                    }
-                    log_joint += max_val.ln();
+                // mixed-radix digits of the configuration, `parents[0]` most significant
+                let mut rest = j;
+                let mut labels = vec![String::new(); parents.len()];
+                for (slot, parent) in labels.iter_mut().zip(&parents).rev() {
+                    let card = parent.categories.len().max(1);
+                    *slot = parent
+                        .categories
+                        .get(rest % card)
+                        .cloned()
+                        .unwrap_or_default();
+                    rest /= card;
                 }
-
-                if let Some(p_idx) = parent_pos.get(pos).copied().flatten() {
-                    let Some(parent_cpt) = pred_cpts.get(p_idx) else {
-                        continue;
-                    };
-                    let rp = parent_cpt.cardinality;
-                    let mut msg = vec![0.0f64; rp];
-                    for (u, msg_u) in msg.iter_mut().enumerate() {
-                        let cfg = u * r_y + yl;
-                        let base = cfg * r;
-                        let mut sum = 0.0;
-                        for (v, &lam_v) in cur_lambda.iter().enumerate() {
-                            if lam_v > 0.0 {
-                                let prob = cpt.probabilities.get(base + v).copied().unwrap_or(0.0);
-                                sum += prob * lam_v;
-                            }
-                        }
-                        *msg_u = sum;
-                    }
-                    if let Some(p_lam) = lambdas.get_mut(p_idx) {
-                        for (dst, mval) in p_lam.iter_mut().zip(msg.iter()) {
-                            *dst *= *mval;
-                        }
-                    }
-                } else {
-                    // Root predictor (parents = [target]).
-                    let base = yl * r;
-                    let mut root_sum = 0.0;
-                    for (u, &lam_u) in cur_lambda.iter().enumerate() {
-                        if lam_u > 0.0 {
-                            let prob = cpt.probabilities.get(base + u).copied().unwrap_or(0.0);
-                            root_sum += prob * lam_u;
-                        }
-                    }
-                    if root_sum <= 0.0 {
-                        log_joint = f64::NEG_INFINITY;
-                        break;
-                    }
-                    log_joint += root_sum.ln();
-                }
+                let start = j * cpt.cardinality;
+                let probabilities = cpt
+                    .probabilities
+                    .get(start..start + cpt.cardinality)
+                    .ok_or_else(|| BayesNetError::Data("a table is shorter than its rows".into()))?
+                    .to_vec();
+                rows.push(dms_pmml::BayesRow {
+                    parent_values: labels,
+                    total: Some(count as f64),
+                    probabilities,
+                });
             }
-            log_scores.push(log_joint);
+            nodes.push(dms_pmml::BayesNode {
+                name: var.name.clone(),
+                parents: parents.iter().map(|p| p.name.clone()).collect(),
+                categories: var.categories.clone(),
+                rows,
+            });
         }
-        Ok(log_scores)
+        Ok(dms_pmml::BayesNetModel {
+            header,
+            target: name(self.target)?.name.clone(),
+            nodes,
+        })
     }
 
     /// Plain-text representation of the structure (parents per variable) and every CPT.
@@ -643,128 +357,6 @@ impl Network {
         }
         out
     }
-}
-
-fn cpt_prob(
-    cpt: &ConditionalProbabilityTable,
-    variables: &[Variable],
-    target: usize,
-    yl: usize,
-    val: usize,
-    evidence: &[Option<u32>],
-) -> f64 {
-    let mut j = 0usize;
-    for &p in &cpt.parents {
-        let rp = variables.get(p).map_or(1, |v| v.categories.len().max(1));
-        let vp = if p == target {
-            yl
-        } else {
-            evidence.get(p).copied().flatten().unwrap_or(0) as usize
-        };
-        if vp >= rp {
-            return 0.0;
-        }
-        j = j * rp + vp;
-    }
-    cpt.probabilities
-        .get(j * cpt.cardinality + val)
-        .copied()
-        .unwrap_or(0.0)
-}
-
-fn cpt_prob_avg_missing(
-    cpt: &ConditionalProbabilityTable,
-    variables: &[Variable],
-    target: usize,
-    yl: usize,
-    val: usize,
-    evidence: &[Option<u32>],
-) -> f64 {
-    let mut indices = vec![0usize];
-    for &p in &cpt.parents {
-        let rp = variables.get(p).map_or(1, |v| v.categories.len().max(1));
-        if p == target {
-            for idx in &mut indices {
-                *idx = *idx * rp + yl;
-            }
-        } else if let Some(Some(vp)) = evidence.get(p).copied()
-            && (vp as usize) < rp
-        {
-            for idx in &mut indices {
-                *idx = *idx * rp + (vp as usize);
-            }
-        } else {
-            let mut next = Vec::with_capacity(
-                indices
-                    .len()
-                    .saturating_mul(rp)
-                    .min(MAX_MB_EXACT_MARGINAL_STATES),
-            );
-            for &idx in &indices {
-                for v in 0..rp {
-                    if next.len() >= MAX_MB_EXACT_MARGINAL_STATES {
-                        break;
-                    }
-                    next.push(idx * rp + v);
-                }
-            }
-            indices = next;
-        }
-    }
-    if indices.is_empty() {
-        return 0.0;
-    }
-    let sum: f64 = indices
-        .iter()
-        .map(|&j| {
-            cpt.probabilities
-                .get(j * cpt.cardinality + val)
-                .copied()
-                .unwrap_or(0.0)
-        })
-        .sum();
-    sum / (indices.len() as f64)
-}
-
-fn normalize_log_scores(log_scores: &[f64], prior: &[f64]) -> Result<Vec<f64>, BayesNetError> {
-    let k = log_scores.len();
-    if k == 0 {
-        return Err(BayesNetError::Data("target has zero categories".into()));
-    }
-    let max_log = log_scores
-        .iter()
-        .copied()
-        .filter(|x| x.is_finite())
-        .fold(f64::NEG_INFINITY, f64::max);
-    if max_log.is_finite() {
-        let mut probs: Vec<f64> = log_scores
-            .iter()
-            .map(|&l| {
-                if l.is_finite() {
-                    (l - max_log).exp()
-                } else {
-                    0.0
-                }
-            })
-            .collect();
-        let sum: f64 = probs.iter().sum();
-        if sum > 0.0 && sum.is_finite() {
-            for p in &mut probs {
-                *p /= sum;
-            }
-            return Ok(probs);
-        }
-    }
-    // Zero-score fallback: target marginal prior, else uniform.
-    let prior_sum: f64 = prior
-        .iter()
-        .copied()
-        .filter(|x| *x > 0.0 && x.is_finite())
-        .sum();
-    if prior.len() == k && prior_sum > 0.0 {
-        return Ok(prior.iter().map(|&p| p.max(0.0) / prior_sum).collect());
-    }
-    Ok(vec![1.0 / (k as f64); k])
 }
 
 /// Validated, dense complete-case matrix of category indices.
@@ -1198,6 +790,7 @@ fn estimate_cpt(
         parents: parents.to_vec(),
         cardinality: r,
         parent_cardinality: q,
+        row_counts: counts_ij,
         probabilities,
     })
 }
@@ -1938,6 +1531,35 @@ fn train_markov_blanket(
 mod tests {
     use super::*;
 
+    /// `P(target | evidence)` as the nugget scores it: the network's tables as a `BayesNetModel`,
+    /// evidence per variable (a code the variable does not have is no evidence).
+    fn posterior(net: &Network, evidence: &[Option<u32>]) -> Result<Vec<f64>, BayesNetError> {
+        if evidence.len() != net.variables.len() {
+            return Err(BayesNetError::Data("evidence length".into()));
+        }
+        let model = net.to_model(dms_pmml::ModelHeader {
+            name: None,
+            function: dms_pmml::MiningFunction::Classification,
+            algorithm: None,
+            mining_schema: Vec::new(),
+            output: Vec::new(),
+            local_transformations: Vec::new(),
+        })?;
+        let observed: Vec<Option<usize>> = model
+            .nodes
+            .iter()
+            .map(|node| {
+                let at = net.variables.iter().position(|v| v.name == node.name)?;
+                let code = usize::try_from(evidence.get(at).copied().flatten()?).ok()?;
+                (code < node.categories.len()).then_some(code)
+            })
+            .collect();
+        model
+            .posterior(&observed)
+            .map_err(|e| BayesNetError::Data(e.to_string()))?
+            .ok_or_else(|| BayesNetError::Data("no probability mass".into()))
+    }
+
     fn var(name: &str, cats: &[&str]) -> Variable {
         Variable {
             name: name.to_string(),
@@ -2007,7 +1629,7 @@ mod tests {
             x1_cpt.probabilities,
             vec![1.0, 0.0, 0.0, 1.0, 0.0, 1.0, 1.0, 0.0]
         );
-        let post_mle = net_mle.posterior(&[Some(0), Some(0), None])?;
+        let post_mle = posterior(&net_mle, &[Some(0), Some(0), None])?;
         assert!((post_mle[0] - 1.0).abs() < 1e-12);
         assert!(post_mle[1].abs() < 1e-12);
 
@@ -2026,12 +1648,12 @@ mod tests {
         {
             assert!((got - exp).abs() < 1e-12, "got {got}, expected {exp}");
         }
-        let post_bayes = net_bayes.posterior(&[Some(0), Some(0), None])?;
+        let post_bayes = posterior(&net_bayes, &[Some(0), Some(0), None])?;
         assert!((post_bayes[0] - 0.9).abs() < 1e-12);
         assert!((post_bayes[1] - 0.1).abs() < 1e-12);
 
         // Missing evidence -> marginal [0.5, 0.5]
-        let post_missing = net_bayes.posterior(&[None, None, None])?;
+        let post_missing = posterior(&net_bayes, &[None, None, None])?;
         assert!((post_missing[0] - 0.5).abs() < 1e-12);
         assert!((post_missing[1] - 0.5).abs() < 1e-12);
         Ok(())
@@ -2149,7 +1771,7 @@ mod tests {
                 .cpt(2)
                 .ok_or_else(|| BayesNetError::Data("missing Y CPT".into()))?;
             assert_eq!(y_cpt.parents, vec![0, 1]);
-            let post = net.posterior(&[Some(1), Some(1), None, Some(0)])?;
+            let post = posterior(&net, &[Some(1), Some(1), None, Some(0)])?;
             assert!((post[0] - (1.0 / 34.0)).abs() < 1e-12);
             assert!((post[1] - (33.0 / 34.0)).abs() < 1e-12);
         }
@@ -2202,7 +1824,7 @@ mod tests {
             .cpt(1)
             .ok_or_else(|| BayesNetError::Data("missing C CPT".into()))?;
         assert_eq!(c_cpt.parents, vec![0, 2]);
-        let post = net.posterior(&[None, Some(0), Some(1), Some(0)])?;
+        let post = posterior(&net, &[None, Some(0), Some(1), Some(0)])?;
         assert!((post[0] - (33.0 / 34.0)).abs() < 1e-12);
         assert!((post[1] - (1.0 / 34.0)).abs() < 1e-12);
         Ok(())
@@ -2403,7 +2025,7 @@ mod tests {
                     [Some(999), Some(1), None],
                     [Some(999), Some(999), Some(42)],
                 ] {
-                    let post = net1.posterior(&ev)?;
+                    let post = posterior(&net1, &ev)?;
                     assert_eq!(post.len(), 2);
                     for &p in &post {
                         assert!(p.is_finite() && (0.0..=1.0).contains(&p));
@@ -2456,7 +2078,7 @@ mod tests {
                     ..Settings::default()
                 },
             )?;
-            let post = net.posterior(&[Some(0), None])?;
+            let post = posterior(&net, &[Some(0), None])?;
             assert!((post.iter().sum::<f64>() - 1.0).abs() < 1e-12);
         }
 
@@ -2474,7 +2096,7 @@ mod tests {
                     ..Settings::default()
                 },
             )?;
-            let post = net.posterior(&[Some(0), None])?;
+            let post = posterior(&net, &[Some(0), None])?;
             assert_eq!(post.len(), 1);
             assert!((post[0] - 1.0).abs() < 1e-12);
         }
@@ -2502,8 +2124,13 @@ mod tests {
                         ..Settings::default()
                     },
                 )?;
-                let post = net.posterior(&[Some(0), Some(1), None])?;
+                let post = posterior(&net, &[Some(0), Some(0), None])?;
                 assert!((post.iter().sum::<f64>() - 1.0).abs() < 1e-12);
+                // A value that never occurred gives the maximum-likelihood tables no mass for
+                // either target category: no prediction, not a panic.
+                if st == StructureType::Tan {
+                    assert!(posterior(&net, &[Some(0), Some(1), None]).is_err());
+                }
             }
         }
 
@@ -2590,7 +2217,7 @@ mod tests {
         ));
         let net_ok = train(&one_row, &Settings::default())?;
         assert!(matches!(
-            net_ok.posterior(&[None]),
+            posterior(&net_ok, &[None]),
             Err(BayesNetError::Data(_))
         ));
 
@@ -2598,9 +2225,9 @@ mod tests {
     }
 
     #[test]
-    fn bayes_net_inputs_always_selected_and_large_mb_fallback() -> Result<(), BayesNetError> {
+    fn bayes_net_inputs_always_selected_and_wide_blanket() -> Result<(), BayesNetError> {
         // Verify inputs_always_selected retains an independent variable even when feature
-        // selection drops it, and verify the large-MB missing-evidence fallback path.
+        // selection drops it, and that a wide blanket scores exactly with missing evidence.
         let mut rows = Vec::with_capacity(32);
         for a in 0..=1u32 {
             for b in 0..=1u32 {
@@ -2633,8 +2260,8 @@ mod tests {
         // but inputs_always_selected keeps it in active_variables.
         assert!(net.active_variables.contains(&3));
 
-        // Construct a synthetic MarkovBlanket network with 13 binary children of Y (2^13 = 8192 > 4096)
-        // to exercise the large missing-evidence fallback in mb_log_scores without overflow/panic.
+        // A synthetic MarkovBlanket network with 13 binary children of Y: summing the missing
+        // children out one by one stays cheap, where enumerating 2^13 states would not.
         let mut vars = vec![var("Y", &["0", "1"])];
         for i in 0..13 {
             vars.push(var(&format!("C{i}"), &["0", "1"]));
@@ -2644,6 +2271,7 @@ mod tests {
             parents: Vec::new(),
             cardinality: 2,
             parent_cardinality: 1,
+            row_counts: vec![10],
             probabilities: vec![0.4, 0.6],
         }];
         for i in 1..=13 {
@@ -2652,6 +2280,7 @@ mod tests {
                 parents: vec![0],
                 cardinality: 2,
                 parent_cardinality: 2,
+                row_counts: vec![5, 5],
                 probabilities: vec![0.8, 0.2, 0.3, 0.7],
             });
         }
@@ -2663,14 +2292,14 @@ mod tests {
             cpts,
             parameter_count: 1 + 13 * 2,
         };
-        // All 13 children missing -> fallback path triggers (2^13 > 4096) and returns [0.4, 0.6].
-        let post_all_missing = big_mb.posterior(&[None; 14])?;
+        // All 13 children missing -> the prior of Y, [0.4, 0.6].
+        let post_all_missing = posterior(&big_mb, &[None; 14])?;
         assert!((post_all_missing[0] - 0.4).abs() < 1e-12);
         assert!((post_all_missing[1] - 0.6).abs() < 1e-12);
         // Observe C0 = 1 while C1..C12 missing -> updates P(Y) using C0 only.
         let mut ev = vec![None; 14];
         ev[1] = Some(1);
-        let post_c0 = big_mb.posterior(&ev)?;
+        let post_c0 = posterior(&big_mb, &ev)?;
         // P(Y=0) * P(C0=1|Y=0) = 0.4 * 0.2 = 0.08; P(Y=1) * P(C0=1|Y=1) = 0.6 * 0.7 = 0.42
         assert!((post_c0[0] - 0.08 / 0.50).abs() < 1e-12);
         assert!((post_c0[1] - 0.42 / 0.50).abs() < 1e-12);

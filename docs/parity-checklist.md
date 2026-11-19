@@ -12,7 +12,7 @@ Status `done (output unverified)`: settings and the records reaching the node ma
 |---|---|---|
 | MVP | 85 | 85 |
 | later | 20 | 24 |
-| license blocked | 0 | 6 |
+| license blocked | 1 | 6 |
 | out of scope | 0 | 34 |
 
 ## Sources
@@ -125,7 +125,7 @@ Status `done (output unverified)`: settings and the records reaching the node ma
 | Neural Net | `neural_net` | MVP | done (statistical) | `TrainNetNode`, `ApplyNetNode`, `ApplyNeuralNetSplitModelNode`, `neuralnet!spss.neuralnet-extension` |
 | SVM | `svm` | license blocked | missing | `spss.svm_id!buildSVM` |
 | KNN | `knn` | license blocked | missing | `spss.KNN_id!KNNbuilder` |
-| Bayes Net | `bayes_net` | license blocked | missing | `spss.bayesian_id!buildBN` |
+| Bayes Net | `bayes_net` | license blocked | done (no oracle) | `spss.bayesian_id!buildBN`, `spss.bayesian_id!applyBN` |
 | Discriminant | `discriminant` | license blocked | missing | `spss.discriminant_id!builddiscriminant` |
 | PCA/Factor | `pca_factor` | MVP | done | `BuildPCANode`, `ApplyPCANode` |
 | Feature Selection | `feature_selection` | MVP | done | `BuildFeatureSelectionNode`, `ApplyFeatureSelectionNode`, `FeatureSelectionModelNode` |

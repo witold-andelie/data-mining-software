@@ -70,7 +70,10 @@ pub(crate) fn parse(xml: &str) -> Result<Pmml, PmmlError> {
 
     for child in root.children().filter(roxmltree::Node::is_element) {
         let name = child.tag_name().name();
-        if is_skipped_element(name) || name == "Header" || name == "MiningBuildTask" {
+        if (is_skipped_element(name) && !is_bayes_net_extension(child))
+            || name == "Header"
+            || name == "MiningBuildTask"
+        {
             continue;
         }
         match name {
@@ -82,6 +85,15 @@ pub(crate) fn parse(xml: &str) -> Result<Pmml, PmmlError> {
             }
             "TransformationDictionary" => {
                 parse_transformation_dictionary(child, &mut transformations, &mut functions)?;
+            }
+            "Extension"
+                if child.attribute("name") == Some("SPSS Models")
+                    && child.children().any(|n| n.has_tag_name("BayesNetModel")) =>
+            {
+                // Modeler keeps its Bayes Net nugget outside the PMML model elements.
+                if let Some(bayes) = child.children().find(|n| n.has_tag_name("BayesNetModel")) {
+                    models.push((Model::BayesNet(crate::bayes::parse(bayes)?), false));
+                }
             }
             tag if MODEL_ELEMENTS.contains(&tag) => {
                 models.push((
@@ -174,6 +186,12 @@ pub(crate) fn parse(xml: &str) -> Result<Pmml, PmmlError> {
         functions,
         model,
     })
+}
+
+fn is_bayes_net_extension(node: roxmltree::Node<'_, '_>) -> bool {
+    node.has_tag_name("Extension")
+        && node.attribute("name") == Some("SPSS Models")
+        && node.children().any(|n| n.has_tag_name("BayesNetModel"))
 }
 
 fn is_skipped_element(name: &str) -> bool {

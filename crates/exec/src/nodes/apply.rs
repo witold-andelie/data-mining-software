@@ -80,6 +80,8 @@ enum Kind {
     TreeAs,
     /// Analytic Engine linear SVM: `$L-`, `$LC-` (classification only).
     LinearSvm,
+    /// Bayes Net: `$B-`, `$BP-` and, with `_all_probabilities`, `$BP-<category>`.
+    BayesNet,
     /// Logistic regression: `$L-`, `$LP-`, `$LRP-`, and `$LP-<category>` when enabled.
     Logistic,
     /// GLE: `$G-<target>` for regression and binomial identity/log; `$L-`/`$LC-` for logit.
@@ -202,6 +204,7 @@ pub fn build(node: &StreamNode) -> Result<Box<dyn Operator>, OperatorError> {
         "spss.treeEngine!applyTree" => Kind::TreeAs,
         "spss.linearEngine!applyLinearEngine" => Kind::Linear,
         "spss.linearSVM!applyLinearSVM" => Kind::LinearSvm,
+        "spss.bayesian_id!applyBN" => Kind::BayesNet,
         "LinearRegressionModel!spss.alm-extension" | "ApplyLinearRegressionSplitModelNode" => {
             Kind::Linear
         }
@@ -292,7 +295,11 @@ pub fn build(node: &StreamNode) -> Result<Box<dyn Operator>, OperatorError> {
         .or_else(|| {
             node.containers
                 .iter()
-                .find(|container| matches!(container.name.as_deref(), Some("PMML" | "ANOMALY_XML")))
+                .find(|container| {
+                    matches!(container.name.as_deref(), Some("PMML" | "ANOMALY_XML"))
+                        // a Bayes Net nugget keeps its model in the container `model`
+                        || (kind == Kind::BayesNet && container.name.as_deref() == Some("model"))
+                })
                 .map(|container| container.member.clone())
         });
     let inline_model_xml = if pmml_member.is_none() {
@@ -314,10 +321,12 @@ pub fn build(node: &StreamNode) -> Result<Box<dyn Operator>, OperatorError> {
         raw_propensities: settings::flag(s, "calculateRawPropensities")?.unwrap_or(false),
         // `$LP-<category>`: the flag, or always for the binomial procedure
         // (`models/logreg_binomial` leaves `appendProbabilities` false and still writes them).
-        all_probabilities: kind == Kind::Logistic
+        all_probabilities: (kind == Kind::Logistic
             && (settings::flag(s, "appendProbabilities")?.unwrap_or(false)
                 || settings::text(s, "logisticProcedure")
-                    .is_some_and(|procedure| procedure.trim() == "Binomial")),
+                    .is_some_and(|procedure| procedure.trim() == "Binomial")))
+            || (kind == Kind::BayesNet
+                && settings::flag(s, "_all_probabilities")?.unwrap_or(false)),
         distance: kind == Kind::KMeans
             && build_setting(s, "generateDistanceField").as_deref() == Some("true"),
         numeric_labels: kind == Kind::TwoStep
@@ -962,6 +971,7 @@ impl Apply {
             Kind::Gle => ("$L", "$LC", "$LRP"),
             Kind::Logistic | Kind::Linear => ("$L", "$LP", "$LRP"),
             Kind::LinearSvm => ("$L", "$LC", "$LRP"),
+            Kind::BayesNet => ("$B", "$BP", "$BRP"),
             Kind::Regression => ("$E", "$EC", "$ERP"),
             Kind::Neural | Kind::Factor | Kind::Anomaly | Kind::DecisionList => {
                 return Err(OperatorError::Data(
@@ -1028,7 +1038,14 @@ impl Apply {
             }
             for category in &categories {
                 columns.push(column(
-                    &format!("$LP{index}-{category}"),
+                    &format!(
+                        "{}{index}-{category}",
+                        if self.kind == Kind::BayesNet {
+                            "$BP"
+                        } else {
+                            "$LP"
+                        }
+                    ),
                     Storage::Real,
                     predictions
                         .iter()
@@ -1295,6 +1312,7 @@ fn target_name(pmml: &Pmml) -> Result<String, OperatorError> {
         dms_pmml::Model::Neural(model) => &model.header,
         dms_pmml::Model::Clustering(model) => &model.header,
         dms_pmml::Model::Mining(model) => &model.header,
+        dms_pmml::Model::BayesNet(model) => &model.header,
         dms_pmml::Model::Association(_) => {
             return Err(OperatorError::Data(
                 "an association model has no single target".into(),
@@ -1879,7 +1897,16 @@ pub(super) fn saved_model_xml(
             .map_err(|error| OperatorError::Data(format!("{member}/PMML.xml: {error}")))?
             .to_string()
     } else {
-        std::str::from_utf8(bytes)
+        // Some nuggets (Bayes Net) store the PMML as length-prefixed text.
+        let text_bytes = match dms_strfmt::container::classify(bytes) {
+            dms_strfmt::AttachmentKind::LengthPrefixed {
+                length_matches: true,
+                payload: dms_strfmt::container::PayloadKind::XmlText,
+                ..
+            } => bytes.get(4..).unwrap_or_default(),
+            _ => bytes,
+        };
+        std::str::from_utf8(text_bytes)
             .map_err(|_| {
                 OperatorError::Data(format!(
                     "the model in {member} is not PMML (a format we cannot read)"

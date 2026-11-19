@@ -11,6 +11,7 @@ pub mod anomaly;
 pub mod apriori;
 pub mod arima;
 pub mod bayes_net;
+pub mod bayes_net_model;
 pub mod c50;
 pub mod c50_boost;
 pub mod c50_rules;

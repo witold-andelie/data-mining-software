@@ -17,6 +17,7 @@
 //! GeneralRegressionModel, RegressionModel, MiningModel.
 
 mod association;
+mod bayes;
 mod clustering;
 mod expr;
 mod neural;
@@ -26,6 +27,7 @@ mod rule_tree;
 mod rules;
 mod score;
 mod sequence;
+pub use bayes::{BayesNetModel, BayesNode, BayesRow};
 pub mod summary;
 mod tree;
 
@@ -267,6 +269,8 @@ pub enum Model {
         header: ModelHeader,
         xml: String,
     },
+    /// Modeler's Bayes Net nugget (`BayesNetModel` inside the `SPSS Models` extension).
+    BayesNet(BayesNetModel),
     /// A model element we read but cannot score: its element name.
     Unsupported(String),
 }
