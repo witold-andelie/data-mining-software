@@ -161,6 +161,45 @@ fn add_residuals(table: Table, targets: &[String]) -> Result<Table, OperatorErro
 
 /// Statistical parity (optimizer).
 pub fn build(node: &StreamNode) -> Result<Box<dyn Operator>, OperatorError> {
+    build_inner(node, false)
+}
+
+/// The Streaming Time Series node (`spss.ts!ts_streaming`): it builds the models from its input
+/// and scores the same records with them (`_buildScoreModelOnly`), so it is the builder followed
+/// by the nugget on one table (`ibm-demos/catalog_streaming_timeseries`).
+pub fn streaming(node: &StreamNode) -> Result<Box<dyn Operator>, OperatorError> {
+    Ok(Box::new(Streaming {
+        build: build_inner(node, true)?,
+        apply: apply_inner(node, true)?,
+    }))
+}
+
+struct Streaming {
+    build: Box<dyn Operator>,
+    apply: Box<dyn Operator>,
+}
+
+impl Operator for Streaming {
+    fn arity(&self) -> Arity {
+        Arity::Exactly(1)
+    }
+
+    fn run(&self, inputs: &[Arc<Table>], context: &ExecContext) -> Result<Table, OperatorError> {
+        let NodeOutput::Model(model) = self.build.produce(inputs, None, context)? else {
+            return Err(OperatorError::Data(
+                "the Streaming Time Series builder produced no model".into(),
+            ));
+        };
+        let NodeOutput::Data(table) = self.apply.produce(inputs, Some(model), context)? else {
+            return Err(OperatorError::Data(
+                "the Streaming Time Series scoring produced no table".into(),
+            ));
+        };
+        Ok((*table).clone())
+    }
+}
+
+fn build_inner(node: &StreamNode, streaming: bool) -> Result<Box<dyn Operator>, OperatorError> {
     let s = node.settings.as_ref();
     let gap = |what: &str| OperatorError::Settings(format!("GAP: Time Series {what}"));
     let expert_requested = settings::text(s, "_method").as_deref() == Some("ExpertModeler")
@@ -184,14 +223,19 @@ pub fn build(node: &StreamNode) -> Result<Box<dyn Operator>, OperatorError> {
             "external training parameters have no oracle; these four streams use inline extension properties",
         ));
     }
+    if !streaming && settings::flag(s, "_buildScoreModelOnly")?.unwrap_or(false) {
+        return Err(gap("_buildScoreModelOnly"));
+    }
+    // A Streaming node takes the fields it lists even when the selection is automatic.
+    if !streaming && settings::flag(s, "autoModelFieldSelection")?.unwrap_or(false) {
+        return Err(gap("autoModelFieldSelection"));
+    }
     for key in [
-        "autoModelFieldSelection",
         "useFrequency",
         "_useFrequency",
         "_useWeight",
         "_specifyEstimationPeriod",
         "_continueEstimation",
-        "_buildScoreModelOnly",
         "_arimaDetectOutliersAutomatically",
         "_esDetectOutliersAutomatically",
         "_expertOutlierDetectMethod",
@@ -248,7 +292,11 @@ pub fn build(node: &StreamNode) -> Result<Box<dyn Operator>, OperatorError> {
         return Err(gap("period preparation without a regular period field"));
     }
     let (period, monthly) = observation_field(s)?;
-    let targets = field_list(s, "_targetField");
+    let mut targets = field_list(s, "_targetField");
+    if streaming && targets.is_empty() {
+        // automatic field selection: the node lists the targets it found
+        targets = field_list(s, "_includeTargets");
+    }
     if targets.is_empty() || targets.len() > MAX_TARGETS {
         return Err(gap("requires 1..=64 explicit target fields"));
     }
@@ -888,6 +936,10 @@ fn trained_models(pmml: &Pmml) -> Result<Vec<(String, SavedModel)>, OperatorErro
 }
 
 pub fn apply(node: &StreamNode) -> Result<Box<dyn Operator>, OperatorError> {
+    apply_inner(node, false)
+}
+
+fn apply_inner(node: &StreamNode, streaming: bool) -> Result<Box<dyn Operator>, OperatorError> {
     let s = node.settings.as_ref();
     // `_calculatePI` and `_isOutputOthers` do not change the scored fields: the IBM demo
     // `catalog_forecast` sets both on its nugget and its forecasts, intervals and residuals
@@ -958,14 +1010,18 @@ pub fn apply(node: &StreamNode) -> Result<Box<dyn Operator>, OperatorError> {
     } else {
         candidates
     };
-    let pmml_member = node
-        .containers
-        .iter()
-        .find(|container| container.name.as_deref() == Some("PMML"))
-        .map(|container| container.member.clone())
-        .ok_or_else(|| {
-            OperatorError::Settings("the Time Series nugget has no PMML container".into())
-        })?;
+    let pmml_member = if streaming {
+        // the models are the ones the builder just trained
+        String::new()
+    } else {
+        node.containers
+            .iter()
+            .find(|container| container.name.as_deref() == Some("PMML"))
+            .map(|container| container.member.clone())
+            .ok_or_else(|| {
+                OperatorError::Settings("the Time Series nugget has no PMML container".into())
+            })?
+    };
     Ok(Box::new(TimeSeriesApply {
         pmml_member,
         replace_link: linked,

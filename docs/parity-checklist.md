@@ -11,8 +11,8 @@ Status `done (output unverified)`: settings and the records reaching the node ma
 | Scope | Implemented | Total |
 |---|---|---|
 | MVP | 85 | 85 |
-| later | 23 | 24 |
-| license blocked | 4 | 6 |
+| later | 24 | 24 |
+| license blocked | 6 | 6 |
 | out of scope | 0 | 34 |
 
 ## Sources
@@ -56,7 +56,7 @@ Status `done (output unverified)`: settings and the records reaching the node ma
 | Append | `append` | MVP | done | `AppendNode` |
 | Distinct | `distinct` | MVP | done | `DistinctNode` |
 | SMOTE (Python) | `smote` | later | done | `smote!spss.smote` |
-| Streaming TS | `streaming_ts` | later | missing | `spss.ts!ts_streaming` |
+| Streaming TS | `streaming_ts` | later | done (statistical) | `spss.ts!ts_streaming` |
 | Extension Transform | `extension_transform` | later | done | `ExtensionDataTransformNode` |
 | Space-Time-Boxes | `space_time_boxes` | out of scope | missing | `stb!spss.stb` |
 | CPLEX Optimization | `cplex_optimization` | out of scope | missing | `cplexopt!spss.cplexopt` |
@@ -126,7 +126,7 @@ Status `done (output unverified)`: settings and the records reaching the node ma
 | SVM | `svm` | license blocked | done (no oracle) | `spss.svm_id!buildSVM`, `spss.svm_id!applySVM` |
 | KNN | `knn` | license blocked | done (no oracle) | `spss.KNN_id!KNNbuilder`, `spss.KNN_id!KNNapplier` |
 | Bayes Net | `bayes_net` | license blocked | done (no oracle) | `spss.bayesian_id!buildBN`, `spss.bayesian_id!applyBN` |
-| Discriminant | `discriminant` | license blocked | missing | `spss.discriminant_id!builddiscriminant` |
+| Discriminant | `discriminant` | license blocked | done (no oracle) | `spss.discriminant_id!builddiscriminant`, `spss.discriminant_id!applydiscriminant` |
 | PCA/Factor | `pca_factor` | MVP | done | `BuildPCANode`, `ApplyPCANode` |
 | Feature Selection | `feature_selection` | MVP | done | `BuildFeatureSelectionNode`, `ApplyFeatureSelectionNode`, `FeatureSelectionModelNode` |
 | Anomaly | `anomaly` | MVP | done | `BuildAnomalyNode`, `ApplyAnomalyNode` |
@@ -136,7 +136,7 @@ Status `done (output unverified)`: settings and the records reaching the node ma
 | GLE | `gle` | later | done | `spss.gle!gle_builder`, `spss.gle!gle_applier` |
 | Cox | `cox` | later | done (no oracle) | `spss.coxreg_id!buildcoxreg`, `spss.coxreg_id!applycoxreg` |
 | LSVM | `lsvm` | later | done (statistical) | `spss.linearSVM!linearSVM`, `spss.linearSVM!applyLinearSVM` |
-| Self-Learning Response Model | `slrm` | license blocked | missing | `spss.selflearning!selflearning` |
+| Self-Learning Response Model | `slrm` | license blocked | done (no oracle) | `spss.selflearning!selflearning`, `spss.selflearning!applyselflearning` |
 | Temporal Causal Model | `tcm` | later | done (no oracle) | `tcm!pasw.timeseries-extension`, `tcmmodel!pasw.timeseries-extension` |
 | Random Forest (Python) | `random_forest` | later | done | `rf!spss.rf` |
 | XGBoost Tree (Python) | `xgboost_tree` | later | done | `xgboosttree!spss.xgboost` |

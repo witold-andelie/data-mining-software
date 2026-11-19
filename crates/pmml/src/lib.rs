@@ -20,6 +20,7 @@ mod association;
 mod bayes;
 mod clustering;
 mod cox;
+mod discriminant;
 mod expr;
 mod knn;
 mod neural;
@@ -29,11 +30,14 @@ mod rule_tree;
 mod rules;
 mod score;
 mod sequence;
+mod slrm;
 mod svm;
 mod tcm;
 pub use bayes::{BayesNetModel, BayesNode, BayesRow};
 pub use cox::{CoxModel, CoxScore, CoxTerm};
+pub use discriminant::{DiscriminantModel, DiscriminantScore};
 pub use knn::KnnModel;
+pub use slrm::{SlrmCell, SlrmInput, SlrmModel, SlrmProduct, SlrmScore};
 pub use svm::{Kernel, SvmModel};
 pub use tcm::{TcmModel, TcmPredictor, TcmTarget};
 pub mod summary;
@@ -287,6 +291,10 @@ pub enum Model {
     Knn(KnnModel),
     /// Modeler's Temporal Causal Model nugget: a model per series.
     Tcm(TcmModel),
+    /// Modeler's Self-Learning Response Model nugget: a Naive Bayes model per product.
+    Slrm(SlrmModel),
+    /// Modeler's Discriminant nugget: the canonical functions, centroids and priors.
+    Discriminant(DiscriminantModel),
     /// A model element we read but cannot score: its element name.
     Unsupported(String),
 }

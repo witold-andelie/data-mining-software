@@ -131,6 +131,8 @@ fn model_kind(model: &Model) -> String {
         Model::Svm(_) => "Support vector machine",
         Model::Knn(_) => "Nearest neighbors",
         Model::Tcm(_) => "Temporal causal model",
+        Model::Slrm(_) => "Self-learning response model",
+        Model::Discriminant(_) => "Discriminant analysis",
         Model::Unsupported(element) => {
             return format!("Unsupported model ({})", file_text(element));
         }
@@ -360,6 +362,36 @@ fn model_sections(model: &Model, depth: usize, sections: &mut Vec<SummarySection
                 sections,
                 "Network",
                 vec!["Variable".into(), "Parents".into(), "Categories".into()],
+                rows,
+            );
+        }
+        Model::Discriminant(m) => {
+            facts(
+                sections,
+                "Discriminant analysis",
+                vec![
+                    ("Predictors", m.predictors.len().to_string()),
+                    ("Groups", m.groups.len().to_string()),
+                    ("Functions", m.constants.len().to_string()),
+                ],
+            );
+        }
+        Model::Slrm(m) => {
+            let rows = m
+                .products
+                .iter()
+                .map(|p| {
+                    vec![
+                        file_text(&p.name),
+                        (p.target_counts[0] + p.target_counts[1]).to_string(),
+                        p.target_counts[1].to_string(),
+                    ]
+                })
+                .collect();
+            table(
+                sections,
+                "Products",
+                vec!["Product".into(), "Cases".into(), "Responses".into()],
                 rows,
             );
         }

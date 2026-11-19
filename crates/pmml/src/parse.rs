@@ -67,6 +67,7 @@ pub(crate) fn parse(xml: &str) -> Result<Pmml, PmmlError> {
     let mut transformations = Vec::new();
     let mut functions = Vec::new();
     let mut models = Vec::new();
+    let mut slrm_products = Vec::new();
 
     for child in root.children().filter(roxmltree::Node::is_element) {
         let name = child.tag_name().name();
@@ -100,6 +101,9 @@ pub(crate) fn parse(xml: &str) -> Result<Pmml, PmmlError> {
             "Extension" if crate::knn::is_knn_extension(child) => {
                 models.push((Model::Knn(crate::knn::parse(child, root)?), false));
             }
+            "NaiveBayesModel" if crate::slrm::is_self_learning(child) => {
+                slrm_products.push(crate::slrm::parse_product(child)?);
+            }
             tag if MODEL_ELEMENTS.contains(&tag) => {
                 models.push((
                     parse_model(child, &transformations)?,
@@ -116,6 +120,21 @@ pub(crate) fn parse(xml: &str) -> Result<Pmml, PmmlError> {
         }
     }
 
+    if !slrm_products.is_empty() {
+        // the product field is the dictionary field Modeler marks as the self-learning target
+        let target = root
+            .descendants()
+            .find(|n| {
+                n.has_tag_name("Extension") && n.attribute("name") == Some("isSelfLearningTarget")
+            })
+            .and_then(|e| e.parent())
+            .and_then(|f| f.attribute("name"))
+            .map(str::to_string);
+        models.push((
+            Model::Slrm(crate::slrm::finish(target, slrm_products)?),
+            false,
+        ));
+    }
     let data_dictionary =
         data_dictionary.ok_or_else(|| PmmlError::Parse("missing DataDictionary".into()))?;
     let model = if models.len() == 1 {

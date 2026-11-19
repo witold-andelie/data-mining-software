@@ -85,6 +85,8 @@ const BUILT_IN: &[(&str, Factory)] = &[
     ("knn", model_node),
     ("tcm", model_node),
     ("glmm", model_node),
+    ("slrm", model_node),
+    ("discriminant", model_node),
     ("kmeans", model_node),
     ("kohonen", model_node),
     ("apriori", model_node),
@@ -105,6 +107,7 @@ const BUILT_IN: &[(&str, Factory)] = &[
     ("decision_list", model_node),
     ("sequence", model_node),
     ("time_series", model_node),
+    ("streaming_ts", streaming_ts_node),
     ("binning", nodes::binning::build),
     ("auto_data_prep", nodes::auto_data_prep::build),
     ("set_to_flag", nodes::set_to_flag::build),
@@ -137,6 +140,7 @@ const STATISTICAL: &[&str] = &[
     "quest",
     "random_trees",
     "sequence",
+    "streaming_ts",
     "time_series",
 ];
 
@@ -199,7 +203,17 @@ pub fn is_output_unverified(catalog_id: &str) -> bool {
 /// Implemented from the public algorithm, but Modeler could not run the node (its licence is blocked,
 /// or the oracle's install lacks it), so there is no expected answer to compare with. These nodes are
 /// *unverified*: they never count as matching Modeler, and `cargo xtask parity` lists them apart.
-const NO_ORACLE: &[&str] = &["bayes_net", "cox", "genlin", "svm", "knn", "tcm", "glmm"];
+const NO_ORACLE: &[&str] = &[
+    "bayes_net",
+    "cox",
+    "genlin",
+    "svm",
+    "knn",
+    "tcm",
+    "glmm",
+    "slrm",
+    "discriminant",
+];
 
 /// Whether an implemented node has no Modeler oracle at all (implemented, unverified).
 pub fn is_no_oracle(catalog_id: &str) -> bool {
@@ -232,4 +246,9 @@ fn is_nugget(node: &StreamNode) -> bool {
         || node.class.ends_with(".CFApplyModelNode")
         || node.class.ends_with(".ExtensionApplyModelNode")
         || id == "FeatureSelectionModelNode"
+}
+
+/// Streaming Time Series: the builder and its nugget on one table.
+fn streaming_ts_node(node: &StreamNode) -> Result<Box<dyn Operator>, OperatorError> {
+    nodes::time_series::streaming(node)
 }

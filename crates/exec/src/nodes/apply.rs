@@ -147,6 +147,12 @@ pub fn build(node: &StreamNode) -> Result<Box<dyn Operator>, OperatorError> {
     ) {
         return super::c50::apply(node);
     }
+    if node.type_identifier() == "spss.discriminant_id!applydiscriminant" {
+        return super::discriminant::apply(node);
+    }
+    if node.type_identifier() == "spss.selflearning!applyselflearning" {
+        return super::slrm::apply(node);
+    }
     if node.type_identifier() == "tcmmodel!pasw.timeseries-extension" {
         return super::tcm::apply(node);
     }
@@ -1351,6 +1357,8 @@ fn target_name(pmml: &Pmml) -> Result<String, OperatorError> {
         dms_pmml::Model::Svm(model) => &model.header,
         dms_pmml::Model::Knn(model) => &model.header,
         dms_pmml::Model::Tcm(model) => &model.header,
+        dms_pmml::Model::Slrm(model) => &model.header,
+        dms_pmml::Model::Discriminant(model) => &model.header,
         dms_pmml::Model::Association(_) => {
             return Err(OperatorError::Data(
                 "an association model has no single target".into(),

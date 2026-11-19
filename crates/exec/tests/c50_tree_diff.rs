@@ -430,6 +430,8 @@ fn model_kind(model: &Model) -> &'static str {
         Model::Svm(_) => "svm",
         Model::Knn(_) => "knn",
         Model::Tcm(_) => "tcm",
+        Model::Slrm(_) => "slrm",
+        Model::Discriminant(_) => "discriminant",
         Model::Unsupported(_) => "unsupported",
     }
 }

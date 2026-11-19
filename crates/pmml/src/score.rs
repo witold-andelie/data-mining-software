@@ -154,6 +154,12 @@ impl<'p> Scorer<'p> {
             )),
             Model::BayesNet(model) => crate::bayes::score(self.pmml, model, &env),
             Model::Svm(model) => crate::svm::score(model, &env),
+            Model::Discriminant(_) => Err(PmmlError::Unsupported(
+                "a Discriminant model is scored by the Discriminant nugget".into(),
+            )),
+            Model::Slrm(_) => Err(PmmlError::Unsupported(
+                "an SLRM model ranks several products, which the SLRM nugget does".into(),
+            )),
             Model::Tcm(_) => Err(PmmlError::Unsupported(
                 "a TCM model is scored over whole series by the TCM nugget".into(),
             )),
@@ -495,6 +501,8 @@ fn score_mining(pmml: &Pmml, mining: &MiningModel, env: &Env<'_>) -> Result<Pred
             | Model::Svm(_)
             | Model::Knn(_)
             | Model::Tcm(_)
+            | Model::Slrm(_)
+            | Model::Discriminant(_)
             | Model::TimeSeries { .. } => Err(PmmlError::Unsupported(
                 "nested MiningModel segment type".into(),
             )),
@@ -604,6 +612,8 @@ pub(crate) fn model_header(model: &Model) -> Option<&ModelHeader> {
         Model::Svm(m) => Some(&m.header),
         Model::Knn(m) => Some(&m.header),
         Model::Tcm(m) => Some(&m.header),
+        Model::Slrm(m) => Some(&m.header),
+        Model::Discriminant(m) => Some(&m.header),
         Model::Unsupported(_) => None,
     }
 }
@@ -729,6 +739,16 @@ fn collect_model_fields<'a>(
             }
         }
         Model::Knn(_) | Model::Tcm(_) => {}
+        Model::Discriminant(model) => {
+            for name in &model.predictors {
+                out.insert(name);
+            }
+        }
+        Model::Slrm(model) => {
+            for name in model.input_fields() {
+                out.insert(name);
+            }
+        }
         Model::Svm(model) => {
             for name in model.input_fields() {
                 out.insert(name);

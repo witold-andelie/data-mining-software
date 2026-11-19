@@ -185,6 +185,10 @@ fn build_with(
         "spss.KNN_id!KNNbuilder" => Algorithm::Knn(super::knn::build_settings(node)?),
         "tcm!pasw.timeseries-extension" => Algorithm::Tcm,
         "GLMM!spss.glmm-extension" => Algorithm::Glmm,
+        "spss.discriminant_id!builddiscriminant" => {
+            Algorithm::Discriminant(super::discriminant::build_settings(node)?)
+        }
+        "spss.selflearning!selflearning" => Algorithm::Slrm(super::slrm::build_settings(node)?),
         "spss.generalizedlinear_id!buildgeneralizedlinear" => {
             Algorithm::Genlin(super::genlin::build_settings(node)?)
         }
@@ -249,6 +253,10 @@ enum Algorithm {
     /// GLMM (`GLMM!spss.glmm-extension`): `dms_algo::glmm_model`, settings from the extension
     /// parameters.
     Glmm,
+    /// Discriminant (`spss.discriminant_id!builddiscriminant`): `dms_algo::discriminant_model`.
+    Discriminant(dms_algo::discriminant::Settings),
+    /// Self-Learning Response Model (`spss.selflearning!selflearning`): `dms_algo::slrm_model`.
+    Slrm(super::slrm::BuildSettings),
     /// Random Trees (`spss.randomTrees!RT`), statistical parity (`dms_algo::random_trees`).
     RandomTrees(RandomTreesSettings),
     /// The settings, and the custom input fields (`None`: the Type roles).
@@ -460,6 +468,68 @@ impl Operator for Build {
                             _ => OperatorError::Data(format!("Bayes Net: {error}")),
                         }
                     })?;
+                return Ok(NodeOutput::Model(Arc::new(pmml)));
+            }
+            if let Algorithm::Discriminant(settings) = &self.algorithm {
+                if table
+                    .model()
+                    .fields()
+                    .iter()
+                    .any(|f| matches!(f.role, Role::Split | Role::Frequency | Role::Partition))
+                {
+                    return Err(OperatorError::Settings(
+                        "GAP: Discriminant with split/frequency/partition fields".into(),
+                    ));
+                }
+                let (target, fields) = supervised_fields(&table, None, None)?;
+                let pmml = dms_algo::discriminant_model::train(&table, target, &fields, settings)
+                    .map_err(|error| match error {
+                    dms_algo::AlgoError::Cancelled => OperatorError::Cancelled,
+                    dms_algo::AlgoError::Unsupported(_) | dms_algo::AlgoError::Settings(_) => {
+                        OperatorError::Settings(format!("GAP: {error}"))
+                    }
+                    _ => OperatorError::Data(format!("Discriminant: {error}")),
+                })?;
+                return Ok(NodeOutput::Model(Arc::new(pmml)));
+            }
+            if let Algorithm::Slrm(slrm) = &self.algorithm {
+                if table
+                    .model()
+                    .fields()
+                    .iter()
+                    .any(|f| matches!(f.role, Role::Split | Role::Frequency | Role::Partition))
+                {
+                    return Err(OperatorError::Settings(
+                        "GAP: SLRM with split/frequency/partition fields".into(),
+                    ));
+                }
+                let fields = table.model().fields();
+                let position = |name: &str| {
+                    table.model().position(name).ok_or_else(|| {
+                        OperatorError::Data(format!("SLRM: the field {name:?} is not in the input"))
+                    })
+                };
+                let target = position(&slrm.target)?;
+                let response = position(&slrm.response)?;
+                let inputs: Vec<usize> = match &slrm.inputs {
+                    Some(names) => names
+                        .iter()
+                        .map(|n| position(n))
+                        .collect::<Result<Vec<_>, _>>()?,
+                    None => (0..fields.len())
+                        .filter(|&i| matches!(fields[i].role, Role::Input | Role::Both))
+                        .collect(),
+                };
+                let pmml =
+                    dms_algo::slrm_model::train(&table, target, response, &inputs, &slrm.settings)
+                        .map_err(|error| match error {
+                            dms_algo::AlgoError::Cancelled => OperatorError::Cancelled,
+                            dms_algo::AlgoError::Unsupported(_)
+                            | dms_algo::AlgoError::Settings(_) => {
+                                OperatorError::Settings(format!("GAP: {error}"))
+                            }
+                            _ => OperatorError::Data(format!("SLRM: {error}")),
+                        })?;
                 return Ok(NodeOutput::Model(Arc::new(pmml)));
             }
             if matches!(self.algorithm, Algorithm::Glmm) {
@@ -891,6 +961,8 @@ impl Operator for Build {
                 | Algorithm::Knn(_)
                 | Algorithm::Tcm
                 | Algorithm::Glmm
+                | Algorithm::Slrm(_)
+                | Algorithm::Discriminant(_)
                 | Algorithm::RandomTrees(_)
                 | Algorithm::TwoStep(_)
                 | Algorithm::Logistic(_)
