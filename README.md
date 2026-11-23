@@ -23,8 +23,11 @@ command in this repository (`cargo xtask regress`, `parity`, `perf`, `ci`) and c
 `.sha256` file, open it and drag **Data Mining** to Applications. The app is signed ad hoc and not notarized, so
 macOS blocks it the first time; see [Opening the downloaded app](#opening-the-downloaded-app-first-time).
 
-**Windows, or building it yourself:** there is no pre-built Windows download yet, so you build the app from source. It
-takes a few commands and no configuration.
+**Windows (x64):** download **Data-Mining-0.6.0-windows-x64.zip** (18.1 MB) from the same release, unzip it and run
+`dms.exe`. Nothing else has to be installed (the C runtime is linked in). The programs are not code-signed, so Windows
+SmartScreen may warn you the first time: check the `.sha256` file, then choose **More info > Run anyway**.
+
+**Building it yourself:** the steps below build the app from source. They take a few commands and no configuration.
 
 **macOS** (Apple silicon, macOS 11 or later)
 
@@ -76,8 +79,8 @@ without it, on Windows and on Apple-silicon Macs, where Modeler's own support is
 **clean-room reimplementation checked as a black box**: Modeler is never inspected, only used to produce the expected
 answer for each stream, and our result must agree with it record by record.
 
-- **Small and self-contained.** The macOS disk image is **19.3 MB** and the Windows release build is one **32.5 MB**
-  executable (the command-line tool is 15.8 MB), against **5.1 GB** for the Modeler 19 installation it replaces on the
+- **Small and self-contained.** The macOS disk image is **19.3 MB** and the Windows download is **18.1 MB**
+  (one **32.8 MB** executable, plus a 16.0 MB command-line tool), against **5.1 GB** for the Modeler 19 installation it replaces on the
   machine the oracles were recorded on (see [Key results](#key-results)). No Java runtime, no Spark, no database server and no Python are needed to open,
   edit and run streams; Python is only for the optional Python nodes.
 - **Opens Modeler streams.** Decodes `.str` files (a ZIP container holding Fast Infoset XML) without Modeler
@@ -133,7 +136,7 @@ answer for each stream, and our result must agree with it record by record.
 | Do SVM and KNN work, if Modeler cannot run them? | Yes, from the public algorithms. SVM reproduces the two models saved in `svm_cancer`: the same support vectors for an RBF and a polynomial kernel, the polynomial model's coefficients, constant and Platt parameters to 1e-14 (the RBF model's coefficients agree to the solver tolerance), and every training record's class. KNN reproduces the neighbours and distances of every case in the model saved in `car_sales_knn` (462 distances to 4e-15). Scores the nuggets write have no Modeler run to compare with; KNN does not score a target or save neighbour details yet. | `crates/algo/src/svm.rs`, `crates/algo/src/knn.rs`, `crates/exec/tests/svm.rs`, `crates/algo/tests/knn_oracle.rs` |
 | Do GLMM and Temporal Causal Models work, if Modeler cannot run them? | Yes, from the public algorithms, checked against models saved in `testscores_glmm` and `tcm_kpi`. The GLMM trainer reproduces the saved normal-identity model with two nested random intercepts: fixed effects, standard errors, variance components, F tests and information criteria to 1e-9 or better (including the standard errors of the variance components). The TCM trainer reproduces all 30 saved series models: the same predictors in the same order, and every intercept, lag coefficient, standard error and F test to 1e-12. The nuggets write the fixed-part prediction (GLMM) and one-step-ahead fitted values (TCM), which have no Modeler run to compare with. Other GLMM distributions, random slopes, TCM forecasts and outlier analysis are not implemented. | `crates/algo/src/glmm.rs`, `crates/algo/src/tcm.rs`, `crates/exec/tests/glmm.rs`, `crates/exec/tests/tcm.rs` |
 | Do Discriminant and SLRM work, if Modeler cannot run them? | Yes, from the public algorithms. Discriminant reproduces every table of the output Modeler saved with `telco_custcat_discriminant` (the stepwise path, canonical functions, structure matrix, centroids and classification table) and the nugget's 24 stored numbers to 1e-13; predictor importance is a Monte-Carlo estimate in the Guide and agrees to 3e-3. SLRM reproduces every count (616 pair counts, four products) and 590 cut points of the model saved in `pm_selflearn` from the three training files. Continuing the training of a saved SLRM model, a randomisation above 0 and separate-groups discriminant scoring are not implemented. | `crates/algo/src/discriminant.rs`, `crates/algo/src/slrm.rs`, `crates/exec/tests/discriminant.rs`, `crates/exec/tests/slrm.rs` |
-| How big is it? | Windows x64 release build (`cargo build --release -p dms -p dms-cli`, measured 2026-11-23): `dms.exe` **32.5 MB** (31.0 MiB) and `dms-cli.exe` **15.8 MB**, each one file whose only dynamic dependencies are Windows system libraries (`odbc32`, `opengl32`, `dwrite`, ...) and the Microsoft Visual C++ runtime. For comparison, the Modeler 19 installation folder on the machine where the oracles were recorded is **5.1 GB** in 35,520 files (including its own Java runtime, Spark and Python), about 160 times the size of `dms.exe`. A freshly started `dms.exe` on a generated 24-node stream held about 300 MB of working memory in three runs (325, 301 and 302 MB after 8 seconds; not broken down further). macOS (Apple silicon, release 0.6.0, measured 2026-11-23): the disk image is **19.33 MB**, `Data Mining.app` **44.18 MB** on disk, of which `dms` is 29.47 MB, `dms-cli` 13.98 MB and the two bundled ODBC libraries 0.48 MB; a freshly started app on the same generated stream had 127.3, 127.7 and 126.9 MB resident after 8 seconds (`ps` RSS; not the same measure as the Windows working set). | `target/release/` |
+| How big is it? | Windows x64 (`cargo xtask bundle-windows`, measured 2026-11-23): the download `Data-Mining-0.6.0-windows-x64.zip` is **18.1 MB**; unpacked, `dms.exe` is **32.8 MB** (31.2 MiB) and `dms-cli.exe` **16.0 MB**, each one file that links the C runtime in and imports only Windows system libraries (`odbc32`, `opengl32`, `dwrite`, ...), so no Visual C++ redistributable is needed. For comparison, the Modeler 19 installation folder on the machine where the oracles were recorded is **5.1 GB** in 35,520 files (including its own Java runtime, Spark and Python), about 160 times the size of `dms.exe`. A freshly started `dms.exe` on a generated 24-node stream held about 300 MB of working memory in three runs (301, 303 and 302 MB after 8 seconds; not broken down further). macOS (Apple silicon, release 0.6.0, measured 2026-11-23): the disk image is **19.33 MB**, `Data Mining.app` **44.18 MB** on disk, of which `dms` is 29.47 MB, `dms-cli` 13.98 MB and the two bundled ODBC libraries 0.48 MB; a freshly started app on the same generated stream had 127.3, 127.7 and 126.9 MB resident after 8 seconds (`ps` RSS; not the same measure as the Windows working set). | `target/release/` |
 | Is the editor fast enough? | On an Apple M1 (release build) a canvas with 200 labelled nodes pans at 60 fps with vertical sync and 176 fps without; 1,000 nodes 177 fps; first frame about 155 ms after launch. `cargo xtask perf` enforces a p95 frame budget of 4 ms. | `xtask/src/perf.rs` |
 | What is not covered? | 41 documented known gaps and a handful of missing nodes and features, explained below. | [Known gaps](#known-gaps-and-their-impact) |
 
@@ -489,7 +492,7 @@ docs/
   clem/                          CLEM reference and the behaviour the oracle showed
   formats/                       node-settings findings, as observed
   mac/                           macOS regression baselines and the comparison script
-xtask/              developer tasks (ci, layers, parity, corpus, oracle, regress, compare, perf, bundle-mac)
+xtask/              developer tasks (ci, layers, parity, corpus, oracle, regress, compare, perf, bundle-mac, bundle-windows)
                     corpus.tsv, known-gaps.tsv, oracle scripts and probes, scorecard
 corpus/, oracle/    local only, git-ignored
 ```
