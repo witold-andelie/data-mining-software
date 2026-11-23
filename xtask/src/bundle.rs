@@ -180,7 +180,7 @@ The app is signed ad hoc and is not notarized, so macOS blocks it the first time
 once, then go to System Settings > Privacy & Security, scroll down and click Open Anyway next to\n\
 the message about Data Mining, and confirm. After that it opens normally, and double-clicking a\n\
 .str stream opens it in the app. (Verified on macOS 26.5.1; right-click > Open no longer\n\
-bypasses the check there. On macOS 14 and earlier it still does.)\n\
+bypasses the check there.)\n\
 \n\
 The command-line tool dms-cli is inside the app. To use it from Terminal, link it once:\n\
   sudo ln -sf \"/Applications/Data Mining.app/Contents/MacOS/dms-cli\" /usr/local/bin/dms-cli\n\
