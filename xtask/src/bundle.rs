@@ -3,11 +3,13 @@
 //! Builds `dms` and `dms-cli` in release mode and writes, under `target/dist/`:
 //! - `Data Mining.app`: Info.plist (document types `.str`), the icon made from
 //!   `apps/dms/assets/icon.png` (our own drawing, see `crates/ui/tests/icon.rs`), ad-hoc signed
-//!   (`codesign -s -`; not notarized: on first launch, right-click the app and choose Open);
+//!   (`codesign -s -`; not notarized: macOS blocks a downloaded copy the first time, see the
+//!   read-me below for the steps);
 //! - `DataMining-<version>.dmg`: the app, a link to /Applications and a short read-me.
 //!
 //! Our own repository `LICENSE` is copied into `Data Mining.app/Contents/Resources/LICENSE`
-//! and to the disk image's root directory.
+//! and to the disk image's root directory. The Rust libraries in the programs and their licence
+//! texts are listed in `Contents/Resources/Licenses/THIRD-PARTY-RUST-LICENSES.txt`.
 //!
 //! Homebrew libraries the app links (unixODBC's `libodbc` and libtool's `libltdl`, both LGPL) are
 //! copied into `Contents/Frameworks` as separate dynamic libraries, so the app starts on a Mac
@@ -19,7 +21,7 @@
 //! Uses the system tools `sips`, `iconutil`, `otool`, `install_name_tool`, `codesign` and
 //! `hdiutil` (macOS only).
 
-use crate::{Result, cargo_release, workspace_root};
+use crate::{Result, cargo_release, notices, workspace_root};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -115,6 +117,13 @@ pub fn run(_args: &[String]) -> Result<()> {
     copy(&target.join("release").join("dms"), &executables[0])?;
     copy(&target.join("release").join("dms-cli"), &executables[1])?;
     bundle_libraries(&executables, &contents)?;
+    let licenses = resources.join("Licenses");
+    fs::create_dir_all(&licenses)
+        .map_err(|e| format!("cannot create {}: {e}", licenses.display()))?;
+    write(
+        &licenses.join("THIRD-PARTY-RUST-LICENSES.txt"),
+        &notices::rust_dependencies(&["dms", "dms-cli"], "aarch64-apple-darwin")?,
+    )?;
     write(&contents.join("Info.plist"), &info_plist(version))?;
     write(&contents.join("PkgInfo"), "APPL????")?;
     make_icon(&root.join("apps/dms/assets/icon.png"), &dist, &resources)?;
@@ -167,9 +176,11 @@ const READ_ME: &str = "Data Mining\n\
 \n\
 Drag \"Data Mining\" to Applications.\n\
 \n\
-The app is signed for this team only (ad-hoc), not notarized by Apple. The first time, open it\n\
-with a right-click (or Control-click) on the app and choose Open, then Open again in the\n\
-dialog. After that it opens normally, and double-clicking a .str stream opens it in the app.\n\
+The app is signed ad hoc and is not notarized, so macOS blocks it the first time. Try to open it\n\
+once, then go to System Settings > Privacy & Security, scroll down and click Open Anyway next to\n\
+the message about Data Mining, and confirm. After that it opens normally, and double-clicking a\n\
+.str stream opens it in the app. (Verified on macOS 26.5.1; right-click > Open no longer\n\
+bypasses the check there. On macOS 14 and earlier it still does.)\n\
 \n\
 The command-line tool dms-cli is inside the app. To use it from Terminal, link it once:\n\
   sudo ln -sf \"/Applications/Data Mining.app/Contents/MacOS/dms-cli\" /usr/local/bin/dms-cli\n\
@@ -177,8 +188,9 @@ The command-line tool dms-cli is inside the app. To use it from Terminal, link i
 Our own licence is in LICENSE on this disk image and in\n\
 Data Mining.app/Contents/Resources/LICENSE.\n\
 \n\
-The app includes the unixODBC and libltdl libraries (LGPL); their licences and sources are\n\
-listed in Data Mining.app/Contents/Resources/Licenses.\n";
+The Rust libraries in the programs and their licences are listed in\n\
+Data Mining.app/Contents/Resources/Licenses/THIRD-PARTY-RUST-LICENSES.txt. The app also includes\n\
+the unixODBC and libltdl libraries (LGPL); their licences and sources are in the same folder.\n";
 
 fn info_plist(version: &str) -> String {
     format!(

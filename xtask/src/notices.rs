@@ -49,7 +49,7 @@ pub fn rust_dependencies(packages: &[&str], platform: &str) -> Result<String> {
     let metadata: Value = serde_json::from_slice(&output.stdout)
         .map_err(|e| format!("cargo metadata is not JSON: {e}"))?;
     let libraries = libraries(&metadata, packages)?;
-    Ok(render(&libraries, packages))
+    Ok(render(&libraries, packages, platform))
 }
 
 fn libraries(metadata: &Value, packages: &[&str]) -> Result<Vec<Library>> {
@@ -186,14 +186,21 @@ fn license_files(folder: &Path, any_text: bool) -> Vec<std::path::PathBuf> {
     files
 }
 
-fn render(libraries: &[Library], packages: &[&str]) -> String {
+fn render(libraries: &[Library], packages: &[&str], platform: &str) -> String {
+    let system = if platform.contains("windows") {
+        "On Windows the programs also use the system libraries of the operating system, which are\n\
+         not part of this distribution."
+    } else {
+        "The programs also use the system libraries of the operating system, which are not part of\n\
+         this distribution. The unixODBC and libltdl libraries bundled with the app are covered by\n\
+         THIRD-PARTY-NOTICES.txt in this folder."
+    };
     let mut out = format!(
         "Third-party libraries in {}\n\
          \n\
          These programs are built from our own source code (see LICENSE) and from the Rust\n\
          libraries listed below, each under the licence shown. The licence texts follow the list.\n\
-         On Windows the programs also use the system libraries of the operating system, which are\n\
-         not part of this distribution.\n\
+         {system}\n\
          \n\
          == Libraries ({}) ==\n\n",
         packages.join(" and "),
@@ -240,4 +247,34 @@ fn render(libraries: &[Library], packages: &[&str]) -> String {
         }
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The notice follows the platform: the macOS build links Objective-C bindings the Windows
+    /// build does not, and both list the licence texts of what they ship.
+    #[test]
+    fn the_notice_lists_the_libraries_of_the_platform_with_their_licence_texts() {
+        let windows = rust_dependencies(&["dms", "dms-cli"], "x86_64-pc-windows-msvc").unwrap();
+        let mac = rust_dependencies(&["dms", "dms-cli"], "aarch64-apple-darwin").unwrap();
+        for notice in [&windows, &mac] {
+            assert!(notice.contains("== Libraries ("), "{notice:.200}");
+            assert!(notice.contains("serde "), "serde is a dependency of both");
+            assert!(notice.contains("Permission is hereby granted"), "MIT text");
+            assert!(notice.contains("Apache License"), "Apache text");
+            assert!(
+                !notice.contains("dms-types"),
+                "our own crates are not listed"
+            );
+        }
+        assert!(mac.contains("objc2 "), "the macOS build uses objc2");
+        assert!(!windows.contains("objc2 "), "the Windows build does not");
+        assert!(
+            windows.contains("windows-sys "),
+            "the Windows build uses windows-sys"
+        );
+        assert!(windows.contains("Windows") && !mac.contains("On Windows the programs"));
+    }
 }

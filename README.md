@@ -261,8 +261,8 @@ notarization ticket. Apple's own steps ([Open a Mac app from an unidentified dev
 
 From macOS 15 (Sequoia) on, right-click > Open no longer bypasses this for unsigned or un-notarized apps; on macOS 14 and
 earlier it still does. If you prefer the terminal, remove the download mark yourself after checking the `.sha256` file:
-`xattr -dr com.apple.quarantine "/Applications/Data Mining.app"`. We have not clicked through the Settings dialog
-ourselves; the steps above are Apple's.
+`xattr -dr com.apple.quarantine "/Applications/Data Mining.app"`. Verified on macOS 26.5.1 with the 0.6.0 disk image:
+right-click > Open did not let the app start, **Open Anyway** did, and it then opened normally.
 
 ### Useful app options
 
