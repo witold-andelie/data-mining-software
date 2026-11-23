@@ -20,8 +20,8 @@ command in this repository (`cargo xtask regress`, `parity`, `perf`, `ci`) and c
 
 **macOS (Apple silicon):** download the disk image **Data-Mining-0.6.0-macos-arm64.dmg** (19.3 MB) from the
 [latest release](https://github.com/witold-andelie/data-mining-software/releases/latest) (a pre-release), together with its
-`.sha256` file, open it and drag **Data Mining** to Applications. The app is signed ad hoc and not notarized: the first
-time, right-click it in Finder, choose **Open** and confirm.
+`.sha256` file, open it and drag **Data Mining** to Applications. The app is signed ad hoc and not notarized, so
+macOS blocks it the first time; see [Opening the downloaded app](#opening-the-downloaded-app-first-time).
 
 **Windows, or building it yourself:** there is no pre-built Windows download yet, so you build the app from source. It
 takes a few commands and no configuration.
@@ -61,8 +61,8 @@ selected by `rust-toolchain.toml` and installed by `rustup` on the first command
 - **Run it:** press ⌘R (Ctrl+R on Windows). If the stream names data files saved on another machine, add the folder that
   holds them with File > Add Data Folder… (the app searches by file name).
 - **A double-clickable app (macOS):** `cargo xtask bundle-mac` writes `target/dist/Data Mining.app` and a `.dmg`; drag the
-  app to Applications and, the first time, right-click it in Finder and choose **Open** (it is signed ad hoc, not
-  notarized).
+  app to Applications (an app you build yourself opens directly; a downloaded copy needs the steps in
+  [Opening the downloaded app](#opening-the-downloaded-app-first-time)).
 - **Python nodes (optional):** `python3 -m pip install pyarrow pandas`, plus the libraries of the nodes you use (see
   [Python nodes](#python-nodes)).
 - **Without a window:** `cargo run -p dms-cli -- run stream.str --out results/` (see [Command-line tool](#command-line-tool)).
@@ -237,8 +237,7 @@ the difference is 3e-4 to 0.38 (see below).
 
 1. Build the disk image: `cargo xtask bundle-mac` (needs the steps in [Quick start](#quick-start)).
 2. Open the `.dmg` and drag **Data Mining** to Applications.
-3. The app is signed ad hoc and not notarized: the first time, right-click it in Finder, choose
-   **Open**, and confirm.
+3. The first time, macOS blocks a downloaded copy (see below).
 4. Double-clicking a `.str` or `.dms` file in Finder (or Open With) opens it in the app.
 5. Optional: the command-line tool is inside the app; link it once with
    `sudo ln -sf "/Applications/Data Mining.app/Contents/MacOS/dms-cli" /usr/local/bin/dms-cli`.
@@ -246,6 +245,21 @@ the difference is 3e-4 to 0.38 (see below).
 `bundle-mac` builds the release binaries, copies the approved Homebrew ODBC libraries into the app (anything else
 fails the build) and rewrites their references, adds the icon, our own `LICENSE` and the third-party licence files,
 signs ad hoc and creates the disk image.
+
+#### Opening the downloaded app (first time)
+
+The app is signed ad hoc and not notarized, so macOS refuses a copy downloaded from the internet. On the Mac we tested
+(macOS 26.5.1) `spctl --assess` reports `rejected` for it, as it does for any app without a developer identity and a
+notarization ticket. Apple's own steps ([Open a Mac app from an unidentified developer](https://support.apple.com/guide/mac-help/open-a-mac-app-from-an-unidentified-developer-mh40616/mac)):
+
+1. Try to open **Data Mining** once from Applications and dismiss the warning.
+2. Open **System Settings > Privacy & Security**, scroll to **Security**, and click **Open Anyway** next to
+   *Data Mining*. Confirm, and enter your password if asked.
+
+From macOS 15 (Sequoia) on, right-click > Open no longer bypasses this for unsigned or un-notarized apps; on macOS 14 and
+earlier it still does. If you prefer the terminal, remove the download mark yourself after checking the `.sha256` file:
+`xattr -dr com.apple.quarantine "/Applications/Data Mining.app"`. We have not clicked through the Settings dialog
+ourselves; the steps above are Apple's.
 
 ### Useful app options
 
