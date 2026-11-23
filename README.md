@@ -228,8 +228,8 @@ the difference is 3e-4 to 0.38 (see below).
    `sudo ln -sf "/Applications/Data Mining.app/Contents/MacOS/dms-cli" /usr/local/bin/dms-cli`.
 
 `bundle-mac` builds the release binaries, copies the approved Homebrew ODBC libraries into the app (anything else
-fails the build) and rewrites their references, adds the icon and licence files, signs ad hoc and creates the disk
-image.
+fails the build) and rewrites their references, adds the icon, our own `LICENSE` and the third-party licence files,
+signs ad hoc and creates the disk image.
 
 ### Useful app options
 

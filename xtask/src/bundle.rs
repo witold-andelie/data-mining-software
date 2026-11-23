@@ -6,6 +6,9 @@
 //!   (`codesign -s -`; not notarized: on first launch, right-click the app and choose Open);
 //! - `DataMining-<version>.dmg`: the app, a link to /Applications and a short read-me.
 //!
+//! Our own repository `LICENSE` is copied into `Data Mining.app/Contents/Resources/LICENSE`
+//! and to the disk image's root directory.
+//!
 //! Homebrew libraries the app links (unixODBC's `libodbc` and libtool's `libltdl`, both LGPL) are
 //! copied into `Contents/Frameworks` as separate dynamic libraries, so the app starts on a Mac
 //! without Homebrew and the libraries stay replaceable; their licence texts go to
@@ -81,6 +84,13 @@ pub fn run(_args: &[String]) -> Result<()> {
         return Err("bundle-mac runs on macOS only".into());
     }
     let root = workspace_root()?;
+    let license = root.join("LICENSE");
+    if !license.is_file() {
+        return Err(format!(
+            "repository licence file {} is missing",
+            license.display()
+        ));
+    }
     let version = env!("CARGO_PKG_VERSION");
     cargo(&["build", "--release", "-p", "dms", "-p", "dms-cli"])?;
 
@@ -98,6 +108,7 @@ pub fn run(_args: &[String]) -> Result<()> {
     for dir in [&macos, &resources] {
         fs::create_dir_all(dir).map_err(|e| format!("cannot create {}: {e}", dir.display()))?;
     }
+    copy(&license, &resources.join("LICENSE"))?;
     // The command-line tool ships inside the app and shares its libraries (see the read-me for
     // putting it on the PATH).
     let executables = [macos.join("dms"), macos.join("dms-cli")];
@@ -128,6 +139,7 @@ pub fn run(_args: &[String]) -> Result<()> {
         ],
     )?;
     link_applications(&staging.join("Applications"))?;
+    copy(&license, &staging.join("LICENSE"))?;
     write(&staging.join("Read Me.txt"), READ_ME)?;
     let dmg = dist.join(format!("DataMining-{version}.dmg"));
     tool(
@@ -161,6 +173,9 @@ dialog. After that it opens normally, and double-clicking a .str stream opens it
 \n\
 The command-line tool dms-cli is inside the app. To use it from Terminal, link it once:\n\
   sudo ln -sf \"/Applications/Data Mining.app/Contents/MacOS/dms-cli\" /usr/local/bin/dms-cli\n\
+\n\
+Our own licence is in LICENSE on this disk image and in\n\
+Data Mining.app/Contents/Resources/LICENSE.\n\
 \n\
 The app includes the unixODBC and libltdl libraries (LGPL); their licences and sources are\n\
 listed in Data Mining.app/Contents/Resources/Licenses.\n";
