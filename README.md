@@ -18,12 +18,12 @@ command in this repository (`cargo xtask regress`, `parity`, `perf`, `ci`) and c
 
 ## Quick start
 
-**macOS (Apple silicon):** download the disk image **Data-Mining-0.6.0-macos-arm64.dmg** (19.4 MB) from the
-[latest release](https://github.com/witold-andelie/data-mining-software/releases/latest) (a pre-release), together with its
+**macOS (Apple silicon):** download the disk image **Data-Mining-0.6.0-macos-arm64.dmg** (19.4 MB; the
+[release page](https://github.com/witold-andelie/data-mining-software/releases/tag/v0.6.0), a pre-release, shows sizes in MiB: 18.5) together with its
 `.sha256` file, open it and drag **Data Mining** to Applications. The app is signed ad hoc and not notarized, so
 macOS blocks it the first time; see [Opening the downloaded app](#opening-the-downloaded-app-first-time).
 
-**Windows (x64):** download **Data-Mining-0.6.0-windows-x64.zip** (18.1 MB) from the same release, unzip it and run
+**Windows (x64):** download **Data-Mining-0.6.0-windows-x64.zip** (18.1 MB, shown as 17.2 MiB on the page) from the same release, unzip it and run
 `dms.exe`. Nothing else has to be installed (the C runtime is linked in). The programs are not code-signed, so Windows
 SmartScreen may warn you the first time: check the `.sha256` file, then choose **More info > Run anyway**.
 
