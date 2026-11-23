@@ -788,13 +788,13 @@ graphs	plot_na_k_color	match	1/1 terminal inputs match Modeler
 graphs	timeplot_na_k	match	1/1 terminal inputs match Modeler
 graphs	web_bp_chol_drug	match	1/1 terminal inputs match Modeler
 ibm-demos	ADP_basic_demo	match	4/4 terminal inputs match Modeler
-ibm-demos	bayes_bankloan	known-gap	1/2 terminal inputs match Modeler: Bayes Net is license-blocked in Modeler 19 and not implemented, so the downstream filter cannot be compared
-ibm-demos	bayes_churn_retrain	known-gap	2/3 terminal inputs match Modeler: Bayes Net is license-blocked in Modeler 19 and not implemented, so the downstream filter cannot be compared
+ibm-demos	bayes_bankloan	known-gap	1/2 terminal inputs match Modeler: Bayes Net is license-blocked in Modeler 19: the oracle's nuggets add no fields, so its downstream filter has no Bayes scores to compare with the ones we write from the saved models
+ibm-demos	bayes_churn_retrain	known-gap	2/3 terminal inputs match Modeler: Bayes Net is license-blocked in Modeler 19: the oracle's nuggets add no fields, so its downstream filter has no Bayes scores to compare with the ones we write from the saved models
 ibm-demos	broadband_apply_models	match	1/1 terminal inputs match Modeler
 ibm-demos	broadband_create_models	known-gap	3/4 terminal inputs match Modeler: Time Series: all four transfer targets match (seasonal factors, predictor log/sqrt and seasonal differencing); Market_3 and Total differ on rows 1-63 because Modeler scores Market_3 with its auxiliary Holt model (2.es.xml) instead of the saved primary log ARIMA(0,2,1), and Total's oracle model is not saved
 ibm-demos	car_sales_knn	match	2/2 terminal inputs match Modeler
 ibm-demos	catalog_forecast	match	2/2 terminal inputs match Modeler
-ibm-demos	catalog_streaming_timeseries	known-gap	1/3 terminal inputs match Modeler: Streaming Time Series is not implemented (its terminal is not produced), so the downstream Time Series nugget scores $null$
+ibm-demos	catalog_streaming_timeseries	known-gap	1/3 terminal inputs match Modeler: Streaming Time Series runs (builder and nugget on one table) and picks the same family as Modeler: Modeler's fitted values equal a Winters additive smoothing model exactly. Its smoothing parameters differ from ours (alpha 0.062 against 0.030) and our fit has the smaller squared error (1.32e9 against 1.34e9), so forecasts differ by up to 4%. The saved nugget of the same stream holds an older seasonal ARIMA model, while the oracle's run scored it with the retrained smoothing model, so our scores from the saved model differ
 ibm-demos	condlearn	match	1/1 terminal inputs match Modeler
 ibm-demos	condplot	match	3/3 terminal inputs match Modeler
 ibm-demos	cplex_goodslearn	known-gap	1/2 terminal inputs match Modeler: CPLEX Optimization is out of scope and not implemented, so its terminal is not produced
@@ -807,9 +807,9 @@ ibm-demos	modelingintro	known-gap	0/1 terminal inputs match Modeler: Statistics 
 ibm-demos	pm_binaryclassifier	known-gap	1/2 terminal inputs match Modeler: Auto Classifier nugget: legacy Auto model scoring is unverified; the oracle retrains a replacement-linked model, which is out of scope
 ibm-demos	pm_decisionlist	match	3/3 terminal inputs match Modeler
 ibm-demos	stp_server_demo	known-gap	0/3 terminal inputs match Modeler: STP node and Var. File treatSquareBracketsAsLists are not implemented; Modeler's own run fails on the map visualisation (IOException), so the oracle is partial
-ibm-demos	svm_cancer	known-gap	2/4 terminal inputs match Modeler: SVM is license-blocked in Modeler 19 and not implemented
-ibm-demos	telco_coxreg	known-gap	1/3 terminal inputs match Modeler: Cox regression: this Modeler 19 install does not have the Cox node (the demo opens it as unknownterminal, extension spss.coxreg_id missing), so no oracle can be produced; not implemented
-ibm-demos	telco_custcat_discriminant	known-gap	1/2 terminal inputs match Modeler: Discriminant is license-blocked in Modeler 19 and not implemented
+ibm-demos	svm_cancer	known-gap	2/4 terminal inputs match Modeler: SVM is license-blocked in Modeler 19: the oracle's nuggets add no fields, so the scores we write from the saved models have nothing to compare with; the build nodes are checked against the two models saved in the stream
+ibm-demos	telco_coxreg	known-gap	1/3 terminal inputs match Modeler: Cox regression: this Modeler 19 install does not have the Cox node (the demo opens it as unknownterminal, extension spss.coxreg_id missing), so the oracle's nuggets add no fields and the scores we write from the saved model have nothing to compare with; the build node is checked against the model saved in the stream
+ibm-demos	telco_custcat_discriminant	known-gap	1/2 terminal inputs match Modeler: Discriminant is license-blocked in Modeler 19: the oracle's nuggets add no fields, so the scores we write from the saved model have nothing to compare with; the build node reproduces the model saved in the stream
 ibm-demos	telco_dataaudit	match	2/2 terminal inputs match Modeler
 ibm-demos	ulcer_genlin	match	2/2 terminal inputs match Modeler
 kohonen_size	kohonen_size_n1000_in2	statistical	1/3 terminal inputs match Modeler (kohonen is held to statistical parity)
@@ -1211,6 +1211,10 @@ sources	excel_default	match	1/1 terminal inputs match Modeler
 sources	excel_explicit_a1	known-gap	0/1 terminal inputs match Modeler: Excel sheet has cell-less <row> elements (probe fixture artifact; Excel writes none); Modeler reads such sheets inconsistently, refused as GAP; see crates/io/src/xlsx.rs
 sources	excel_explicit_r1c1	known-gap	0/1 terminal inputs match Modeler: Excel sheet has cell-less <row> elements (probe fixture artifact; Excel writes none); Modeler reads such sheets inconsistently, refused as GAP; see crates/io/src/xlsx.rs
 sources	excel_header_names	match	1/1 terminal inputs match Modeler
+sources	excel_named_headers	match	1/1 terminal inputs match Modeler
+sources	excel_named_main	match	1/1 terminal inputs match Modeler
+sources	excel_named_missing	match	0/0 terminal inputs match Modeler
+sources	excel_named_override	match	1/1 terminal inputs match Modeler
 sources	excel_named_range	match	0/0 terminal inputs match Modeler
 sources	excel_no_headers	match	1/1 terminal inputs match Modeler
 sources	excel_scan_1	match	1/1 terminal inputs match Modeler
