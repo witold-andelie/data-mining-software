@@ -205,7 +205,7 @@ the difference is 3e-4 to 0.38 (see below).
 | Graphics output and R syntax in Extension nodes | The options are absent |
 | Licence-blocked (6) and out-of-scope (34) nodes | Listed in the catalog and greyed out in the palette, with the reason |
 | Native models are not turned into nuggets after training in the app (C5.0, CHAID, ...), which needs a PMML writer | Train, then score by running the stream; nuggets imported in `.str` files score normally, and Python models do generate nuggets |
-| Excel named ranges whose sheet name needs quotes (`'My Sheet'!A1:B2`) | Refused with a `GAP:` error. Modeler 19 itself crashes its server process on such names, so there is no answer to compare with; names on sheets without spaces are read and match Modeler (`excel_named_*`) |
+| Excel named ranges whose sheet name needs quotes (`'My Sheet'!A1:B2`) | Refused with a `GAP:` error. Modeler 19 itself crashes its server process on such names ([reported here](https://github.com/witold-andelie/data-mining-software/issues/1)), so there is no answer to compare with; names on sheets without spaces are read and match Modeler (`excel_named_*`) |
 | Python Extension nodes from Modeler `.str` files | Kept, but usually do not run: how Modeler stores their settings has not been observed, and its Python extension API is Spark-based |
 | TwoStep clustering on data whose CF tree needs a rebuild (more than three levels) | The node stops with a "not supported yet" error instead of producing a result. Seen on the team's `cluster_analysis` stream; the TwoStep streams in the corpus that fit the supported depth match |
 | Supernodes | Shown and run, but cannot be edited |

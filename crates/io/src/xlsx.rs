@@ -735,7 +735,7 @@ const WORKBOOK_RELS: &str = r#"<?xml version="1.0" encoding="UTF-8" standalone="
 //   field names). A name the workbook does not define is an error (`excel_named_missing`: "The
 //   data source defines no fields"). Only a plain `Sheet!$A$1:$B$2` rectangle on a sheet whose
 //   name needs no quotes is read: Modeler's server process crashes as soon as the name points
-//   at `'Offset Data'!...` (`excel_named_range`), and names scoped to one sheet, duplicate
+//   at `'Offset Data'!...` (`excel_named_range`, GitHub issue #1), and names scoped to one sheet, duplicate
 //   names, single cells and formulas have no oracle, so those are `GAP:` errors.
 // - Only `.xlsx` (`v2007`) is read; `.xls` and other `excel_file_type` values stay `GAP:` errors.
 //
