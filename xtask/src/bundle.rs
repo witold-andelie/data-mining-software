@@ -92,7 +92,7 @@ pub fn run(_args: &[String]) -> Result<()> {
         ));
     }
     let version = env!("CARGO_PKG_VERSION");
-    cargo_release(&["build", "--release", "-p", "dms", "-p", "dms-cli"])?;
+    cargo_release(&["build", "--release", "-p", "dms", "-p", "dms-cli"], &[])?;
 
     let target = std::env::var_os("CARGO_TARGET_DIR")
         .map(PathBuf::from)

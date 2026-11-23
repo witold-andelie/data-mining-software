@@ -1,9 +1,11 @@
 //! Developer tasks: `cargo xtask <command>`.
 
 mod bundle;
+mod bundle_windows;
 mod compare;
 mod corpus;
 mod layers;
+mod notices;
 mod oracle;
 mod parity;
 mod perf;
@@ -20,7 +22,9 @@ commands:
   ci                         fmt, clippy -D warnings, tests, layers, parity --check
   bundle-mac                 build target/dist/Data Mining.app and DataMining-<version>.dmg
                              (macOS; ad-hoc signed, not notarized)
-  layers                     check crate dependency layering
+  bundle-windows             build target/dist/windows/Data-Mining-<version>-windows-x64.zip
+                             (Windows; static C runtime, not code-signed)
+  layers                    check crate dependency layering
   perf                       release CPU frames (200/1000 nodes); 200-node p95 <= 4 ms
   parity [--check]           regenerate docs/parity-checklist.md (--check: fail if stale)
   corpus record <label> <dir> [ext,...]
@@ -77,6 +81,7 @@ fn main() -> ExitCode {
     let outcome = match args.first().map(String::as_str) {
         Some("ci") => ci(),
         Some("bundle-mac") => bundle::run(rest),
+        Some("bundle-windows") => bundle_windows::run(rest),
         Some("layers") => layers::check(),
         Some("perf") => perf::run(rest),
         Some("parity") => parity::run(rest.iter().any(|a| a == "--check")),
@@ -130,8 +135,9 @@ fn cargo_quiet(args: &[&str]) -> Result<()> {
 /// A release build for binaries that are handed to other people: the paths of this machine (the
 /// Cargo home with the dependency sources, and the checkout) are replaced in the binaries, which
 /// otherwise carry them in panic locations and debug output, with the user name inside.
-fn cargo_release(args: &[&str]) -> Result<()> {
+fn cargo_release(args: &[&str], extra_flags: &[&str]) -> Result<()> {
     let flags = release_rustflags(
+        extra_flags,
         std::env::var("CARGO_ENCODED_RUSTFLAGS").ok().as_deref(),
         std::env::var("RUSTFLAGS").ok().as_deref(),
         &cargo_home()?,
@@ -153,23 +159,25 @@ fn cargo_home() -> Result<PathBuf> {
 /// the flags the environment already sets, then the path remapping. Cargo prefers this variable
 /// over `RUSTFLAGS`, so both are carried over.
 fn release_rustflags(
+    extra: &[&str],
     encoded: Option<&str>,
     plain: Option<&str>,
     cargo_home: &Path,
     root: &Path,
 ) -> String {
     let mut flags: Vec<String> = match (encoded, plain) {
-        (Some(encoded), _) => encoded.split('').map(str::to_string).collect(),
+        (Some(encoded), _) => encoded.split('\x1f').map(str::to_string).collect(),
         (None, Some(plain)) => plain.split_whitespace().map(str::to_string).collect(),
         (None, None) => Vec::new(),
     };
     flags.retain(|flag| !flag.is_empty());
+    flags.extend(extra.iter().map(|flag| (*flag).to_string()));
     flags.push(format!(
         "--remap-path-prefix={}=/cargo",
         cargo_home.display()
     ));
     flags.push(format!("--remap-path-prefix={}=/build", root.display()));
-    flags.join("")
+    flags.join("\x1f")
 }
 
 fn run_cargo(args: &[&str], echo: bool, env: &[(&str, String)]) -> Result<()> {
@@ -223,15 +231,26 @@ mod tests {
         let root = Path::new("/Users/some user/dev/dms");
         let remap = "--remap-path-prefix=/Users/some user/.cargo=/cargo\x1f\
                      --remap-path-prefix=/Users/some user/dev/dms=/build";
-        assert_eq!(release_rustflags(None, None, home, root), remap);
+        assert_eq!(release_rustflags(&[], None, None, home, root), remap);
         // the plain variable is split on white space, the encoded one on 0x1f and wins
         assert_eq!(
-            release_rustflags(None, Some("-C target-cpu=native"), home, root),
+            release_rustflags(&[], None, Some("-C target-cpu=native"), home, root),
             format!("-C\x1ftarget-cpu=native\x1f{remap}")
         );
         assert_eq!(
-            release_rustflags(Some("-Cdebuginfo=0"), Some("-C ignored"), home, root),
+            release_rustflags(&[], Some("-Cdebuginfo=0"), Some("-C ignored"), home, root),
             format!("-Cdebuginfo=0\x1f{remap}")
+        );
+        // flags the task itself needs come after the environment's and before the remapping
+        assert_eq!(
+            release_rustflags(
+                &["-C", "target-feature=+crt-static"],
+                None,
+                None,
+                home,
+                root
+            ),
+            format!("-C\x1ftarget-feature=+crt-static\x1f{remap}")
         );
     }
 }
