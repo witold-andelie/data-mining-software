@@ -983,7 +983,7 @@ dependencies = [
 
 [[package]]
 name = "dms"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "arboard",
  "dms-engine",
@@ -997,7 +997,7 @@ dependencies = [
 
 [[package]]
 name = "dms-algo"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "dms-pmml",
  "dms-types",
@@ -1006,14 +1006,14 @@ dependencies = [
 
 [[package]]
 name = "dms-catalog"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "dms-stream",
 ]
 
 [[package]]
 name = "dms-clem"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "dms-types",
  "serde_json",
@@ -1021,7 +1021,7 @@ dependencies = [
 
 [[package]]
 name = "dms-cli"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "dms-engine",
  "dms-exec",
@@ -1033,7 +1033,7 @@ dependencies = [
 
 [[package]]
 name = "dms-engine"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "dms-catalog",
  "dms-exec",
@@ -1044,7 +1044,7 @@ dependencies = [
 
 [[package]]
 name = "dms-exec"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "dms-algo",
  "dms-catalog",
@@ -1063,7 +1063,7 @@ dependencies = [
 
 [[package]]
 name = "dms-io"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "dms-sav",
  "dms-types",
@@ -1075,7 +1075,7 @@ dependencies = [
 
 [[package]]
 name = "dms-macos-open"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "block2 0.6.2",
  "objc2 0.6.5",
@@ -1085,7 +1085,7 @@ dependencies = [
 
 [[package]]
 name = "dms-pmml"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "roxmltree 0.20.0",
  "serde_json",
@@ -1093,7 +1093,7 @@ dependencies = [
 
 [[package]]
 name = "dms-python"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "arrow-array",
  "arrow-buffer",
@@ -1106,7 +1106,7 @@ dependencies = [
 
 [[package]]
 name = "dms-sav"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "encoding_rs",
  "flate2",
@@ -1114,7 +1114,7 @@ dependencies = [
 
 [[package]]
 name = "dms-stream"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "dms-strfmt",
  "roxmltree 0.20.0",
@@ -1124,7 +1124,7 @@ dependencies = [
 
 [[package]]
 name = "dms-strfmt"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "flate2",
  "zip",
@@ -1132,11 +1132,11 @@ dependencies = [
 
 [[package]]
 name = "dms-types"
-version = "0.5.0"
+version = "0.6.0"
 
 [[package]]
 name = "dms-ui"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "dms-clem",
  "dms-engine",
@@ -4940,7 +4940,7 @@ checksum = "e450f9b2ed1dff33c94c12589a87338689467b9c4f5d8a5710bd09a847d2c8a7"
 
 [[package]]
 name = "xtask"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "dms-engine",
  "dms-exec",

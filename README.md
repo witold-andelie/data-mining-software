@@ -3,7 +3,7 @@
 [![License: PolyForm Noncommercial 1.0.0](https://img.shields.io/badge/license-PolyForm%20Noncommercial%201.0.0-blue.svg)](LICENSE)
 ![Rust 1.95](https://img.shields.io/badge/rust-1.95.0-orange.svg)
 ![Platforms](https://img.shields.io/badge/platforms-macOS%20(Apple%20silicon)%20%7C%20Windows%20x64-blue.svg)
-![Version](https://img.shields.io/badge/version-0.5.0-informational.svg)
+![Version](https://img.shields.io/badge/version-0.6.0-informational.svg)
 ![Status](https://img.shields.io/badge/status-active%20development-green.svg)
 
 Source code, regression suite and verification records of **Data Mining**, a data-mining workbench written in Rust
@@ -117,7 +117,7 @@ answer for each stream, and our result must agree with it record by record.
 | Question | Finding | Where |
 |---|---|---|
 | Does it read Modeler's streams? | Every `.str` in the corpus decodes; unknown nodes and settings are preserved and shown dashed. | `crates/strfmt` |
-| Do results match Modeler? | A regression suite of **1,601 streams** is compared with Modeler's own batch output: **1,469 match exactly, 91 match to statistical parity, 41 are documented known gaps and 0 regress** (Windows, 2026-11-23, version 0.5.0). | `xtask/corpus.tsv`, `xtask/known-gaps.tsv` |
+| Do results match Modeler? | A regression suite of **1,601 streams** is compared with Modeler's own batch output: **1,469 match exactly, 91 match to statistical parity, 41 are documented known gaps and 0 regress** (Windows, 2026-11-23, version 0.6.0). | `xtask/corpus.tsv`, `xtask/known-gaps.tsv` |
 | Which models are exact? | C5.0, CHAID, C&R Tree and QUEST (without an overfit-prevention set), Tree-AS, Linear, Linear-AS, Regression, Logistic, Decision List, K-Means, TwoStep, Apriori, CARMA, PCA/Factor, Anomaly, Feature Selection, RBF. | `docs/statistical-parity.md` |
 | Which are statistical? | MLP neural network, Kohonen, LSVM, Random Trees, Time Series, Sequence, Auto Cluster, Auto Classifier, Auto Numeric, and C&R Tree / QUEST with an overfit-prevention set: our result is compared with the spread of repeated runs of our own seedable implementation. | `docs/statistical-parity.md` |
 | Same answers on Windows and macOS? | Yes. On 2026-11-23 the full regression on an Apple-silicon Mac classified all 1,601 streams exactly as on Windows (1,469 match, 91 statistical, 41 known gaps, 0 regressions), and the stream-by-stream comparison with the Windows baseline shows no difference. On 2026-11-09 the earlier 1,596-stream comparison on an Apple M1 showed no floating-point differences beyond the comparison tolerance (printed precision, or relative 1e-9). | `docs/mac/windows-baseline.tsv`, `docs/mac/compare_baseline.py` |
@@ -528,7 +528,7 @@ If you use the software in research or teaching, please cite it as:
 @misc{ma2026datamining,
   author = {Ma, Wentao},
   title  = {Data Mining: a {Rust} workbench for {SPSS} {Modeler} 19 streams},
-  note   = {Software, version 0.5.0; code at https://github.com/witold-andelie/data-mining-software},
+  note   = {Software, version 0.6.0; code at https://github.com/witold-andelie/data-mining-software},
   year   = {2026}
 }
 ```
