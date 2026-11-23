@@ -17,11 +17,13 @@
 //! | `blankRows` | `blank_rows` | `stopReading` (end at the first blank row, `more_blank_noempty_stop`) / `returnBlankRows` (keep blank rows in place, `more_blank_noempty_return`) |
 //! | `scanLineCount` | `lines_to_scan` | string-vs-numeric horizon, default 200 (`excel_scan_1` saved 200 vs `excel_scan_250` 250) |
 //! | `excelFileType` | `excel_file_type` | `v2007` (`.xlsx`; `Excel2007` scripting spelling accepted) |
-//! | `useNamedRange`, `namedRange` | `use_named_range`, `named_range` | only `false`/empty; `true` is a `GAP:` error (`excel_named_range` has no oracle data) |
+//! | `useNamedRange`, `namedRange` | `use_named_range`, `named_range` | `true` reads the workbook's defined name instead of the worksheet and range settings (`excel_named_main`, `excel_named_override`, `excel_named_headers`; `excel_named_missing`: an undefined name is an error) |
 //! | `filterTable`, `typeTable` | — | embedded Filter and Type rules via `parse_source_tables` |
 //!
 //! GAPs (explicit `GAP:` errors, never silently ignored):
-//! - `useNamedRange = true` (`excel_named_range`; Modeler drops the server connection, no data).
+//! - `useNamedRange = true` with a name on a quoted sheet name (`excel_named_range`: Modeler's
+//!   server process crashes), a sheet-scoped name, a single cell or a formula; see
+//!   [`dms_io::xlsx`].
 //! - `.xls` files and `excelFileType` other than `v2007`.
 //! - `doReadValues = true`.
 //! - A sheet with a `<row>` element without cells (see [`dms_io::xlsx`]).
@@ -78,11 +80,17 @@ pub fn build(node: &StreamNode) -> Result<Box<dyn Operator>, OperatorError> {
     if settings::flag(s, "doReadValues")?.unwrap_or(false) {
         return Err(gap("doReadValues=true is not supported".into()));
     }
-    if settings::flag(s, "useNamedRange")?.unwrap_or(false) {
-        return Err(gap(
-            "useNamedRange=true (named ranges) is not supported; excel_named_range has no oracle data".into(),
-        ));
-    }
+    let named_range = if settings::flag(s, "useNamedRange")?.unwrap_or(false) {
+        let name = settings::text(s, "namedRange").unwrap_or_default();
+        if name.trim().is_empty() {
+            return Err(bad(
+                "namedRange is required when useNamedRange is true".into()
+            ));
+        }
+        Some(name.trim().to_string())
+    } else {
+        None
+    };
 
     let field_names = settings::flag(s, "fieldNamesIncluded")?.unwrap_or(true);
 
@@ -159,6 +167,7 @@ pub fn build(node: &StreamNode) -> Result<Box<dyn Operator>, OperatorError> {
             range,
             blank_rows,
             scan_lines,
+            named_range,
         },
         tables: parse_source_tables(s)?,
     }))

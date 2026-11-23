@@ -111,7 +111,7 @@ answer for each stream, and our result must agree with it record by record.
 | Question | Finding | Where |
 |---|---|---|
 | Does it read Modeler's streams? | Every `.str` in the corpus decodes; unknown nodes and settings are preserved and shown dashed. | `crates/strfmt` |
-| Do results match Modeler? | A regression suite of **1,597 streams** is compared with Modeler's own batch output: **1,465 match exactly, 91 match to statistical parity, 41 are documented known gaps and 0 regress** (Windows, 2026-11-18, version 0.5.0). | `xtask/corpus.tsv`, `xtask/known-gaps.tsv` |
+| Do results match Modeler? | A regression suite of **1,601 streams** is compared with Modeler's own batch output: **1,469 match exactly, 91 match to statistical parity, 41 are documented known gaps and 0 regress** (Windows, 2026-11-23, version 0.5.0). | `xtask/corpus.tsv`, `xtask/known-gaps.tsv` |
 | Which models are exact? | C5.0, CHAID, C&R Tree and QUEST (without an overfit-prevention set), Tree-AS, Linear, Linear-AS, Regression, Logistic, Decision List, K-Means, TwoStep, Apriori, CARMA, PCA/Factor, Anomaly, Feature Selection, RBF. | `docs/statistical-parity.md` |
 | Which are statistical? | MLP neural network, Kohonen, LSVM, Random Trees, Time Series, Sequence, Auto Cluster, Auto Classifier, Auto Numeric, and C&R Tree / QUEST with an overfit-prevention set: our result is compared with the spread of repeated runs of our own seedable implementation. | `docs/statistical-parity.md` |
 | Same answers on Windows and macOS? | Yes. On 2026-11-09 the full regression on an Apple M1 classified all 1,596 streams that both machines had exactly as on Windows, with no floating-point differences beyond the comparison tolerance (printed precision, or relative 1e-9); the merged version 0.5.0 classifies all 1,597 streams on Windows exactly as the 2026-11-09 baseline did. | `docs/mac/windows-baseline.tsv`, `docs/mac/compare_baseline.py` |
@@ -140,7 +140,7 @@ A **gap** is a place where our result differs from Modeler's, or where a Modeler
 fails on a listed gap that has since been fixed, so the list cannot go stale.
 
 **What it means in practice.** None of the gaps stops the core workflow (open, edit, run and save a stream): 1,556 of
-1,597 recorded streams agree with Modeler exactly (1,465) or statistically (91). What you may notice:
+1,601 recorded streams agree with Modeler exactly (1,469) or statistically (91). What you may notice:
 
 1. A stream that uses a node we do not have runs up to that node and reports it; the rest of the stream is unaffected.
 2. Models that depend on random numbers or on Modeler's optimizer stopping rule give **equivalent but not identical**
@@ -149,7 +149,7 @@ fails on a listed gap that has since been fixed, so the list cannot go stale.
    a few badly conditioned fits differ more (see [Statistical parity](#2-statistical-parity-91-streams-not-failures)).
 4. Nodes that sample without a seed (Balance) differ from run to run, in Modeler as well.
 
-### 1. Documented known gaps: 41 of 1,597 streams
+### 1. Documented known gaps: 41 of 1,601 streams
 
 | Group | Streams | What differs | Impact |
 |---|---|---|---|
@@ -255,8 +255,8 @@ The raw data are not in the repository. `xtask/corpus.tsv` pins every corpus fil
 | Probe streams | Streams and data our probe scripts generate from fixed seeds (`xtask/oracle/probes/`) | Recorded under `corpus/`, pinned by SHA-256 | all other labels |
 | Oracle | Modeler's exported models (PMML) and each terminal node's input (CSV), recorded in batch mode with Modeler 19.0.0.0.26 on Windows | Under `oracle/<label>/<stream>/`; only `cargo xtask oracle` writes it | `regress`, `compare` |
 
-The oracle is large (about 14 GB), almost all of it in `oracle/probes/` (9.3 GB) and `oracle/sources/excel_named_range`
-(4.6 GB). **To run the regression on another machine** copy `corpus/` and the rest of `oracle/` (175 MB) and the
+The oracle is about 250 MB, of which `oracle/probes/` is 80 MB. **To run the regression on another machine** copy
+`corpus/` and the rest of `oracle/` (175 MB) and the
 Modeler `Demos` folder, and set `DMS_MODELER_HOME` to the folder that contains it. `cargo xtask test-corpus` also needs
 `oracle/probes/clem_semantics` and `oracle/probes/sav_to_csv` (4.5 MB).
 
@@ -388,7 +388,7 @@ Run these from the repository root. The regression and corpus checks need `corpu
 | All build gates | `cargo xtask ci` | nothing | about 2.5 min on an M1 (warm build) |
 | Corpus integrity | `cargo xtask corpus verify` | `corpus/` | seconds |
 | Corpus-backed tests | `cargo xtask test-corpus` | `corpus/`, `oracle/probes/` | about 2 min (M1) |
-| Full regression | the command below | `corpus/`, `oracle/` (without `probes/`, `excel_named_range`) | about 7 min (M1, `--jobs 4`) |
+| Full regression | the command below | `corpus/`, `oracle/` (without `probes/`) | about 7 min (M1, `--jobs 4`) |
 | One stream against its oracle | `cargo xtask compare <label> <file>.str` (file name only) | `corpus/`, `oracle/` | seconds |
 | Compare two platforms | `python3 docs/mac/compare_baseline.py docs/mac/windows-baseline.tsv <mac.tsv>` | two regress `--out` files | seconds |
 | Canvas frame budget | `cargo xtask perf` | nothing | seconds |

@@ -729,8 +729,15 @@ const WORKBOOK_RELS: &str = r#"<?xml version="1.0" encoding="UTF-8" standalone="
 //   (`excel_scan_1` saved 200 vs `excel_scan_250`, 205 data rows: `late_text` numeric with
 //   null beyond 200 vs string; `late_real` real in both since `2.5` promotes the column;
 //   `late_numeric` all-null in the first 200 still numeric).
-// - Only `.xlsx` (`v2007`) is read; `.xls`, other `excel_file_type` values and named ranges
-//   stay `GAP:` errors (`excel_named_range` has no oracle: Modeler drops the connection).
+// - A named range (`useNamedRange`, `namedRange`) is the sheet and rectangle of the workbook's
+//   defined name, replacing the worksheet and range settings (`excel_named_main`,
+//   `excel_named_override`, `excel_named_headers`: the first row of the rectangle gives the
+//   field names). A name the workbook does not define is an error (`excel_named_missing`: "The
+//   data source defines no fields"). Only a plain `Sheet!$A$1:$B$2` rectangle on a sheet whose
+//   name needs no quotes is read: Modeler's server process crashes as soon as the name points
+//   at `'Offset Data'!...` (`excel_named_range`), and names scoped to one sheet, duplicate
+//   names, single cells and formulas have no oracle, so those are `GAP:` errors.
+// - Only `.xlsx` (`v2007`) is read; `.xls` and other `excel_file_type` values stay `GAP:` errors.
 //
 // Limits (like the writer's): at most 16384 columns, 1048576 rows, 1000 sheets, 1000 zip
 // members, 32 MiB per XML part, 8M grid cells, 1M shared strings, 10k styles, 512 XML depth
@@ -789,6 +796,10 @@ pub struct ExcelOptions {
     pub blank_rows: BlankRows,
     /// `scanLineCount` string-vs-numeric horizon (`excel_scan_1` 200 vs `excel_scan_250` 250).
     pub scan_lines: usize,
+    /// `useNamedRange` with its `namedRange`: the worksheet and rectangle the workbook defines
+    /// for that name replace `sheet` and `range` (`excel_named_override` keeps a different
+    /// worksheet and explicit range from mattering).
+    pub named_range: Option<String>,
 }
 
 impl Default for ExcelOptions {
@@ -799,6 +810,7 @@ impl Default for ExcelOptions {
             range: RangeSelector::FirstNonBlank,
             blank_rows: BlankRows::StopReading,
             scan_lines: 200,
+            named_range: None,
         }
     }
 }
@@ -1471,6 +1483,60 @@ fn bounding_box(
     }
 }
 
+/// The worksheet and rectangle a defined name stands for.
+struct NamedRange {
+    sheet: String,
+    start: (u32, u32),
+    end: (u32, u32),
+}
+
+/// Resolve `wanted` among the workbook's `definedNames` (see the reader notes for what is read).
+fn resolve_named_range(
+    workbook: roxmltree::Node<'_, '_>,
+    wanted: &str,
+) -> Result<NamedRange, XlsxError> {
+    let gap = |what: String| XlsxError::Value(format!("GAP: named range {wanted:?} {what}"));
+    let mut found = workbook
+        .children()
+        .filter(|n| n.is_element() && n.tag_name().name() == "definedNames")
+        .flat_map(|names| names.children())
+        .filter(|n| {
+            n.is_element()
+                && n.tag_name().name() == "definedName"
+                && n.attribute("name") == Some(wanted)
+        });
+    let Some(defined) = found.next() else {
+        return Err(XlsxError::Sheet(format!(
+            "named range {wanted:?} is not defined in the workbook"
+        )));
+    };
+    if found.next().is_some() || defined.attribute("localSheetId").is_some() {
+        return Err(gap("is defined more than once or for one sheet only".into()));
+    }
+    let reference = defined.text().unwrap_or_default().trim();
+    if reference.starts_with('\'') {
+        return Err(gap(
+            "points at a quoted sheet name, which Modeler cannot read (its server process crashes)"
+                .into(),
+        ));
+    }
+    let (sheet, cells) = reference
+        .split_once('!')
+        .filter(|(sheet, _)| !sheet.is_empty())
+        .ok_or_else(|| gap(format!("is not a sheet reference: {reference:?}")))?;
+    let (start, end) = cells
+        .split_once(':')
+        .ok_or_else(|| gap(format!("is not a cell rectangle: {reference:?}")))?;
+    let corner = |text: &str| {
+        parse_a1(text).map_err(|_| gap(format!("is not a cell rectangle: {reference:?}")))
+    };
+    Ok(NamedRange {
+        sheet: sheet.to_string(),
+        start: corner(start)?,
+        end: corner(end)?,
+    })
+}
+
 /// Reads `bytes` (an `.xlsx` package) as a [`Table`] following `options`.
 pub fn read_table(bytes: &[u8], options: &ExcelOptions) -> Result<Table, XlsxError> {
     use dms_types::{DataModel, Field, Measurement, Table, Value};
@@ -1593,8 +1659,25 @@ pub fn read_table(bytes: &[u8], options: &ExcelOptions) -> Result<Table, XlsxErr
             grids.push(grid);
         }
     }
+    // A named range replaces the worksheet and range settings.
+    let named = options
+        .named_range
+        .as_deref()
+        .map(|name| resolve_named_range(workbook_root, name))
+        .transpose()?;
+    let sheet_selector = named.as_ref().map_or_else(
+        || options.sheet.clone(),
+        |named| SheetSelector::Name(named.sheet.clone()),
+    );
+    let range_selector = named.as_ref().map_or_else(
+        || options.range.clone(),
+        |named| RangeSelector::Explicit {
+            start: named.start,
+            end: named.end,
+        },
+    );
     // Select the worksheet.
-    let grid: &SheetGrid = match &options.sheet {
+    let grid: &SheetGrid = match &sheet_selector {
         SheetSelector::Index(index) => grids.get(*index).ok_or_else(|| {
             XlsxError::Sheet(format!("worksheet index {index} is outside the workbook"))
         })?,
@@ -1610,7 +1693,7 @@ pub fn read_table(bytes: &[u8], options: &ExcelOptions) -> Result<Table, XlsxErr
         )));
     }
     // Determine the rectangle.
-    let ((first_col, first_row), (last_col, last_row)) = match &options.range {
+    let ((first_col, first_row), (last_col, last_row)) = match &range_selector {
         RangeSelector::FirstNonBlank => match bounding_box(&grid.cells, &shared, &styles)? {
             Some(corners) => corners,
             None => {
@@ -2088,6 +2171,17 @@ mod tests {
         shared: Option<&str>,
         date1904: bool,
     ) -> Vec<u8> {
+        minimal_workbook_named(sheets, styles, shared, date1904, "")
+    }
+
+    /// As [`minimal_workbook`], with the given `<definedName>` elements.
+    fn minimal_workbook_named(
+        sheets: &[(&str, &str)],
+        styles: &str,
+        shared: Option<&str>,
+        date1904: bool,
+        defined_names: &str,
+    ) -> Vec<u8> {
         use std::io::Write as _;
         let mut writer = zip::ZipWriter::new(Cursor::new(Vec::new()));
         let opts: zip::write::SimpleFileOptions = zip::write::SimpleFileOptions::default();
@@ -2120,7 +2214,11 @@ mod tests {
             ));
             write(&format!("xl/worksheets/sheet{id}.xml"), sheet_xml);
         }
-        workbook.push_str("</sheets></workbook>");
+        workbook.push_str("</sheets>");
+        if !defined_names.is_empty() {
+            workbook.push_str(&format!("<definedNames>{defined_names}</definedNames>"));
+        }
+        workbook.push_str("</workbook>");
         rels.push_str(&format!(
             r#"<Relationship Id="rIdStyles" Type="{rel_ns}/styles" Target="styles.xml"/></Relationships>"#
         ));
@@ -2236,6 +2334,53 @@ mod tests {
         let bytes = minimal_workbook(&[("S", &with_empty_row)], &probe_styles(), None, false);
         let error = read_table(&bytes, &ExcelOptions::default()).unwrap_err();
         assert!(error.to_string().starts_with("GAP:"), "{error}");
+    }
+
+    /// Named ranges follow `excel_named_*`: the name's sheet and rectangle replace the worksheet
+    /// and range settings, the first row gives the field names, and an unknown name is an error.
+    #[test]
+    fn named_ranges_replace_the_sheet_and_range_settings() {
+        let main = rows_sheet(&[&["id", "x", "y"], &["1", "a", "b"], &["2", "c", "d"]]);
+        let other = rows_sheet(&[&["p", "q"], &["9", "8"]]);
+        let book = |names: &str| {
+            minimal_workbook_named(
+                &[("Main", &main), ("Other", &other)],
+                &probe_styles(),
+                None,
+                false,
+                names,
+            )
+        };
+        let bytes = book(
+            r#"<definedName name="Block">Main!$A$1:$B$3</definedName><definedName name="Spaced">'Main Data'!$A$1:$B$2</definedName><definedName name="Scoped" localSheetId="0">Main!$A$1:$B$2</definedName><definedName name="One">Main!$A$1</definedName>"#,
+        );
+        let named = |name: &str| ExcelOptions {
+            // a different worksheet and range that must not matter
+            sheet: SheetSelector::Name("Other".into()),
+            range: RangeSelector::Explicit {
+                start: (1, 1),
+                end: (1, 1),
+            },
+            named_range: Some(name.into()),
+            ..Default::default()
+        };
+        let table = read_table(&bytes, &named("Block")).unwrap();
+        let names: Vec<&str> = table
+            .model()
+            .fields()
+            .iter()
+            .map(|f| f.name.as_str())
+            .collect();
+        assert_eq!(names, ["id", "x"]);
+        assert_eq!(table.row_count(), 2);
+        // a name the workbook does not define is an error, not an empty table
+        let error = read_table(&bytes, &named("Nope")).unwrap_err();
+        assert!(error.to_string().contains("not defined"), "{error}");
+        // names Modeler cannot read or no oracle covers are `GAP:` errors
+        for gap in ["Spaced", "Scoped", "One"] {
+            let error = read_table(&bytes, &named(gap)).unwrap_err();
+            assert!(error.to_string().starts_with("GAP:"), "{gap}: {error}");
+        }
     }
 
     #[test]
