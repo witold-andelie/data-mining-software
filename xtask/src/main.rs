@@ -9,7 +9,7 @@ mod parity;
 mod perf;
 mod regress;
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
 
 type Result<T> = std::result::Result<T, String>;
@@ -119,17 +119,63 @@ fn cargo_program() -> String {
 }
 
 fn cargo(args: &[&str]) -> Result<()> {
-    run_cargo(args, true)
+    run_cargo(args, true, &[])
 }
 
 /// Like `cargo`, without echoing the command: `regress` runs hundreds of them.
 fn cargo_quiet(args: &[&str]) -> Result<()> {
-    run_cargo(args, false)
+    run_cargo(args, false, &[])
 }
 
-fn run_cargo(args: &[&str], echo: bool) -> Result<()> {
+/// A release build for binaries that are handed to other people: the paths of this machine (the
+/// Cargo home with the dependency sources, and the checkout) are replaced in the binaries, which
+/// otherwise carry them in panic locations and debug output, with the user name inside.
+fn cargo_release(args: &[&str]) -> Result<()> {
+    let flags = release_rustflags(
+        std::env::var("CARGO_ENCODED_RUSTFLAGS").ok().as_deref(),
+        std::env::var("RUSTFLAGS").ok().as_deref(),
+        &cargo_home()?,
+        &workspace_root()?,
+    );
+    run_cargo(args, true, &[("CARGO_ENCODED_RUSTFLAGS", flags)])
+}
+
+fn cargo_home() -> Result<PathBuf> {
+    if let Some(home) = std::env::var_os("CARGO_HOME") {
+        return Ok(PathBuf::from(home));
+    }
+    let user = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE"));
+    user.map(|user| PathBuf::from(user).join(".cargo"))
+        .ok_or_else(|| "cannot find the Cargo home (set CARGO_HOME)".to_string())
+}
+
+/// The value of `CARGO_ENCODED_RUSTFLAGS` (flags joined by 0x1f, which allows spaces in paths):
+/// the flags the environment already sets, then the path remapping. Cargo prefers this variable
+/// over `RUSTFLAGS`, so both are carried over.
+fn release_rustflags(
+    encoded: Option<&str>,
+    plain: Option<&str>,
+    cargo_home: &Path,
+    root: &Path,
+) -> String {
+    let mut flags: Vec<String> = match (encoded, plain) {
+        (Some(encoded), _) => encoded.split('').map(str::to_string).collect(),
+        (None, Some(plain)) => plain.split_whitespace().map(str::to_string).collect(),
+        (None, None) => Vec::new(),
+    };
+    flags.retain(|flag| !flag.is_empty());
+    flags.push(format!(
+        "--remap-path-prefix={}=/cargo",
+        cargo_home.display()
+    ));
+    flags.push(format!("--remap-path-prefix={}=/build", root.display()));
+    flags.join("")
+}
+
+fn run_cargo(args: &[&str], echo: bool, env: &[(&str, String)]) -> Result<()> {
     let mut command = Command::new(cargo_program());
     command.args(args).current_dir(workspace_root()?);
+    command.envs(env.iter().map(|(name, value)| (*name, value)));
     if echo {
         println!("$ cargo {}", args.join(" "));
         let status = command
@@ -165,4 +211,27 @@ fn workspace_root() -> Result<PathBuf> {
         .parent()
         .map(PathBuf::from)
         .ok_or_else(|| "xtask manifest has no parent directory".to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn release_rustflags_remap_the_machine_paths_and_keep_the_flags_already_set() {
+        let home = Path::new("/Users/some user/.cargo");
+        let root = Path::new("/Users/some user/dev/dms");
+        let remap = "--remap-path-prefix=/Users/some user/.cargo=/cargo\x1f\
+                     --remap-path-prefix=/Users/some user/dev/dms=/build";
+        assert_eq!(release_rustflags(None, None, home, root), remap);
+        // the plain variable is split on white space, the encoded one on 0x1f and wins
+        assert_eq!(
+            release_rustflags(None, Some("-C target-cpu=native"), home, root),
+            format!("-C\x1ftarget-cpu=native\x1f{remap}")
+        );
+        assert_eq!(
+            release_rustflags(Some("-Cdebuginfo=0"), Some("-C ignored"), home, root),
+            format!("-Cdebuginfo=0\x1f{remap}")
+        );
+    }
 }

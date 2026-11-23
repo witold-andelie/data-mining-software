@@ -19,7 +19,7 @@
 //! Uses the system tools `sips`, `iconutil`, `otool`, `install_name_tool`, `codesign` and
 //! `hdiutil` (macOS only).
 
-use crate::{Result, cargo, workspace_root};
+use crate::{Result, cargo_release, workspace_root};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -92,7 +92,7 @@ pub fn run(_args: &[String]) -> Result<()> {
         ));
     }
     let version = env!("CARGO_PKG_VERSION");
-    cargo(&["build", "--release", "-p", "dms", "-p", "dms-cli"])?;
+    cargo_release(&["build", "--release", "-p", "dms", "-p", "dms-cli"])?;
 
     let target = std::env::var_os("CARGO_TARGET_DIR")
         .map(PathBuf::from)
