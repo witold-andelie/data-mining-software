@@ -246,9 +246,9 @@ signs ad hoc and creates the disk image.
 | Option | Effect |
 |---|---|
 | `<file.str\|file.dms>` | Open this stream on start |
-| `--run` | Run the opened stream, then quit without saving |
+| `--run` | Run the opened stream once it is open; the window stays open with the results |
 | `--data-dir <dir>` | Extra folder searched for data files the stream names (repeatable) |
-| `--report <file>` | With `--run`: write a JSON run report |
+| `--report <file>` | With `--run`: write a plain-text run summary (counts and result kinds, no data values), then quit without saving |
 | `--synthetic <n>` | Open a generated stream with `n` nodes (no data needed) |
 | `--frame-time` | Show the CPU time of each frame in the status bar |
 
