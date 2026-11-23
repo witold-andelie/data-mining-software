@@ -76,9 +76,11 @@ answer for each stream, and our result must agree with it record by record.
 - **Runs them with verified results.** Each stream in a regression suite is run and every terminal node's input is
   compared with Modeler's own batch export (see [Key results](#key-results)).
 - **All 85 MVP nodes**, across the standard palettes (Sources, Record Ops, Field Ops, Graphs, Modeling, Output,
-  Export), plus 20 of 24 "later" nodes, including the complete Python palette.
-- **Our own training algorithms.** C5.0, CHAID, C&R Tree, QUEST, linear and logistic regression, neural networks,
-  K-Means, TwoStep, Apriori, time series and more, implemented from published documentation.
+  Export), plus all 24 "later" nodes, including the complete Python palette, and the six standard nodes Modeler's
+  licence tier greys out in the oracle's installation.
+- **Our own training algorithms.** C5.0, CHAID, C&R Tree, QUEST, linear, logistic and generalized linear regression,
+  Cox regression, discriminant analysis, neural networks, SVM, KNN, Bayes Net, K-Means, TwoStep, Apriori, time series
+  and more, implemented from published documentation.
 - **A visual editor and results viewer** (egui, no WebView): palette, canvas, generated settings forms, undo/redo,
   autosave and crash recovery; virtual-scrolling tables, statistics documents, model summaries and charts.
 - **A Python bridge** for Extension nodes and Python modelling nodes, run in the user's own Python.
@@ -114,7 +116,7 @@ answer for each stream, and our result must agree with it record by record.
 | Do results match Modeler? | A regression suite of **1,601 streams** is compared with Modeler's own batch output: **1,469 match exactly, 91 match to statistical parity, 41 are documented known gaps and 0 regress** (Windows, 2026-11-23, version 0.5.0). | `xtask/corpus.tsv`, `xtask/known-gaps.tsv` |
 | Which models are exact? | C5.0, CHAID, C&R Tree and QUEST (without an overfit-prevention set), Tree-AS, Linear, Linear-AS, Regression, Logistic, Decision List, K-Means, TwoStep, Apriori, CARMA, PCA/Factor, Anomaly, Feature Selection, RBF. | `docs/statistical-parity.md` |
 | Which are statistical? | MLP neural network, Kohonen, LSVM, Random Trees, Time Series, Sequence, Auto Cluster, Auto Classifier, Auto Numeric, and C&R Tree / QUEST with an overfit-prevention set: our result is compared with the spread of repeated runs of our own seedable implementation. | `docs/statistical-parity.md` |
-| Same answers on Windows and macOS? | Yes. On 2026-11-09 the full regression on an Apple M1 classified all 1,596 streams that both machines had exactly as on Windows, with no floating-point differences beyond the comparison tolerance (printed precision, or relative 1e-9); the merged version 0.5.0 classifies all 1,597 streams on Windows exactly as the 2026-11-09 baseline did. | `docs/mac/windows-baseline.tsv`, `docs/mac/compare_baseline.py` |
+| Same answers on Windows and macOS? | Yes. On 2026-11-23 the full regression on an Apple-silicon Mac classified all 1,601 streams exactly as on Windows (1,469 match, 91 statistical, 41 known gaps, 0 regressions), and the stream-by-stream comparison with the Windows baseline shows no difference. On 2026-11-09 the earlier 1,596-stream comparison on an Apple M1 showed no floating-point differences beyond the comparison tolerance (printed precision, or relative 1e-9). | `docs/mac/windows-baseline.tsv`, `docs/mac/compare_baseline.py` |
 | Time-series Expert Modeler? | 92 of 93 recorded ARIMA Expert selections and 26 of 26 univariate selections are reproduced; estimation follows the Guide's Marquardt procedure and matches Modeler to 11–14 digits for single-term ARMA and airline models. For ARMA models with both an AR and an MA term Modeler's Marquardt iteration stops earlier than ours: the estimates agree to 2–4 digits, and in all 12 recorded probes our estimates have the lower (better) exact likelihood objective. | [Known gaps](#known-gaps-and-their-impact) |
 | Does Bayes Net work, if Modeler cannot run it? | Yes, from the public algorithm (TAN and Markov blanket). Two demo streams embed Bayes Net models Modeler trained earlier, so the learner is checked against them: it reproduces their structure and every probability table (to 1e-12) for TAN on two data sets and Markov blanket on one. That check found four places where the Guide's text alone gave a different network; they are fixed and listed in the module. Scores written by the nugget have no Modeler run to compare with. | `crates/algo/src/bayes_net.rs`, `crates/algo/tests/bayes_net_oracle.rs` |
 | Do Cox and Generalized Linear work, if Modeler cannot run them? | Yes, from the public algorithms. Demo streams embed models Modeler trained, so the trainers are checked against them: Cox reproduces 12 coefficients (to 4e-15) and the 64-point baseline hazard (to 4e-11), and its stepwise selection picks exactly the saved terms; Generalized Linear reproduces the coefficients and covariance of three saved models (binomial with a complementary log-log link, and gamma with an inverse link and case weights; to 1e-15) and the goodness-of-fit and Type III tables Modeler printed. Scores written by the nuggets have no Modeler run to compare with. Cox strata and custom terms, Tweedie and multinomial targets are not implemented. | `crates/algo/src/cox.rs`, `crates/algo/src/genlin.rs`, `crates/exec/tests/cox.rs`, `crates/exec/tests/genlin.rs` |
@@ -139,14 +141,15 @@ A **gap** is a place where our result differs from Modeler's, or where a Modeler
 `cargo xtask regress` lists every known gap with its reason in `xtask/known-gaps.tsv`, fails on a new difference, and
 fails on a listed gap that has since been fixed, so the list cannot go stale.
 
-**What it means in practice.** None of the gaps stops the core workflow (open, edit, run and save a stream): 1,556 of
+**What it means in practice.** None of the gaps stops the core workflow (open, edit, run and save a stream): 1,560 of
 1,601 recorded streams agree with Modeler exactly (1,469) or statistically (91). What you may notice:
 
 1. A stream that uses a node we do not have runs up to that node and reports it; the rest of the stream is unaffected.
 2. Models that depend on random numbers or on Modeler's optimizer stopping rule give **equivalent but not identical**
    numbers: do not expect the same weights, cluster layout or last digits.
-3. Time-series models with both AR and MA terms give estimates that agree with Modeler to about 2–4 significant digits;
-   a few badly conditioned fits differ more (see [Statistical parity](#2-statistical-parity-91-streams-not-failures)).
+3. Time-series models with both AR and MA terms give estimates that agree with Modeler to about 2–4 significant digits
+   (ours have the better likelihood); a few badly conditioned fits differ more (see
+   [Statistical parity](#2-statistical-parity-91-streams-not-failures)).
 4. Nodes that sample without a seed (Balance) differ from run to run, in Modeler as well.
 
 ### 1. Documented known gaps: 41 of 1,601 streams
@@ -162,7 +165,7 @@ fails on a listed gap that has since been fixed, so the list cannot go stale.
 | Demo streams with unsupported settings or an incomplete oracle | 3 | `modelingintro` (a Statistics File option, and Modeler's batch run finds nothing to execute), `stp_server_demo` (STP node; Modeler's own run fails), `pm_binaryclassifier` (the oracle retrains a replacement-linked Auto model, which is out of scope) | Affects those demo streams only |
 | Time Series scoring of one demo | 1 | `broadband_create_models`: all four transfer-function targets match; for two series the first 63 rows differ because Modeler scores `Market_3` with its auxiliary Holt model instead of the saved primary ARIMA, and `Total`'s oracle model is not saved | Values in rows 1–63 of those two series differ; the other targets are exact |
 | Unseeded Balance | 4 | The Balance node has no seed, so Modeler's own runs keep different records (row counts 1155 vs 1156, 356 vs 379, 206 vs 210, 7774 vs 7797) | No single Modeler run can be matched. Models trained downstream (for example the logistic regression) vary with the sample, as they do in Modeler |
-| Excel test-fixture artifacts | 15 | Our generated test sheets contain cell-less `<row>` elements. Excel never writes them, and Modeler reads such sheets inconsistently, so we refuse them | None for files saved by Excel; 61 of 67 `sources` streams and 12 of 21 `excel_more` streams match |
+| Excel test-fixture artifacts | 15 | Our generated test sheets contain cell-less `<row>` elements. Excel never writes them, and Modeler reads such sheets inconsistently, so we refuse them | None for files saved by Excel; 65 of 71 `sources` streams and 12 of 21 `excel_more` streams match |
 | GLE: separated data and chaotic paths | 9 | Binomial identity/log fits where the data are separated, or where fitted means leave (0, 1) so the iteration is chaotic or Modeler's estimate is not a root of the score. `gle_binom_factor` is only a rounding difference of about 2e-7 relative | Affects ill-posed fits only: 40 of 49 GLE streams match exactly |
 | Decision List | 1 | `dl05_carry`: a tie in the rule search picks a different first rule (equal total coverage, different partition) | One edge case; 11 of 12 Decision List streams match |
 | Linear-AS | 1 | `x_shift`: forward selection treats one numerically degenerate term differently | Only when a candidate term is numerically degenerate; 20 of 21 Linear-AS streams match |
@@ -184,8 +187,9 @@ the difference is 3e-4 to 0.38 (see below).
 
 - **Time-series estimation.** Modeler's optimizer follows the Guide's Marquardt procedure and we reproduce it to 11–14
   digits for single-term AR or MA models and for the airline model. For models with both AR and MA terms its starting
-  values are not reproduced by any reading of the Guide we tried (about 20); the objective function is identical at
-  Modeler's own saved estimates, so the difference is where the optimizer stops.
+  values are not reproduced by any reading of the Guide we tried (about 20). The objective function is identical at
+  Modeler's own saved estimates, and in all 12 recorded probes ours is the lower one, so the difference is that
+  Modeler's iteration stops earlier; we do not copy its stopping point.
 - **No-constant ARMA near a unit root.** On three synthetic probe streams (ARMA(1,1) without a constant, on a series
   whose mean is about 50) our estimate of the error variance differs from Modeler's by about 3 %, so the confidence
   limits differ much more than elsewhere (in the first row by tens of percent). The same fits with a constant match to
@@ -201,6 +205,7 @@ the difference is 3e-4 to 0.38 (see below).
 | Graphics output and R syntax in Extension nodes | The options are absent |
 | Licence-blocked (6) and out-of-scope (34) nodes | Listed in the catalog and greyed out in the palette, with the reason |
 | Native models are not turned into nuggets after training in the app (C5.0, CHAID, ...), which needs a PMML writer | Train, then score by running the stream; nuggets imported in `.str` files score normally, and Python models do generate nuggets |
+| Excel named ranges whose sheet name needs quotes (`'My Sheet'!A1:B2`) | Refused with a `GAP:` error. Modeler 19 itself crashes its server process on such names, so there is no answer to compare with; names on sheets without spaces are read and match Modeler (`excel_named_*`) |
 | Python Extension nodes from Modeler `.str` files | Kept, but usually do not run: how Modeler stores their settings has not been observed, and its Python extension API is Spark-based |
 | TwoStep clustering on data whose CF tree needs a rebuild (more than three levels) | The node stops with a "not supported yet" error instead of producing a result. Seen on the team's `cluster_analysis` stream; the TwoStep streams in the corpus that fit the supported depth match |
 | Supernodes | Shown and run, but cannot be edited |
@@ -245,7 +250,7 @@ signs ad hoc and creates the disk image.
 ## Data
 
 The raw data are not in the repository. `xtask/corpus.tsv` pins every corpus file by label, relative path and SHA-256
-(**1,717 files in 83 labels**); the files themselves live in the git-ignored `corpus/` and
+(**1,722 files in 83 labels**); the files themselves live in the git-ignored `corpus/` and
 `oracle/` folders.
 
 | Data | What it is | Handling | Used by |
