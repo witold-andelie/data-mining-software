@@ -1,6 +1,6 @@
 # Implementing a node
 
-> For contributors and agents. Follow the never-crash, clean-room and layering rules in the top-level README first.
+> For contributors and agents. Follow the never-crash, clean-room and layering rules in [development.md](development.md) and the README first.
 
 ## Where things go
 

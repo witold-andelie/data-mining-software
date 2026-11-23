@@ -1,35 +1,69 @@
+<div align="center">
+
 # Data Mining
 
+### Open, run and edit IBM SPSS Modeler 19 streams, without Modeler. An 18 to 19 MB download.
+
+**A data-mining workbench written in Rust, for macOS (Apple silicon) and Windows. Its results are compared with Modeler's own output on 1,601 recorded streams.**
+
 [![License: PolyForm Noncommercial 1.0.0](https://img.shields.io/badge/license-PolyForm%20Noncommercial%201.0.0-blue.svg)](LICENSE)
+[![Latest release](https://img.shields.io/github/v/release/witold-andelie/data-mining-software?include_prereleases&label=download)](https://github.com/witold-andelie/data-mining-software/releases/tag/v0.6.0)
 ![Rust 1.95](https://img.shields.io/badge/rust-1.95.0-orange.svg)
 ![Platforms](https://img.shields.io/badge/platforms-macOS%20(Apple%20silicon)%20%7C%20Windows%20x64-blue.svg)
 ![Version](https://img.shields.io/badge/version-0.6.0-informational.svg)
 ![Status](https://img.shields.io/badge/status-active%20development-green.svg)
 
-Source code, regression suite and verification records of **Data Mining**, a data-mining workbench written in Rust
-that targets the single-machine feature set of IBM SPSS Modeler 19. It opens existing Modeler `.str` streams, runs
-them, and saves streams in its own reviewable text format (`.dms`). Every number in this README is produced by a
-command in this repository (`cargo xtask regress`, `parity`, `perf`, `ci`) and carries the date it was measured.
+**[Download](#download) · [First steps](#first-steps) · [Why it is different](#why-data-mining) · [Results](#results-at-a-glance) · [FAQ](#faq) · [Documentation](#documentation)**
 
-> **Free for individuals and educational institutions; no commercial use.** The code is released under the
-> [PolyForm Noncommercial License 1.0.0](LICENSE) (see [License](#license)). It is not affiliated with, endorsed by
-> or derived from IBM. "IBM", "SPSS" and "Modeler" are trademarks of their owners and are used here only to
-> describe compatibility.
+<img src="crates/ui/tests/snapshots/workbench_light_in_window_menu.png" width="760" alt="The main window on a synthetic stream: node palette, canvas, properties panel and results area">
+
+<sub>The main window on a generated stream (the screenshot test's reference image: no IBM or team data). On macOS the menu is the native menu bar.</sub>
+
+</div>
+
+> [!IMPORTANT]
+> Get Data Mining only from this repository's [Releases page](https://github.com/witold-andelie/data-mining-software/releases).
+> It is **free for individuals and educational institutions; no commercial use** ([PolyForm Noncommercial 1.0.0](LICENSE),
+> see [License](#license)). It is not affiliated with, endorsed by or derived from IBM. "IBM", "SPSS" and "Modeler"
+> are trademarks of their owners and are used here only to describe compatibility.
+
+Source code, regression suite and verification records of **Data Mining**, a data-mining workbench in Rust that targets
+the single-machine feature set of IBM SPSS Modeler 19. It opens existing Modeler `.str` streams, runs them, and saves
+streams in its own reviewable text format (`.dms`). Every number in this README is produced by a command in this
+repository (`cargo xtask regress`, `parity`, `perf`, `ci`) and carries the date it was measured.
 
 ## Quick start
 
-**macOS (Apple silicon):** download the disk image **Data-Mining-0.6.0-macos-arm64.dmg** (19.4 MB; the
-[release page](https://github.com/witold-andelie/data-mining-software/releases/tag/v0.6.0), a pre-release, shows sizes in MiB: 18.5) together with its
-`.sha256` file, open it and drag **Data Mining** to Applications. The app is signed ad hoc and not notarized, so
-macOS blocks it the first time; see [Opening the downloaded app](#opening-the-downloaded-app-first-time).
+### Download
 
-**Windows (x64):** download **Data-Mining-0.6.0-windows-x64.zip** (18.1 MB, shown as 17.2 MiB on the page) from the same release, unzip it and run
-`dms.exe`. Nothing else has to be installed (the C runtime is linked in). The programs are not code-signed, so Windows
-SmartScreen may warn you the first time: check the `.sha256` file, then choose **More info > Run anyway**.
+Version 0.6.0 is a pre-release. Pick your system, download, and check the file against its `.sha256` next to it.
 
-**Building it yourself:** the steps below build the app from source. They take a few commands and no configuration.
+| System | Download | Size | First start |
+|---|---|---|---|
+| **macOS** (Apple silicon, macOS 11 or later) | [Data-Mining-0.6.0-macos-arm64.dmg](https://github.com/witold-andelie/data-mining-software/releases/download/v0.6.0/Data-Mining-0.6.0-macos-arm64.dmg) | 19.4 MB | Open the `.dmg`, drag **Data Mining** to Applications. macOS blocks the first start (ad hoc signed, not notarized): try to open it once, then **System Settings > Privacy & Security > Open Anyway**. |
+| **Windows** (x64) | [Data-Mining-0.6.0-windows-x64.zip](https://github.com/witold-andelie/data-mining-software/releases/download/v0.6.0/Data-Mining-0.6.0-windows-x64.zip) | 18.1 MB | Unzip, run `dms.exe`. Nothing else to install. Not code-signed, so SmartScreen may warn: **More info > Run anyway**. |
 
-**macOS** (Apple silicon, macOS 11 or later)
+All files, with their checksums, are on the [release page](https://github.com/witold-andelie/data-mining-software/releases/tag/v0.6.0)
+(GitHub shows sizes in MiB there: 18.5 and 17.2). Details, the steps verified on macOS 26.5.1 and the terminal
+alternative to *Open Anyway*: [Installation](docs/installation.md#opening-the-downloaded-app-first-time).
+
+### First steps
+
+- **Open a stream:** File > Open… (a Modeler `.str` or our `.dms`), or pass the file on the command line (`dms.exe
+  stream.str` on Windows). No stream at hand? `dms.exe --synthetic 24` opens a generated one that needs no data files.
+- **Run it:** press ⌘R (Ctrl+R on Windows). If the stream names data files saved on another machine, add the folder that
+  holds them with File > Add Data Folder… (the app searches by file name).
+- **Without a window:** `dms-cli run stream.str --out results/` (inside the macOS app; `dms-cli.exe` in the Windows
+  download). See [Using Data Mining](docs/using.md#command-line-tool).
+- **Python nodes (optional):** `python3 -m pip install pyarrow pandas`, plus the libraries of the nodes you use (see
+  [Python nodes](docs/using.md#python-nodes)).
+
+### Build from source (optional)
+
+<details>
+<summary><strong>macOS (Apple silicon) and Windows (x64)</strong></summary>
+
+**macOS**
 
 ```sh
 xcode-select --install          # compiler and linker; skip if already installed
@@ -40,491 +74,154 @@ cd data-mining-software
 cargo run -p dms --release      # builds and starts the app
 ```
 
-**Windows** (x64)
+**Windows**: install Rust from <https://rustup.rs> (it needs the Microsoft C++ Build Tools; the installer offers them)
+and [Git](https://git-scm.com), then in a terminal:
 
-1. Install Rust from <https://rustup.rs>. It needs the Microsoft C++ Build Tools; the installer tells you if they are
-   missing and offers to install them. Install [Git](https://git-scm.com) if you do not have it.
-2. In a terminal:
+```powershell
+git clone https://github.com/witold-andelie/data-mining-software.git
+cd data-mining-software
+cargo run -p dms --release      # builds and starts the app
+```
 
-   ```powershell
-   git clone https://github.com/witold-andelie/data-mining-software.git
-   cd data-mining-software
-   cargo run -p dms --release      # builds and starts the app
-   ```
+The first build compiles all dependencies (about 7 minutes on the Windows laptop this was checked on, with two build
+jobs). The right Rust version (1.95.0) is selected by `rust-toolchain.toml`. Packaging commands:
+`cargo xtask bundle-mac` (`.app` and `.dmg`) and `cargo xtask bundle-windows` (the `.zip`). More:
+[Installation](docs/installation.md).
 
-The first build compiles all dependencies: it took about 7 minutes on the Windows laptop this was checked on, with
-two build jobs (the default uses every core and is faster). Later starts take seconds. The right Rust version (1.95.0) is
-selected by `rust-toolchain.toml` and installed by `rustup` on the first command.
+</details>
 
-**Then:**
+## Why Data Mining
 
-- **Open a stream:** File > Open… (a Modeler `.str` or our `.dms`), or pass it on the command line:
-  `cargo run -p dms --release -- path/to/stream.str`. No stream at hand? `cargo run -p dms --release -- --synthetic 24`
-  opens a generated one that needs no data files.
-- **Run it:** press ⌘R (Ctrl+R on Windows). If the stream names data files saved on another machine, add the folder that
-  holds them with File > Add Data Folder… (the app searches by file name).
-- **A double-clickable app (macOS):** `cargo xtask bundle-mac` writes `target/dist/Data Mining.app` and a `.dmg`; drag the
-  app to Applications (an app you build yourself opens directly; a downloaded copy needs the steps in
-  [Opening the downloaded app](#opening-the-downloaded-app-first-time)).
-- **Python nodes (optional):** `python3 -m pip install pyarrow pandas`, plus the libraries of the nodes you use (see
-  [Python nodes](#python-nodes)).
-- **Without a window:** `cargo run -p dms-cli -- run stream.str --out results/` (see [Command-line tool](#command-line-tool)).
-
-More detail, requirements and options: [Installation in detail](#installation-in-detail).
-
-## Overview
-
-Modeler is the tool the team's analysis streams were built in. We needed those streams to open, run and be edited
-without it, on Windows and on Apple-silicon Macs, where Modeler's own support is poor. The project is therefore a
-**clean-room reimplementation checked as a black box**: Modeler is never inspected, only used to produce the expected
-answer for each stream, and our result must agree with it record by record.
-
-- **Small and self-contained.** The macOS disk image is **19.4 MB** and the Windows download is **18.1 MB**
-  (one **32.8 MB** executable, plus a 16.0 MB command-line tool), against **5.1 GB** for the Modeler 19 installation it replaces on the
-  machine the oracles were recorded on (see [Key results](#key-results)). No Java runtime, no Spark, no database server and no Python are needed to open,
-  edit and run streams; Python is only for the optional Python nodes.
-- **Opens Modeler streams.** Decodes `.str` files (a ZIP container holding Fast Infoset XML) without Modeler
-  installed. Nodes and settings the application does not understand are kept exactly as saved and drawn with a dashed
-  outline, so nothing is lost.
+- **Opens Modeler streams without Modeler.** Decodes `.str` files; nodes and settings the app does not understand are
+  kept exactly as saved and drawn with a dashed outline, so nothing is lost.
+- **Small and self-contained.** The macOS disk image is **19.4 MB** and the Windows download is **18.1 MB** (one
+  **32.8 MB** executable plus a 16.0 MB command-line tool), against **5.1 GB** for the Modeler 19 installation it replaces
+  on the machine the oracles were recorded on. No Java runtime, no Spark, no database server and no Python are needed
+  to open, edit and run streams; Python is only for the optional Python nodes.
 - **Runs them with verified results.** Each stream in a regression suite is run and every terminal node's input is
-  compared with Modeler's own batch export (see [Key results](#key-results)).
-- **All 85 MVP nodes**, across the standard palettes (Sources, Record Ops, Field Ops, Graphs, Modeling, Output,
-  Export), plus all 24 "later" nodes, including the complete Python palette, and the six standard nodes Modeler's
-  licence tier greys out in the oracle's installation.
-- **Our own training algorithms.** C5.0, CHAID, C&R Tree, QUEST, linear, logistic and generalized linear regression,
-  Cox regression, discriminant analysis, neural networks, SVM, KNN, Bayes Net, K-Means, TwoStep, Apriori, time series
-  and more, implemented from published documentation.
+  compared with Modeler's own batch export.
+- **All 85 MVP nodes** across the standard palettes (Sources, Record Ops, Field Ops, Graphs, Modeling, Output, Export),
+  plus all 24 "later" nodes, including the complete Python palette, and the six standard nodes Modeler's licence tier
+  greys out in the oracle's installation.
+- **Our own training algorithms,** from published documentation: C5.0, CHAID, C&R Tree, QUEST, linear, logistic and
+  generalized linear regression, Cox regression, discriminant analysis, neural networks, SVM, KNN, Bayes Net, K-Means,
+  TwoStep, Apriori, time series and more.
 - **A visual editor and results viewer** (egui, no WebView): palette, canvas, generated settings forms, undo/redo,
   autosave and crash recovery; virtual-scrolling tables, statistics documents, model summaries and charts.
-- **A Python bridge** for Extension nodes and Python modelling nodes, run in the user's own Python.
+- **A Python bridge** for Extension nodes and Python modelling nodes, run in your own Python.
 - **English and Simplified Chinese** interface, following the system language.
 
-<p align="center"><img src="crates/ui/tests/snapshots/workbench_light_in_window_menu.png" width="760" alt="The main window on a synthetic stream: node palette, canvas, properties panel and results area"></p>
-<p align="center"><em>The main window on a generated stream (the screenshot test's reference image: no IBM or team data). On macOS the menu is the native menu bar.</em></p>
+More on the design and what it contributes: [About](docs/about.md).
 
-## Main contributions
+## Results at a glance
 
-1. **A black-box verified clean room.** Every algorithm follows IBM's published *Algorithms Guide*, the user
-   manuals, the scripting guide, the CLEM reference, the PMML standard and the open literature; Modeler's programs
-   are never decompiled or opened, and no GPL code is read. Where the documentation is silent, behaviour is pinned
-   down by differential probes (change one input, observe the output) and recorded under `docs/formats/`. See
-   [Clean room](#clean-room).
-2. **A regression suite against Modeler itself.** Streams, models and Modeler's expected outputs are pinned by
-   SHA-256 and compared cell by cell on every platform.
-3. **Two explicit parity levels.** Models whose training Modeler makes unreproducible (undocumented random number
-   generator or optimizer stopping rule) are accepted at *statistical* parity under a stated method; everything else
-   must match *exactly*. Nothing statistical is presented as exact.
-4. **An editable, diff-friendly stream model.** Reversible edits drive undo/redo; the `.dms` format is TOML text that
-   can be reviewed in git; imported settings are kept byte for byte unless the user changes them.
-5. **One engine, many front ends.** Every user-visible action is a command with an id, so menus, shortcuts, the
-   canvas, the command line and automation call the same code.
-6. **Never crash.** Corrupt files, bad arguments and full disks produce errors you can act on, not crashes or lost
-   work, enforced by lints and tests rather than by convention.
+| Question | Finding |
+|---|---|
+| Do results match Modeler? | A regression suite of **1,601 streams** is compared with Modeler's own batch output: **1,469 match exactly, 91 match to statistical parity, 41 are documented known gaps and 0 regress** (Windows, 2026-11-23, version 0.6.0). |
+| Same answers on Windows and macOS? | Yes: on 2026-11-23 the full regression on an Apple-silicon Mac classified all 1,601 streams exactly as on Windows. |
+| What is statistical rather than exact? | Models Modeler makes unreproducible (undocumented random numbers or optimizer stopping rule): MLP neural network, Kohonen, LSVM, Random Trees, Time Series, Sequence, Auto Cluster / Classifier / Numeric. Nothing statistical is presented as exact. |
+| What is not covered? | 41 documented known gaps and a handful of missing nodes and features: [Known gaps](docs/known-gaps.md). |
+| How big is it? | Download 18.1 MB (Windows) and 19.4 MB (macOS); `dms.exe` 32.8 MB, `Data Mining.app` 44.7 MB. A started app held about 300 MB (Windows working set) and 128 MB (macOS resident) on a generated 24-node stream. |
 
-## Key results
-
-| Question | Finding | Where |
-|---|---|---|
-| Does it read Modeler's streams? | Every `.str` in the corpus decodes; unknown nodes and settings are preserved and shown dashed. | `crates/strfmt` |
-| Do results match Modeler? | A regression suite of **1,601 streams** is compared with Modeler's own batch output: **1,469 match exactly, 91 match to statistical parity, 41 are documented known gaps and 0 regress** (Windows, 2026-11-23, version 0.6.0). | `xtask/corpus.tsv`, `xtask/known-gaps.tsv` |
-| Which models are exact? | C5.0, CHAID, C&R Tree and QUEST (without an overfit-prevention set), Tree-AS, Linear, Linear-AS, Regression, Logistic, Decision List, K-Means, TwoStep, Apriori, CARMA, PCA/Factor, Anomaly, Feature Selection, RBF. | `docs/statistical-parity.md` |
-| Which are statistical? | MLP neural network, Kohonen, LSVM, Random Trees, Time Series, Sequence, Auto Cluster, Auto Classifier, Auto Numeric, and C&R Tree / QUEST with an overfit-prevention set: our result is compared with the spread of repeated runs of our own seedable implementation. | `docs/statistical-parity.md` |
-| Same answers on Windows and macOS? | Yes. On 2026-11-23 the full regression on an Apple-silicon Mac classified all 1,601 streams exactly as on Windows (1,469 match, 91 statistical, 41 known gaps, 0 regressions), and the stream-by-stream comparison with the Windows baseline shows no difference. On 2026-11-09 the earlier 1,596-stream comparison on an Apple M1 showed no floating-point differences beyond the comparison tolerance (printed precision, or relative 1e-9). | `docs/mac/windows-baseline.tsv`, `docs/mac/compare_baseline.py` |
-| Time-series Expert Modeler? | 92 of 93 recorded ARIMA Expert selections and 26 of 26 univariate selections are reproduced; estimation follows the Guide's Marquardt procedure and matches Modeler to 11–14 digits for single-term ARMA and airline models. For ARMA models with both an AR and an MA term Modeler's Marquardt iteration stops earlier than ours: the estimates agree to 2–4 digits, and in all 12 recorded probes our estimates have the lower (better) exact likelihood objective. | [Known gaps](#known-gaps-and-their-impact) |
-| Does Bayes Net work, if Modeler cannot run it? | Yes, from the public algorithm (TAN and Markov blanket). Two demo streams embed Bayes Net models Modeler trained earlier, so the learner is checked against them: it reproduces their structure and every probability table (to 1e-12) for TAN on two data sets and Markov blanket on one. That check found four places where the Guide's text alone gave a different network; they are fixed and listed in the module. Scores written by the nugget have no Modeler run to compare with. | `crates/algo/src/bayes_net.rs`, `crates/algo/tests/bayes_net_oracle.rs` |
-| Do Cox and Generalized Linear work, if Modeler cannot run them? | Yes, from the public algorithms. Demo streams embed models Modeler trained, so the trainers are checked against them: Cox reproduces 12 coefficients (to 4e-15) and the 64-point baseline hazard (to 4e-11), and its stepwise selection picks exactly the saved terms; Generalized Linear reproduces the coefficients and covariance of three saved models (binomial with a complementary log-log link, and gamma with an inverse link and case weights; to 1e-15) and the goodness-of-fit and Type III tables Modeler printed. Scores written by the nuggets have no Modeler run to compare with. Cox strata and custom terms, Tweedie and multinomial targets are not implemented. | `crates/algo/src/cox.rs`, `crates/algo/src/genlin.rs`, `crates/exec/tests/cox.rs`, `crates/exec/tests/genlin.rs` |
-| Do SVM and KNN work, if Modeler cannot run them? | Yes, from the public algorithms. SVM reproduces the two models saved in `svm_cancer`: the same support vectors for an RBF and a polynomial kernel, the polynomial model's coefficients, constant and Platt parameters to 1e-14 (the RBF model's coefficients agree to the solver tolerance), and every training record's class. KNN reproduces the neighbours and distances of every case in the model saved in `car_sales_knn` (462 distances to 4e-15). Scores the nuggets write have no Modeler run to compare with; KNN does not score a target or save neighbour details yet. | `crates/algo/src/svm.rs`, `crates/algo/src/knn.rs`, `crates/exec/tests/svm.rs`, `crates/algo/tests/knn_oracle.rs` |
-| Do GLMM and Temporal Causal Models work, if Modeler cannot run them? | Yes, from the public algorithms, checked against models saved in `testscores_glmm` and `tcm_kpi`. The GLMM trainer reproduces the saved normal-identity model with two nested random intercepts: fixed effects, standard errors, variance components, F tests and information criteria to 1e-9 or better (including the standard errors of the variance components). The TCM trainer reproduces all 30 saved series models: the same predictors in the same order, and every intercept, lag coefficient, standard error and F test to 1e-12. The nuggets write the fixed-part prediction (GLMM) and one-step-ahead fitted values (TCM), which have no Modeler run to compare with. Other GLMM distributions, random slopes, TCM forecasts and outlier analysis are not implemented. | `crates/algo/src/glmm.rs`, `crates/algo/src/tcm.rs`, `crates/exec/tests/glmm.rs`, `crates/exec/tests/tcm.rs` |
-| Do Discriminant and SLRM work, if Modeler cannot run them? | Yes, from the public algorithms. Discriminant reproduces every table of the output Modeler saved with `telco_custcat_discriminant` (the stepwise path, canonical functions, structure matrix, centroids and classification table) and the nugget's 24 stored numbers to 1e-13; predictor importance is a Monte-Carlo estimate in the Guide and agrees to 3e-3. SLRM reproduces every count (616 pair counts, four products) and 590 cut points of the model saved in `pm_selflearn` from the three training files. Continuing the training of a saved SLRM model, a randomisation above 0 and separate-groups discriminant scoring are not implemented. | `crates/algo/src/discriminant.rs`, `crates/algo/src/slrm.rs`, `crates/exec/tests/discriminant.rs`, `crates/exec/tests/slrm.rs` |
-| How big is it? | Windows x64 (`cargo xtask bundle-windows`, measured 2026-11-23): the download `Data-Mining-0.6.0-windows-x64.zip` is **18.1 MB**; unpacked, `dms.exe` is **32.8 MB** (31.2 MiB) and `dms-cli.exe` **16.0 MB**, each one file that links the C runtime in and imports only Windows system libraries (`odbc32`, `opengl32`, `dwrite`, ...), so no Visual C++ redistributable is needed. For comparison, the Modeler 19 installation folder on the machine where the oracles were recorded is **5.1 GB** in 35,520 files (including its own Java runtime, Spark and Python), about 160 times the size of `dms.exe`. A freshly started `dms.exe` on a generated 24-node stream held about 300 MB of working memory in three runs (301, 303 and 302 MB after 8 seconds; not broken down further). macOS (Apple silicon, release 0.6.0, measured 2026-11-23): the disk image is **19.43 MB**, `Data Mining.app` **44.73 MB** on disk, of which `dms` is 29.47 MB, `dms-cli` 13.98 MB and the two bundled ODBC libraries 0.48 MB; a freshly started app on the same generated stream had 127.8, 127.8 and 127.1 MB resident after 8 seconds (`ps` RSS; not the same measure as the Windows working set). | `target/release/` |
-| Is the editor fast enough? | On an Apple M1 (release build) a canvas with 200 labelled nodes pans at 60 fps with vertical sync and 176 fps without; 1,000 nodes 177 fps; first frame about 155 ms after launch. `cargo xtask perf` enforces a p95 frame budget of 4 ms. | `xtask/src/perf.rs` |
-| What is not covered? | 41 documented known gaps and a handful of missing nodes and features, explained below. | [Known gaps](#known-gaps-and-their-impact) |
-
-Node coverage, generated from the node catalog by `cargo xtask parity` (`docs/parity-checklist.md`):
+Node coverage, generated from the node catalog by `cargo xtask parity` ([checklist](docs/parity-checklist.md)):
 
 | Scope | Implemented | Total | Notes |
 |---|---|---|---|
 | MVP | 85 | 85 | The standard single-machine palettes |
 | Later | 24 | 24 | Python palette, extension nodes, Cox, GLMM, Temporal Causal Model and Streaming TS done |
-| Licence-blocked | 6 | 6 | Standard nodes the oracle's Modeler licence greys out (SVM, KNN, Bayes Net, Discriminant, GenLin, SLRM), so they cannot be verified. All six are implemented from the public algorithms and checked against models Modeler saved in demo streams (see the questions above) |
+| Licence-blocked | 6 | 6 | Standard nodes the oracle's Modeler licence greys out (SVM, KNN, Bayes Net, Discriminant, GenLin, SLRM), so they cannot be verified. All six are implemented from the public algorithms and checked against models Modeler saved in demo streams |
 | Out of scope | 0 | 34 | IBM ecosystem, big data, in-database mining, Statistics integration |
 
-## Known gaps and their impact
-
-A **gap** is a place where our result differs from Modeler's, or where a Modeler feature is missing. None is hidden:
-`cargo xtask regress` lists every known gap with its reason in `xtask/known-gaps.tsv`, fails on a new difference, and
-fails on a listed gap that has since been fixed, so the list cannot go stale.
-
-**What it means in practice.** None of the gaps stops the core workflow (open, edit, run and save a stream): 1,560 of
-1,601 recorded streams agree with Modeler exactly (1,469) or statistically (91). What you may notice:
-
-1. A stream that uses a node we do not have runs up to that node and reports it; the rest of the stream is unaffected.
-2. Models that depend on random numbers or on Modeler's optimizer stopping rule give **equivalent but not identical**
-   numbers: do not expect the same weights, cluster layout or last digits.
-3. Time-series models with both AR and MA terms give estimates that agree with Modeler to about 2–4 significant digits
-   (ours have the better likelihood); a few badly conditioned fits differ more (see
-   [Statistical parity](#2-statistical-parity-91-streams-not-failures)).
-4. Nodes that sample without a seed (Balance) differ from run to run, in Modeler as well.
-
-### 1. Documented known gaps: 41 of 1,601 streams
-
-| Group | Streams | What differs | Impact |
-|---|---|---|---|
-| Nodes not implemented | 1 | CPLEX Optimization (`cplex_goodslearn`), which is out of scope | The node does not run. Its branch of a stream stops there; palette entries are greyed out with the reason |
-| Streaming Time Series demo stream | 1 | `catalog_streaming_timeseries`: the node runs and picks the same model family as Modeler (Winters additive smoothing), but our smoothing parameters differ (our fit has the smaller squared error), so forecasts differ by up to 4%; the saved nugget in the same stream holds an older ARIMA model that Modeler's own run replaced by the retrained one | Values of that stream differ; Modeler's estimate is the less accurate one |
-| Discriminant demo stream | 1 | `telco_custcat_discriminant`: Modeler 19 cannot run the Discriminant nugget (licence), so the oracle's nuggets add no fields, while ours scores them from the model saved in the stream | The scores have no Modeler output to compare with; the build node reproduces the saved model (see above) |
-| SVM demo stream | 1 | `svm_cancer`: Modeler 19 cannot run the SVM nugget (licence), so the oracle's nuggets add no fields, while ours scores them from the models saved in the stream | The scores have no Modeler output to compare with; the build nodes are checked against the two saved models (see above) |
-| Cox demo stream | 1 | `telco_coxreg`: the oracle's Modeler install has no Cox node, so its nuggets add no fields, while ours scores them from the model saved in the stream | The scores have no Modeler output to compare with; the build node is checked against the saved model (see above) |
-| Bayes Net demo streams | 2 | `bayes_bankloan` and `bayes_churn_retrain`: Modeler 19 cannot run the Bayes Net nugget (licence), so the oracle's downstream filter carries no Bayes scores, while ours scores them from the models saved in the streams | The scores have no Modeler output to compare with; the learner itself is checked against the saved models (see above) |
-| Demo streams with unsupported settings or an incomplete oracle | 3 | `modelingintro` (a Statistics File option, and Modeler's batch run finds nothing to execute), `stp_server_demo` (STP node; Modeler's own run fails), `pm_binaryclassifier` (the oracle retrains a replacement-linked Auto model, which is out of scope) | Affects those demo streams only |
-| Time Series scoring of one demo | 1 | `broadband_create_models`: all four transfer-function targets match; for two series the first 63 rows differ because Modeler scores `Market_3` with its auxiliary Holt model instead of the saved primary ARIMA, and `Total`'s oracle model is not saved | Values in rows 1–63 of those two series differ; the other targets are exact |
-| Unseeded Balance | 4 | The Balance node has no seed, so Modeler's own runs keep different records (row counts 1155 vs 1156, 356 vs 379, 206 vs 210, 7774 vs 7797) | No single Modeler run can be matched. Models trained downstream (for example the logistic regression) vary with the sample, as they do in Modeler |
-| Excel test-fixture artifacts | 15 | Our generated test sheets contain cell-less `<row>` elements. Excel never writes them, and Modeler reads such sheets inconsistently, so we refuse them | None for files saved by Excel; 65 of 71 `sources` streams and 12 of 21 `excel_more` streams match |
-| GLE: separated data and chaotic paths | 9 | Binomial identity/log fits where the data are separated, or where fitted means leave (0, 1) so the iteration is chaotic or Modeler's estimate is not a root of the score. `gle_binom_factor` is only a rounding difference of about 2e-7 relative | Affects ill-posed fits only: 40 of 49 GLE streams match exactly |
-| Decision List | 1 | `dl05_carry`: a tie in the rule search picks a different first rule (equal total coverage, different partition) | One edge case; 11 of 12 Decision List streams match |
-| Linear-AS | 1 | `x_shift`: forward selection treats one numerically degenerate term differently | Only when a candidate term is numerically degenerate; 20 of 21 Linear-AS streams match |
-
-### 2. Statistical parity: 91 streams (not failures)
-
-For these models Modeler's training cannot be reproduced bit for bit (an undocumented random number generator or
-optimizer stopping rule), so the stream is accepted when Modeler's value lies inside the spread of our own seeded runs
-(method in `docs/statistical-parity.md`). By model family: Time Series 33, Kohonen 17, MLP neural network 13, Sequence 12,
-Random Trees 9, LSVM 3, QUEST 3, C&R Tree 1.
-
-**Impact:** the models are equivalent in distribution but not numerically identical. Do not use them where a result must
-match a Modeler run digit for digit. For the 33 Time Series streams, the first mismatching cell each one reports differs
-from Modeler's by a median of 3e-6 (relative) and by less than 1e-4 in 29 of them. The other four are synthetic
-no-constant ARMA fits on a series with a large mean, where the AR root is close to 1: the cell is a confidence limit and
-the difference is 3e-4 to 0.38 (see below).
-
-### 3. Open algorithm differences
-
-- **Time-series estimation.** Modeler's optimizer follows the Guide's Marquardt procedure and we reproduce it to 11–14
-  digits for single-term AR or MA models and for the airline model. For models with both AR and MA terms its starting
-  values are not reproduced by any reading of the Guide we tried (about 20). The objective function is identical at
-  Modeler's own saved estimates, and in all 12 recorded probes ours is the lower one, so the difference is that
-  Modeler's iteration stops earlier; we do not copy its stopping point.
-- **No-constant ARMA near a unit root.** On three synthetic probe streams (ARMA(1,1) without a constant, on a series
-  whose mean is about 50) our estimate of the error variance differs from Modeler's by about 3 %, so the confidence
-  limits differ much more than elsewhere (in the first row by tens of percent). The same fits with a constant match to
-  about the usual 2–4 digits.
-- **Time-series Expert Modeler.** One of 93 recorded ARIMA Expert selections differs (Modeler picks white noise where we
-  keep an MA(2) at a partial-autocorrelation statistic of 2.2), and one of 23 transfer-function selections differs in
-  its noise ARMA term.
-
-### 4. Missing nodes and features
-
-| Missing | Impact |
-|---|---|
-| Graphics output and R syntax in Extension nodes | The options are absent |
-| Licence-blocked (6) and out-of-scope (34) nodes | Listed in the catalog and greyed out in the palette, with the reason |
-| Native models are not turned into nuggets after training in the app (C5.0, CHAID, ...), which needs a PMML writer | Train, then score by running the stream; nuggets imported in `.str` files score normally, and Python models do generate nuggets |
-| Excel named ranges whose sheet name needs quotes (`'My Sheet'!A1:B2`) | Refused with a `GAP:` error. Modeler 19 itself crashes its server process on such names ([reported here](https://github.com/witold-andelie/data-mining-software/issues/1)), so there is no answer to compare with; names on sheets without spaces are read and match Modeler (`excel_named_*`) |
-| Python Extension nodes from Modeler `.str` files | Kept, but usually do not run: how Modeler stores their settings has not been observed, and its Python extension API is Spark-based |
-| TwoStep clustering on data whose CF tree needs a rebuild (more than three levels) | The node stops with a "not supported yet" error instead of producing a result. Seen on the team's `cluster_analysis` stream; the TwoStep streams in the corpus that fit the supported depth match |
-| Supernodes | Shown and run, but cannot be edited |
-| Settings forms cover the most-used nodes | Other nodes keep their imported settings and show them read-only |
-| Python nodes have no Modeler oracle | Their score field names follow Modeler's naming but are inferred |
-
-## Installation in detail
-
-| | |
-|---|---|
-| macOS | Apple silicon (`aarch64-apple-darwin`), macOS 11 or later |
-| Windows | x64 |
-| Rust (to build) | 1.95.0, selected automatically by `rust-toolchain.toml` |
-| Python (optional) | 3.9 or later with `pyarrow` and `pandas`, only for Python nodes |
-| ODBC | The macOS app bundles the unixODBC driver manager (see [License](#license)). Building from source needs it installed (`brew install unixodbc`). Database nodes also need an ODBC driver for your database |
-
-### The macOS app
-
-1. Build the disk image: `cargo xtask bundle-mac` (needs the steps in [Quick start](#quick-start)).
-2. Open the `.dmg` and drag **Data Mining** to Applications.
-3. The first time, macOS blocks a downloaded copy (see below).
-4. Double-clicking a `.str` or `.dms` file in Finder (or Open With) opens it in the app.
-5. Optional: the command-line tool is inside the app; link it once with
-   `sudo ln -sf "/Applications/Data Mining.app/Contents/MacOS/dms-cli" /usr/local/bin/dms-cli`.
-
-`bundle-mac` builds the release binaries, copies the approved Homebrew ODBC libraries into the app (anything else
-fails the build) and rewrites their references, adds the icon, our own `LICENSE` and the third-party licence files,
-signs ad hoc and creates the disk image.
-
-#### Opening the downloaded app (first time)
-
-The app is signed ad hoc and not notarized, so macOS refuses a copy downloaded from the internet. On the Mac we tested
-(macOS 26.5.1) `spctl --assess` reports `rejected` for it, as it does for any app without a developer identity and a
-notarization ticket. Apple's own steps ([Open a Mac app from an unidentified developer](https://support.apple.com/guide/mac-help/open-a-mac-app-from-an-unidentified-developer-mh40616/mac)):
-
-1. Try to open **Data Mining** once from Applications and dismiss the warning.
-2. Open **System Settings > Privacy & Security**, scroll to **Security**, and click **Open Anyway** next to
-   *Data Mining*. Confirm, and enter your password if asked.
-
-From macOS 15 (Sequoia) on, right-click > Open no longer bypasses this for unsigned or un-notarized apps (Apple's
-documentation says it still works on macOS 14 and earlier; we have not tested that). If you prefer the terminal, remove the download mark yourself after checking the `.sha256` file:
-`xattr -dr com.apple.quarantine "/Applications/Data Mining.app"`. Verified on macOS 26.5.1 with the 0.6.0 disk image:
-right-click > Open did not let the app start, **Open Anyway** did, and it then opened normally.
-
-### Useful app options
-
-| Option | Effect |
-|---|---|
-| `<file.str\|file.dms>` | Open this stream on start |
-| `--run` | Run the opened stream once it is open; the window stays open with the results |
-| `--data-dir <dir>` | Extra folder searched for data files the stream names (repeatable) |
-| `--report <file>` | With `--run`: write a plain-text run summary (counts and result kinds, no data values), then quit without saving |
-| `--synthetic <n>` | Open a generated stream with `n` nodes (no data needed) |
-| `--frame-time` | Show the CPU time of each frame in the status bar |
-
-## Data
-
-The raw data are not in the repository. `xtask/corpus.tsv` pins every corpus file by label, relative path and SHA-256
-(**1,722 files in 83 labels**); the files themselves live in the git-ignored `corpus/` and
-`oracle/` folders.
-
-| Data | What it is | Handling | Used by |
-|---|---|---|---|
-| IBM sample streams and demo data | Streams and data shipped with Modeler 19 | Never committed; found through `DMS_MODELER_HOME` (`Demos/`) | `ibm-demos` label |
-| Team streams | Seven analysis streams and their data | Never committed | `team` label |
-| Probe streams | Streams and data our probe scripts generate from fixed seeds (`xtask/oracle/probes/`) | Recorded under `corpus/`, pinned by SHA-256 | all other labels |
-| Oracle | Modeler's exported models (PMML) and each terminal node's input (CSV), recorded in batch mode with Modeler 19.0.0.0.26 on Windows | Under `oracle/<label>/<stream>/`; only `cargo xtask oracle` writes it | `regress`, `compare` |
-
-The oracle is about 250 MB, of which `oracle/probes/` is 80 MB. **To run the regression on another machine** copy
-`corpus/` and the rest of `oracle/` (175 MB) and the
-Modeler `Demos` folder, and set `DMS_MODELER_HOME` to the folder that contains it. `cargo xtask test-corpus` also needs
-`oracle/probes/clem_semantics` and `oracle/probes/sav_to_csv` (4.5 MB).
-
-Modeler is used only to produce expected answers; it is never linked, bundled or distributed. Recording oracles is
-Windows-only and needs Modeler 19 and `DMS_MODELER_HOME`: `cargo xtask oracle <label> <file>.str` runs one corpus stream
-in batch mode and writes each terminal node's input and each trained model, and `cargo xtask probe <name>` runs a
-probe script (`xtask/oracle/probes/<name>.py`) to observe a file format or a node's behaviour.
-
-## Using the desktop app
-
-The window has a node **palette** on the left, the stream **canvas** in the middle, the **properties** panel on the
-right and the **results** panel at the bottom; each can be hidden from the toolbar or the View menu.
-
-**Building a stream.** Drag a node from the palette onto the canvas, or double-click it there (nodes not implemented
-yet are greyed out, with the reason as a tooltip). Connect two nodes by dragging from the small circle on a node's right
-edge, by holding Option (Alt on Windows) and dragging from the node, or by right-clicking and choosing **Connect From
-Here**. Drag on empty canvas to box-select, hold Space and drag to pan, delete a connection by clicking it and pressing
-Delete, and rename a node with Return (F2 on Windows).
-
-**Editing settings.** Double-click a node to open its settings in a floating window with **Run** and **Close**; the
-properties panel shows the same form. Forms are generated from each node's settings schema (checkboxes, ranges,
-choices, field pickers filled from the last run, file pickers, CLEM expressions with syntax checking, tables, code
-editors). Every change is one undo step. Nodes whose settings cannot be edited yet show them read-only.
-
-**Running and results.** **Run** (⌘R) runs the whole stream, **Run Selected** (⇧⌘R) the selected node and what it
-needs, in the background with a progress bar; **Stop** (⌘.) cancels, including long model training. The results panel
-has one tab per terminal node: data tables, output documents (Statistics, Data Audit, Matrix, Means, Analysis, ...),
-model summaries, and charts for graph nodes (Histogram, Distribution, Plot, Multiplot, Time Plot, Evaluation,
-Collection, t-SNE). A failed node shows why, and nodes that did not run say which upstream node to look at. Streams
-often name data files on the machine that saved them: the app looks in the stream's folder first, then in the folders
-added with **File > Add Data Folder…**, by file name.
-
-**Saving.** Streams are saved as `.dms` (⌘S, ⇧⌘S); imported `.str` files are never overwritten. Edits are autosaved
-and unsaved streams are offered for recovery after a crash.
-
-**Settings** (⌘,): language (System, English, 简体中文), data folders, and the Python executable with a **Check Python**
-button.
-
-| Action | macOS | Windows |
-|---|---|---|
-| New / Open / Close | ⌘N / ⌘O / ⌘W | Ctrl+N / Ctrl+O / Ctrl+W |
-| Save / Save As | ⌘S / ⇧⌘S | Ctrl+S / Ctrl+Shift+S |
-| Undo / Redo | ⌘Z / ⇧⌘Z | Ctrl+Z / Ctrl+Shift+Z |
-| Cut / Copy / Paste / Duplicate | ⌘X / ⌘C / ⌘V / ⌘D | Ctrl+X / Ctrl+C / Ctrl+V / Ctrl+D |
-| Run stream / Run selected / Stop | ⌘R / ⇧⌘R / ⌘. | Ctrl+R / Ctrl+Shift+R / Escape |
-| Zoom in / out / to fit | ⌘= / ⌘- / ⌘0 | Ctrl+= / Ctrl+- / Ctrl+0 |
-| Rename / Delete | ↩ / ⌫ | F2 / Delete |
-| Full screen | ⌃⌘F | F11 |
-
-On macOS the menu bar is the native one; on Windows the same menus are drawn in the window. Both are generated from
-one command table.
-
-## Python nodes
-
-Python nodes run in **your own Python**, as a separate process: no Python is bundled and libpython is not linked. Data
-goes to Python and back as Apache Arrow files in a private temporary folder; scripts see a pandas DataFrame.
-
-```sh
-python3 -m pip install pyarrow pandas            # every Python node
-python3 -m pip install scikit-learn              # Random Forest, GMM, One-Class SVM, KDE, t-SNE
-python3 -m pip install xgboost                   # XGBoost Tree / Linear
-python3 -m pip install hdbscan                   # HDBSCAN
-python3 -m pip install imbalanced-learn          # SMOTE
-brew install libomp                              # macOS only: OpenMP runtime xgboost needs
-```
-
-The app looks for Python in this order: the path in Settings; `DMS_PYTHON`; on macOS `/opt/homebrew/bin/python3` and
-`/usr/local/bin/python3` (apps opened from Finder get a short `PATH`); then `python3` and `python` (`py -3` first on
-Windows). A configured path that does not work is reported, never silently replaced, and missing packages produce the
-exact install command.
-
-**Extension scripts** see `modelerData` (the input as a pandas DataFrame, `None` in Extension Import),
-`modelerDataModel` (a list of `{name, storage, measurement, role}`) and `print(...)` (the Extension Output result).
-Import and Transform scripts leave their result in `modelerData`; errors report the line of your script.
-
-| Palette | Node | Library |
-|---|---|---|
-| Sources / Record Ops | Extension Import, Extension Transform | your script |
-| Record Ops | SMOTE | imbalanced-learn |
-| Graphs | t-SNE | scikit-learn |
-| Modeling | Random Forest, Gaussian Mixture, One-Class SVM, KDE | scikit-learn |
-| Modeling | XGBoost Tree, XGBoost Linear | xgboost |
-| Modeling | HDBSCAN | hdbscan |
-| Modeling | Extension Model | your build and score scripts |
-| Output / Export | Extension Output, KDE Simulation, Extension Export | your script / scikit-learn |
-
-As in Modeler, running a Python build node trains the model and places a **model nugget** next to it. The model is
-stored inside the stream as a pickle attachment, so it survives saving and reopening. A continuous target is regressed,
-any other is classified; with a partition field only the training partition is used.
-
-> **Security.** Running a stream runs the Python code in it, and loading a saved Python model unpickles it, which can
-> also run code, with your permissions. This is the same trust model as Modeler: only run streams you trust.
-
-## Command-line tool
-
-`dms-cli` works without the window (on macOS it ships inside the app; from source use `cargo run -p dms-cli -- <command>`):
-
-```text
-dms-cli xml <file.str>                 print the decoded stream document as XML
-dms-cli inspect <file.str>             print nodes, links and attachments as JSON
-dms-cli coverage [--json] <path>...    report which catalog nodes the .str files use
-dms-cli convert <in.str> <out.dms>     import a stream and save it in the native format
-dms-cli run <file.str|file.dms> --out <dir> [--data-dir <dir>]... [--terminal-order <uid,...>]
-                                       run the stream; write the data reaching each terminal
-                                       node to <dir>/<uid>.csv and a report to <dir>/run.json
-```
-
-Export nodes write under `<dir>/exports/`, never over the paths saved in the stream.
-
-## File formats
-
-| Format | Read | Write | Notes |
-|---|---|---|---|
-| Modeler stream `.str` | ✓ | — | ZIP + Fast Infoset (ITU-T X.891); unknown nodes and settings preserved; node settings as observed in `docs/formats/` |
-| Native stream `.dms` | ✓ | ✓ | TOML text; attachments (models, extension settings) as base64; saved atomically |
-| Delimited text, fixed-width | ✓ | ✓ | Var. File, Fixed File, Flat File export |
-| SPSS Statistics `.sav` / `.zsav` | ✓ | ✓ | Our own reader and writer |
-| Excel `.xlsx`, SAS, JSON, XML | ✓ | ✓ | |
-| Databases (ODBC) | ✓ | ✓ | Needs an ODBC driver manager |
-| PMML 4.3 | ✓ | — | Model nuggets in `.str` files score from their saved PMML |
-
-## Reproducing the verification
-
-Run these from the repository root. The regression and corpus checks need `corpus/` and `oracle/` in place (see
-[Data](#data)); the others need nothing.
-
-| Check | Command | Needs | Measured time |
-|---|---|---|---|
-| All build gates | `cargo xtask ci` | nothing | about 2.5 min on an M1 (warm build) |
-| Corpus integrity | `cargo xtask corpus verify` | `corpus/` | seconds |
-| Corpus-backed tests | `cargo xtask test-corpus` | `corpus/`, `oracle/probes/` | about 2 min (M1) |
-| Full regression | the command below | `corpus/`, `oracle/` (without `probes/`) | about 7 min (M1, `--jobs 4`) |
-| One stream against its oracle | `cargo xtask compare <label> <file>.str` (file name only) | `corpus/`, `oracle/` | seconds |
-| Compare two platforms | `python3 docs/mac/compare_baseline.py docs/mac/windows-baseline.tsv <mac.tsv>` | two regress `--out` files | seconds |
-| Canvas frame budget | `cargo xtask perf` | nothing | seconds |
-
-```sh
-labels=$(awk -F'\t' 'NR>1 && $1!~/^#/ {print $1}' xtask/corpus.tsv | sort -u \
-  | grep -vx -e database -e probes | sed 's/^/--label /' | tr '\n' ' ')
-cargo xtask regress $labels --jobs 4 --out target/regress.tsv
-```
-
-Do not run `regress` without labels, or with the `database` label, on a machine with the Access ODBC driver: it opens
-a modal dialog and hangs. Do not edit source files while a regression runs; later streams fail to build and show up as
-false regressions.
-
-## Verification
-
-- **Oracle comparison.** For every stream with an oracle, each terminal node's input is compared with Modeler's export
-  cell by cell: numbers within printed precision or relative 1e-9, text and missing values exactly. A stream is
-  `match`, `statistical` (held to the statistical-parity method), `known-gap` (listed with a reason in
-  `xtask/known-gaps.tsv`) or `regression`. The command fails on a regression and on a known-gap entry that now matches,
-  so fixed gaps are deleted instead of lingering.
-- **A change is adopted only if more oracle streams match and none regress.** Hypotheses that fit some cases and break
-  others are measured, reported and not shipped.
-- **Statistical parity** is tested by training with at least 10 seeds of our own generator: Modeler's value must lie
-  inside our seeds' range widened by 10 % of its width, and must also rank near the middle of our distribution across
-  the oracle family, so a wide band cannot hide a systematic bias. Documented outliers are asserted to stay outliers
-  (`docs/statistical-parity.md`).
-- **Platform parity.** The same regression runs on Windows and on Apple silicon and is compared stream by stream
-  (`docs/mac/`).
-- **Interface tests.** Off-screen screenshot tests (egui_kittest on wgpu) render synthetic streams only, and
-  interaction tests send real pointer and keyboard events (connecting, menus, editing, undo, settings, translations).
-  Reference images are updated only after review.
-- **Never crash.** Non-test code may not use `unwrap`, `expect`, `panic!`, `unreachable!`, `todo!` or
-  `unimplemented!` (workspace lints), and `unsafe` is forbidden outside `dms-macos-open`. Numbers from files and
-  arguments are treated as hostile; every crash fix comes with a test that panicked before the fix, and parsers have
-  mutation fuzz tests.
-- **Agent-assisted work is checked, not trusted.** Parts of the code were written with AI coding agents. Each result is
-  merged only after the coordinator reruns `cargo xtask ci` and the regression itself.
-
-## Limitations
-
-- **One reference version.** The expected answers come from Modeler 19.0.0.0.26, recorded on one Windows machine and
-  its licence tier. Behaviour of other versions, and of nodes that licence blocks, is not checked.
-- **Comparison at terminal nodes.** Results are compared where a stream ends (each terminal node's input) and for saved
-  models, not at every intermediate node.
-- **Windows** builds, passes `cargo xtask ci` and the full regression, but the desktop app has not yet had a full manual
-  pass there.
-- The gaps, missing nodes and their effects are listed under [Known gaps and their impact](#known-gaps-and-their-impact).
-
-## Repository structure
-
-```
-apps/
-  dms/              desktop application (eframe; native menus and bundle metadata on macOS)
-  dms-cli/          command-line tool
-crates/
-  types/ strfmt/ sav/ pmml/      L0  values and tables; .str container; .sav; PMML 4.3
-  stream/ clem/                  L1  stream model, reversible edits, .dms; CLEM expressions
-  catalog/ io/ algo/ python/     L2  node catalog; data files and databases; training algorithms; Python bridge
-  exec/                          L3  executor, settings schemas, cancellation
-  engine/                        L4  session, command registry, undo/redo, background jobs, autosave
-  ui/ macos-open/                L6  egui canvas, panels, forms, results, charts; Finder file opening
-docs/
-  statistical-parity.md          how statistical parity is tested
-  parity-checklist.md            every Modeler node and its status (generated by cargo xtask parity)
-  decision-list-validation.md    Decision List validation notes
-  node-implementation.md         how a node is implemented
-  clem/                          CLEM reference and the behaviour the oracle showed
-  formats/                       node-settings findings, as observed
-  mac/                           macOS regression baselines and the comparison script
-xtask/              developer tasks (ci, layers, parity, corpus, oracle, regress, compare, perf, bundle-mac, bundle-windows)
-                    corpus.tsv, known-gaps.tsv, oracle scripts and probes, scorecard
-corpus/, oracle/    local only, git-ignored
-```
-
-A crate may depend only on crates in lower layers, and nothing below the UI layer may use a GUI library;
-`cargo xtask layers` enforces both. Design principles:
-
-- **Everything is a command.** Menus, shortcuts, the canvas, the command line and automation call engine commands by id
-  (`file.save`, `node.connect`, `run.node`, ...); commands never open dialogs themselves.
-- **Data types are runtime data.** Storage, measurement level, role, missing values and date baselines are never
-  hard-coded.
-- **Settings are kept verbatim** unless the user changes them; forms read and write them through per-node schemas.
-- **Long work is cancellable.** Execution and training check a shared cancel token; Python processes are killed on Stop.
+The full results table (exact and statistical model lists, Bayes Net, Cox, GenLin, SVM, KNN, GLMM, TCM, Discriminant
+and SLRM checks, editor speed, time-series Expert Modeler), how to reproduce it and its limitations:
+[Results and verification](docs/verification.md).
+
+## FAQ
+
+<details>
+<summary><strong>Do I need IBM SPSS Modeler?</strong></summary>
+
+No. Data Mining opens and runs `.str` streams without Modeler installed. Modeler was used only to record the expected
+answers the regression suite compares against; it is never linked, bundled or distributed.
+
+</details>
+
+<details>
+<summary><strong>Which systems are supported?</strong></summary>
+
+macOS on Apple silicon (macOS 11 or later) and Windows x64. The Windows desktop app has not yet had a full manual pass;
+the Windows build passes `cargo xtask ci` and the full regression.
+
+</details>
+
+<details>
+<summary><strong>Why does macOS or Windows warn me when I start it?</strong></summary>
+
+The programs are not signed with a paid developer identity: the macOS app is signed ad hoc and not notarized, and the
+Windows programs are not code-signed. Check the download against its `.sha256` file, then follow the first-start step in
+the [download table](#download). Both steps are described in [Installation](docs/installation.md#opening-the-downloaded-app-first-time).
+
+</details>
+
+<details>
+<summary><strong>Will my results be identical to Modeler's?</strong></summary>
+
+For 1,469 of 1,601 recorded streams, yes, record by record. For 91 the models are equivalent in distribution but not
+numerically identical (random numbers, optimizer stopping rules). 41 are documented gaps with their reasons. See
+[Results and verification](docs/verification.md) and [Known gaps](docs/known-gaps.md).
+
+</details>
+
+<details>
+<summary><strong>Is it a copy of Modeler?</strong></summary>
+
+No. Every algorithm follows IBM's published *Algorithms Guide*, the manuals and the open literature; Modeler's programs are
+never decompiled or opened, and no GPL code is read. Modeler is only a black-box oracle. See [Clean room](#clean-room).
+
+</details>
+
+<details>
+<summary><strong>What do I need for Python nodes?</strong></summary>
+
+Your own Python 3.9 or later with `pyarrow` and `pandas`, plus the libraries of the nodes you use. Python nodes run as a
+separate process in your Python; no Python is bundled. See [Python nodes](docs/using.md#python-nodes).
+
+</details>
+
+<details>
+<summary><strong>Can I use it at work?</strong></summary>
+
+Not for commercial use. The licence is free for individuals and educational institutions and other noncommercial uses;
+commercial licences are granted by the author on request. See [License](#license).
+
+</details>
+
+<details>
+<summary><strong>I found a bug. What should I do?</strong></summary>
+
+Open an [issue](https://github.com/witold-andelie/data-mining-software/issues) with the version (the release name),
+your system, the steps to reproduce and the error output. For a wrong result, say which stream and which node and,
+if you can, what Modeler gives.
+
+</details>
+
+## Documentation
+
+- [Installation](docs/installation.md): downloads, building from source, the macOS app, first start, app options.
+- [Using Data Mining](docs/using.md): the desktop app and shortcuts, Python nodes, the command-line tool, file formats.
+- [Results and verification](docs/verification.md): the full results table, data and oracles, how to reproduce, limitations.
+- [Known gaps and their impact](docs/known-gaps.md): every difference from Modeler, with the reason.
+- [About](docs/about.md): overview, main contributions, the clean-room method.
+- [Development](docs/development.md): repository structure, build gates, conventions.
+- [Statistical parity](docs/statistical-parity.md), [node checklist](docs/parity-checklist.md), [CLEM reference](docs/clem/reference.md), [node settings as observed](docs/formats/nodes/common.md).
 
 ## Development
 
 Rust 1.95.0 (`rust-toolchain.toml`), edition 2024. New dependencies must be permissively licensed (MIT, Apache-2.0,
 BSD, ISC, Zlib, BSL-1.0, Unicode-3.0, CC0; MPL-2.0 only for test-only dependencies) and pinned in the workspace
-`Cargo.toml`.
-
-```sh
-cargo xtask ci                 # fmt, clippy -D warnings, all tests, layers, parity: run before every commit
-cargo xtask layers             # check the dependency layers
-cargo xtask parity [--check]   # regenerate docs/parity-checklist.md from the catalog
-cargo xtask corpus sync <label> <dir>
-cargo xtask regress [--label <label>]... [--jobs <n>] [--via-dms] [--out <file>]
-cargo xtask oracle <label> <path>   # Windows + Modeler only: record expected answers
-cargo xtask probe <name>            # Windows + Modeler only: differential format probe
-```
-
-Commits follow Conventional Commits (`feat(exec): ...`, `fix(ui): ...`). Errors carry context and say what the user can
-do.
+`Cargo.toml`. Run `cargo xtask ci` (fmt, clippy `-D warnings`, all tests, layers, parity) before every commit. Commits
+follow Conventional Commits. Repository structure, the full command list and the rules (never crash, layering,
+everything is a command): [Development](docs/development.md).
 
 ## Clean room
 
@@ -533,15 +230,14 @@ SPSS Modeler, and no Modeler code is reused.
 
 - **We never look inside Modeler.** Its jars, DLLs and executables are never decompiled, disassembled or opened. C5.0 is
   RuleQuest's proprietary algorithm; the C5.0/See5 source has not been consulted either.
-- **Only public sources:** IBM's published *Algorithms Guide* (formulas), the user manuals, the *Python Scripting and
-  Automation Guide* (node properties), the CLEM reference, the PMML standard (DMG) and the open literature. Each
-  algorithm module cites the chapter and page it implements.
-- **Modeler is only a black-box oracle.** We prepare input data, let Modeler train and score in batch mode, and compare
-  its output with ours cell by cell. The `.str` format is learned the same way: save a stream twice with one setting
-  changed and compare the bytes.
-- **No GPL code.** GPL/LGPL/AGPL code (for example PSPP) is never read or copied.
-- **No IBM assets.** No IBM icons, wording or colours are used; IBM sample streams, team data and Modeler outputs stay
-  in the git-ignored `corpus/` and `oracle/` folders and are never committed or distributed.
+- **Only public sources:** IBM's published *Algorithms Guide*, the user manuals, the *Python Scripting and Automation
+  Guide*, the CLEM reference, the PMML standard and the open literature. Each algorithm module cites the chapter and
+  page it implements.
+- **Modeler is only a black-box oracle:** we prepare input data, let Modeler train and score in batch mode, and compare
+  its output with ours cell by cell.
+- **No GPL code and no IBM assets.** Nothing from IBM, the team's data or Modeler outputs is committed or distributed.
+
+The full statement is in [About](docs/about.md#clean-room).
 
 ## Citation
 
@@ -591,3 +287,4 @@ MIT licence).
 
 The work rests on other public material: the Data Mining Group's PMML standard, ITU-T X.891 (Fast Infoset), the
 Rust ecosystem, and the egui project and its libraries.
+
