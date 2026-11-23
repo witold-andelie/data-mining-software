@@ -3,10 +3,11 @@
 # Public Modeler scripting API only.
 #
 # `excel_named_range` (source_streams.py) cannot be recorded: its workbook defines the name on a
-# sheet whose name has a space (`'Offset Data'!$B$3:$I$10`) and Modeler's server process crashes
+# sheet whose name needs quotes (`'Offset Data'!$B$3:$I$10`) and Modeler's server process crashes
 # as soon as `use_named_range` is true (observed with `use_named_range` alone, without any other
-# setting). Names on sheets without a space work, so this probe writes a copy of the workbook
-# with such names and saves one stream per question:
+# setting). The quotes cause it, not the space: `'Main'!$A$1:$D$4` crashes too, while `Main!...`
+# works. So this probe writes a copy of the workbook with unquoted names and saves one stream
+# per question:
 #   excel_named_main      only the named range (Main!$A$1:$D$4)
 #   excel_named_override  the named range plus a different worksheet and explicit range
 #   excel_named_headers   a second name (Headers!$A$1:$B$3): its first row holds the field names
